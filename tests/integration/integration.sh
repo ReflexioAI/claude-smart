@@ -142,6 +142,40 @@ stage_setup() {
   log "setup: ok"
 }
 
+stage_setup_hook() {
+  # ─────────────────────────────────────────────────────────────────────
+  # CI-ONLY WORKAROUND — invoke smart-install.sh directly.
+  #
+  # Claude Code has no documented lifecycle event named "Setup", and
+  # `claude plugin install` does not fire any hooks in headless CI — it
+  # only writes local config. This is tracked upstream at
+  #   https://github.com/anthropics/claude-code/issues/11240
+  # (plugin Install/Uninstall lifecycle hooks — not yet implemented).
+  #
+  # In real use, smart-install.sh ends up running through some path that
+  # populates plugin/dashboard/.next before the first session start. In
+  # CI we have no such path, so we call the script directly here to
+  # simulate what that path produces (npm install + next build).
+  #
+  # Everything else in this test stays on the real CLI flow. Remove this
+  # stage once upstream ships a headless Setup trigger.
+  # ─────────────────────────────────────────────────────────────────────
+  log "setup-hook: running plugin/scripts/smart-install.sh (CI workaround — no headless Setup trigger; upstream #11240)"
+  if ! bash "$PLUGIN_ROOT/scripts/smart-install.sh" >"$HOME/smart-install.log" 2>&1; then
+    cat "$HOME/smart-install.log" >&2 || true
+    fail "smart-install.sh failed (exit $?)"
+  fi
+  # Always surface the log so build warnings (e.g., npm audit, node
+  # version mismatches) are visible even on success.
+  printf '\n===== %s/smart-install.log =====\n' "$HOME" >&2
+  cat "$HOME/smart-install.log" >&2 || true
+  printf '\n'
+  if [ ! -d "$PLUGIN_ROOT/dashboard/.next" ]; then
+    fail "smart-install.sh returned 0 but dashboard/.next was not produced"
+  fi
+  log "setup-hook: ok"
+}
+
 stage_backend() {
   log "backend: starting"
   bash "$PLUGIN_ROOT/scripts/backend-service.sh" start >/dev/null
@@ -170,16 +204,18 @@ stage_cleanup() {
 
 CMD="${1:-all}"
 case "$CMD" in
-  setup)     stage_setup ;;
-  backend)   stage_backend ;;
-  dashboard) stage_dashboard ;;
-  cleanup)   stage_cleanup ;;
+  setup)      stage_setup ;;
+  setup-hook) stage_setup_hook ;;
+  backend)    stage_backend ;;
+  dashboard)  stage_dashboard ;;
+  cleanup)    stage_cleanup ;;
   all)
     stage_setup
+    stage_setup_hook
     stage_backend
     stage_dashboard
     stage_cleanup
     log "all stages passed"
     ;;
-  *) fail "unknown stage: $CMD (expected: setup|backend|dashboard|cleanup|all)" ;;
+  *) fail "unknown stage: $CMD (expected: setup|setup-hook|backend|dashboard|cleanup|all)" ;;
 esac
