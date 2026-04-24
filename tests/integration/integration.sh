@@ -117,9 +117,23 @@ stage_setup() {
   fi
 
   log "setup: claude plugin install claude-smart@reflexioai (fires real Setup hook)"
-  if ! claude plugin install claude-smart@reflexioai >"$HOME/plugin-install.log" 2>&1; then
-    cat "$HOME/plugin-install.log" >&2 || true
-    fail "claude plugin install failed"
+  install_rc=0
+  claude plugin install claude-smart@reflexioai >"$HOME/plugin-install.log" 2>&1 || install_rc=$?
+
+  # Always surface what the install produced — success paths can still
+  # silently skip the Setup hook, which leaves .next unbuilt and surfaces
+  # only downstream as a dashboard failure. Dumping here makes the root
+  # cause visible in the CI log regardless of exit status.
+  printf '\n===== %s/plugin-install.log =====\n' "$HOME" >&2
+  cat "$HOME/plugin-install.log" >&2 || true
+  printf '\n===== ls -la %s/.claude-smart/ =====\n' "$HOME" >&2
+  ls -la "$HOME/.claude-smart/" >&2 2>/dev/null || echo "(no .claude-smart dir — Setup hook did not run)" >&2
+  printf '\n===== ls %s/dashboard/.next =====\n' "$PLUGIN_ROOT" >&2
+  ls "$PLUGIN_ROOT/dashboard/.next" >&2 2>/dev/null || echo "(no .next — dashboard build did not run)" >&2
+  printf '\n'
+
+  if [ "$install_rc" -ne 0 ]; then
+    fail "claude plugin install failed (exit $install_rc)"
   fi
   if [ -f "$HOME/.claude-smart/install-failed" ]; then
     cat "$HOME/.claude-smart/install-failed" >&2 || true
