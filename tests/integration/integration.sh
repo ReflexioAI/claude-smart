@@ -14,13 +14,15 @@
 # Usage:
 #   bash tests/integration/integration.sh            # all stages
 #   bash tests/integration/integration.sh setup      # single stage
+#   bash tests/integration/integration.sh setup-hook
 #   bash tests/integration/integration.sh backend
 #   bash tests/integration/integration.sh dashboard
+#   bash tests/integration/integration.sh cleanup
 #
 # Exit status: 0 on success, non-zero on any stage failure. Dumps the
 # relevant service logs to stderr before exiting non-zero.
 
-set -euo pipefail
+set -Eeuo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
@@ -36,6 +38,9 @@ if [ -z "${CLAUDE_SMART_INTEG_HOME:-}" ]; then
   export CLAUDE_SMART_INTEG_HOME="$INTEG_HOME"
 else
   INTEG_HOME="$CLAUDE_SMART_INTEG_HOME"
+  # Caller-supplied path may not exist yet (fresh env, typo in reuse).
+  # Create it before exporting so later log redirects don't fail early.
+  mkdir -p "$INTEG_HOME"
 fi
 export HOME="$INTEG_HOME"
 
@@ -116,61 +121,37 @@ stage_setup() {
     fail "claude plugin marketplace add failed"
   fi
 
-  log "setup: claude plugin install claude-smart@reflexioai (fires real Setup hook)"
-  install_rc=0
-  claude plugin install claude-smart@reflexioai >"$HOME/plugin-install.log" 2>&1 || install_rc=$?
-
-  # Always surface what the install produced — success paths can still
-  # silently skip the Setup hook, which leaves .next unbuilt and surfaces
-  # only downstream as a dashboard failure. Dumping here makes the root
-  # cause visible in the CI log regardless of exit status.
-  printf '\n===== %s/plugin-install.log =====\n' "$HOME" >&2
-  cat "$HOME/plugin-install.log" >&2 || true
-  printf '\n===== ls -la %s/.claude-smart/ =====\n' "$HOME" >&2
-  ls -la "$HOME/.claude-smart/" >&2 2>/dev/null || echo "(no .claude-smart dir — Setup hook did not run)" >&2
-  printf '\n===== ls %s/dashboard/.next =====\n' "$PLUGIN_ROOT" >&2
-  ls "$PLUGIN_ROOT/dashboard/.next" >&2 2>/dev/null || echo "(no .next — dashboard build did not run)" >&2
-  printf '\n'
-
-  if [ "$install_rc" -ne 0 ]; then
-    fail "claude plugin install failed (exit $install_rc)"
-  fi
-  if [ -f "$HOME/.claude-smart/install-failed" ]; then
-    cat "$HOME/.claude-smart/install-failed" >&2 || true
-    fail "Setup hook wrote install-failed marker"
+  # `claude plugin install` only writes local config in headless mode — it
+  # does NOT fire any lifecycle hooks (there is no "Setup" event in the
+  # documented set). We still run it so the plugin is registered the way a
+  # real user's machine would have it; smart-install.sh is invoked in the
+  # next stage as a CI-only workaround. See upstream #11240.
+  log "setup: claude plugin install claude-smart@reflexioai"
+  if ! claude plugin install claude-smart@reflexioai >"$HOME/plugin-install.log" 2>&1; then
+    cat "$HOME/plugin-install.log" >&2 || true
+    fail "claude plugin install failed"
   fi
   log "setup: ok"
 }
 
 stage_setup_hook() {
-  # ─────────────────────────────────────────────────────────────────────
-  # CI-ONLY WORKAROUND — invoke smart-install.sh directly.
-  #
-  # Claude Code has no documented lifecycle event named "Setup", and
-  # `claude plugin install` does not fire any hooks in headless CI — it
-  # only writes local config. This is tracked upstream at
-  #   https://github.com/anthropics/claude-code/issues/11240
-  # (plugin Install/Uninstall lifecycle hooks — not yet implemented).
-  #
-  # In real use, smart-install.sh ends up running through some path that
-  # populates plugin/dashboard/.next before the first session start. In
-  # CI we have no such path, so we call the script directly here to
-  # simulate what that path produces (npm install + next build).
-  #
-  # Everything else in this test stays on the real CLI flow. Remove this
-  # stage once upstream ships a headless Setup trigger.
-  # ─────────────────────────────────────────────────────────────────────
-  log "setup-hook: running plugin/scripts/smart-install.sh (CI workaround — no headless Setup trigger; upstream #11240)"
+  # CI-only workaround. Claude Code has no documented Setup/Install
+  # lifecycle hook, so `claude plugin install` never runs smart-install.sh
+  # in any environment (upstream anthropics/claude-code#11240). We invoke
+  # it here directly to produce dashboard/.next, which dashboard-service.sh
+  # refuses to build in the foreground. Remove this stage once upstream
+  # ships a headless Setup trigger.
+  log "setup-hook: running plugin/scripts/smart-install.sh"
   if ! bash "$PLUGIN_ROOT/scripts/smart-install.sh" >"$HOME/smart-install.log" 2>&1; then
     cat "$HOME/smart-install.log" >&2 || true
-    fail "smart-install.sh failed (exit $?)"
+    fail "smart-install.sh failed"
   fi
-  # Always surface the log so build warnings (e.g., npm audit, node
-  # version mismatches) are visible even on success.
-  printf '\n===== %s/smart-install.log =====\n' "$HOME" >&2
-  cat "$HOME/smart-install.log" >&2 || true
-  printf '\n'
+  if [ -f "$HOME/.claude-smart/install-failed" ]; then
+    cat "$HOME/.claude-smart/install-failed" >&2 || true
+    fail "smart-install.sh wrote install-failed marker"
+  fi
   if [ ! -d "$PLUGIN_ROOT/dashboard/.next" ]; then
+    cat "$HOME/smart-install.log" >&2 || true
     fail "smart-install.sh returned 0 but dashboard/.next was not produced"
   fi
   log "setup-hook: ok"
