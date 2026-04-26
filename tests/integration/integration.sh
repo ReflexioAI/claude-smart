@@ -150,9 +150,24 @@ stage_setup_hook() {
     cat "$HOME/.claude-smart/install-failed" >&2 || true
     fail "smart-install.sh wrote install-failed marker"
   fi
+  # smart-install.sh now spawns dashboard-build.sh detached so the install
+  # hook returns immediately. Wait up to 10 minutes for the build pid file
+  # to clear AND .next/ to appear before failing.
+  local build_pid_file="$HOME/.claude-smart/dashboard-build.pid"
+  local i=0
+  local timeout=600
+  log "setup-hook: waiting for detached dashboard build (up to ${timeout}s)"
+  while [ "$i" -lt "$timeout" ]; do
+    if [ ! -e "$build_pid_file" ] && [ -d "$PLUGIN_ROOT/dashboard/.next" ]; then
+      break
+    fi
+    sleep 2
+    i=$((i + 2))
+  done
   if [ ! -d "$PLUGIN_ROOT/dashboard/.next" ]; then
     cat "$HOME/smart-install.log" >&2 || true
-    fail "smart-install.sh returned 0 but dashboard/.next was not produced"
+    [ -f "$HOME/.claude-smart/dashboard.log" ] && cat "$HOME/.claude-smart/dashboard.log" >&2 || true
+    fail "detached dashboard build did not produce dashboard/.next within ${timeout}s"
   fi
   log "setup-hook: ok"
 }
