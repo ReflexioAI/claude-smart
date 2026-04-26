@@ -12,7 +12,7 @@ export type ProfileStatus = "CURRENT" | "ARCHIVED" | "PENDING";
 export interface ToolUsed {
   tool_name: string;
   status: string;
-  tool_data?: { input?: Record<string, unknown> };
+  tool_data?: { input?: Record<string, unknown>; output?: string };
 }
 
 export interface CitedItem {

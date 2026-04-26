@@ -144,9 +144,12 @@ export default function InteractionDetailPage({
                         <div className="flex items-center gap-1 flex-wrap">
                           {turn.tools_used.map((t, ti) => {
                             const input = t.tool_data?.input;
+                            const output = t.tool_data?.output;
                             const hasInput =
                               input && Object.keys(input).length > 0;
-                            if (!hasInput) {
+                            const hasOutput =
+                              typeof output === "string" && output.length > 0;
+                            if (!hasInput && !hasOutput) {
                               return (
                                 <span key={ti}>
                                   <Badge
@@ -171,9 +174,28 @@ export default function InteractionDetailPage({
                                     <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
                                   </Badge>
                                 </summary>
-                                <pre className="mt-1 whitespace-pre-wrap break-words rounded-md border border-border bg-muted/40 px-2 py-1 text-[10px] font-mono text-muted-foreground">
-                                  {JSON.stringify(input, null, 2)}
-                                </pre>
+                                <div className="mt-1 space-y-1.5">
+                                  {hasInput && (
+                                    <div>
+                                      <div className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground/70 mb-0.5">
+                                        input
+                                      </div>
+                                      <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-muted/40 px-2 py-1 text-[10px] font-mono text-muted-foreground">
+                                        {JSON.stringify(input, null, 2)}
+                                      </pre>
+                                    </div>
+                                  )}
+                                  {hasOutput && (
+                                    <div>
+                                      <div className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground/70 mb-0.5">
+                                        output
+                                      </div>
+                                      <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-muted/40 px-2 py-1 text-[10px] font-mono text-muted-foreground">
+                                        {output}
+                                      </pre>
+                                    </div>
+                                  )}
+                                </div>
                               </details>
                             );
                           })}

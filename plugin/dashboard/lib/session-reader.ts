@@ -17,6 +17,18 @@ import type {
   UserActionType,
 } from "./types";
 
+// Mirrors _TOOL_DATA_FIELD_MAX_LEN in plugin/src/claude_smart/state.py — we
+// truncate to the same length the publisher ships to reflexio so the
+// dashboard renders the exact bytes the extractor sees.
+const TOOL_DATA_FIELD_MAX_LEN = 256;
+
+function truncateToolField<T>(value: T): T {
+  if (typeof value === "string" && value.length > TOOL_DATA_FIELD_MAX_LEN) {
+    return value.slice(0, TOOL_DATA_FIELD_MAX_LEN) as T;
+  }
+  return value;
+}
+
 export function stateDir(): string {
   const override = process.env.CLAUDE_SMART_STATE_DIR;
   if (override) return override;
@@ -30,6 +42,7 @@ type RawRecord = {
   user_id?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
+  tool_output?: string;
   status?: string;
   user_action?: UserActionType;
   user_action_description?: string;
@@ -81,8 +94,19 @@ function foldTurns(records: RawRecord[]): {
         tool_name: rec.tool_name ?? "",
         status: rec.status ?? "success",
       };
+      const toolData: { input?: Record<string, unknown>; output?: string } = {};
       if (rec.tool_input && Object.keys(rec.tool_input).length > 0) {
-        entry.tool_data = { input: rec.tool_input };
+        const input: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(rec.tool_input)) {
+          input[k] = truncateToolField(v);
+        }
+        toolData.input = input;
+      }
+      if (typeof rec.tool_output === "string" && rec.tool_output.length > 0) {
+        toolData.output = truncateToolField(rec.tool_output);
+      }
+      if (toolData.input || toolData.output) {
+        entry.tool_data = toolData;
       }
       pendingTools.push(entry);
       continue;
