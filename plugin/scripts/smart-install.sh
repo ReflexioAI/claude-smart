@@ -147,31 +147,18 @@ then
   echo "[claude-smart] added Bash(cs-cite:*) to $CLAUDE_SETTINGS permissions.allow" >&2
 fi
 
-# Pre-install + build the Next.js dashboard so SessionStart can boot it
-# without the multi-minute first-run cost. dashboard-service.sh will retry
-# the build lazily if either step is skipped or fails here.
+# Spawn the dashboard build detached so install returns immediately and
+# Claude Code's install-hook timeout never kills a half-finished
+# `next build` (which would force the user into a manual /claude-smart:restart
+# recovery). dashboard-service.sh will also re-spawn this on SessionStart
+# if .next is still missing, and dashboard-open.sh detects the build-pid
+# file to surface a "still building" message instead of a generic error.
 DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
-if [ -d "$DASHBOARD_DIR" ]; then
-  if command -v npm >/dev/null 2>&1; then
-    echo "[claude-smart] installing dashboard dependencies..." >&2
-    if (cd "$DASHBOARD_DIR" && npm install --silent --no-fund --no-audit >&2); then
-      echo "[claude-smart] building dashboard..." >&2
-      # Trap INT/TERM so a killed build (e.g., Setup hit a hook timeout)
-      # doesn't leave a partial .next that dashboard-service.sh can't
-      # detect as broken. The trap runs in the current shell; unset it
-      # once the build step returns.
-      trap 'rm -rf "$DASHBOARD_DIR/.next"; exit 130' INT TERM
-      if ! (cd "$DASHBOARD_DIR" && npm run build >&2); then
-        rm -rf "$DASHBOARD_DIR/.next"
-        echo "[claude-smart] WARNING: dashboard build failed; rerun plugin Setup to retry" >&2
-      fi
-      trap - INT TERM
-    else
-      echo "[claude-smart] WARNING: dashboard npm install failed; dashboard will be unavailable" >&2
-    fi
-  else
-    echo "[claude-smart] WARNING: npm not on PATH — dashboard will be unavailable" >&2
-  fi
+if [ -d "$DASHBOARD_DIR" ] && command -v npm >/dev/null 2>&1; then
+  echo "[claude-smart] starting dashboard build in background (~1-2 min on first install)" >&2
+  claude_smart_spawn_detached bash "$HERE/dashboard-build.sh" >/dev/null 2>&1
+elif [ -d "$DASHBOARD_DIR" ]; then
+  echo "[claude-smart] WARNING: npm not on PATH — dashboard will be unavailable until npm is installed" >&2
 fi
 
 # Point ~/.reflexio/plugin-root at this install so slash commands can

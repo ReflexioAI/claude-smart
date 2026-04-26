@@ -20,3 +20,29 @@ claude_smart_source_login_path() {
 claude_smart_prepend_astral_bins() {
   export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 }
+
+# Spawn a command fully detached from the current shell so a hook timeout
+# (Claude Code's install/SessionStart budget) cannot kill it mid-flight.
+# Picks the strongest available primitive: setsid → python3 os.setsid → nohup.
+# Caller is responsible for redirecting stdout/stderr; we do not impose a
+# log destination here. Stdin is closed so the child cannot inherit a tty.
+claude_smart_spawn_detached() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid nohup "$@" < /dev/null &
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+      "$@" < /dev/null &
+  else
+    nohup "$@" < /dev/null &
+  fi
+}
+
+# Return 0 (true) if $1 names a pid file whose pid is currently alive.
+# Silent on missing/empty/stale files.
+claude_smart_pid_alive_file() {
+  pid_file="$1"
+  [ -f "$pid_file" ] || return 1
+  pid=$(cat "$pid_file" 2>/dev/null || echo "")
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}

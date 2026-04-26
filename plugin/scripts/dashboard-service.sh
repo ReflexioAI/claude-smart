@@ -111,10 +111,16 @@ case "$CMD" in
 
     # `npm run start` requires a prior `next build`. Do NOT build in the
     # foreground here — SessionStart hooks have a tight timeout and a cold
-    # Next build easily exceeds it. If Setup hasn't populated .next, log
-    # and bail; the user can rerun Setup (restart Claude Code) to retry.
+    # Next build easily exceeds it. If .next is missing, spawn a detached
+    # build (dashboard-build.sh) so the first-install cost is paid out of
+    # band. dashboard-open.sh detects the build-pid file to surface a
+    # "still building" message instead of a generic error.
     if [ ! -d "$DASHBOARD_DIR/.next" ]; then
-      echo "[claude-smart] dashboard: .next missing — run plugin Setup (restart Claude Code) to build it" >>"$LOG_FILE"
+      BUILD_PID_FILE="$STATE_DIR/dashboard-build.pid"
+      if ! claude_smart_pid_alive_file "$BUILD_PID_FILE"; then
+        echo "[claude-smart] dashboard: .next missing — starting background build (~1-2 min)" >>"$LOG_FILE"
+        claude_smart_spawn_detached bash "$HERE/dashboard-build.sh" >>"$LOG_FILE" 2>&1
+      fi
       emit_ok; exit 0
     fi
 

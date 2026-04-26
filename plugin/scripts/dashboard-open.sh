@@ -9,6 +9,8 @@ set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$HERE"
+# shellcheck source=_lib.sh
+. "$HERE/_lib.sh"
 
 STATE_DIR="$HOME/.claude-smart"
 BACKEND_LOG="$STATE_DIR/backend.log"
@@ -66,9 +68,14 @@ fi
 if [ "$dashboard_status" = "not running" ]; then
     failed=1
     echo ""
-    echo "ERROR: dashboard failed to start on http://localhost:3001"
-    [ -n "$dashboard_start_out" ] && echo "$dashboard_start_out"
-    show_log_tail "dashboard" "$DASHBOARD_LOG"
+    BUILD_PID_FILE="$STATE_DIR/dashboard-build.pid"
+    if claude_smart_pid_alive_file "$BUILD_PID_FILE"; then
+        echo "dashboard: still building (first-run cost, ~1-2 min). Re-run /claude-smart:dashboard in a minute."
+    else
+        echo "ERROR: dashboard failed to start on http://localhost:3001"
+        [ -n "$dashboard_start_out" ] && echo "$dashboard_start_out"
+        show_log_tail "dashboard" "$DASHBOARD_LOG"
+    fi
 fi
 
 if [ "$failed" = "1" ]; then

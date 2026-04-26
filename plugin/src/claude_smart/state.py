@@ -195,15 +195,20 @@ def unpublished_slice(
         role = rec.get("role")
         if role == "Assistant_tool":
             tool_input = rec.get("tool_input") or {}
+            tool_output = rec.get("tool_output") or ""
             tool_entry: dict[str, Any] = {
                 "tool_name": rec.get("tool_name", ""),
                 "status": rec.get("status", "success"),
             }
+            tool_data: dict[str, Any] = {}
             if tool_input:
-                truncated_input = {
+                tool_data["input"] = {
                     k: _truncate_tool_data_field(v) for k, v in tool_input.items()
                 }
-                tool_entry["tool_data"] = {"input": truncated_input}
+            if tool_output:
+                tool_data["output"] = _truncate_tool_data_field(tool_output)
+            if tool_data:
+                tool_entry["tool_data"] = tool_data
             pending_tools.append(tool_entry)
             continue
         if role in {"User", "Assistant"}:

@@ -80,17 +80,59 @@ def _derive_status(tool_response: Any) -> str:
     return "success"
 
 
+_OUTPUT_TEXT_KEYS = ("stdout", "stderr", "output", "content", "text", "error")
+
+
+def _flatten_tool_response_text(tool_response: Any) -> str:
+    """Flatten ``tool_response`` into a single string for buffering.
+
+    Claude Code delivers tool responses in heterogeneous shapes — Bash sends
+    a dict with ``stdout``/``stderr``, Edit/Read send a string or a dict
+    with ``content``/``output``, and failures populate ``error``. Joining
+    the well-known string-valued keys preserves the parts most useful for
+    downstream learning (failure messages, command output) without
+    serializing entire structured payloads.
+
+    Note: structured ``content`` lists (e.g. ``[{type: 'text', text: ...}]``)
+    are not flattened — only top-level string values are joined. If a tool
+    starts emitting block-form content we want to capture, add a dedicated
+    branch here.
+
+    Args:
+        tool_response (Any): The raw ``tool_response`` from the PostToolUse
+            payload.
+
+    Returns:
+        str: A flattened string. Empty when no textual content is present.
+    """
+    if tool_response is None:
+        return ""
+    if isinstance(tool_response, str):
+        return tool_response
+    if isinstance(tool_response, dict):
+        parts = [
+            tool_response[key]
+            for key in _OUTPUT_TEXT_KEYS
+            if isinstance(tool_response.get(key), str) and tool_response[key]
+        ]
+        return "\n".join(parts)
+    return str(tool_response)
+
+
 def handle(payload: dict[str, Any]) -> None:
     session_id = payload.get("session_id")
     tool_name = payload.get("tool_name") or ""
     if not session_id or not tool_name:
         return
 
+    tool_response = payload.get("tool_response")
+    output_text = _flatten_tool_response_text(tool_response)
     record = {
         "ts": int(time.time()),
         "role": "Assistant_tool",
         "tool_name": tool_name,
         "tool_input": _redact(payload.get("tool_input") or {}),
-        "status": _derive_status(payload.get("tool_response")),
+        "tool_output": _redact_string(output_text) if output_text else "",
+        "status": _derive_status(tool_response),
     }
     state.append(session_id, record)

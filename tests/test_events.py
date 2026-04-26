@@ -113,6 +113,75 @@ def test_post_tool_exit_plan_mode_records_only_assistant_tool(session_dir) -> No
     assert records[0]["tool_name"] == "ExitPlanMode"
 
 
+@pytest.mark.parametrize(
+    "tool_response, expected",
+    [
+        ({"stdout": "out\n", "stderr": "err\n"}, "out\n\nerr\n"),
+        ({"stderr": "permission denied"}, "permission denied"),
+        ({"error": "boom"}, "boom"),
+        ({"content": "text body"}, "text body"),
+        ("plain", "plain"),
+        (None, ""),
+        ({"unrelated": 1}, ""),
+    ],
+)
+def test_post_tool_flattens_tool_response_text(tool_response, expected) -> None:
+    assert post_tool._flatten_tool_response_text(tool_response) == expected
+
+
+def test_post_tool_records_tool_output(session_dir) -> None:
+    """Bash stdout/stderr is captured under ``tool_output`` so reflexio sees
+    failure text, not just a status flag.
+    """
+    post_tool.handle(
+        {
+            "session_id": "s1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls /nope"},
+            "tool_response": {
+                "stdout": "",
+                "stderr": "ls: /nope: No such file or directory",
+                "is_error": True,
+            },
+        }
+    )
+    post_tool.handle(
+        {
+            "session_id": "s1",
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/tmp/x"},
+            "tool_response": None,
+        }
+    )
+    records = state.read_all("s1")
+    assert records[0]["tool_output"] == "ls: /nope: No such file or directory"
+    assert records[0]["status"] == "error"
+    # Missing/None responses leave the field empty rather than absent.
+    assert records[1]["tool_output"] == ""
+
+
+def test_post_tool_redacts_secrets_in_tool_output(session_dir) -> None:
+    """Secret-shaped ``KEY=value`` assignments leaking through stderr must be
+    masked the same way as ``tool_input`` strings — ``tool_output`` flows
+    through the same redaction step.
+    """
+    post_tool.handle(
+        {
+            "session_id": "s1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "deploy"},
+            "tool_response": {
+                "stdout": "",
+                "stderr": "AWS_SECRET_ACCESS_KEY=AbCdEf1234567890XyZQrStUv",
+                "is_error": True,
+            },
+        }
+    )
+    records = state.read_all("s1")
+    assert "AbCdEf1234567890XyZQrStUv" not in records[0]["tool_output"]
+    assert "<redacted:" in records[0]["tool_output"]
+
+
 def test_post_tool_truncates_oversized_string(session_dir) -> None:
     blob = "x" * 5000
     post_tool.handle(
@@ -454,7 +523,10 @@ def test_stop_plan_decision_handles_list_content_shape(
                             "type": "tool_result",
                             "content": [
                                 {"type": "text", "text": "Your plan has been saved."},
-                                {"type": "text", "text": "User has approved your plan."},
+                                {
+                                    "type": "text",
+                                    "text": "User has approved your plan.",
+                                },
                             ],
                         }
                     ]
@@ -787,16 +859,16 @@ def test_stop_stamps_user_id_from_payload_cwd(
     assert records[-1]["user_id"] == "proj::/some/repo"
 
 
-def _stub_user_prompt_adapter(monkeypatch, *, playbooks=None, profiles=None, calls=None):
+def _stub_user_prompt_adapter(
+    monkeypatch, *, playbooks=None, profiles=None, calls=None
+):
     class Stub:
         def search_both(self, **kwargs):
             if calls is not None:
                 calls.append(kwargs)
             return (list(playbooks or []), list(profiles or []))
 
-    monkeypatch.setattr(
-        "claude_smart.context_inject.Adapter", lambda *a, **kw: Stub()
-    )
+    monkeypatch.setattr("claude_smart.context_inject.Adapter", lambda *a, **kw: Stub())
     monkeypatch.setattr(
         "claude_smart.events.user_prompt.ids.resolve_project_id",
         lambda *_a, **_kw: "demo",
@@ -817,7 +889,9 @@ def test_user_prompt_stamps_user_id_from_payload_cwd(session_dir, monkeypatch) -
     assert records[-1]["user_id"] == "proj::/some/repo"
 
 
-def test_user_prompt_injects_context_when_hits_present(session_dir, monkeypatch) -> None:
+def test_user_prompt_injects_context_when_hits_present(
+    session_dir, monkeypatch
+) -> None:
     """A prompt with matching profiles/playbooks injects additionalContext."""
     calls: list[dict[str, Any]] = []
     _stub_user_prompt_adapter(
@@ -871,9 +945,7 @@ def test_user_prompt_buffers_even_when_search_raises(session_dir, monkeypatch) -
         def search_both(self, **_kw):
             raise RuntimeError("reflexio down")
 
-    monkeypatch.setattr(
-        "claude_smart.context_inject.Adapter", lambda *a, **kw: Boom()
-    )
+    monkeypatch.setattr("claude_smart.context_inject.Adapter", lambda *a, **kw: Boom())
     monkeypatch.setattr(
         "claude_smart.events.user_prompt.ids.resolve_project_id",
         lambda *_a, **_kw: "demo",

@@ -235,11 +235,48 @@ def test_unpublished_slice_truncates_overlong_tool_fields_to_cap() -> None:
     ]
     _, turns = state.unpublished_slice(records)
     tools = turns[-1]["tools_used"]
-    assert len(tools[0]["tool_data"]["input"]["command"]) == state._TOOL_DATA_FIELD_MAX_LEN
+    assert (
+        len(tools[0]["tool_data"]["input"]["command"]) == state._TOOL_DATA_FIELD_MAX_LEN
+    )
     assert tools[0]["tool_data"]["input"]["description"] == "short"
-    assert len(tools[1]["tool_data"]["input"]["new_string"]) == state._TOOL_DATA_FIELD_MAX_LEN
+    assert (
+        len(tools[1]["tool_data"]["input"]["new_string"])
+        == state._TOOL_DATA_FIELD_MAX_LEN
+    )
     assert tools[1]["tool_data"]["input"]["file_path"] == "/a/b.py"
     json.dumps(turns[-1])  # sanity: publish-ready
+
+
+def test_unpublished_slice_includes_truncated_tool_output() -> None:
+    """``tool_output`` is folded into ``tool_data.output`` and capped at the same
+    256-char limit as ``tool_input`` fields, so reflexio sees concrete failure
+    text without inflating the extractor prompt.
+    """
+    long_output = "z" * 5000
+    records = [
+        {"role": "User", "content": "u1"},
+        {
+            "role": "Assistant_tool",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls /nope"},
+            "tool_output": long_output,
+            "status": "error",
+        },
+        {
+            "role": "Assistant_tool",
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo ok"},
+            "tool_output": "",
+            "status": "success",
+        },
+        {"role": "Assistant", "content": "a1"},
+    ]
+    _, turns = state.unpublished_slice(records)
+    tools = turns[-1]["tools_used"]
+    assert tools[0]["tool_data"]["input"] == {"command": "ls /nope"}
+    assert len(tools[0]["tool_data"]["output"]) == state._TOOL_DATA_FIELD_MAX_LEN
+    # Empty output collapses — only the input key is present.
+    assert tools[1]["tool_data"] == {"input": {"command": "echo ok"}}
 
 
 def test_unpublished_slice_strips_cited_items(session_dir) -> None:
