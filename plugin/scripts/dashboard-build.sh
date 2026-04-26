@@ -31,6 +31,7 @@ DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
 STATE_DIR="$HOME/.claude-smart"
 LOG_FILE="$STATE_DIR/dashboard.log"
 BUILD_PID_FILE="$STATE_DIR/dashboard-build.pid"
+BUILD_LOCK_DIR="$STATE_DIR/dashboard-build.lock"
 mkdir -p "$STATE_DIR"
 
 log() { printf '[claude-smart] %s\n' "$1" >>"$LOG_FILE"; }
@@ -44,23 +45,42 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-# Single-flight guard: if another build is running, exit cleanly.
-if claude_smart_pid_alive_file "$BUILD_PID_FILE"; then
-  log "dashboard build: already in progress; skipping"
-  exit 0
+# Atomic single-flight: mkdir is a single atomic syscall, so two concurrent
+# builds (e.g., smart-install.sh and a SessionStart-driven dashboard-service.sh
+# firing within milliseconds on first install) cannot both pass this check.
+# BUILD_PID_FILE remains as status metadata for dashboard-open.sh and
+# dashboard-service.sh to probe — it is written only after the lock is held
+# and removed only by the lock holder.
+if ! mkdir "$BUILD_LOCK_DIR" 2>/dev/null; then
+  if claude_smart_pid_alive_file "$BUILD_PID_FILE"; then
+    log "dashboard build: already in progress; skipping"
+    exit 0
+  fi
+  # Stale lock from a crashed build (lock dir survived but owner is gone).
+  # Reclaim it; if another process beats us to the reclaim, defer to them.
+  rm -rf "$BUILD_LOCK_DIR"
+  rm -f "$BUILD_PID_FILE"
+  if ! mkdir "$BUILD_LOCK_DIR" 2>/dev/null; then
+    log "dashboard build: lost race for stale lock; skipping"
+    exit 0
+  fi
 fi
-rm -f "$BUILD_PID_FILE"
 echo $$ > "$BUILD_PID_FILE"
 
+release_lock() {
+  rm -f "$BUILD_PID_FILE"
+  rmdir "$BUILD_LOCK_DIR" 2>/dev/null || rm -rf "$BUILD_LOCK_DIR"
+}
 cleanup() {
   status=$?
-  rm -f "$BUILD_PID_FILE"
+  release_lock
   exit "${status:-0}"
 }
 on_interrupt() {
   rm -rf "$DASHBOARD_DIR/.next"
-  rm -f "$BUILD_PID_FILE"
-  log "dashboard build: interrupted; removed partial .next"
+  rm -rf "$DASHBOARD_DIR/node_modules"
+  release_lock
+  log "dashboard build: interrupted; removed partial .next and node_modules"
   exit 130
 }
 trap cleanup EXIT
@@ -80,7 +100,8 @@ fi
 if [ "$needs_install" = "1" ]; then
   log "dashboard build: running npm install..."
   if ! npm install --silent --no-fund --no-audit >>"$LOG_FILE" 2>&1; then
-    log "dashboard build: npm install failed; see $LOG_FILE"
+    rm -rf "$DASHBOARD_DIR/node_modules"
+    log "dashboard build: npm install failed; removed partial node_modules; see $LOG_FILE"
     exit 1
   fi
 fi
