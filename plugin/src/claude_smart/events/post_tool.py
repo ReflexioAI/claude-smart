@@ -115,8 +115,18 @@ def _flatten_tool_response_text(tool_response: Any) -> str:
             for key in _OUTPUT_TEXT_KEYS
             if isinstance(tool_response.get(key), str) and tool_response[key]
         ]
-        return "\n".join(parts)
-    return str(tool_response)
+        if parts:
+            return "\n".join(parts)
+        for key in ("text", "content"):
+            value = tool_response.get(key)
+            if isinstance(value, str):
+                return value
+        return ""
+    for attr in ("text", "content"):
+        value = getattr(tool_response, attr, None)
+        if isinstance(value, str):
+            return value
+    return ""
 
 
 def handle(payload: dict[str, Any]) -> None:
