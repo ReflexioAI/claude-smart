@@ -122,12 +122,16 @@ export default function SessionsPage() {
                       role="link"
                       tabIndex={0}
                       onClick={() =>
-                        router.push(`/sessions/${s.session_id}`)
+                        router.push(
+                          `/sessions/${encodeURIComponent(s.session_id)}`,
+                        )
                       }
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
-                          router.push(`/sessions/${s.session_id}`);
+                          router.push(
+                            `/sessions/${encodeURIComponent(s.session_id)}`,
+                          );
                         }
                       }}
                       className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-accent/40 focus:bg-accent/40 focus:outline-none transition-colors"
