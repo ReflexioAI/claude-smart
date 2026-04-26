@@ -240,6 +240,7 @@ def cmd_tag(args: argparse.Namespace) -> int:
     if not session_id:
         sys.stdout.write("No active claude-smart session buffer found.\n")
         return 0
+    project_id = args.project or ids.resolve_project_id(os.getcwd())
     note = args.note or "the previous answer was wrong"
     state.append(
         session_id,
@@ -247,11 +248,26 @@ def cmd_tag(args: argparse.Namespace) -> int:
             "ts": int(time.time()),
             "role": "User",
             "content": f"[correction] {note}",
-            "user_id": ids.resolve_project_id(os.getcwd()),
+            "user_id": project_id,
         },
     )
-    sys.stdout.write(f"Tagged correction on session `{session_id}`.\n")
-    return 0
+    status, count = publish.publish_unpublished(
+        session_id=session_id,
+        project_id=project_id,
+        force_extraction=True,
+        skip_aggregation=True,
+    )
+    if status == "ok":
+        sys.stdout.write(
+            f"Tagged correction on session `{session_id}` and forced extraction "
+            f"over {count} interactions.\n"
+        )
+        return 0
+    if status == "nothing":
+        sys.stdout.write(f"Tagged correction on session `{session_id}`.\n")
+        return 0
+    sys.stdout.write(_REFLEXIO_UNREACHABLE_MSG)
+    return 1
 
 
 def _run_service(script: Path, subcmd: str) -> int:
@@ -487,6 +503,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tg = sub.add_parser("tag", help="Tag the current session with a correction note")
     tg.add_argument("note", nargs="?", default="", help="Correction description")
     tg.add_argument("--session", help="Session id (defaults to latest)")
+    tg.add_argument("--project", help="Override project id")
     tg.set_defaults(func=cmd_tag)
 
     ca = sub.add_parser(
