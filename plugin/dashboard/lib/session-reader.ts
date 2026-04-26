@@ -55,7 +55,7 @@ async function readJsonl(filePath: string): Promise<RawRecord[]> {
 function foldTurns(records: RawRecord[]): {
   turns: SessionTurn[];
   publishedUpTo: number;
-  hasCorrection: boolean;
+  learningInteractionCount: number;
   lastTs: number | null;
   firstTs: number | null;
   preview: string | null;
@@ -63,7 +63,7 @@ function foldTurns(records: RawRecord[]): {
   let published = 0;
   let pendingTools: ToolUsed[] = [];
   const turns: SessionTurn[] = [];
-  let hasCorrection = false;
+  let learningInteractionCount = 0;
   let lastTs: number | null = null;
   let firstTs: number | null = null;
   let preview: string | null = null;
@@ -89,7 +89,13 @@ function foldTurns(records: RawRecord[]): {
     }
     if (role !== "User" && role !== "Assistant") continue;
 
-    if (rec.user_action && rec.user_action !== "NONE") hasCorrection = true;
+    if (
+      role === "Assistant" &&
+      rec.cited_items &&
+      rec.cited_items.length > 0
+    ) {
+      learningInteractionCount += 1;
+    }
     if (typeof rec.ts === "number") {
       lastTs = rec.ts;
       if (firstTs === null) firstTs = rec.ts;
@@ -121,7 +127,14 @@ function foldTurns(records: RawRecord[]): {
     turns.push(turn);
   }
 
-  return { turns, publishedUpTo: published, hasCorrection, lastTs, firstTs, preview };
+  return {
+    turns,
+    publishedUpTo: published,
+    learningInteractionCount,
+    lastTs,
+    firstTs,
+    preview,
+  };
 }
 
 export async function listSessions(): Promise<SessionSummary[]> {
@@ -139,12 +152,18 @@ export async function listSessions(): Promise<SessionSummary[]> {
     if (entry.endsWith(".injected.jsonl")) continue;
     const fullPath = path.join(dir, entry);
     const records = await readJsonl(fullPath).catch(() => []);
-    const { turns, publishedUpTo, hasCorrection, lastTs, firstTs, preview } =
-      foldTurns(records);
+    const {
+      turns,
+      publishedUpTo,
+      learningInteractionCount,
+      lastTs,
+      firstTs,
+      preview,
+    } = foldTurns(records);
     summaries.push({
       session_id: entry.replace(/\.jsonl$/, ""),
       turn_count: turns.length,
-      has_correction: hasCorrection,
+      learning_interaction_count: learningInteractionCount,
       last_activity: lastTs,
       first_activity: firstTs,
       published_up_to: publishedUpTo,

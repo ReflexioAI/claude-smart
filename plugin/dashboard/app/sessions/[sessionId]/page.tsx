@@ -43,7 +43,7 @@ export default function InteractionDetailPage({
         { method: "DELETE" },
       );
       if (!res.ok) throw new Error(`delete failed: ${res.status}`);
-      router.push("/interactions");
+      router.push("/sessions");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setDeleting(false);
@@ -75,7 +75,7 @@ export default function InteractionDetailPage({
         description={sessionId}
         actions={
           <div className="flex items-center gap-2">
-            <Link href="/interactions">
+            <Link href="/sessions">
               <Button variant="outline" size="sm">
                 <ArrowLeft className="h-3.5 w-3.5" />
                 Back

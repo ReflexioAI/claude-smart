@@ -77,7 +77,7 @@ export interface SessionTurn {
 export interface SessionSummary {
   session_id: string;
   turn_count: number;
-  has_correction: boolean;
+  learning_interaction_count: number;
   last_activity: number | null;
   first_activity: number | null;
   published_up_to: number;

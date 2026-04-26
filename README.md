@@ -19,7 +19,7 @@
     <img src="https://img.shields.io/badge/python-%3E%3D3.12-brightgreen.svg" alt="Python">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg" alt="Node">
+    <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg" alt="Node">
   </a>
   <a href="#quick-start">
     <img src="https://img.shields.io/badge/llm-claude%20code%20cli-purple.svg" alt="LLM">

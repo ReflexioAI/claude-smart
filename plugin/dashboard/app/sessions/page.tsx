@@ -2,16 +2,16 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { MessageSquare, AlertTriangle, Search } from "lucide-react";
+import { MessageSquare, Search } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { DeleteAllButton } from "@/components/common/delete-all-button";
-import { Badge } from "@/components/ui/badge";
+import { LearningsBadge } from "@/components/common/learnings-badge";
 import { Input } from "@/components/ui/input";
 import { dayBucket, formatRelative, truncateId } from "@/lib/format";
 import type { SessionSummary } from "@/lib/types";
 
-export default function InteractionsPage() {
+export default function SessionsPage() {
   const router = useRouter();
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [filter, setFilter] = useState("");
@@ -55,8 +55,8 @@ export default function InteractionsPage() {
   return (
     <div className="flex-1 overflow-auto">
       <PageHeader
-        title="Interactions"
-        description="Sessions buffered locally under ~/.claude-smart/sessions/."
+        title="Sessions"
+        description="Sessions buffered locally under ~/.claude-smart/sessions/. Each row is one session; click to see its interactions."
         actions={
           <div className="flex items-center gap-2">
             <div className="relative">
@@ -122,12 +122,12 @@ export default function InteractionsPage() {
                       role="link"
                       tabIndex={0}
                       onClick={() =>
-                        router.push(`/interactions/${s.session_id}`)
+                        router.push(`/sessions/${s.session_id}`)
                       }
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
-                          router.push(`/interactions/${s.session_id}`);
+                          router.push(`/sessions/${s.session_id}`);
                         }
                       }}
                       className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-accent/40 focus:bg-accent/40 focus:outline-none transition-colors"
@@ -142,15 +142,10 @@ export default function InteractionsPage() {
                               </span>
                             )}
                           </p>
-                          {s.has_correction && (
-                            <Badge
-                              variant="destructive"
-                              className="h-4 gap-1 px-1.5 text-[10px] shrink-0"
-                            >
-                              <AlertTriangle className="h-2.5 w-2.5" />
-                              correction
-                            </Badge>
-                          )}
+                          <LearningsBadge
+                            count={s.learning_interaction_count}
+                            size="sm"
+                          />
                         </div>
                         <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-0.5">
                           <code className="font-mono">
