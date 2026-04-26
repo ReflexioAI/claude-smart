@@ -164,10 +164,10 @@ stage_setup_hook() {
     sleep 2
     i=$((i + 2))
   done
-  if [ ! -d "$PLUGIN_ROOT/dashboard/.next" ]; then
+  if [ -e "$build_pid_file" ] || [ ! -d "$PLUGIN_ROOT/dashboard/.next" ]; then
     cat "$HOME/smart-install.log" >&2 || true
     [ -f "$HOME/.claude-smart/dashboard.log" ] && cat "$HOME/.claude-smart/dashboard.log" >&2 || true
-    fail "detached dashboard build did not produce dashboard/.next within ${timeout}s"
+    fail "detached dashboard build did not finish within ${timeout}s (pid file present or .next missing)"
   fi
   log "setup-hook: ok"
 }
