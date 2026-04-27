@@ -43,13 +43,29 @@ fi
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "[claude-smart] uv not found — installing from astral.sh..." >&2
-  if ! curl -LsSf https://astral.sh/uv/install.sh | sh >&2; then
-    write_failure "uv install failed — install manually from https://docs.astral.sh/uv/"
+  # The astral.sh bash installer downloads a zip and unzips it. On
+  # Windows-flavoured bash (Git Bash / MSYS) the bundled `unzip` corrupts
+  # the Windows uv binary (bad CRC on the inflated uv.exe), leaving the
+  # install half-finished. Use the official PowerShell installer
+  # (install.ps1) on Windows, which writes uv.exe to ~/.local/bin
+  # natively — same destination the bash installer targets on POSIX, so
+  # claude_smart_prepend_astral_bins picks it up uniformly afterwards.
+  if claude_smart_is_windows; then
+    if ! command -v powershell >/dev/null 2>&1; then
+      write_failure "uv install needs PowerShell on Windows but powershell is not on PATH — install uv manually from https://docs.astral.sh/uv/"
+    fi
+    if ! powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex" >&2; then
+      write_failure "uv install via PowerShell failed — install manually from https://docs.astral.sh/uv/"
+    fi
+  else
+    if ! curl -LsSf https://astral.sh/uv/install.sh | sh >&2; then
+      write_failure "uv install failed — install manually from https://docs.astral.sh/uv/"
+    fi
   fi
   claude_smart_prepend_astral_bins
   if ! command -v uv >/dev/null 2>&1; then
     UV_FOUND=""
-    for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv" "$HOME/bin/uv"; do
+    for candidate in "$HOME/.local/bin/uv" "$HOME/.local/bin/uv.exe" "$HOME/.cargo/bin/uv" "$HOME/bin/uv"; do
       if [ -x "$candidate" ]; then
         UV_FOUND="$candidate"
         break
@@ -103,9 +119,15 @@ fi
 # Allowlist cs-cite globally so Claude's citation Bash calls don't pop a
 # permission prompt mid-turn. Idempotent: no-ops when the entry is already
 # present. Uses Python to preserve the rest of settings.json intact.
+# Resolves python via claude_smart_resolve_python so we don't fire the
+# Windows App Execution Alias stub (which exits non-zero with "Python
+# was not found" when no real interpreter is installed).
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
-if python3 - "$CLAUDE_SETTINGS" <<'PY' >&2
+PY_BIN=$(claude_smart_resolve_python || true)
+if [ -z "$PY_BIN" ]; then
+  echo "[claude-smart] WARNING: no working python interpreter found; skipping cs-cite allowlist" >&2
+elif "$PY_BIN" - "$CLAUDE_SETTINGS" <<'PY' >&2
 import json
 import sys
 from pathlib import Path

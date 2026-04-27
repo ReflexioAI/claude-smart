@@ -36,18 +36,10 @@ mkdir -p "$STATE_DIR"
 
 emit_ok() { echo '{"continue":true,"suppressOutput":true}'; }
 
-# Kill a process group started via setsid. Sends SIGTERM, waits briefly,
-# then SIGKILL. Silent on failure — the PID file may point at a process
-# that already exited.
+# Tree-kill the recorded process. Delegates to claude_smart_kill_tree
+# (POSIX: signal the process group; Windows: taskkill /T /F /PID).
 kill_group() {
-  pgid="$1"
-  [ -z "$pgid" ] && return 0
-  kill -TERM -- "-$pgid" 2>/dev/null || true
-  for _ in 1 2 3 4 5; do
-    kill -0 -- "-$pgid" 2>/dev/null || return 0
-    sleep 0.2
-  done
-  kill -KILL -- "-$pgid" 2>/dev/null || true
+  claude_smart_kill_tree "$1"
 }
 
 # True if the marker header served by app/api/health is present on the
@@ -126,23 +118,20 @@ case "$CMD" in
 
     cd "$DASHBOARD_DIR"
 
-    # Detach so the hook returns immediately, and put the child in its own
-    # session so kill_group can signal the whole tree via a negative PID.
-    #   - Linux: setsid is standard.
-    #   - macOS: setsid is not installed; use python3 (ships with the OS)
-    #     to call os.setsid() before execing npm, which makes the child
-    #     session/group leader with PID==PGID.
-    #   - Fallback: bare nohup, then derive the real PGID via ps -o pgid.
-    if command -v setsid >/dev/null 2>&1; then
-      setsid nohup npm run start >>"$LOG_FILE" 2>&1 < /dev/null &
-      echo $! > "$PID_FILE"
-    elif command -v python3 >/dev/null 2>&1; then
-      python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-        npm run start >>"$LOG_FILE" 2>&1 < /dev/null &
-      echo $! > "$PID_FILE"
+    # Detach so the hook returns immediately. claude_smart_spawn_detached
+    # picks the strongest primitive available:
+    #   - Linux: setsid (puts child in its own session/group, pid==pgid).
+    #   - macOS: python3 os.setsid + execvp (same effect as setsid).
+    #   - Windows: nohup alone (no process groups; tree-kill via taskkill).
+    # Caller-side `>>file 2>&1` redirection is honoured before the child
+    # detaches, so per-OS log paths stay identical.
+    claude_smart_spawn_detached npm run start >>"$LOG_FILE" 2>&1
+    dash_pid=$!
+    if claude_smart_is_windows; then
+      echo "$dash_pid" > "$PID_FILE"
+    elif command -v setsid >/dev/null 2>&1; then
+      echo "$dash_pid" > "$PID_FILE"
     else
-      nohup npm run start >>"$LOG_FILE" 2>&1 < /dev/null &
-      dash_pid=$!
       actual_pgid=""
       if command -v ps >/dev/null 2>&1; then
         actual_pgid=$(ps -o pgid= -p "$dash_pid" 2>/dev/null | tr -d ' ')
