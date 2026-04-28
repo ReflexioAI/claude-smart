@@ -195,14 +195,18 @@ def _to_wire_citations(cited_items: Any) -> list[dict[str, str]]:
             continue
         real_id = item.get("real_id")
         kind = item.get("kind")
-        if not real_id or kind not in _VALID_CITATION_KINDS:
+        if not isinstance(real_id, str) or not real_id:
             continue
+        if kind not in _VALID_CITATION_KINDS:
+            continue
+        tag = item.get("id")
+        title = item.get("title")
         out.append(
             {
                 "kind": kind,
                 "real_id": real_id,
-                "tag": item.get("id", ""),
-                "title": item.get("title", ""),
+                "tag": tag if isinstance(tag, str) else "",
+                "title": title if isinstance(title, str) else "",
             }
         )
     return out
@@ -261,11 +265,12 @@ def unpublished_slice(
                 k: v for k, v in rec.items() if k not in {"role", "ts", "cited_items"}
             }
             turn["role"] = role
-            citations = _to_wire_citations(rec.get("cited_items"))
-            if citations:
-                turn["citations"] = citations
-            if role == "Assistant" and pending_tools:
-                turn["tools_used"] = pending_tools
-                pending_tools = []
+            if role == "Assistant":
+                citations = _to_wire_citations(rec.get("cited_items"))
+                if citations:
+                    turn["citations"] = citations
+                if pending_tools:
+                    turn["tools_used"] = pending_tools
+                    pending_tools = []
             turns.append(turn)
     return published, turns
