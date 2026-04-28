@@ -31,14 +31,8 @@ import { reflexio } from "@/lib/reflexio-client";
 import { useSettings } from "@/hooks/use-settings";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { statusLabel as status } from "@/lib/status";
 import type { UserProfile } from "@/lib/types";
-
-function status(p: UserProfile): "CURRENT" | "ARCHIVED" | "PENDING" {
-  if (!p.status) return "CURRENT";
-  if (p.status === "ARCHIVED") return "ARCHIVED";
-  if (p.status === "PENDING") return "PENDING";
-  return "CURRENT";
-}
 
 export default function ProfileDetailPage({
   params,

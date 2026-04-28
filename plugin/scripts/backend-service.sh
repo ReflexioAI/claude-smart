@@ -162,8 +162,8 @@ case "$CMD" in
     # claude-smart users. Reflexio's library defaults are much higher
     # (250k/50k) for server deployments; here we override only in the
     # claude-smart plugin context. Users can still override via env.
-    export INTERACTION_CLEANUP_THRESHOLD="${INTERACTION_CLEANUP_THRESHOLD:-1000}"
-    export INTERACTION_CLEANUP_DELETE_COUNT="${INTERACTION_CLEANUP_DELETE_COUNT:-500}"
+    export INTERACTION_CLEANUP_THRESHOLD="${INTERACTION_CLEANUP_THRESHOLD:-500}"
+    export INTERACTION_CLEANUP_DELETE_COUNT="${INTERACTION_CLEANUP_DELETE_COUNT:-200}"
 
     # --no-reload: uvicorn's reloader forks a supervisor; makes PGID
     # bookkeeping harder and we don't need hot-reload for a user-facing

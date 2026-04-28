@@ -18,14 +18,8 @@ import {
 import { reflexio } from "@/lib/reflexio-client";
 import { useSettings } from "@/hooks/use-settings";
 import { formatRelative } from "@/lib/format";
+import { statusLabel } from "@/lib/status";
 import type { UserPlaybook } from "@/lib/types";
-
-function statusLabel(p: UserPlaybook): "CURRENT" | "ARCHIVED" | "PENDING" {
-  if (!p.status) return "CURRENT";
-  if (p.status === "ARCHIVED") return "ARCHIVED";
-  if (p.status === "PENDING") return "PENDING";
-  return "CURRENT";
-}
 
 export default function PlaybooksPage() {
   const { reflexioUrl } = useSettings();

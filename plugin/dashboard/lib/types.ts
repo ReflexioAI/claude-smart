@@ -5,9 +5,13 @@ export type UserActionType =
   | "PRAISE"
   | "STOP";
 
-export type PlaybookStatus = "PENDING" | "CURRENT" | "ARCHIVED";
+// Wire format from the reflexio API. CURRENT rows arrive as `status: null`
+// (response_model_exclude_none strips it from the JSON entirely), so the type
+// only enumerates the non-null values. The values are lowercase because they
+// come from Python's Status StrEnum.
+export type PlaybookStatus = "pending" | "archived";
 
-export type ProfileStatus = "CURRENT" | "ARCHIVED" | "PENDING";
+export type ProfileStatus = "pending" | "archived";
 
 export interface ToolUsed {
   tool_name: string;

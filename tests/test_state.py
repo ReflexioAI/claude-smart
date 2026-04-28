@@ -280,7 +280,7 @@ def test_unpublished_slice_includes_truncated_tool_output() -> None:
 
 
 def test_unpublished_slice_strips_cited_items(session_dir) -> None:
-    """``cited_items`` is dashboard-only metadata; reflexio must not receive it."""
+    """``cited_items`` is local-only — never lands on the wire under that key."""
     records = [
         {"role": "User", "content": "hi"},
         {
@@ -291,6 +291,113 @@ def test_unpublished_slice_strips_cited_items(session_dir) -> None:
     ]
     _, turns = state.unpublished_slice(records)
     assert "cited_items" not in turns[-1]
+
+
+def test_unpublished_slice_maps_cited_items_to_citations() -> None:
+    """Resolved cited_items become a wire-shaped ``citations`` list on the turn."""
+    records = [
+        {"role": "User", "content": "hi"},
+        {
+            "role": "Assistant",
+            "content": "ok",
+            "cited_items": [
+                {
+                    "id": "r1-ab12",
+                    "kind": "playbook",
+                    "title": "rule X",
+                    "real_id": "pb_42",
+                },
+                {
+                    "id": "p1-cd34",
+                    "kind": "profile",
+                    "title": "user role",
+                    "real_id": "prof_7",
+                },
+            ],
+        },
+    ]
+    _, turns = state.unpublished_slice(records)
+    assert turns[-1]["citations"] == [
+        {"kind": "playbook", "real_id": "pb_42", "tag": "r1-ab12", "title": "rule X"},
+        {
+            "kind": "profile",
+            "real_id": "prof_7",
+            "tag": "p1-cd34",
+            "title": "user role",
+        },
+    ]
+
+
+def test_unpublished_slice_omits_citations_when_empty() -> None:
+    """Empty / unresolvable cited_items → no ``citations`` key on the turn.
+
+    Producing a key with ``[]`` would inflate every published Assistant
+    record; absence is meaningful.
+    """
+    records = [
+        {"role": "User", "content": "hi"},
+        {
+            "role": "Assistant",
+            "content": "no real_id",
+            "cited_items": [{"id": "r1-ab12", "kind": "playbook", "title": "t"}],
+        },
+        {
+            "role": "Assistant",
+            "content": "empty list",
+            "cited_items": [],
+        },
+        {
+            "role": "Assistant",
+            "content": "no cited_items at all",
+        },
+    ]
+    _, turns = state.unpublished_slice(records)
+    for turn in turns[1:]:
+        assert "citations" not in turn
+
+
+def test_to_wire_citations_filters_invalid_kinds() -> None:
+    """Items with unknown ``kind`` are dropped (server has a Literal there)."""
+    items = [
+        {"id": "r1-ab12", "kind": "playbook", "title": "ok", "real_id": "pb_1"},
+        {"id": "x1-0001", "kind": "agent_playbook", "title": "junk", "real_id": "ap_1"},
+        {"id": "y1-0002", "kind": "", "title": "junk2", "real_id": "z_1"},
+    ]
+    result = state._to_wire_citations(items)
+    assert [c["kind"] for c in result] == ["playbook"]
+    assert result[0]["real_id"] == "pb_1"
+
+
+def test_to_wire_citations_drops_unresolved_real_id() -> None:
+    """Entries without ``real_id`` (unresolved injections) cannot round-trip."""
+    items = [
+        {"id": "r1-ab12", "kind": "playbook", "title": "no real_id"},
+        {"id": "p1-cd34", "kind": "profile", "title": "empty", "real_id": ""},
+        {"id": "r1-9999", "kind": "playbook", "title": "ok", "real_id": "pb_9"},
+    ]
+    result = state._to_wire_citations(items)
+    assert len(result) == 1
+    assert result[0]["real_id"] == "pb_9"
+
+
+def test_to_wire_citations_handles_non_list_input() -> None:
+    """None / dict / str inputs return ``[]`` without raising."""
+    assert state._to_wire_citations(None) == []
+    assert state._to_wire_citations({"id": "r1-ab12"}) == []
+    assert state._to_wire_citations("oops") == []
+
+
+def test_to_wire_citations_skips_non_dict_items() -> None:
+    """A list that mixes dicts and junk only emits the dict entries."""
+    items = [
+        "a-string",
+        None,
+        42,
+        {"id": "r1-ab12", "kind": "playbook", "title": "ok", "real_id": "pb_1"},
+    ]
+    result = state._to_wire_citations(items)
+    assert len(result) == 1
+    assert result[0]["tag"] == "r1-ab12"
 
 
 def _append_worker(state_dir: str, session_id: str, payload: str) -> None:

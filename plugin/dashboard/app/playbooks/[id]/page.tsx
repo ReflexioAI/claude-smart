@@ -28,6 +28,7 @@ import { reflexio } from "@/lib/reflexio-client";
 import { useSettings } from "@/hooks/use-settings";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { statusLabel } from "@/lib/status";
 import type { UserPlaybook } from "@/lib/types";
 
 type FormState = { content: string; trigger: string; rationale: string };
@@ -44,13 +45,6 @@ function displayName(name: string | null | undefined): string | null {
   if (!name) return null;
   if (name === "default_playbook_extractor") return "playbook";
   return name;
-}
-
-function statusLabel(p: UserPlaybook): "CURRENT" | "ARCHIVED" | "PENDING" {
-  if (!p.status) return "CURRENT";
-  if (p.status === "ARCHIVED") return "ARCHIVED";
-  if (p.status === "PENDING") return "PENDING";
-  return "CURRENT";
 }
 
 export default function PlaybookDetailPage({

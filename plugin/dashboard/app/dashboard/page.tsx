@@ -50,9 +50,9 @@ export default function DashboardPage() {
     };
   }, [reflexioUrl]);
 
-  const currentPlaybooks = (playbooks ?? []).filter(
-    (p) => p.status == null || p.status === "CURRENT",
-  );
+  // CURRENT playbooks arrive as `status: null` (response_model_exclude_none
+  // strips the field). Anything else (e.g. "archived", "pending") is excluded.
+  const currentPlaybooks = (playbooks ?? []).filter((p) => p.status == null);
   const learningInteractionTotal = (sessions ?? []).reduce(
     (acc, s) => acc + s.learning_interaction_count,
     0,
