@@ -50,7 +50,7 @@ claude_smart_resolve_python() {
     return 1
   fi
   for cand in python3 python; do
-    if command -v "$cand" >/dev/null 2>&1; then
+    if command -v "$cand" >/dev/null 2>&1 && "$cand" -V >/dev/null 2>&1; then
       command -v "$cand"
       return 0
     fi
