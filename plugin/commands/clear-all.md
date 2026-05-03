@@ -1,8 +1,8 @@
 ---
 description: Delete ALL reflexio interactions, profiles, and user playbooks (destructive)
-allowed-tools: Bash(uv run:*)
+allowed-tools: Bash(bash:*)
 ---
 
 Run this bash command and show its output verbatim:
 
-!`uv run --project "$HOME/.reflexio/plugin-root" --quiet python -m claude_smart.cli clear-all --yes`
+!`bash "$HOME/.reflexio/plugin-root/scripts/cli.sh" clear-all --yes`

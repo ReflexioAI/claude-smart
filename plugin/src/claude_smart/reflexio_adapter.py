@@ -192,13 +192,13 @@ class Adapter:
         if client is None:
             return []
         try:
-            response = client.search_profiles(
+            response = client.search_user_profiles(
                 user_id=project_id,
                 query="",
                 top_k=top_k,
             )
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("search_profiles failed: %s", exc)
+            _LOGGER.debug("search_user_profiles failed: %s", exc)
             return []
         return _extract_items(response, "user_profiles")
 
@@ -250,13 +250,13 @@ class Adapter:
         if client is None:
             return []
         try:
-            response = client.search_profiles(
+            response = client.search_user_profiles(
                 user_id=project_id,
                 query=query,
                 top_k=top_k,
             )
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("search_profiles failed: %s", exc)
+            _LOGGER.debug("search_user_profiles failed: %s", exc)
             return []
         return _extract_items(response, "user_profiles")
 
