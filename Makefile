@@ -36,12 +36,14 @@ check-clean:
 	@git diff --quiet && git diff --cached --quiet \
 	  || { echo "error: working tree is dirty — commit or stash first" >&2; exit 1; }
 
-check-npm-auth: ## Verify npm login; run `npm login` interactively if not authenticated
-	@if npm whoami >/dev/null 2>&1; then \
+check-npm-auth: ## Verify npm auth via NPM_TOKEN or `npm whoami`; fail if neither is available
+	@if [ -n "$$NPM_TOKEN" ]; then \
+	  echo "→ npm: NPM_TOKEN is set"; \
+	elif npm whoami >/dev/null 2>&1; then \
 	  echo "→ npm: logged in as $$(npm whoami)"; \
 	else \
-	  echo "→ npm: not logged in, running npm login"; \
-	  npm login || { echo "error: npm login failed" >&2; exit 1; }; \
+	  echo "error: not authenticated via npm whoami and NPM_TOKEN is not set; set NPM_TOKEN for CI or run npm login locally" >&2; \
+	  exit 1; \
 	fi
 
 unskip-worktree: ## Clear skip-worktree on plugin/pyproject.toml and plugin/uv.lock so release edits land in git
