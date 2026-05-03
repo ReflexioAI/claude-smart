@@ -127,17 +127,11 @@ case "$CMD" in
     # detaches, so per-OS log paths stay identical.
     claude_smart_spawn_detached npm run start >>"$LOG_FILE" 2>&1
     dash_pid=$!
-    if claude_smart_is_windows; then
-      echo "$dash_pid" > "$PID_FILE"
-    elif command -v setsid >/dev/null 2>&1; then
-      echo "$dash_pid" > "$PID_FILE"
-    else
-      actual_pgid=""
-      if command -v ps >/dev/null 2>&1; then
-        actual_pgid=$(ps -o pgid= -p "$dash_pid" 2>/dev/null | tr -d ' ')
-      fi
-      echo "${actual_pgid:-$dash_pid}" > "$PID_FILE"
-    fi
+    # Record the spawned pid, not a pgid sampled with ps. On POSIX,
+    # setsid/python os.setsid make this pid the new process group leader;
+    # sampling immediately can race and capture the caller's pgid instead.
+    # On Windows, claude_smart_kill_tree translates the MSYS pid to WINPID.
+    echo "$dash_pid" > "$PID_FILE"
     emit_ok
     ;;
   stop)

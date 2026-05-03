@@ -169,22 +169,11 @@ case "$CMD" in
       reflexio services start --only backend --no-reload \
       >>"$LOG_FILE" 2>&1
     svc_pid=$!
-    if claude_smart_is_windows; then
-      # Windows has no process groups; record the spawned pid directly.
-      # claude_smart_kill_tree uses taskkill /T to walk the child tree.
-      echo "$svc_pid" > "$PID_FILE"
-    elif command -v setsid >/dev/null 2>&1; then
-      # setsid made the child its own session/group leader, so pid==pgid.
-      echo "$svc_pid" > "$PID_FILE"
-    else
-      # macOS / fallback path: python3 os.setsid or bare nohup. Derive
-      # the real pgid via ps so kill_group can signal the whole tree.
-      actual_pgid=""
-      if command -v ps >/dev/null 2>&1; then
-        actual_pgid=$(ps -o pgid= -p "$svc_pid" 2>/dev/null | tr -d ' ')
-      fi
-      echo "${actual_pgid:-$svc_pid}" > "$PID_FILE"
-    fi
+    # Record the spawned pid, not a pgid sampled with ps. On POSIX,
+    # setsid/python os.setsid make this pid the new process group leader;
+    # sampling immediately can race and capture the caller's pgid instead.
+    # On Windows, claude_smart_kill_tree translates the MSYS pid to WINPID.
+    echo "$svc_pid" > "$PID_FILE"
 
     # Give uvicorn up to ~10s to answer /health. The very first boot
     # after a fresh checkout may be slower (LiteLLM import, chromadb

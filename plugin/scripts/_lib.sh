@@ -119,7 +119,19 @@ claude_smart_kill_tree() {
     fi
     return 0
   fi
-  kill -TERM -- "-$pid" 2>/dev/null || true
+  current_pgid=""
+  if command -v ps >/dev/null 2>&1; then
+    current_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
+  fi
+  if [ -n "$current_pgid" ] && [ "$pid" = "$current_pgid" ]; then
+    return 0
+  fi
+  if ! kill -TERM -- "-$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 0.5
+    kill -KILL "$pid" 2>/dev/null || true
+    return 0
+  fi
   for _ in 1 2 3 4 5; do
     kill -0 -- "-$pid" 2>/dev/null || return 0
     sleep 0.2
