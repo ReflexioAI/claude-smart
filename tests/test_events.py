@@ -1208,7 +1208,7 @@ def test_session_start_emits_continue_when_no_playbook_or_profile(
     session_dir, monkeypatch
 ) -> None:
     class StubAdapter:
-        def apply_batch_defaults(self, **_kw):
+        def apply_extraction_defaults(self, **_kw):
             return True
 
         def fetch_both(self, **_kw):
@@ -1230,7 +1230,7 @@ def test_session_start_emits_additional_context_when_playbook_present(
     session_dir, monkeypatch
 ) -> None:
     class Stub:
-        def apply_batch_defaults(self, **_kw):
+        def apply_extraction_defaults(self, **_kw):
             return True
 
         def fetch_both(self, **_kw):
@@ -1260,14 +1260,14 @@ def test_session_start_emits_additional_context_when_playbook_present(
     assert "use pathlib" in payload["hookSpecificOutput"]["additionalContext"]
 
 
-def test_session_start_applies_claude_smart_batch_defaults(
+def test_session_start_applies_claude_smart_extraction_defaults(
     session_dir, monkeypatch
 ) -> None:
-    """SessionStart must push claude-smart's 5/3 batch defaults to reflexio."""
+    """SessionStart must push claude-smart's 5/3 extraction defaults to reflexio."""
     applied: list[dict[str, Any]] = []
 
     class Stub:
-        def apply_batch_defaults(self, **kwargs):
+        def apply_extraction_defaults(self, **kwargs):
             applied.append(kwargs)
             return True
 
@@ -1284,7 +1284,7 @@ def test_session_start_applies_claude_smart_batch_defaults(
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
     session_start.handle({"session_id": "s1", "source": "startup"})
-    assert applied == [{"batch_size": 5, "batch_interval": 3}]
+    assert applied == [{"window_size": 5, "stride_size": 3}]
 
 
 def test_session_start_fetches_both_on_every_source(session_dir, monkeypatch) -> None:
@@ -1292,7 +1292,7 @@ def test_session_start_fetches_both_on_every_source(session_dir, monkeypatch) ->
     calls: list[dict[str, Any]] = []
 
     class Stub:
-        def apply_batch_defaults(self, **_kw):
+        def apply_extraction_defaults(self, **_kw):
             return True
 
         def fetch_both(self, **kwargs):

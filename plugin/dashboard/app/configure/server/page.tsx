@@ -162,11 +162,11 @@ export default function ConfigureServerPage() {
               <Input
                 type="number"
                 min={1}
-                value={srvConfig.batch_size ?? ""}
+                value={srvConfig.window_size ?? ""}
                 onChange={(e) => {
                   const n = Number(e.target.value);
                   updateSrv(
-                    "batch_size",
+                    "window_size",
                     Number.isFinite(n) && n > 0 ? n : undefined,
                   );
                 }}
@@ -184,11 +184,11 @@ export default function ConfigureServerPage() {
               <Input
                 type="number"
                 min={1}
-                value={srvConfig.batch_interval ?? ""}
+                value={srvConfig.stride_size ?? ""}
                 onChange={(e) => {
                   const n = Number(e.target.value);
                   updateSrv(
-                    "batch_interval",
+                    "stride_size",
                     Number.isFinite(n) && n > 0 ? n : undefined,
                   );
                 }}

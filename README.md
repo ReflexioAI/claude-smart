@@ -58,9 +58,9 @@ Four ways this changes what Claude Code can do for you:
 
 - 💡 **Stop repeating the same mistakes:** Produces actionable playbooks Claude can follow next time; memory only records what happened.
 
-  > *Example:* you tell Claude to stop running `npm test` without `--run` because watch mode hangs.<br>
-  > **Memory:** “user was annoyed about npm test hanging”<br>
-  > **Learning:** “always pass `--run` to `npm test` in this repo — default watch mode blocks CI”
+  > *Example:* a deploy fails after Claude bumps `prisma` from 5.x to 6.0; you tell it to roll back because 6.0 breaks nested writes in your order flow.<br>
+  > **Memory:** “deploy broke after prisma bump; user rolled back”<br>
+  > **Learning:** “treat major-version bumps of ORMs/DB drivers as breaking — verify with integration tests, not just unit tests”
 
 - 🚀 **Start from the optimized path:** Preserves and optimizes execution paths so Claude can reuse what already works.
   > *Example:* Claude spends several iterations trying to start the local dev environment before discovering that this repo requires `pnpm dev:all` instead of the usual `npm run dev`.<br>

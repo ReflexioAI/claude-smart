@@ -434,7 +434,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "chromadb", specifier = ">=0.5" },
-    { name = "reflexio-ai", specifier = ">=0.2.15" },
+    { name = "reflexio-ai", specifier = ">=0.2.20" },
 ]
 
 [package.metadata.requires-dev]

@@ -5,7 +5,7 @@ description = "Self-improving Claude Code plugin — learns from corrections via
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "reflexio-ai>=0.2.15",
+    "reflexio-ai>=0.2.20",
     # Used by reflexio's local embedding provider (ONNXMiniLM_L6_V2).
     # Pulls in onnxruntime + tokenizers; the ~80 MB ONNX model itself is
     # downloaded on first use, not at install time.
