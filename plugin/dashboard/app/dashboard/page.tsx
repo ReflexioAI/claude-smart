@@ -183,7 +183,7 @@ export default function DashboardPage() {
             <EmptyState
               icon={BookOpen}
               title="No playbooks yet"
-              description="Playbooks are extracted from your interactions — run /smart-sync to force extraction."
+              description="Keep using Claude with claude-smart enabled — playbooks will be extracted automatically from your interactions when patterns emerge."
             />
           )}
         </section>

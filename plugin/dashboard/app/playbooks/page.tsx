@@ -137,7 +137,7 @@ export default function PlaybooksPage() {
           <EmptyState
             icon={BookOpen}
             title="No playbooks match"
-            description="Adjust the filters or run /smart-sync to extract rules from recent interactions."
+            description="Adjust the filters, or keep using Claude with claude-smart enabled — playbook rules will be extracted automatically from your interactions when patterns emerge."
           />
         ) : (
           <div className="grid gap-3 lg:grid-cols-2">

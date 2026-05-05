@@ -82,7 +82,7 @@ export default function ProfilesPage() {
           <EmptyState
             icon={Users}
             title="No profiles yet"
-            description="Profiles are generated from interactions once the extractor runs. Try /smart-sync after a few turns."
+            description="Keep using Claude with claude-smart enabled — profiles will appear here automatically as the extractor learns patterns from your interactions."
           />
         ) : (
           <div className="grid gap-3 md:grid-cols-2">

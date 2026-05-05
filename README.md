@@ -24,6 +24,9 @@
   <a href="#quick-start">
     <img src="https://img.shields.io/badge/llm-claude%20code%20cli-purple.svg" alt="LLM">
   </a>
+  <a href="https://discord.gg/Jbft3jPn">
+    <img src="https://img.shields.io/badge/Discord-Join%20Chat-5865F2?logo=discord&logoColor=white" alt="Discord">
+  </a>
 </p>
 
 <p align="center">
