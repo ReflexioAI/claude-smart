@@ -14,6 +14,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_lib.sh"
 claude_smart_source_login_path
 claude_smart_prepend_astral_bins
+claude_smart_prepend_node_bins
 
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 

@@ -5,6 +5,7 @@
 # PATH the same way claude-mem does so hook-spawned scripts find them without
 # the user having to mutate their global PATH. Best-effort — failures silent.
 claude_smart_source_login_path() {
+  local _SHELL_PATH
   if [ -n "${SHELL:-}" ] && [ -x "$SHELL" ]; then
     if _SHELL_PATH="$("$SHELL" -lc 'printf %s "$PATH"' 2>/dev/null)"; then
       [ -n "$_SHELL_PATH" ] && export PATH="$_SHELL_PATH:$PATH"
@@ -19,6 +20,64 @@ claude_smart_source_login_path() {
 # under `set -u`.
 claude_smart_prepend_astral_bins() {
   export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+}
+
+# Prepend claude-smart's private Node.js install, if present. The Setup
+# hook installs Node here when the user does not already have a suitable
+# node/npm on PATH, so later hook-spawned dashboard scripts can run without
+# requiring nvm/brew/global npm to be visible from Claude Code's shell.
+claude_smart_prepend_node_bins() {
+  local _CS_NODE_ROOT
+  _CS_NODE_ROOT="$HOME/.claude-smart/node/current"
+  export PATH="$_CS_NODE_ROOT/bin:$_CS_NODE_ROOT:$PATH"
+}
+
+claude_smart_dashboard_unavailable_marker() {
+  printf '%s\n' "$HOME/.claude-smart/dashboard-unavailable"
+}
+
+claude_smart_node_recovery_hint() {
+  cat <<'EOF'
+Recovery:
+  1. Restart Claude Code to let claude-smart retry its private Node.js install.
+  2. If the retry is blocked by your network or OS policy, install Node.js 20.9+ manually:
+EOF
+  if claude_smart_is_windows; then
+    cat <<'EOF'
+     - winget install OpenJS.NodeJS.LTS
+     - or download the LTS installer from https://nodejs.org/
+EOF
+  elif [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    cat <<'EOF'
+     - brew install node
+     - or download the LTS installer from https://nodejs.org/
+EOF
+  else
+    cat <<'EOF'
+     - use your distro package manager for nodejs/npm
+     - or download the LTS archive from https://nodejs.org/
+EOF
+  fi
+  cat <<'EOF'
+  3. Run /claude-smart:restart, then /claude-smart:dashboard.
+EOF
+}
+
+claude_smart_write_dashboard_unavailable() {
+  local reason marker
+  reason="$1"
+  marker="$(claude_smart_dashboard_unavailable_marker)"
+  mkdir -p "$(dirname "$marker")"
+  {
+    printf 'claude-smart dashboard is unavailable: %s\n\n' "$reason"
+    printf 'The learning backend and hooks can still work; only the dashboard UI is affected.\n\n'
+    printf 'Private Node.js location: %s\n\n' "$HOME/.claude-smart/node/current"
+    claude_smart_node_recovery_hint
+  } > "$marker"
+}
+
+claude_smart_clear_dashboard_unavailable() {
+  rm -f "$(claude_smart_dashboard_unavailable_marker)"
 }
 
 # Return 0 (true) if running under a Windows-flavoured bash (Git Bash,
@@ -56,6 +115,122 @@ claude_smart_resolve_python() {
     fi
   done
   return 1
+}
+
+claude_smart_download() {
+  local url dest src _CS_PY
+  url="$1"
+  dest="$2"
+  mkdir -p "$(dirname "$dest")"
+  case "$url" in
+    file://*)
+      src="${url#file://}"
+      cp "$src" "$dest"
+      return $?
+      ;;
+  esac
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$dest"
+    return $?
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -q -O "$dest" "$url"
+    return $?
+  fi
+  if command -v powershell >/dev/null 2>&1; then
+    URL="$url" DEST="$dest" powershell -NoProfile -ExecutionPolicy Bypass -Command \
+      '$ProgressPreference="SilentlyContinue"; Invoke-WebRequest -Uri $env:URL -OutFile $env:DEST'
+    return $?
+  fi
+  if command -v pwsh >/dev/null 2>&1; then
+    URL="$url" DEST="$dest" pwsh -NoProfile -Command \
+      '$ProgressPreference="SilentlyContinue"; Invoke-WebRequest -Uri $env:URL -OutFile $env:DEST'
+    return $?
+  fi
+  _CS_PY=$(claude_smart_resolve_python || true)
+  if [ -n "$_CS_PY" ]; then
+    "$_CS_PY" - "$url" "$dest" <<'PY'
+import sys
+import urllib.request
+
+url, dest = sys.argv[1], sys.argv[2]
+with urllib.request.urlopen(url, timeout=60) as response:
+    data = response.read()
+with open(dest, "wb") as fh:
+    fh.write(data)
+PY
+    return $?
+  fi
+  return 1
+}
+
+claude_smart_sha256_file() {
+  local path _CS_PY
+  path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+    return ${PIPESTATUS[0]}
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+    return ${PIPESTATUS[0]}
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$path" | awk '{print $NF}'
+    return ${PIPESTATUS[0]}
+  fi
+  _CS_PY=$(claude_smart_resolve_python || true)
+  if [ -n "$_CS_PY" ]; then
+    "$_CS_PY" - "$path" <<'PY'
+import hashlib
+import sys
+
+h = hashlib.sha256()
+with open(sys.argv[1], "rb") as fh:
+    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+        h.update(chunk)
+print(h.hexdigest())
+PY
+    return $?
+  fi
+  return 1
+}
+
+# Return 0 if `node` exists and satisfies the minimum major/minor pair.
+# Patch versions are intentionally ignored because our requirement is a
+# floor, not an exact runtime pin.
+claude_smart_node_satisfies() {
+  local min_major min_minor version major minor
+  min_major="$1"
+  min_minor="$2"
+  command -v node >/dev/null 2>&1 || return 1
+  version=$(node -v 2>/dev/null | sed 's/^v//') || return 1
+  major=$(printf '%s' "$version" | awk -F. '{print $1}')
+  minor=$(printf '%s' "$version" | awk -F. '{print $2}')
+  [ -n "$major" ] && [ -n "$minor" ] || return 1
+  case "$major:$minor" in
+    *[!0-9:]*|:*|*:) return 1 ;;
+  esac
+  [ "$major" -gt "$min_major" ] && return 0
+  [ "$major" -eq "$min_major" ] && [ "$minor" -ge "$min_minor" ]
+}
+
+claude_smart_resolve_npm() {
+  local cand
+  for cand in npm npm.cmd; do
+    if command -v "$cand" >/dev/null 2>&1; then
+      command -v "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+claude_smart_npm_available() {
+  local npm_bin
+  npm_bin=$(claude_smart_resolve_npm || true)
+  [ -n "$npm_bin" ] || return 1
+  "$npm_bin" --version >/dev/null 2>&1
 }
 
 # Spawn a command fully detached from the current shell so a hook timeout

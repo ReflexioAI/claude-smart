@@ -140,3 +140,12 @@ def test_restart_no_rebuild_flag_skips_npm(fake_services) -> None:
     rc = cli.cmd_restart(_make_args(no_rebuild=True))
     assert rc == 0
     assert build_calls == []
+
+
+def test_restart_uses_npm_ci_when_lockfile_exists(fake_services) -> None:
+    _, build_calls = fake_services
+    (cli._DASHBOARD_DIR / "package-lock.json").write_text("{}\n")
+    rc = cli.cmd_restart(_make_args())
+    assert rc == 0
+    assert build_calls[0] == ["npm", "ci", "--no-audit", "--no-fund"]
+    assert build_calls[1] == ["npm", "run", "build"]

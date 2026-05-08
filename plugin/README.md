@@ -7,21 +7,27 @@ This directory is the published Python package (`claude-smart` on PyPI) and the 
 ## Install
 
 ```bash
-npx claude-smart install   # or: uvx claude-smart install
+claude plugin marketplace add ReflexioAI/claude-smart
+claude plugin install claude-smart@reflexioai
 ```
+
+The Setup hook bootstraps `uv`, Python 3.12, and a private Node.js/npm runtime
+under `~/.claude-smart/` when they are missing. If Node.js is already installed,
+`npx claude-smart install` is equivalent; if uv is already installed,
+`uvx claude-smart install` is equivalent.
 
 Then restart Claude Code.
 
 ## Uninstall
 
 ```bash
-npx claude-smart uninstall   # or: uvx claude-smart uninstall
+claude plugin uninstall claude-smart@reflexioai
 ```
 
-Or run the equivalent command directly via the Claude Code CLI:
+Or, if Node.js or uv is already installed:
 
 ```bash
-claude plugin uninstall claude-smart@reflexioai
+npx claude-smart uninstall   # or: uvx claude-smart uninstall
 ```
 
 Local data under `~/.reflexio/` and `~/.claude-smart/` is left in place — remove manually if desired.

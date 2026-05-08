@@ -21,6 +21,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
 claude_smart_source_login_path
+claude_smart_prepend_astral_bins
 
 CMD="${1:-start}"
 PORT=8071

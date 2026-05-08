@@ -12,6 +12,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
 claude_smart_source_login_path
+claude_smart_prepend_astral_bins
+claude_smart_prepend_node_bins
 
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
@@ -22,11 +24,217 @@ mkdir -p "$MARKER_DIR"
 rm -f "$FAILURE_MARKER"
 
 write_failure() {
-  printf '%s\n' "$1" > "$FAILURE_MARKER"
-  echo "[claude-smart] install failed: $1" >&2
+  local reason
+  reason="$1"
+  printf '%s\n' "$reason" > "$FAILURE_MARKER"
+  echo "[claude-smart] install failed: $reason" >&2
   echo '{"continue":true,"suppressOutput":true}'
   exit 0
 }
+
+install_private_node() {
+  local NODE_MIN_MAJOR NODE_MIN_MINOR NODE_LTS_MAJOR
+  local node_os archive_ext reason node_arch node_platform base_url node_root
+  local tmp_dir shasums_path archive_name ext_re install_dir archive_path
+  local expected_hash actual_hash archive_win dest_win candidate_path next_link
+
+  NODE_MIN_MAJOR=20
+  NODE_MIN_MINOR=9
+  NODE_LTS_MAJOR="${CLAUDE_SMART_NODE_LTS_MAJOR:-22}"
+
+  if claude_smart_node_satisfies "$NODE_MIN_MAJOR" "$NODE_MIN_MINOR" \
+    && claude_smart_npm_available; then
+    claude_smart_clear_dashboard_unavailable
+    return 0
+  fi
+
+  case "$(uname -s 2>/dev/null)" in
+    Darwin*) node_os="darwin"; archive_ext="tar.gz" ;;
+    Linux*) node_os="linux"; archive_ext="tar.gz" ;;
+    MINGW*|MSYS*|CYGWIN*)
+      node_os="win"
+      archive_ext="zip"
+      if ! command -v powershell >/dev/null 2>&1; then
+        reason="PowerShell is not on PATH, so claude-smart could not extract private Node.js on Windows."
+        echo "[claude-smart] WARNING: $reason" >&2
+        claude_smart_write_dashboard_unavailable "$reason"
+        return 1
+      fi
+      ;;
+    *)
+      reason="unsupported OS for private Node.js install: $(uname -s 2>/dev/null || echo unknown)"
+      echo "[claude-smart] WARNING: $reason" >&2
+      claude_smart_write_dashboard_unavailable "$reason"
+      return 1
+      ;;
+  esac
+
+  case "$(uname -m 2>/dev/null)" in
+    x86_64|amd64) node_arch="x64" ;;
+    arm64|aarch64) node_arch="arm64" ;;
+    *)
+      reason="unsupported CPU for private Node.js install: $(uname -m 2>/dev/null || echo unknown)"
+      echo "[claude-smart] WARNING: $reason" >&2
+      claude_smart_write_dashboard_unavailable "$reason"
+      return 1
+      ;;
+  esac
+
+  node_platform="$node_os-$node_arch"
+  base_url="${CLAUDE_SMART_NODE_BASE_URL:-https://nodejs.org/dist/latest-v${NODE_LTS_MAJOR}.x}"
+  echo "[claude-smart] Node.js >=20.9 with npm not found — installing private Node.js from nodejs.org..." >&2
+  node_root="$HOME/.claude-smart/node"
+  mkdir -p "$node_root"
+  tmp_dir=$(mktemp -d "$node_root/tmp.XXXXXX") || {
+    reason="could not create temporary directory under $node_root"
+    echo "[claude-smart] WARNING: $reason" >&2
+    claude_smart_write_dashboard_unavailable "$reason"
+    return 1
+  }
+  shasums_path="$tmp_dir/SHASUMS256.txt"
+
+  if ! claude_smart_download "$base_url/SHASUMS256.txt" "$shasums_path"; then
+    rm -rf "$tmp_dir"
+    reason="could not download Node.js checksums from $base_url/SHASUMS256.txt"
+    echo "[claude-smart] WARNING: $reason" >&2
+    claude_smart_write_dashboard_unavailable "$reason"
+    return 1
+  fi
+
+  ext_re=$(printf '%s' "$archive_ext" | sed 's/\./\\./g')
+  archive_name=$(
+    awk -v platform="$node_platform" -v ext="$ext_re" \
+          '$2 ~ ("^node-v[0-9][^ ]*-" platform "\\." ext "$") { print $2; exit }' \
+      "$shasums_path"
+  ) || archive_name=""
+  if [ -z "$archive_name" ]; then
+    rm -rf "$tmp_dir"
+    reason="could not resolve Node.js archive for $node_platform from $base_url"
+    echo "[claude-smart] WARNING: $reason" >&2
+    claude_smart_write_dashboard_unavailable "$reason"
+    return 1
+  fi
+
+  install_dir="$node_root/${archive_name%.$archive_ext}"
+  archive_path="$tmp_dir/$archive_name"
+  expected_hash=$(awk -v name="$archive_name" '$2 == name { print $1; exit }' "$shasums_path")
+  if [ -z "$expected_hash" ]; then
+    rm -rf "$tmp_dir"
+    reason="Node.js checksums did not include $archive_name"
+    echo "[claude-smart] WARNING: $reason" >&2
+    claude_smart_write_dashboard_unavailable "$reason"
+    return 1
+  fi
+
+  if ! claude_smart_download "$base_url/$archive_name" "$archive_path"; then
+    rm -rf "$tmp_dir"
+    reason="Node.js download failed from $base_url/$archive_name"
+    echo "[claude-smart] WARNING: $reason" >&2
+    claude_smart_write_dashboard_unavailable "$reason"
+    return 1
+  fi
+
+  actual_hash=$(claude_smart_sha256_file "$archive_path" || true)
+  if [ -z "$actual_hash" ] || [ "$actual_hash" != "$expected_hash" ]; then
+    rm -rf "$tmp_dir"
+    reason="Node.js checksum verification failed for $archive_name"
+    echo "[claude-smart] WARNING: $reason" >&2
+    claude_smart_write_dashboard_unavailable "$reason"
+    return 1
+  fi
+
+  rm -rf "$install_dir" "$node_root/current.next"
+  if [ "$archive_ext" = "zip" ]; then
+    archive_win="$archive_path"
+    dest_win="$node_root"
+    if command -v cygpath >/dev/null 2>&1; then
+      archive_win=$(cygpath -w "$archive_path")
+      dest_win=$(cygpath -w "$node_root")
+    fi
+    if ! ARCHIVE_PATH="$archive_win" DEST_DIR="$dest_win" powershell -NoProfile -ExecutionPolicy Bypass -Command \
+      '$ProgressPreference="SilentlyContinue"; Expand-Archive -LiteralPath $env:ARCHIVE_PATH -DestinationPath $env:DEST_DIR -Force' >&2; then
+      rm -rf "$tmp_dir" "$install_dir"
+      reason="Node.js archive extraction failed for $archive_name"
+      echo "[claude-smart] WARNING: $reason" >&2
+      claude_smart_write_dashboard_unavailable "$reason"
+      return 1
+    fi
+  elif ! tar -xzf "$archive_path" -C "$node_root"; then
+    rm -rf "$tmp_dir" "$install_dir"
+    reason="Node.js archive extraction failed for $archive_name"
+    echo "[claude-smart] WARNING: $reason" >&2
+    claude_smart_write_dashboard_unavailable "$reason"
+    return 1
+  fi
+
+  if [ ! -d "$install_dir" ]; then
+    rm -rf "$tmp_dir"
+    reason="Node.js archive extracted without expected directory $install_dir"
+    echo "[claude-smart] WARNING: $reason" >&2
+    claude_smart_write_dashboard_unavailable "$reason"
+    return 1
+  fi
+
+  if [ -x "$install_dir/bin/node" ]; then
+    candidate_path="$install_dir/bin:$PATH"
+  elif [ -x "$install_dir/node.exe" ] || [ -x "$install_dir/node" ]; then
+    candidate_path="$install_dir:$PATH"
+  else
+    rm -rf "$tmp_dir"
+    reason="Node.js archive extracted without a node executable"
+    echo "[claude-smart] WARNING: $reason" >&2
+    claude_smart_write_dashboard_unavailable "$reason"
+    return 1
+  fi
+
+  if claude_smart_node_satisfies "$NODE_MIN_MAJOR" "$NODE_MIN_MINOR" \
+    && claude_smart_npm_available; then
+    : # existing PATH unexpectedly became suitable; keep going
+  elif PATH="$candidate_path" claude_smart_node_satisfies "$NODE_MIN_MAJOR" "$NODE_MIN_MINOR" \
+    && PATH="$candidate_path" claude_smart_npm_available; then
+    : # candidate install is suitable
+  else
+    rm -rf "$tmp_dir"
+    reason="private Node.js install completed but node/npm are still not usable"
+    echo "[claude-smart] WARNING: $reason" >&2
+    claude_smart_write_dashboard_unavailable "$reason"
+    return 1
+  fi
+
+  next_link="$node_root/current.next.$$"
+  if ln -s "$install_dir" "$next_link" 2>/dev/null; then
+    if mv -Tf "$next_link" "$node_root/current" 2>/dev/null; then
+      :
+    elif mv -hf "$next_link" "$node_root/current" 2>/dev/null; then
+      :
+    else
+      rm -rf "$node_root/current"
+      mv "$next_link" "$node_root/current"
+    fi
+  else
+    rm -rf "$next_link" "$node_root/current"
+    mv "$install_dir" "$node_root/current"
+  fi
+
+  rm -rf "$tmp_dir"
+  claude_smart_prepend_node_bins
+  if claude_smart_node_satisfies "$NODE_MIN_MAJOR" "$NODE_MIN_MINOR" \
+    && claude_smart_npm_available; then
+    claude_smart_clear_dashboard_unavailable
+    echo "[claude-smart] installed private $(node -v) at $node_root/current" >&2
+    return 0
+  fi
+
+  reason="private Node.js install completed but current node/npm are still not usable"
+  echo "[claude-smart] WARNING: $reason" >&2
+  claude_smart_write_dashboard_unavailable "$reason"
+  return 1
+}
+
+if [ "${CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY:-}" = "1" ]; then
+  install_private_node
+  exit $?
+fi
 
 # Dev-mode only: when running from a git checkout, pull the reflexio
 # submodule so tests/benchmarks can use its sources. In install mode the
@@ -58,7 +266,11 @@ if ! command -v uv >/dev/null 2>&1; then
       write_failure "uv install via PowerShell failed — install manually from https://docs.astral.sh/uv/"
     fi
   else
-    if ! curl -LsSf https://astral.sh/uv/install.sh | sh >&2; then
+    UV_INSTALLER="$MARKER_DIR/uv-install.sh"
+    if ! claude_smart_download https://astral.sh/uv/install.sh "$UV_INSTALLER"; then
+      write_failure "uv installer download failed — install manually from https://docs.astral.sh/uv/"
+    fi
+    if ! sh "$UV_INSTALLER" >&2; then
       write_failure "uv install failed — install manually from https://docs.astral.sh/uv/"
     fi
   fi
@@ -81,8 +293,8 @@ fi
 
 cd "$PLUGIN_ROOT"
 echo "[claude-smart] running uv sync..." >&2
-if ! uv sync --quiet >&2; then
-  write_failure "uv sync failed in $PLUGIN_ROOT — run 'uv sync' there to diagnose"
+if ! uv sync --locked --python 3.12 --quiet >&2; then
+  write_failure "uv sync failed in $PLUGIN_ROOT — run 'uv sync --locked --python 3.12' there to diagnose"
 fi
 
 # Reflexio's CLI reads ~/.reflexio/.env (see reflexio/cli/env_loader.py);
@@ -176,11 +388,16 @@ fi
 # if .next is still missing, and dashboard-open.sh detects the build-pid
 # file to surface a "still building" message instead of a generic error.
 DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
-if [ -d "$DASHBOARD_DIR" ] && command -v npm >/dev/null 2>&1; then
+if [ -d "$DASHBOARD_DIR" ]; then
+  install_private_node || true
+fi
+if [ -d "$DASHBOARD_DIR" ] && claude_smart_npm_available; then
   echo "[claude-smart] starting dashboard build in background (~1-2 min on first install)" >&2
   claude_smart_spawn_detached bash "$HERE/dashboard-build.sh" >/dev/null 2>&1
 elif [ -d "$DASHBOARD_DIR" ]; then
-  echo "[claude-smart] WARNING: npm not on PATH — dashboard will be unavailable until npm is installed" >&2
+  reason="npm is not on PATH after private Node.js bootstrap"
+  echo "[claude-smart] WARNING: $reason" >&2
+  [ -f "$(claude_smart_dashboard_unavailable_marker)" ] || claude_smart_write_dashboard_unavailable "$reason"
 fi
 
 # Point ~/.reflexio/plugin-root at this install so slash commands can

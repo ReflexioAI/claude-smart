@@ -11,10 +11,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$HERE"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
+claude_smart_source_login_path
+claude_smart_prepend_node_bins
 
 STATE_DIR="$HOME/.claude-smart"
 BACKEND_LOG="$STATE_DIR/backend.log"
 DASHBOARD_LOG="$STATE_DIR/dashboard.log"
+DASHBOARD_UNAVAILABLE="$(claude_smart_dashboard_unavailable_marker)"
 
 # Capture start-command output so we can surface fatal errors (e.g. uv/npm
 # missing, port collisions, .next not built) rather than silently swallow
@@ -74,6 +77,11 @@ if [ "$dashboard_status" = "not running" ]; then
     else
         echo "ERROR: dashboard failed to start on http://localhost:3001"
         [ -n "$dashboard_start_out" ] && echo "$dashboard_start_out"
+        if [ -f "$DASHBOARD_UNAVAILABLE" ]; then
+            echo ""
+            echo "--- dashboard availability ($DASHBOARD_UNAVAILABLE) ---"
+            cat "$DASHBOARD_UNAVAILABLE" 2>/dev/null || true
+        fi
         show_log_tail "dashboard" "$DASHBOARD_LOG"
     fi
 fi
@@ -84,4 +92,16 @@ if [ "$failed" = "1" ]; then
     exit 1
 fi
 
-python3 -m webbrowser "http://localhost:3001" && echo "Opened http://localhost:3001"
+URL="http://localhost:3001"
+PY_BIN=$(claude_smart_resolve_python || true)
+if [ -n "$PY_BIN" ] && "$PY_BIN" -m webbrowser "$URL"; then
+    echo "Opened $URL"
+elif command -v open >/dev/null 2>&1 && open "$URL"; then
+    echo "Opened $URL"
+elif command -v xdg-open >/dev/null 2>&1 && xdg-open "$URL"; then
+    echo "Opened $URL"
+elif command -v powershell >/dev/null 2>&1 && powershell -NoProfile -Command "Start-Process '$URL'"; then
+    echo "Opened $URL"
+else
+    echo "Dashboard is running at $URL"
+fi

@@ -79,14 +79,19 @@ Four ways this changes what Claude Code can do for you:
 ## Quick Start
 
 ```bash
-npx claude-smart install     # or: uvx claude-smart install
-```
-
-Or run the equivalent marketplace commands directly via the Claude Code CLI:
-
-```bash
 claude plugin marketplace add ReflexioAI/claude-smart
 claude plugin install claude-smart@reflexioai
+```
+
+The plugin Setup hook installs its own `uv`, Python 3.12 environment, and
+private Node.js/npm runtime under `~/.claude-smart/` when they are missing, so
+you do not need to install Python or Node globally for the plugin/dashboard.
+
+If you already have Node.js or uv, these convenience wrappers are equivalent
+but require their own runtime to already exist:
+
+```bash
+npx claude-smart install     # or: uvx claude-smart install
 ```
 
 Then restart Claude Code.
@@ -94,13 +99,13 @@ Then restart Claude Code.
 To uninstall:
 
 ```bash
-npx claude-smart uninstall     # or: uvx claude-smart uninstall
+claude plugin uninstall claude-smart@reflexioai
 ```
 
-Or run the equivalent command directly via the Claude Code CLI:
+Or, if you already have Node.js or uv:
 
 ```bash
-claude plugin uninstall claude-smart@reflexioai
+npx claude-smart uninstall     # or: uvx claude-smart uninstall
 ```
 
 Local data under `~/.reflexio/` and `~/.claude-smart/` is left in place — remove manually if desired.

@@ -352,18 +352,25 @@ def cmd_restart(args: argparse.Namespace) -> int:
         else:
             next_bin = _DASHBOARD_DIR / "node_modules" / ".bin" / "next"
             if not next_bin.exists():
+                install_cmd = (
+                    ["npm", "ci", "--no-audit", "--no-fund"]
+                    if (_DASHBOARD_DIR / "package-lock.json").exists()
+                    else ["npm", "install", "--no-audit", "--no-fund"]
+                )
+                install_label = " ".join(install_cmd)
                 sys.stdout.write(
-                    "Installing dashboard dependencies (npm install, may take a minute)…\n"
+                    "Installing dashboard dependencies "
+                    f"({install_label}, may take a minute)…\n"
                 )
                 try:
                     subprocess.run(
-                        ["npm", "install", "--no-audit", "--no-fund"],
+                        install_cmd,
                         cwd=_DASHBOARD_DIR,
                         check=True,
                     )
                 except subprocess.CalledProcessError as exc:
                     sys.stderr.write(
-                        f"error: npm install failed (exit {exc.returncode}); "
+                        f"error: {install_label} failed (exit {exc.returncode}); "
                         "not starting dashboard.\n"
                     )
                     if do_backend:

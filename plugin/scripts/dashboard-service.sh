@@ -22,6 +22,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
 claude_smart_source_login_path
+claude_smart_prepend_node_bins
 
 CMD="${1:-start}"
 PORT=3001
@@ -91,13 +92,16 @@ case "$CMD" in
       emit_ok; exit 0
     fi
     if [ ! -d "$DASHBOARD_DIR" ]; then emit_ok; exit 0; fi
-    if is_our_dashboard_running; then emit_ok; exit 0; fi
+    if is_our_dashboard_running; then claude_smart_clear_dashboard_unavailable; emit_ok; exit 0; fi
     if port_occupied; then
       echo "[claude-smart] dashboard: port $PORT held by another process; skipping" >>"$LOG_FILE"
       emit_ok; exit 0
     fi
-    if ! command -v npm >/dev/null 2>&1; then
-      echo "[claude-smart] dashboard: npm not on PATH; skipping" >>"$LOG_FILE"
+    NPM_BIN=$(claude_smart_resolve_npm || true)
+    if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
+      reason="npm is not on PATH; dashboard cannot start"
+      echo "[claude-smart] dashboard: $reason; skipping" >>"$LOG_FILE"
+      claude_smart_write_dashboard_unavailable "$reason"
       emit_ok; exit 0
     fi
 
@@ -125,13 +129,25 @@ case "$CMD" in
     #   - Windows: nohup alone (no process groups; tree-kill via taskkill).
     # Caller-side `>>file 2>&1` redirection is honoured before the child
     # detaches, so per-OS log paths stay identical.
-    claude_smart_spawn_detached npm run start >>"$LOG_FILE" 2>&1
+    claude_smart_spawn_detached "$NPM_BIN" run start >>"$LOG_FILE" 2>&1
     dash_pid=$!
     # Record the spawned pid, not a pgid sampled with ps. On POSIX,
     # setsid/python os.setsid make this pid the new process group leader;
     # sampling immediately can race and capture the caller's pgid instead.
     # On Windows, claude_smart_kill_tree translates the MSYS pid to WINPID.
     echo "$dash_pid" > "$PID_FILE"
+    dashboard_ready=0
+    for _ in 1 2 3 4 5; do
+      if marker_responds; then
+        dashboard_ready=1
+        claude_smart_clear_dashboard_unavailable
+        break
+      fi
+      sleep 1
+    done
+    if [ "$dashboard_ready" != "1" ]; then
+      claude_smart_write_dashboard_unavailable "dashboard process spawned but did not respond on http://127.0.0.1:$PORT within 5s; see $LOG_FILE"
+    fi
     emit_ok
     ;;
   stop)
