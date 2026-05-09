@@ -1,10 +1,9 @@
 ---
-description: Flag the last turn as a correction so reflexio learns from it
+description: Force reflexio to extract learnings from this session now
 allowed-tools: Bash(bash:*)
-argument-hint: [note]
 ---
 
-Flag the user's previous turn as a correction and force reflexio to run extraction on this session's interactions now.
+Force reflexio to run extraction on this session's interactions now.
 Run the bash command below and show its output verbatim.
 
-!`bash "$HOME/.reflexio/plugin-root/scripts/cli.sh" learn "$ARGUMENTS"`
+!`bash "$HOME/.reflexio/plugin-root/scripts/cli.sh" learn`

@@ -11,9 +11,8 @@ Exposes the following subcommands:
   in place.
 - ``show``: print the current project playbook and project user profiles
   (as markdown).
-- ``learn "<note>"``: append a ``[correction]``-prefixed turn to the active
-  session buffer (default note: "the previous answer was wrong"), then
-  publish unpublished interactions and force reflexio extraction now.
+- ``learn``: publish unpublished interactions and force reflexio
+  extraction now over the active session buffer.
 - ``restart``: stop and restart the reflexio backend + dashboard services
   (rebuilding the dashboard bundle) so local edits under the ``reflexio``
   submodule or ``plugin/dashboard/`` take effect without restarting Claude
@@ -208,41 +207,25 @@ def cmd_show(args: argparse.Namespace) -> int:
 
 
 def cmd_learn(args: argparse.Namespace) -> int:
-    """Flag the previous turn as a correction and force reflexio extraction.
+    """Force reflexio extraction over the active session's interactions.
 
-    Appends a ``[correction]``-prefixed user turn to the active session's
-    JSONL buffer so reflexio's extractor sees the signal, then publishes
-    unpublished interactions with ``force_extraction=True`` so extraction
-    runs immediately rather than at the next batch interval.
+    Publishes unpublished interactions with ``force_extraction=True`` so
+    extraction runs immediately rather than at the next batch interval.
 
     Args:
-        args (argparse.Namespace): Parsed CLI args. Honors ``args.note``
-            (defaults to "the previous answer was wrong" when empty),
-            ``args.session`` (defaults to most-recent), and ``args.project``
-            (defaults to ``ids.resolve_project_id()``).
+        args (argparse.Namespace): Parsed CLI args. Honors ``args.session``
+            (defaults to most-recent) and ``args.project`` (defaults to
+            ``ids.resolve_project_id()``).
 
     Returns:
-        int: 0 on success or no-op (no active session, or correction recorded
-            but nothing to publish), 1 if reflexio is unreachable. When
-            reflexio is unreachable, the ``[correction]`` row is still
-            appended to the local JSONL — only the publish/extraction step
-            is skipped, so the next successful publish drains it.
+        int: 0 on success or no-op (no active session, or nothing to
+            publish), 1 if reflexio is unreachable.
     """
     session_id = args.session or _latest_session_id()
     if not session_id:
         sys.stdout.write("No active claude-smart session buffer found.\n")
         return 0
     project_id = args.project or ids.resolve_project_id()
-    note = args.note or "the previous answer was wrong"
-    state.append(
-        session_id,
-        {
-            "ts": int(time.time()),
-            "role": "User",
-            "content": f"[correction] {note}",
-            "user_id": project_id,
-        },
-    )
     status, count = publish.publish_unpublished(
         session_id=session_id,
         project_id=project_id,
@@ -251,12 +234,14 @@ def cmd_learn(args: argparse.Namespace) -> int:
     )
     if status == "ok":
         sys.stdout.write(
-            f"Recorded correction on session `{session_id}` and forced extraction "
+            f"Forced extraction on session `{session_id}` "
             f"over {count} interactions.\n"
         )
         return 0
     if status == "nothing":
-        sys.stdout.write(f"Recorded correction on session `{session_id}`.\n")
+        sys.stdout.write(
+            f"No unpublished interactions on session `{session_id}`.\n"
+        )
         return 0
     sys.stdout.write(_REFLEXIO_UNREACHABLE_MSG)
     return 1
@@ -496,9 +481,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ln = sub.add_parser(
         "learn",
-        help="Flag the last turn as a correction and force reflexio extraction now",
+        help="Force reflexio extraction over the active session now",
     )
-    ln.add_argument("note", nargs="?", default="", help="Correction description")
     ln.add_argument("--session", help="Session id (defaults to latest)")
     ln.add_argument("--project", help="Override project id")
     ln.set_defaults(func=cmd_learn)
