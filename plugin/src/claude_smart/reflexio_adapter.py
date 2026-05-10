@@ -77,7 +77,7 @@ class Adapter:
             client.publish_interaction(
                 user_id=project_id,
                 interactions=list(interactions),
-                agent_version=project_id,
+                agent_version="claude-code",
                 session_id=session_id,
                 wait_for_response=False,
                 force_extraction=force_extraction,
@@ -149,8 +149,8 @@ class Adapter:
 
             desired = {
                 "enabled": True,
-                "optimize_user_playbooks": True,
-                "optimize_agent_playbooks": False,
+                "optimize_user_playbooks": False,
+                "optimize_agent_playbooks": True,
                 "auto_update_user_playbooks": True,
                 "min_commit_windows": 1,
                 "max_metric_calls": 5,

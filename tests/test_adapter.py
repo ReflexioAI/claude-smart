@@ -56,7 +56,7 @@ def test_publish_returns_true_on_success() -> None:
     # ``user_id`` is the project slug and ``session_id`` is sent separately.
     assert client.published_kwargs["user_id"] == "p1"
     assert client.published_kwargs["session_id"] == "s1"
-    assert client.published_kwargs["agent_version"] == "p1"
+    assert client.published_kwargs["agent_version"] == "claude-code"
     assert client.published_kwargs["force_extraction"] is True
 
 
@@ -331,8 +331,8 @@ def test_apply_optimizer_defaults_writes_required_fields() -> None:
     assert len(client.set_calls) == 1
     opt = client.set_calls[0].playbook_optimizer_config
     assert opt.enabled is True
-    assert opt.optimize_user_playbooks is True
-    assert opt.optimize_agent_playbooks is False
+    assert opt.optimize_user_playbooks is False
+    assert opt.optimize_agent_playbooks is True
     assert opt.auto_update_user_playbooks is True
     assert opt.min_commit_windows == 1
     assert opt.max_metric_calls == 5
@@ -345,8 +345,8 @@ def test_apply_optimizer_defaults_writes_required_fields() -> None:
 def test_apply_optimizer_defaults_skips_set_when_values_match() -> None:
     opt = SimpleNamespace(
         enabled=True,
-        optimize_user_playbooks=True,
-        optimize_agent_playbooks=False,
+        optimize_user_playbooks=False,
+        optimize_agent_playbooks=True,
         auto_update_user_playbooks=True,
         min_commit_windows=1,
         max_metric_calls=5,

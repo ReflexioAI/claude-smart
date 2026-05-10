@@ -16,5 +16,5 @@ def handle(payload: dict[str, Any]) -> None:
         session_id=session_id,
         project_id=project_id,
         force_extraction=False,
-        skip_aggregation=True,
+        skip_aggregation=False,
     )

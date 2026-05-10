@@ -28,15 +28,21 @@ def publish_unpublished(
 
     Args:
         session_id (str): Claude Code session id, attached to each interaction.
-        project_id (str): Stable project name; used as both reflexio
-            ``agent_version`` (playbooks) and ``user_id`` (profiles), so both
-            entities accumulate at the project level across sessions.
+        project_id (str): Stable project name; used as reflexio's
+            ``user_id`` (profiles) so profiles accumulate at the project
+            level across sessions. ``agent_version`` is hardcoded to
+            ``"claude-code"`` in the adapter so playbooks roll up
+            globally per agent rather than per project.
         force_extraction (bool): Whether to ask reflexio to run extraction
             synchronously instead of queuing for the next sweep.
         skip_aggregation (bool): When True, reflexio extracts profiles and
             raw playbook entries but skips the rollup into agent-level
-            project playbooks. Every claude-smart publish path (Stop,
-            SessionEnd, /learn) passes True.
+            project playbooks. claude-smart passes False on every publish
+            path so user_playbooks roll up into agent_playbooks; aggregation
+            additionally requires `aggregation_config` to be set on
+            reflexio's `user_playbook_extractor_configs[0]` and
+            `optimize_agent_playbooks=true` at the top level — otherwise
+            the rollup silently no-ops.
         adapter (Adapter | None): Injection point for tests; a fresh
             ``Adapter()`` is constructed when omitted.
 

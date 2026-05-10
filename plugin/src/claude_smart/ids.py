@@ -7,9 +7,11 @@ Two identifiers matter to reflexio:
   turns remain attributable to their conversation, but it is no longer
   the scope key for extracted profiles.
 - ``project_id``: a stable, cross-session name for the project. We use
-  this as both ``agent_version`` (playbooks roll up at the project level)
-  and reflexio's ``user_id`` for profiles, so user preferences extracted
-  in one session are visible to every later session in the same repo.
+  this as reflexio's ``user_id`` for profiles, so user preferences
+  extracted in one session are visible to every later session in the
+  same repo. ``agent_version`` is hardcoded to ``"claude-code"`` in the
+  adapter so playbooks roll up globally across all projects rather than
+  per project.
 """
 
 from __future__ import annotations

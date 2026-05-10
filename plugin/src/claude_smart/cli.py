@@ -218,11 +218,16 @@ def cmd_learn(args: argparse.Namespace) -> int:
 
     Publishes unpublished interactions with ``force_extraction=True`` so
     extraction runs immediately rather than at the next batch interval.
+    When ``args.note`` is provided, the note is appended to the session
+    buffer as a neutral User turn before publishing — letting the user
+    capture an explicit insight, preference, or workflow note alongside
+    whatever has already been buffered.
 
     Args:
         args (argparse.Namespace): Parsed CLI args. Honors ``args.session``
-            (defaults to most-recent) and ``args.project`` (defaults to
-            ``ids.resolve_project_id()``).
+            (defaults to most-recent), ``args.project`` (defaults to
+            ``ids.resolve_project_id()``), and ``args.note`` (free-form
+            text appended as a User turn before publish).
 
     Returns:
         int: 0 on success or no-op (no active session, or nothing to
@@ -233,15 +238,29 @@ def cmd_learn(args: argparse.Namespace) -> int:
         sys.stdout.write("No active claude-smart session buffer found.\n")
         return 0
     project_id = args.project or ids.resolve_project_id()
+
+    note = (args.note or "").strip()
+    if note:
+        state.append(
+            session_id,
+            {
+                "ts": int(time.time()),
+                "role": "User",
+                "content": note,
+                "user_id": project_id,
+            },
+        )
+
     status, count = publish.publish_unpublished(
         session_id=session_id,
         project_id=project_id,
         force_extraction=True,
-        skip_aggregation=True,
+        skip_aggregation=False,
     )
     if status == "ok":
+        suffix = " (including your note)" if note else ""
         sys.stdout.write(
-            f"Forced extraction on session `{session_id}` over {count} interactions.\n"
+            f"Forced extraction on session `{session_id}` over {count} interactions{suffix}.\n"
         )
         return 0
     if status == "nothing":
@@ -755,6 +774,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     ln.add_argument("--session", help="Session id (defaults to latest)")
     ln.add_argument("--project", help="Override project id")
+    ln.add_argument(
+        "--note",
+        default=None,
+        help=(
+            "Free-form note to publish as a User turn before extraction "
+            "(e.g. an insight, preference, or workflow rule)"
+        ),
+    )
     ln.set_defaults(func=cmd_learn)
 
     ca = sub.add_parser(
