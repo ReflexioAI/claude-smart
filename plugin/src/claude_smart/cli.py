@@ -22,10 +22,13 @@ Exposes the following subcommands:
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from claude_smart import context_format, ids, publish, state
@@ -45,6 +48,10 @@ _SCRIPTS_DIR = _PLUGIN_ROOT / "scripts"
 _DASHBOARD_DIR = _PLUGIN_ROOT / "dashboard"
 _BACKEND_SCRIPT = _SCRIPTS_DIR / "backend-service.sh"
 _DASHBOARD_SCRIPT = _SCRIPTS_DIR / "dashboard-service.sh"
+_REFLEXIO_DIR = Path.home() / ".reflexio"
+_DEFAULT_STORAGE_ROOT = _REFLEXIO_DIR / "data"
+_REFLEXIO_CONFIG_PATH = _REFLEXIO_DIR / "configs" / "config_self-host-org.json"
+_LOCAL_STORAGE_ENV = "LOCAL_STORAGE_PATH"
 
 
 def _latest_session_id() -> str | None:
@@ -234,14 +241,11 @@ def cmd_learn(args: argparse.Namespace) -> int:
     )
     if status == "ok":
         sys.stdout.write(
-            f"Forced extraction on session `{session_id}` "
-            f"over {count} interactions.\n"
+            f"Forced extraction on session `{session_id}` over {count} interactions.\n"
         )
         return 0
     if status == "nothing":
-        sys.stdout.write(
-            f"No unpublished interactions on session `{session_id}`.\n"
-        )
+        sys.stdout.write(f"No unpublished interactions on session `{session_id}`.\n")
         return 0
     sys.stdout.write(_REFLEXIO_UNREACHABLE_MSG)
     return 1
@@ -295,6 +299,219 @@ def _service_status(script: Path, wait_ready_s: float = 3.0) -> str:
         if status != "not running" or time.monotonic() >= deadline:
             return status
         time.sleep(0.2)
+
+
+class _ClearAllError(RuntimeError):
+    """Raised when a destructive clear-all target is unsafe or unsupported."""
+
+
+@dataclass(frozen=True)
+class _ClearAllTarget:
+    """One filesystem target removed by ``clear-all``."""
+
+    path: Path
+    kind: str
+    label: str
+
+
+def _is_running_status(status: str) -> bool:
+    return status.startswith("running on ")
+
+
+def _read_dotenv_value(env_path: Path, key: str) -> str | None:
+    """Read one simple KEY=VALUE binding from a dotenv file."""
+    if not env_path.is_file():
+        return None
+    try:
+        lines = env_path.read_text().splitlines()
+    except OSError:
+        return None
+    prefix = f"{key}="
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if not line.startswith(prefix):
+            continue
+        value = line[len(prefix) :].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        return value.strip()
+    return None
+
+
+def _resolve_absolute_path(raw_path: str | Path, *, source: str) -> Path:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        raise _ClearAllError(f"{source} must be an absolute path: {raw_path}")
+    return path
+
+
+def _effective_storage_root() -> Path:
+    raw = os.environ.get(_LOCAL_STORAGE_ENV, "").strip()
+    if not raw:
+        raw = _read_dotenv_value(_REFLEXIO_ENV_PATH, _LOCAL_STORAGE_ENV) or ""
+    return _resolve_absolute_path(
+        raw or _DEFAULT_STORAGE_ROOT, source=_LOCAL_STORAGE_ENV
+    )
+
+
+def _load_reflexio_config() -> dict[str, object] | None:
+    if not _REFLEXIO_CONFIG_PATH.is_file():
+        return None
+    try:
+        loaded = json.loads(_REFLEXIO_CONFIG_PATH.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise _ClearAllError(
+            f"could not read reflexio config {_REFLEXIO_CONFIG_PATH}: {exc}"
+        ) from exc
+    if not isinstance(loaded, dict):
+        raise _ClearAllError(
+            f"reflexio config {_REFLEXIO_CONFIG_PATH} is not a JSON object"
+        )
+    return loaded
+
+
+def _storage_config_kind(storage_config: dict[str, object]) -> str:
+    if storage_config.get("managed_by") == "platform":
+        return "remote"
+    explicit_type = str(
+        storage_config.get("type") or storage_config.get("storage_type") or ""
+    ).lower()
+    if explicit_type in {"supabase", "postgres"}:
+        return "remote"
+    if explicit_type == "disk":
+        return "disk"
+    if explicit_type == "sqlite":
+        return "sqlite"
+    if (
+        "url" in storage_config
+        and "key" in storage_config
+        and "db_url" in storage_config
+    ):
+        return "remote"
+    if "db_url" in storage_config:
+        return "remote"
+    if "dir_path" in storage_config:
+        return "disk"
+    if "db_path" in storage_config or not storage_config:
+        return "sqlite"
+    raise _ClearAllError(
+        "unsupported reflexio storage_config shape; refusing to delete local data"
+    )
+
+
+def _dangerous_clear_all_paths() -> set[Path]:
+    home = Path.home().resolve(strict=False)
+    reflexio_dir = _resolve_absolute_path(_REFLEXIO_DIR, source="reflexio dir")
+    return {
+        Path("/").resolve(strict=False),
+        home,
+        reflexio_dir.resolve(strict=False),
+        _resolve_absolute_path(
+            reflexio_dir / "configs", source="reflexio configs"
+        ).resolve(strict=False),
+        _PLUGIN_ROOT.resolve(strict=False),
+        _PLUGIN_ROOT.parent.resolve(strict=False),
+    }
+
+
+def _validate_deletion_target(path: Path) -> None:
+    if path.exists() and path.is_symlink():
+        raise _ClearAllError(f"refusing to delete symlink target: {path}")
+    resolved = path.resolve(strict=False)
+    if resolved in _dangerous_clear_all_paths():
+        raise _ClearAllError(f"refusing to delete dangerous path: {resolved}")
+
+
+def _disk_org_targets(base_dir: Path) -> list[_ClearAllTarget]:
+    if base_dir.exists() and base_dir.is_symlink():
+        raise _ClearAllError(
+            f"refusing to inspect symlink disk storage dir: {base_dir}"
+        )
+    if not base_dir.exists():
+        return []
+    if not base_dir.is_dir():
+        raise _ClearAllError(
+            f"configured disk storage path is not a directory: {base_dir}"
+        )
+    targets: list[_ClearAllTarget] = []
+    for child in sorted(base_dir.glob("disk_*")):
+        targets.append(_ClearAllTarget(child, "dir", "disk org data"))
+    return targets
+
+
+def _resolve_clear_all_targets() -> list[_ClearAllTarget]:
+    targets = [
+        _ClearAllTarget(_effective_storage_root(), "dir", "managed local storage root")
+    ]
+
+    config = _load_reflexio_config()
+    storage_config = config.get("storage_config") if config else None
+    if storage_config is not None:
+        if not isinstance(storage_config, dict):
+            raise _ClearAllError("reflexio storage_config is not a JSON object")
+        kind = _storage_config_kind(storage_config)
+        if kind == "remote":
+            raise _ClearAllError(
+                "clear-all only resets local Reflexio storage; "
+                "remote Supabase/Postgres storage is not supported"
+            )
+        if kind == "sqlite":
+            raw_db_path = storage_config.get("db_path")
+            if isinstance(raw_db_path, str) and raw_db_path.strip():
+                db_path = _resolve_absolute_path(
+                    raw_db_path.strip(), source="configured SQLite db_path"
+                )
+                for suffix in ("", "-wal", "-shm", "-journal"):
+                    targets.append(
+                        _ClearAllTarget(
+                            Path(f"{db_path}{suffix}"),
+                            "file",
+                            "configured SQLite data",
+                        )
+                    )
+        elif kind == "disk":
+            raw_dir_path = storage_config.get("dir_path")
+            if not isinstance(raw_dir_path, str) or not raw_dir_path.strip():
+                raise _ClearAllError("configured disk storage is missing dir_path")
+            disk_base = _resolve_absolute_path(
+                raw_dir_path.strip(), source="configured disk dir_path"
+            )
+            targets.extend(_disk_org_targets(disk_base))
+
+    deduped: list[_ClearAllTarget] = []
+    seen: set[Path] = set()
+    for target in targets:
+        _validate_deletion_target(target.path)
+        resolved = target.path.resolve(strict=False)
+        if resolved in seen:
+            continue
+        deduped.append(_ClearAllTarget(resolved, target.kind, target.label))
+        seen.add(resolved)
+    return deduped
+
+
+def _remove_clear_all_target(target: _ClearAllTarget) -> bool:
+    """Remove a target. Returns True when something was actually removed."""
+    path = target.path
+    if not path.exists():
+        return False
+    if target.kind == "dir":
+        if not path.is_dir():
+            raise _ClearAllError(
+                f"expected directory target but found non-directory: {path}"
+            )
+        shutil.rmtree(path)
+        return True
+    if target.kind == "file":
+        if not path.is_file():
+            raise _ClearAllError(f"expected file target but found non-file: {path}")
+        path.unlink()
+        return True
+    raise _ClearAllError(f"unknown clear-all target kind: {target.kind}")
 
 
 def cmd_restart(args: argparse.Namespace) -> int:
@@ -406,31 +623,64 @@ def cmd_restart(args: argparse.Namespace) -> int:
 
 
 def cmd_clear_all(args: argparse.Namespace) -> int:
-    """Delete all interactions, profiles, and user playbooks from reflexio.
+    """Delete all local reflexio data and claude-smart session buffers.
 
-    Also removes local session JSONL buffers under ``state_dir()`` so
-    claude-smart starts from a clean slate. Requires ``--yes`` to proceed.
+    Stops the managed backend first when it is running, wipes local Reflexio
+    data targets, removes local session JSONL buffers under ``state_dir()``,
+    then restarts the backend if it was running before. Requires ``--yes``.
 
     Args:
         args (argparse.Namespace): Parsed CLI args. Honors ``args.yes``
             (skip the confirmation prompt).
 
     Returns:
-        int: 0 on success, 1 if reflexio is unreachable or the user aborts.
+        int: 0 on success, 1 if reset is unsafe, unsupported, or fails.
     """
+    try:
+        targets = _resolve_clear_all_targets()
+    except _ClearAllError as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 1
+
     if not args.yes:
+        target_lines = "\n".join(
+            f"  - {target.path} ({target.label})" for target in targets
+        )
         sys.stdout.write(
-            "This will permanently delete ALL interactions, profiles, and "
-            "user playbooks from reflexio, plus local session buffers under "
-            f"{state.state_dir()}.\nRe-run with --yes to confirm.\n"
+            "This will permanently delete ALL local reflexio data at:\n"
+            f"{target_lines}\n"
+            f"and local session buffers under {state.state_dir()}.\n"
+            "If the reflexio backend is running, it will be stopped first "
+            "and restarted afterward.\n"
+            "Re-run with --yes to confirm.\n"
         )
         return 1
 
-    result = Adapter().delete_all()
-    if result is None:
-        sys.stdout.write(_REFLEXIO_UNREACHABLE_MSG)
+    was_running = _is_running_status(_service_status(_BACKEND_SCRIPT, wait_ready_s=0.0))
+    if was_running:
+        sys.stdout.write("Stopping reflexio backend…\n")
+        stop_rc = _run_service(_BACKEND_SCRIPT, "stop")
+        if stop_rc != 0:
+            sys.stderr.write(
+                f"error: reflexio backend failed to stop (exit {stop_rc})\n"
+            )
+            return stop_rc or 1
+        stopped_status = _service_status(_BACKEND_SCRIPT, wait_ready_s=0.0)
+        if _is_running_status(stopped_status):
+            sys.stderr.write(
+                "error: reflexio backend is still running after stop; "
+                "aborting without deleting data\n"
+            )
+            return 1
+
+    removed_targets = 0
+    try:
+        for target in targets:
+            if _remove_clear_all_target(target):
+                removed_targets += 1
+    except (OSError, _ClearAllError) as exc:
+        sys.stderr.write(f"error: could not remove reflexio data: {exc}\n")
         return 1
-    counts, errors = result
 
     removed_buffers = 0
     root = state.state_dir()
@@ -442,16 +692,36 @@ def cmd_clear_all(args: argparse.Namespace) -> int:
             except OSError as exc:
                 sys.stderr.write(f"warning: could not remove {buf}: {exc}\n")
 
+    start_rc = 0
+    backend_status = "not running"
+    if was_running:
+        sys.stdout.write("Starting reflexio backend…\n")
+        start_rc = _run_service(_BACKEND_SCRIPT, "start")
+        backend_status = _service_status(_BACKEND_SCRIPT)
+        if start_rc != 0:
+            sys.stderr.write(
+                f"error: reflexio backend failed to start (exit {start_rc})\n"
+            )
+        elif not _is_running_status(backend_status):
+            sys.stderr.write(
+                f"error: reflexio backend did not report running: {backend_status}\n"
+            )
+            start_rc = 1
+
+    target_summary = (
+        f"removed {removed_targets} data target(s)"
+        if removed_targets
+        else "nothing to wipe"
+    )
     sys.stdout.write(
-        "Cleared reflexio: "
-        f"{counts.get('interactions', 0)} interactions, "
-        f"{counts.get('profiles', 0)} profiles, "
-        f"{counts.get('user_playbooks', 0)} user playbooks. "
+        f"Cleared reflexio: {target_summary}. "
         f"Removed {removed_buffers} local session buffer(s).\n"
     )
-    for entity, err in errors:
-        sys.stderr.write(f"warning: delete {entity} failed: {err}\n")
-    return 1 if errors else 0
+    if was_running:
+        sys.stdout.write(f"reflexio backend: {backend_status}\n")
+    else:
+        sys.stdout.write("reflexio backend was not running; left stopped.\n")
+    return start_rc or 0
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -489,7 +759,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ca = sub.add_parser(
         "clear-all",
-        help="Delete all interactions, profiles, and user playbooks from reflexio",
+        help="Delete all local reflexio data and restart the backend",
     )
     ca.add_argument(
         "--yes",

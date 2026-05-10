@@ -1,5 +1,5 @@
 ---
-description: Delete ALL reflexio interactions, profiles, and user playbooks (destructive)
+description: Delete ALL local reflexio data and restart the backend (destructive)
 allowed-tools: Bash(bash:*)
 ---
 

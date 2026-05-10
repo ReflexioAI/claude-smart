@@ -88,39 +88,6 @@ class Adapter:
             _LOGGER.warning("publish_interaction failed: %s", exc)
             return False
 
-    def delete_all(self) -> tuple[dict[str, int], list[tuple[str, str]]] | None:
-        """Delete all interactions, profiles, and user playbooks from reflexio.
-
-        Returns:
-            tuple[dict[str, int], list[tuple[str, str]]] | None: A
-                ``(counts, errors)`` pair on reachable reflexio, or ``None``
-                if the client could not be constructed at all. ``counts``
-                maps entity name → deleted row count (``0`` for entities
-                whose delete raised). ``errors`` is a list of
-                ``(entity_name, exception_message)`` tuples for every
-                individual failure, so the caller can distinguish "deleted
-                nothing" from "delete raised" and surface it to the user.
-        """
-        client = self._get_client()
-        if client is None:
-            return None
-        counts: dict[str, int] = {}
-        errors: list[tuple[str, str]] = []
-        for name, method in (
-            ("interactions", "delete_all_interactions"),
-            ("profiles", "delete_all_profiles"),
-            ("user_playbooks", "delete_all_user_playbooks"),
-        ):
-            try:
-                response = getattr(client, method)()
-            except Exception as exc:  # noqa: BLE001 — adapter must never raise.
-                _LOGGER.warning("%s failed: %s", method, exc)
-                counts[name] = 0
-                errors.append((name, str(exc)))
-                continue
-            counts[name] = getattr(response, "deleted_count", 0) or 0
-        return counts, errors
-
     def apply_extraction_defaults(self, *, window_size: int, stride_size: int) -> bool:
         """Push claude-smart's preferred extraction defaults to the reflexio server.
 
@@ -160,6 +127,46 @@ class Adapter:
             return True
         except Exception as exc:  # noqa: BLE001 — adapter must never raise.
             _LOGGER.warning("apply_extraction_defaults failed: %s", exc)
+            return False
+
+    def apply_optimizer_defaults(
+        self, *, script_path: str, timeout_seconds: int = 300
+    ) -> bool:
+        """Push claude-smart's opt-in playbook optimizer defaults to reflexio.
+
+        The caller is responsible for gating this behind
+        ``CLAUDE_SMART_ENABLE_OPTIMIZER=1``. This method only performs an
+        idempotent compare-then-write against reflexio's config.
+        """
+        client = self._get_client()
+        if client is None:
+            return False
+        try:
+            config = client.get_config()
+            opt = getattr(config, "playbook_optimizer_config", None)
+            if opt is None:
+                return False
+
+            desired = {
+                "enabled": True,
+                "optimize_user_playbooks": True,
+                "optimize_agent_playbooks": False,
+                "auto_update_user_playbooks": True,
+                "min_commit_windows": 1,
+                "max_metric_calls": 5,
+                "assistant_script_path": script_path,
+                "assistant_script_args": [],
+                "webhook_url": None,
+                "webhook_timeout_seconds": timeout_seconds,
+            }
+            if all(getattr(opt, key, None) == value for key, value in desired.items()):
+                return True
+            for key, value in desired.items():
+                setattr(opt, key, value)
+            client.set_config(config)
+            return True
+        except Exception as exc:  # noqa: BLE001 — adapter must never raise.
+            _LOGGER.warning("apply_optimizer_defaults failed: %s", exc)
             return False
 
     # -----------------------------------------------------------------

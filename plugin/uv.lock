@@ -434,7 +434,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "chromadb", specifier = ">=0.5" },
-    { name = "reflexio-ai", specifier = ">=0.2.20" },
+    { name = "reflexio-ai", specifier = ">=0.2.21" },
 ]
 
 [package.metadata.requires-dev]
@@ -1158,6 +1158,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/41/f2/d34e8b3a08a9cc79a50b2208a93dce981fe615b64d5a4d4abee421d898df/joblib-1.5.3.tar.gz", hash = "sha256:8561a3269e6801106863fd0d6d84bb737be9e7631e33aaed3fb9ce5953688da3", size = 331603, upload-time = "2025-12-15T08:41:46.427Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7b/91/984aca2ec129e2757d1e4e3c81c3fcda9d0f85b74670a094cc443d9ee949/joblib-1.5.3-py3-none-any.whl", hash = "sha256:5fc3c5039fc5ca8c0276333a188bbd59d6b7ab37fe6632daa76bc7f9ec18e713", size = 309071, upload-time = "2025-12-15T08:41:44.973Z" },
+]
+
+[[package]]
+name = "json-repair"
+version = "0.59.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/67/eba7fad54ff6f5cce6db4e01f596fc68156b5c7e864af0aa07ad48e880a1/json_repair-0.59.5.tar.gz", hash = "sha256:bb886ee054e99066be8a337b67a986b6a50d79be9a5ad37ae81966e698990784", size = 48632, upload-time = "2026-04-24T11:41:38.133Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3e/aa/0529dee460b745b93f6abc97b56b7527314c5167ba29ab7a5bd5c08de01f/json_repair-0.59.5-py3-none-any.whl", hash = "sha256:6869965bd1cc1aaaa04dc85865c26fbb76d9a2d83a20010f5eae2563b1567827", size = 47282, upload-time = "2026-04-24T11:41:36.653Z" },
 ]
 
 [[package]]
@@ -2598,7 +2607,7 @@ wheels = [
 
 [[package]]
 name = "reflexio-ai"
-version = "0.2.20"
+version = "0.2.21"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -2612,6 +2621,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "hdbscan" },
     { name = "httpx" },
+    { name = "json-repair" },
     { name = "litellm" },
     { name = "nltk" },
     { name = "openai" },
@@ -2633,9 +2643,9 @@ dependencies = [
     { name = "websocket-client" },
     { name = "xlsxwriter" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bf/b2/3fc4d63fba1b554e1009382052a9201a2df448de33dbe48f9520a90e080d/reflexio_ai-0.2.20.tar.gz", hash = "sha256:cef108a9f3654be2b70ebfee2b4d4fedf8df120504204bc2781e3f93540b9b30", size = 646967, upload-time = "2026-05-03T18:31:52.214Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/97/f5/8e0f08be5aee55425fa31f5b888e8f2f45c6d27f0fa69b2c46bdc0df878c/reflexio_ai-0.2.21.tar.gz", hash = "sha256:758b132b562f4aa18c7dd42136e0cc7b2cd0c3881364960078d504fa61fdad0d", size = 650558, upload-time = "2026-05-06T16:49:39.356Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/dd/44c706b4cd95842283557bb22b23dd0813c60c223e32d1a43de7e2b1cca2/reflexio_ai-0.2.20-py3-none-any.whl", hash = "sha256:a86485896569311a28137ef92cab595d5c87bba69a80dc96839a1f8da3b68198", size = 868958, upload-time = "2026-05-03T18:31:53.891Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/7d/5708a4d7062ec0cef90cc0b2c8fda7ed3c61cfdc2cf292bde66a50f58014/reflexio_ai-0.2.21-py3-none-any.whl", hash = "sha256:cd79513502ad7a4e30f7a70dc6a8bcdc2d10337608d4db628b90f36c5c6a51d5", size = 872892, upload-time = "2026-05-06T16:49:37.57Z" },
 ]
 
 [[package]]

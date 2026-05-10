@@ -285,3 +285,94 @@ def test_apply_extraction_defaults_absorbs_get_config_errors() -> None:
         _ConfigClient(window_size=10, stride_size=5, get_raises=RuntimeError("down"))
     )
     assert a.apply_extraction_defaults(window_size=5, stride_size=3) is False
+
+
+# -----------------------------------------------------------------------------
+# apply_optimizer_defaults — opt-in Reflexio optimizer wiring
+# -----------------------------------------------------------------------------
+
+
+class _OptimizerConfigClient:
+    def __init__(self, *, opt=None, get_raises=None):
+        self._config = SimpleNamespace(
+            playbook_optimizer_config=opt
+            or SimpleNamespace(
+                enabled=False,
+                optimize_user_playbooks=False,
+                optimize_agent_playbooks=True,
+                auto_update_user_playbooks=False,
+                min_commit_windows=2,
+                assistant_script_path=None,
+                assistant_script_args=["old"],
+                webhook_url="https://example.test/assistant",
+                webhook_timeout_seconds=60,
+            )
+        )
+        self._get_raises = get_raises
+        self.set_calls: list[Any] = []
+
+    def get_config(self):
+        if self._get_raises is not None:
+            raise self._get_raises
+        return self._config
+
+    def set_config(self, config):
+        self.set_calls.append(config)
+        self._config = config
+        return {"ok": True}
+
+
+def test_apply_optimizer_defaults_writes_required_fields() -> None:
+    client = _OptimizerConfigClient()
+    a = _adapter_with(client)
+
+    assert a.apply_optimizer_defaults(script_path="/venv/bin/assistant") is True
+
+    assert len(client.set_calls) == 1
+    opt = client.set_calls[0].playbook_optimizer_config
+    assert opt.enabled is True
+    assert opt.optimize_user_playbooks is True
+    assert opt.optimize_agent_playbooks is False
+    assert opt.auto_update_user_playbooks is True
+    assert opt.min_commit_windows == 1
+    assert opt.max_metric_calls == 5
+    assert opt.assistant_script_path == "/venv/bin/assistant"
+    assert opt.assistant_script_args == []
+    assert opt.webhook_url is None
+    assert opt.webhook_timeout_seconds == 300
+
+
+def test_apply_optimizer_defaults_skips_set_when_values_match() -> None:
+    opt = SimpleNamespace(
+        enabled=True,
+        optimize_user_playbooks=True,
+        optimize_agent_playbooks=False,
+        auto_update_user_playbooks=True,
+        min_commit_windows=1,
+        max_metric_calls=5,
+        assistant_script_path="/venv/bin/assistant",
+        assistant_script_args=[],
+        webhook_url=None,
+        webhook_timeout_seconds=300,
+    )
+    client = _OptimizerConfigClient(opt=opt)
+    a = _adapter_with(client)
+
+    assert a.apply_optimizer_defaults(script_path="/venv/bin/assistant") is True
+
+    assert client.set_calls == []
+
+
+def test_apply_optimizer_defaults_returns_false_when_client_unavailable(
+    monkeypatch,
+) -> None:
+    a = reflexio_adapter.Adapter()
+    monkeypatch.setattr(a, "_get_client", lambda: None)
+
+    assert a.apply_optimizer_defaults(script_path="/venv/bin/assistant") is False
+
+
+def test_apply_optimizer_defaults_absorbs_get_config_errors() -> None:
+    a = _adapter_with(_OptimizerConfigClient(get_raises=RuntimeError("down")))
+
+    assert a.apply_optimizer_defaults(script_path="/venv/bin/assistant") is False

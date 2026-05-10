@@ -47,3 +47,4 @@ local-marketplace/
 
 # Scheduled tasks lock
 .claude/scheduled_tasks.lock
+.coverage

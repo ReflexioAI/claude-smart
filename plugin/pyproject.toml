@@ -5,7 +5,7 @@ description = "Self-improving Claude Code plugin — learns from corrections via
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "reflexio-ai>=0.2.20",
+    "reflexio-ai>=0.2.21",
     # Used by reflexio's local embedding provider (ONNXMiniLM_L6_V2).
     # Pulls in onnxruntime + tokenizers; the ~80 MB ONNX model itself is
     # downloaded on first use, not at install time.
@@ -15,6 +15,7 @@ dependencies = [
 [project.scripts]
 claude-smart-hook = "claude_smart.hook:main"
 claude-smart = "claude_smart.cli:main"
+claude-smart-optimizer-assistant = "claude_smart.optimizer_assistant:main"
 
 # NOTE: LOCAL DEV ONLY — do not commit this block to main.
 # Published installs must resolve reflexio-ai from PyPI. This override

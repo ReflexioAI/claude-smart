@@ -1287,6 +1287,75 @@ def test_session_start_applies_claude_smart_extraction_defaults(
     assert applied == [{"window_size": 5, "stride_size": 3}]
 
 
+def test_session_start_does_not_apply_optimizer_defaults_without_opt_in(
+    session_dir, monkeypatch
+) -> None:
+    optimizer_calls: list[dict[str, Any]] = []
+
+    class Stub:
+        def apply_extraction_defaults(self, **_kw):
+            return True
+
+        def apply_optimizer_defaults(self, **kwargs):
+            optimizer_calls.append(kwargs)
+            return True
+
+        def fetch_both(self, **_kw):
+            return ([], [])
+
+    monkeypatch.setattr(
+        "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
+    )
+    monkeypatch.setattr(
+        "claude_smart.events.session_start.ids.resolve_project_id",
+        lambda *_a, **_kw: "demo",
+    )
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+
+    session_start.handle({"session_id": "s1", "source": "startup"})
+
+    assert optimizer_calls == []
+
+
+def test_session_start_applies_optimizer_defaults_when_opted_in(
+    session_dir, monkeypatch
+) -> None:
+    optimizer_calls: list[dict[str, Any]] = []
+
+    class Stub:
+        def apply_extraction_defaults(self, **_kw):
+            return True
+
+        def apply_optimizer_defaults(self, **kwargs):
+            optimizer_calls.append(kwargs)
+            return True
+
+        def fetch_both(self, **_kw):
+            return ([], [])
+
+    monkeypatch.setenv("CLAUDE_SMART_ENABLE_OPTIMIZER", "1")
+    monkeypatch.setattr(session_start.sys, "executable", "/tmp/venv/bin/python")
+    monkeypatch.setattr(
+        "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
+    )
+    monkeypatch.setattr(
+        "claude_smart.events.session_start.ids.resolve_project_id",
+        lambda *_a, **_kw: "demo",
+    )
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+
+    session_start.handle({"session_id": "s1", "source": "startup"})
+
+    assert optimizer_calls == [
+        {
+            "script_path": "/tmp/venv/bin/claude-smart-optimizer-assistant",
+            "timeout_seconds": 300,
+        }
+    ]
+
+
 def test_session_start_fetches_both_on_every_source(session_dir, monkeypatch) -> None:
     """Used to skip profile fetch unless source ∈ {resume,clear,compact}; now always both."""
     calls: list[dict[str, Any]] = []
