@@ -72,7 +72,6 @@ def test_optimizer_assistant_invokes_claude_and_emits_content(monkeypatch, key) 
     assert kwargs["input"] == "answer now"
     assert kwargs["env"]["CLAUDE_SMART_INTERNAL"] == "1"
     assert kwargs["env"]["CLAUDE_CODE_ENTRYPOINT"] == "optimizer"
-    assert kwargs["env"]["CLAUDE_SMART_ENABLE_OPTIMIZER"] == "0"
     system_prompt = cmd[cmd.index("--append-system-prompt") + 1]
     assert "Be concise." in system_prompt
     assert "User: first" in system_prompt

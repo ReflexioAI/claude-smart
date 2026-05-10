@@ -40,8 +40,10 @@ def emit_context(
         session_id (str): Claude Code session id; used to scope the
             per-session citation registry.
         project_id (str): reflexio ``user_id`` for this repo.
-        query (str): Free-text query routed to both
-            ``search_user_playbooks`` and ``search_profiles``.
+        query (str): Free-text query routed to reflexio's unified
+            ``/api/search`` endpoint, which fans out to user playbooks
+            (project-scoped), agent playbooks (global), and preferences
+            (project-scoped) server-side.
         hook_event_name (str): ``"PreToolUse"`` or ``"UserPromptSubmit"``;
             echoed verbatim in the hook envelope so Claude Code attributes
             the context to the right event.
@@ -53,14 +55,15 @@ def emit_context(
         bool: ``True`` when markdown was emitted to stdout; ``False``
             when the search returned nothing to inject.
     """
-    playbooks, profiles = (adapter or Adapter()).search_both(
+    user_playbooks, agent_playbooks, profiles = (adapter or Adapter()).search_all(
         project_id=project_id,
         query=query,
         top_k=top_k,
     )
     markdown, registry = context_format.render_inline_with_registry(
         project_id=project_id,
-        playbooks=playbooks,
+        user_playbooks=user_playbooks,
+        agent_playbooks=agent_playbooks,
         profiles=profiles,
     )
     if not markdown:

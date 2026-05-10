@@ -12,7 +12,7 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: "Claude-Smart Dashboard",
-  description: "Manage sessions, profiles, playbooks, and configuration",
+  description: "Manage sessions, preferences, skills, and configuration",
 };
 
 export default function RootLayout({

@@ -9,7 +9,9 @@ export type UserActionType =
 // (response_model_exclude_none strips it from the JSON entirely), so the type
 // only enumerates the non-null values. The values are lowercase because they
 // come from Python's Status StrEnum.
-export type PlaybookStatus = "pending" | "archived";
+export type LifecycleStatus = "pending" | "archived";
+
+export type AgentPlaybookStatus = "pending" | "approved" | "rejected";
 
 export type ProfileStatus = "pending" | "archived";
 
@@ -24,6 +26,7 @@ export interface CitedItem {
   kind: "playbook" | "profile";
   title: string;
   real_id?: string;
+  source_kind?: "user_playbook" | "agent_playbook" | "profile";
 }
 
 export interface Interaction {
@@ -48,9 +51,22 @@ export interface UserPlaybook {
   content: string;
   trigger: string | null;
   rationale: string | null;
-  status: PlaybookStatus | null;
+  status: LifecycleStatus | null;
   source: string | null;
   source_interaction_ids: number[];
+}
+
+export interface AgentPlaybook {
+  agent_playbook_id: number;
+  playbook_name: string;
+  agent_version: string;
+  created_at: number;
+  content: string;
+  trigger: string | null;
+  rationale: string | null;
+  playbook_status: AgentPlaybookStatus;
+  playbook_metadata: string;
+  status: LifecycleStatus | null;
 }
 
 export interface UserProfile {
@@ -103,6 +119,15 @@ export interface ClaudeSmartConfig {
   CLAUDE_SMART_CLI_TIMEOUT: string;
   CLAUDE_SMART_STATE_DIR: string;
   [extra: string]: string | boolean;
+}
+
+export interface ClaudeCodeHookConfig {
+  CLAUDE_SMART_ENABLE_OPTIMIZER: boolean;
+  effectiveValue: boolean;
+  localValue: boolean | null;
+  userValue: boolean | null;
+  settingsPath: string;
+  userSettingsPath: string;
 }
 
 export interface ReflexioExtractorConfig {

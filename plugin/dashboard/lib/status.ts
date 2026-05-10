@@ -4,6 +4,7 @@
 // Normalize to the uppercase label the dashboard renders.
 
 export type StatusLabel = "CURRENT" | "ARCHIVED" | "PENDING";
+export type AgentPlaybookStatusLabel = "PENDING" | "APPROVED" | "REJECTED";
 
 export function statusLabel(p: { status?: string | null }): StatusLabel {
   if (!p.status) return "CURRENT";
@@ -11,4 +12,13 @@ export function statusLabel(p: { status?: string | null }): StatusLabel {
   if (s === "archived") return "ARCHIVED";
   if (s === "pending") return "PENDING";
   return "CURRENT";
+}
+
+export function agentPlaybookStatusLabel(p: {
+  playbook_status?: string | null;
+}): AgentPlaybookStatusLabel {
+  const s = String(p.playbook_status ?? "pending").toLowerCase();
+  if (s === "approved") return "APPROVED";
+  if (s === "rejected") return "REJECTED";
+  return "PENDING";
 }

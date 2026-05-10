@@ -860,13 +860,22 @@ def test_stop_stamps_user_id_from_payload_cwd(
 
 
 def _stub_user_prompt_adapter(
-    monkeypatch, *, playbooks=None, profiles=None, calls=None
+    monkeypatch,
+    *,
+    playbooks=None,
+    agent_playbooks=None,
+    profiles=None,
+    calls=None,
 ):
     class Stub:
-        def search_both(self, **kwargs):
+        def search_all(self, **kwargs):
             if calls is not None:
                 calls.append(kwargs)
-            return (list(playbooks or []), list(profiles or []))
+            return (
+                list(playbooks or []),
+                list(agent_playbooks or []),
+                list(profiles or []),
+            )
 
     monkeypatch.setattr("claude_smart.context_inject.Adapter", lambda *a, **kw: Stub())
     monkeypatch.setattr(
@@ -892,7 +901,7 @@ def test_user_prompt_stamps_user_id_from_payload_cwd(session_dir, monkeypatch) -
 def test_user_prompt_injects_context_when_hits_present(
     session_dir, monkeypatch
 ) -> None:
-    """A prompt with matching profiles/playbooks injects additionalContext."""
+    """A prompt with matching preferences/skills injects additionalContext."""
     calls: list[dict[str, Any]] = []
     _stub_user_prompt_adapter(
         monkeypatch,
@@ -923,7 +932,7 @@ def test_user_prompt_injects_context_when_hits_present(
     kinds = {entry["kind"] for entry in registry.values()}
     assert kinds == {"playbook", "profile"}
     for cite_id, entry in registry.items():
-        assert cite_id[0] in {"r", "p"}
+        assert cite_id[0] in {"s", "p"}
         assert entry["content"]
         assert entry["title"]
 
@@ -942,7 +951,7 @@ def test_user_prompt_buffers_even_when_search_raises(session_dir, monkeypatch) -
     """A failing search must not prevent the prompt from being buffered."""
 
     class Boom:
-        def search_both(self, **_kw):
+        def search_all(self, **_kw):
             raise RuntimeError("reflexio down")
 
     monkeypatch.setattr("claude_smart.context_inject.Adapter", lambda *a, **kw: Boom())
@@ -1010,7 +1019,7 @@ def _prime_injected_registry(session_id: str) -> None:
         session_id,
         [
             {
-                "id": "r1-42",
+                "id": "s1-42",
                 "kind": "playbook",
                 "title": "use pathlib",
                 "content": "use pathlib",
@@ -1034,7 +1043,7 @@ def test_stop_records_cs_cite_ids_as_cited_items(
 ) -> None:
     """A single cs-cite call resolves ids against the session registry."""
     _prime_injected_registry("s1")
-    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite r1-42,p1-uuid")
+    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite s1-42,p1-uuid")
     monkeypatch.setattr(
         "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
     )
@@ -1043,13 +1052,48 @@ def test_stop_records_cs_cite_ids_as_cited_items(
     assert records[-1]["role"] == "Assistant"
     cited = records[-1].get("cited_items")
     assert cited == [
-        {"id": "r1-42", "kind": "playbook", "title": "use pathlib", "real_id": "42"},
+        {"id": "s1-42", "kind": "playbook", "title": "use pathlib", "real_id": "42"},
         {
             "id": "p1-uuid",
             "kind": "profile",
             "title": "prefers anyio",
             "real_id": "uuid-anyio",
         },
+    ]
+
+
+def test_stop_preserves_cited_item_source_kind(
+    session_dir, tmp_path, monkeypatch
+) -> None:
+    """Stop carries source_kind so shared skill citations can route correctly."""
+    state.append_injected(
+        "s1",
+        [
+            {
+                "id": "s1-42",
+                "kind": "playbook",
+                "title": "global rule",
+                "content": "global rule",
+                "real_id": "42",
+                "source_kind": "agent_playbook",
+                "ts": 0,
+            }
+        ],
+    )
+    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite s1-42")
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
+    )
+    stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
+    records = state.read_all("s1")
+    assert records[-1].get("cited_items") == [
+        {
+            "id": "s1-42",
+            "kind": "playbook",
+            "title": "global rule",
+            "real_id": "42",
+            "source_kind": "agent_playbook",
+        }
     ]
 
 
@@ -1079,7 +1123,7 @@ def test_stop_omits_cited_items_when_no_cs_cite_call(
 def test_stop_drops_unknown_cs_cite_ids(session_dir, tmp_path, monkeypatch) -> None:
     """Ids not present in the session registry are silently dropped."""
     _prime_injected_registry("s1")
-    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite r1-42,r9-ffff")
+    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite s1-42,s9-ffff")
     monkeypatch.setattr(
         "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
     )
@@ -1087,7 +1131,7 @@ def test_stop_drops_unknown_cs_cite_ids(session_dir, tmp_path, monkeypatch) -> N
     records = state.read_all("s1")
     cited = records[-1].get("cited_items")
     assert cited == [
-        {"id": "r1-42", "kind": "playbook", "title": "use pathlib", "real_id": "42"},
+        {"id": "s1-42", "kind": "playbook", "title": "use pathlib", "real_id": "42"},
     ]
 
 
@@ -1107,7 +1151,7 @@ def test_stop_merges_multiple_cs_cite_calls_dedup(
                         {
                             "type": "tool_use",
                             "name": "Bash",
-                            "input": {"command": "cs-cite r1-42"},
+                            "input": {"command": "cs-cite s1-42"},
                         }
                     ]
                 },
@@ -1119,7 +1163,7 @@ def test_stop_merges_multiple_cs_cite_calls_dedup(
                         {
                             "type": "tool_use",
                             "name": "Bash",
-                            "input": {"command": "cs-cite r1-42,p1-uuid"},
+                            "input": {"command": "cs-cite s1-42,p1-uuid"},
                         }
                     ]
                 },
@@ -1133,7 +1177,7 @@ def test_stop_merges_multiple_cs_cite_calls_dedup(
     records = state.read_all("s1")
     cited = records[-1].get("cited_items")
     assert cited == [
-        {"id": "r1-42", "kind": "playbook", "title": "use pathlib", "real_id": "42"},
+        {"id": "s1-42", "kind": "playbook", "title": "use pathlib", "real_id": "42"},
         {
             "id": "p1-uuid",
             "kind": "profile",
@@ -1153,7 +1197,7 @@ def test_stop_rejects_chained_cs_cite_commands(
     bare ``cs-cite <ids>`` invocation.
     """
     _prime_injected_registry("s1")
-    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite r1-42 && echo done")
+    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite s1-42 && echo done")
     monkeypatch.setattr(
         "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
     )
@@ -1178,7 +1222,7 @@ def test_stop_citation_without_prior_registry_drops_all_ids(
     session_dir, tmp_path, monkeypatch
 ) -> None:
     """Citation with no ``.injected.jsonl`` (e.g. resumed session) → all ids drop."""
-    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite r1-42")
+    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite s1-42")
     monkeypatch.setattr(
         "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
     )
@@ -1188,7 +1232,7 @@ def test_stop_citation_without_prior_registry_drops_all_ids(
 
 
 # -----------------------------------------------------------------------------
-# session_start — emit_continue when nothing to render
+# session_start - emit_continue when nothing to render
 # -----------------------------------------------------------------------------
 
 
@@ -1204,15 +1248,18 @@ def test_session_start_emits_continue_without_session_id(
     }
 
 
-def test_session_start_emits_continue_when_no_playbook_or_profile(
+def test_session_start_emits_continue_when_no_skill_or_preference(
     session_dir, monkeypatch
 ) -> None:
     class StubAdapter:
         def apply_extraction_defaults(self, **_kw):
             return True
 
-        def fetch_both(self, **_kw):
-            return ([], [])
+        def apply_optimizer_defaults(self, **_kw):
+            return True
+
+        def fetch_all(self, **_kw):
+            return ([], [], [])
 
     monkeypatch.setattr(
         "claude_smart.events.session_start.Adapter", lambda *a, **kw: StubAdapter()
@@ -1233,7 +1280,10 @@ def test_session_start_emits_additional_context_when_playbook_present(
         def apply_extraction_defaults(self, **_kw):
             return True
 
-        def fetch_both(self, **_kw):
+        def apply_optimizer_defaults(self, **_kw):
+            return True
+
+        def fetch_all(self, **_kw):
             return (
                 [
                     {
@@ -1242,6 +1292,7 @@ def test_session_start_emits_additional_context_when_playbook_present(
                         "rationale": "safer",
                     }
                 ],
+                [],
                 [],
             )
 
@@ -1271,8 +1322,11 @@ def test_session_start_applies_claude_smart_extraction_defaults(
             applied.append(kwargs)
             return True
 
-        def fetch_both(self, **_kw):
-            return ([], [])
+        def apply_optimizer_defaults(self, **_kw):
+            return True
+
+        def fetch_all(self, **_kw):
+            return ([], [], [])
 
     monkeypatch.setattr(
         "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
@@ -1287,7 +1341,7 @@ def test_session_start_applies_claude_smart_extraction_defaults(
     assert applied == [{"window_size": 5, "stride_size": 3}]
 
 
-def test_session_start_does_not_apply_optimizer_defaults_without_opt_in(
+def test_session_start_skips_optimizer_defaults_when_opted_out(
     session_dir, monkeypatch
 ) -> None:
     optimizer_calls: list[dict[str, Any]] = []
@@ -1300,9 +1354,10 @@ def test_session_start_does_not_apply_optimizer_defaults_without_opt_in(
             optimizer_calls.append(kwargs)
             return True
 
-        def fetch_both(self, **_kw):
-            return ([], [])
+        def fetch_all(self, **_kw):
+            return ([], [], [])
 
+    monkeypatch.setenv("CLAUDE_SMART_ENABLE_OPTIMIZER", "0")
     monkeypatch.setattr(
         "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
     )
@@ -1318,7 +1373,7 @@ def test_session_start_does_not_apply_optimizer_defaults_without_opt_in(
     assert optimizer_calls == []
 
 
-def test_session_start_applies_optimizer_defaults_when_opted_in(
+def test_session_start_applies_optimizer_defaults_by_default(
     session_dir, monkeypatch
 ) -> None:
     optimizer_calls: list[dict[str, Any]] = []
@@ -1331,10 +1386,9 @@ def test_session_start_applies_optimizer_defaults_when_opted_in(
             optimizer_calls.append(kwargs)
             return True
 
-        def fetch_both(self, **_kw):
-            return ([], [])
+        def fetch_all(self, **_kw):
+            return ([], [], [])
 
-    monkeypatch.setenv("CLAUDE_SMART_ENABLE_OPTIMIZER", "1")
     monkeypatch.setattr(session_start.sys, "executable", "/tmp/venv/bin/python")
     monkeypatch.setattr(
         "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
@@ -1356,17 +1410,22 @@ def test_session_start_applies_optimizer_defaults_when_opted_in(
     ]
 
 
-def test_session_start_fetches_both_on_every_source(session_dir, monkeypatch) -> None:
-    """Used to skip profile fetch unless source ∈ {resume,clear,compact}; now always both."""
+def test_session_start_fetches_all_memory_on_every_source(
+    session_dir, monkeypatch
+) -> None:
+    """Used to skip preference fetch for some sources; now always fetches all."""
     calls: list[dict[str, Any]] = []
 
     class Stub:
         def apply_extraction_defaults(self, **_kw):
             return True
 
-        def fetch_both(self, **kwargs):
+        def apply_optimizer_defaults(self, **_kw):
+            return True
+
+        def fetch_all(self, **kwargs):
             calls.append(kwargs)
-            return ([], [])
+            return ([], [], [])
 
     monkeypatch.setattr(
         "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
@@ -1389,12 +1448,23 @@ def test_session_start_fetches_both_on_every_source(session_dir, monkeypatch) ->
 # -----------------------------------------------------------------------------
 
 
-def _stub_pretool_adapter(monkeypatch, *, playbooks=None, profiles=None, calls=None):
+def _stub_pretool_adapter(
+    monkeypatch,
+    *,
+    playbooks=None,
+    agent_playbooks=None,
+    profiles=None,
+    calls=None,
+):
     class Stub:
-        def search_both(self, **kwargs):
+        def search_all(self, **kwargs):
             if calls is not None:
                 calls.append(kwargs)
-            return (list(playbooks or []), list(profiles or []))
+            return (
+                list(playbooks or []),
+                list(agent_playbooks or []),
+                list(profiles or []),
+            )
 
     monkeypatch.setattr("claude_smart.context_inject.Adapter", lambda *a, **kw: Stub())
     monkeypatch.setattr(

@@ -13,7 +13,7 @@ import { useSettings } from "@/hooks/use-settings";
 import { formatRelative, truncateId } from "@/lib/format";
 import type { UserProfile } from "@/lib/types";
 
-export default function ProfilesPage() {
+export default function PreferencesPage() {
   const { reflexioUrl } = useSettings();
   const [profiles, setProfiles] = useState<UserProfile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -46,7 +46,7 @@ export default function ProfilesPage() {
   return (
     <div className="flex-1 overflow-auto">
       <PageHeader
-        title="Profiles"
+        title="Preferences"
         description="Project-scoped preferences extracted from interactions."
         actions={
           <div className="flex items-center gap-2">
@@ -58,7 +58,7 @@ export default function ProfilesPage() {
             />
             <DeleteAllButton
               label={`Delete all${profiles && profiles.length > 0 ? ` (${profiles.length})` : ""}`}
-              confirmMessage={`Delete ALL ${profiles?.length ?? 0} profiles? Profiles regenerate from fresh interactions, but this cannot be undone.`}
+              confirmMessage={`Delete ALL ${profiles?.length ?? 0} preferences? Preferences regenerate from fresh interactions, but this cannot be undone.`}
               disabled={!profiles || profiles.length === 0}
               onConfirm={async () => {
                 await reflexio.deleteAllProfiles(reflexioUrl);
@@ -81,15 +81,15 @@ export default function ProfilesPage() {
         ) : filtered.length === 0 ? (
           <EmptyState
             icon={Users}
-            title="No profiles yet"
-            description="Keep using Claude with claude-smart enabled — profiles will appear here automatically as the extractor learns patterns from your interactions."
+            title="No preferences yet"
+            description="Keep using Claude with claude-smart enabled — preferences will appear here automatically as the extractor learns patterns from your interactions."
           />
         ) : (
           <div className="grid gap-3 md:grid-cols-2">
             {filtered.map((p) => (
               <Link
                 key={p.profile_id}
-                href={`/profiles/${encodeURIComponent(p.profile_id)}`}
+                href={`/preferences/${encodeURIComponent(p.profile_id)}`}
                 className="group block rounded-xl border border-border bg-card p-4 hover:bg-accent/40 transition-colors"
               >
                 <header className="flex items-center justify-between gap-2 mb-2">

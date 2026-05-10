@@ -18,6 +18,9 @@ _ENV_URL = "REFLEXIO_URL"
 _DEFAULT_URL = "http://localhost:8071/"
 _AGENT_VERSION = "claude-code"
 _SEARCH_MODE_HYBRID = "hybrid"  # reflexio.models.config_schema.SearchMode.HYBRID
+_UNIFIED_ENTITY_TYPES = ("profiles", "user_playbooks", "agent_playbooks")
+_AGENT_PLAYBOOK_APPROVAL_STATUSES = ("pending", "approved")
+_REJECTED_AGENT_PLAYBOOK_STATUS = "rejected"
 
 
 @dataclass
@@ -133,11 +136,12 @@ class Adapter:
     def apply_optimizer_defaults(
         self, *, script_path: str, timeout_seconds: int = 300
     ) -> bool:
-        """Push claude-smart's opt-in playbook optimizer defaults to reflexio.
+        """Push claude-smart's shared skill optimizer defaults to reflexio.
 
-        The caller is responsible for gating this behind
-        ``CLAUDE_SMART_ENABLE_OPTIMIZER=1``. This method only performs an
-        idempotent compare-then-write against reflexio's config.
+        Idempotent compare-then-write: reads ``Config``, only issues a
+        ``set_config`` when the server-side values differ from the desired
+        dict below. Called unconditionally from SessionStart; the caller's
+        only escape hatch is ``CLAUDE_SMART_ENABLE_OPTIMIZER=0``.
         """
         client = self._get_client()
         if client is None:
@@ -154,7 +158,7 @@ class Adapter:
                 "optimize_agent_playbooks": True,
                 "auto_update_user_playbooks": True,
                 "min_commit_windows": 1,
-                "max_metric_calls": 5,
+                "max_metric_calls": 15,
                 "assistant_script_path": script_path,
                 "assistant_script_args": [],
                 "webhook_url": None,
@@ -174,18 +178,28 @@ class Adapter:
     # Reads (used by SessionStart)
     # -----------------------------------------------------------------
 
-    def fetch_playbooks(self, top_k: int = 10) -> list[Any]:
-        """Fetch CURRENT playbooks globally (across projects) for SessionStart priming.
+    def fetch_user_playbooks(
+        self, *, project_id: str, top_k: int = 10
+    ) -> list[Any]:
+        """Fetch CURRENT user playbooks for ``project_id``.
 
-        Playbooks are not scoped by ``agent_version``/``user_id`` on retrieval
-        so lessons learned in one project are available in every project.
+        User playbooks are project-scoped: filtering by ``user_id=project_id``
+        mirrors the publish path (``publish_interaction(user_id=project_id, …)``)
+        so each project only sees the playbooks it produced.
+
+        Args:
+            project_id (str): reflexio ``user_id`` for this repo.
+            top_k (int): Cap on results.
+
+        Returns:
+            list[Any]: User playbook records, possibly empty.
         """
         client = self._get_client()
         if client is None:
             return []
         try:
             response = client.search_user_playbooks(
-                user_id=None,
+                user_id=project_id,
                 status_filter=[None],  # None => CURRENT in reflexio's filter API
                 top_k=top_k,
             )
@@ -194,8 +208,38 @@ class Adapter:
             return []
         return _extract_items(response, "user_playbooks")
 
+    def fetch_agent_playbooks(self, top_k: int = 10) -> list[Any]:
+        """Fetch CURRENT agent playbooks globally (shared across projects).
+
+        Agent playbooks have no ``user_id`` field — they are aggregated from
+        user playbooks across every project so that distilled lessons travel
+        with the agent, not with a single repo. Filter by ``agent_version``
+        so we only pull in playbooks produced by claude-code sessions.
+
+        Args:
+            top_k (int): Cap on results.
+
+        Returns:
+            list[Any]: Agent playbook records, possibly empty.
+        """
+        client = self._get_client()
+        if client is None:
+            return []
+        try:
+            response = client.search_agent_playbooks(
+                agent_version=_AGENT_VERSION,
+                status_filter=[None],
+                top_k=top_k,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("search_agent_playbooks failed: %s", exc)
+            return []
+        return _filter_rejected_agent_playbooks(
+            _extract_items(response, "agent_playbooks")
+        )
+
     def fetch_project_profiles(self, project_id: str, top_k: int = 20) -> list[Any]:
-        """Fetch profiles extracted for this project (across sessions)."""
+        """Fetch preferences extracted for this project (across sessions)."""
         client = self._get_client()
         if client is None:
             return []
@@ -210,116 +254,91 @@ class Adapter:
             return []
         return _extract_items(response, "user_profiles")
 
-    def search_playbooks(self, *, query: str, top_k: int = 5) -> list[Any]:
-        """Query-aware CURRENT playbook search via reflexio hybrid retrieval.
+    # -----------------------------------------------------------------
+    # Query-aware unified search (used by PreToolUse / UserPromptSubmit)
+    # -----------------------------------------------------------------
 
-        Playbooks are retrieved globally (no ``agent_version`` / ``user_id``
-        filter) so lessons learned in one project are findable from any
-        project.
+    def search_all(
+        self, *, project_id: str, query: str, top_k: int = 5
+    ) -> tuple[list[Any], list[Any], list[Any]]:
+        """Unified hybrid search → ``(user_playbooks, agent_playbooks, preferences)``.
+
+        One round trip to ``/api/search`` fans out all three legs server-side.
+        Reflexio's unified ``user_id`` filter scopes ``user_playbooks`` and
+        preferences to this project; ``agent_playbooks`` carry no ``user_id``
+        column so the same filter silently no-ops on that leg, leaving them
+        global across projects.
 
         Args:
-            query (str): Free-text query; routed through BM25 + vector RRF.
-            top_k (int): Cap on results. Defaults to 5 for just-in-time inject.
+            project_id (str): reflexio ``user_id`` for this repo.
+            query (str): Free-text query routed through BM25 + vector RRF.
+            top_k (int): Cap on results per entity type.
 
         Returns:
-            list[Any]: Playbook records (dicts or dataclasses), possibly empty.
+            tuple[list[Any], list[Any], list[Any]]: ``(user_playbooks,
+                agent_playbooks, preferences)``. Returns three empty lists on
+                connection failure or any unified-search error so this
+                wrapper never raises.
         """
         client = self._get_client()
         if client is None:
-            return []
+            return [], [], []
         try:
-            response = client.search_user_playbooks(
-                user_id=None,
+            response = client.search(
                 query=query,
-                status_filter=[None],
+                user_id=project_id,
+                agent_version=_AGENT_VERSION,
+                entity_types=list(_UNIFIED_ENTITY_TYPES),
+                agent_playbook_status_filter=list(_AGENT_PLAYBOOK_APPROVAL_STATUSES),
+                enable_agent_answer=False,
                 top_k=top_k,
                 search_mode=_SEARCH_MODE_HYBRID,
             )
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("search_playbooks failed: %s", exc)
-            return []
-        return _extract_items(response, "user_playbooks")
-
-    def search_profiles(
-        self, *, project_id: str, query: str, top_k: int = 5
-    ) -> list[Any]:
-        """Query-aware profile search scoped to this project.
-
-        Args:
-            project_id (str): reflexio user_id — profiles are project-scoped
-                so they persist across sessions in the same repo.
-            query (str): Free-text query.
-            top_k (int): Cap on results.
-
-        Returns:
-            list[Any]: Profile records, possibly empty.
-        """
-        client = self._get_client()
-        if client is None:
-            return []
-        try:
-            response = client.search_user_profiles(
-                user_id=project_id,
-                query=query,
-                top_k=top_k,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("search_user_profiles failed: %s", exc)
-            return []
-        return _extract_items(response, "user_profiles")
-
-    # -----------------------------------------------------------------
-    # Parallel fan-out
-    # -----------------------------------------------------------------
-
-    def search_both(
-        self,
-        *,
-        project_id: str,
-        query: str,
-        top_k: int = 5,
-    ) -> tuple[list[Any], list[Any]]:
-        """Run ``search_playbooks`` + ``search_profiles`` concurrently.
-
-        Playbook retrieval is global (``project_id`` is not forwarded to it);
-        profile retrieval stays project-scoped.
-
-        Returns:
-            tuple[list[Any], list[Any]]: ``(playbooks, profiles)``. Each leg
-                absorbs its own exceptions and returns ``[]`` on failure, so
-                this wrapper never raises.
-        """
-        return self._fan_out(
-            playbook_call=lambda: self.search_playbooks(query=query, top_k=top_k),
-            profile_call=lambda: self.search_profiles(
-                project_id=project_id, query=query, top_k=top_k
+            _LOGGER.debug("unified search failed: %s", exc)
+            return [], [], []
+        return (
+            _extract_items(response, "user_playbooks"),
+            _filter_rejected_agent_playbooks(
+                _extract_items(response, "agent_playbooks")
             ),
+            _extract_items(response, "profiles"),
         )
 
-    def fetch_both(
+    # -----------------------------------------------------------------
+    # SessionStart broad fetch (no query → can't use unified /api/search)
+    # -----------------------------------------------------------------
+
+    def fetch_all(
         self,
         *,
         project_id: str,
-        playbook_top_k: int = 10,
+        user_playbook_top_k: int = 10,
+        agent_playbook_top_k: int = 10,
         profile_top_k: int = 20,
-    ) -> tuple[list[Any], list[Any]]:
-        """Parallel broad fetch for SessionStart (empty-query, recency order).
+    ) -> tuple[list[Any], list[Any], list[Any]]:
+        """Parallel broad fetch for SessionStart → ``(user_playbooks,
+        agent_playbooks, preferences)``.
 
-        Playbooks are fetched globally; profiles are scoped to ``project_id``.
+        Unified search rejects empty queries, so SessionStart still uses
+        per-entity endpoints. User playbooks and preferences are scoped to
+        ``project_id``; agent playbooks are global (filtered only by
+        ``agent_version``).
+
+        Each leg absorbs its own exceptions and returns ``[]`` on failure,
+        so this wrapper never raises.
         """
-        return self._fan_out(
-            playbook_call=lambda: self.fetch_playbooks(top_k=playbook_top_k),
-            profile_call=lambda: self.fetch_project_profiles(
-                project_id, top_k=profile_top_k
-            ),
-        )
-
-    @staticmethod
-    def _fan_out(*, playbook_call, profile_call) -> tuple[list[Any], list[Any]]:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            pb_future = pool.submit(playbook_call)
-            pr_future = pool.submit(profile_call)
-        return pb_future.result(), pr_future.result()
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            up_future = pool.submit(
+                self.fetch_user_playbooks,
+                project_id=project_id,
+                top_k=user_playbook_top_k,
+            )
+            ap_future = pool.submit(self.fetch_agent_playbooks, agent_playbook_top_k)
+            pr_future = pool.submit(
+                self.fetch_project_profiles, project_id, profile_top_k
+            )
+        return up_future.result(), ap_future.result(), pr_future.result()
 
 
 def _extract_items(response: Any, field: str) -> list[Any]:
@@ -331,3 +350,20 @@ def _extract_items(response: Any, field: str) -> list[Any]:
     else:
         value = getattr(response, field, None)
     return list(value) if value else []
+
+
+def _filter_rejected_agent_playbooks(items: list[Any]) -> list[Any]:
+    """Drop rejected shared skills defensively, even if an older backend ignores filters."""
+    return [
+        item
+        for item in items
+        if _agent_playbook_status(item) != _REJECTED_AGENT_PLAYBOOK_STATUS
+    ]
+
+
+def _agent_playbook_status(item: Any) -> str:
+    if isinstance(item, dict):
+        value = item.get("playbook_status")
+    else:
+        value = getattr(item, "playbook_status", None)
+    return str(value or "").lower()

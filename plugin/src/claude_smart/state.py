@@ -84,8 +84,8 @@ def injected_path(session_id: str) -> Path:
 def append_injected(session_id: str, entries: Iterable[dict[str, Any]]) -> None:
     """Append citation-registry entries to the per-session injected-items file.
 
-    Each entry maps a short ``id`` (4-hex-char) back to the playbook or
-    profile it came from so the Stop hook can resolve ids cited by
+    Each entry maps a short ``id`` (4-hex-char) back to the skill or
+    preference it came from so the Stop hook can resolve ids cited by
     Claude via ``cs-cite`` into human-readable titles for the dashboard.
     Silently no-ops when ``entries`` is empty.
     """
@@ -174,7 +174,7 @@ def _to_wire_citations(cited_items: Any) -> list[dict[str, str]]:
     Local entries (from ``events.stop._resolve_cited_items``) carry
     ``{id, kind, title, real_id}``; reflexio's ``InteractionData.citations``
     wants ``{kind, real_id, tag, title}`` where ``tag`` is the rank id
-    (``r1-301``-style) we already keep under ``id``. Entries without a
+    (``s1-301``-style) we already keep under ``id``. Entries without a
     ``real_id`` (unresolved injections) are dropped — the server can't
     join them back to a stored row.
 
@@ -260,7 +260,7 @@ def unpublished_slice(
         if role in {"User", "Assistant"}:
             # ``cited_items`` is local-only metadata (dashboard "used" badge);
             # map it onto the wire's ``citations`` field — reflexio uses those
-            # to drive playbook/profile reflection in the publish flow.
+            # to drive skill/preference reflection in the publish flow.
             turn = {
                 k: v for k, v in rec.items() if k not in {"role", "ts", "cited_items"}
             }

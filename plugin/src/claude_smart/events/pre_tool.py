@@ -1,4 +1,4 @@
-"""PreToolUse hook — just-in-time playbook + profile inject before a mutating tool.
+"""PreToolUse hook — just-in-time skill + preference inject before a mutating tool.
 
 Fires only for tools listed in ``hooks.json``'s PreToolUse matcher
 (Edit/Write/NotebookEdit/Bash). Composes a query from the tool call and

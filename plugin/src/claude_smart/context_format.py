@@ -1,4 +1,4 @@
-"""Render reflexio profiles + playbooks as markdown for SessionStart injection."""
+"""Render reflexio preferences + skills as markdown for SessionStart injection."""
 
 from __future__ import annotations
 
@@ -18,25 +18,32 @@ def _first_nonempty(*values: Any) -> str:
 def render(
     *,
     project_id: str,
-    playbooks: Iterable[Any],
+    user_playbooks: Iterable[Any],
+    agent_playbooks: Iterable[Any],
     profiles: Iterable[Any],
 ) -> str:
-    """Render playbooks + profiles as the markdown injected at SessionStart.
+    """Render skills + preferences as SessionStart markdown.
 
-    Empty sections are omitted. When both sections are empty, returns "".
+    Empty sections are omitted. When all sections are empty, returns "".
 
     Args:
-        project_id: Displayed in the header so the user can tell which
-            project's playbook is in effect.
-        playbooks: Iterable of ``UserPlaybook`` objects (or dicts with the
-            same fields).
-        profiles: Iterable of ``UserProfile`` objects (or dicts).
+        project_id (str): Displayed in the header so the user can tell
+            which project is in effect.
+        user_playbooks (Iterable[Any]): Skill records scoped to this project
+            (``UserPlaybook`` objects or dicts with the same fields).
+        agent_playbooks (Iterable[Any]): Skill records shared across projects
+            (``AgentPlaybook`` objects or dicts with the same fields).
+        profiles (Iterable[Any]): Iterable of preference records
+            (``UserProfile`` objects or dicts).
 
     Returns:
         str: Markdown, or "" when there is nothing to show.
     """
     markdown, _ = render_with_registry(
-        project_id=project_id, playbooks=playbooks, profiles=profiles
+        project_id=project_id,
+        user_playbooks=user_playbooks,
+        agent_playbooks=agent_playbooks,
+        profiles=profiles,
     )
     return markdown
 
@@ -44,37 +51,44 @@ def render(
 def render_with_registry(
     *,
     project_id: str,
-    playbooks: Iterable[Any],
+    user_playbooks: Iterable[Any],
+    agent_playbooks: Iterable[Any],
     profiles: Iterable[Any],
 ) -> tuple[str, list[dict[str, Any]]]:
     """Variant of ``render`` that also returns the citation registry.
 
-    Every playbook and profile bullet is tagged with a short
-    ``[cs:ID]`` prefix. The registry maps those ids back to
-    ``{id, kind, title, content}`` entries so ``events.stop`` can
-    resolve citations into human-readable titles for the dashboard.
+    Every skill and preference bullet is tagged with a short ``[cs:ID]``
+    prefix. The registry maps those ids back to ``{id, kind, title,
+    content}`` entries so ``events.stop`` can resolve citations into
+    human-readable titles for the dashboard.
+
+    Agent playbooks (cross-project, distilled) are listed before user
+    playbooks (this project's lessons) under one ``### Project-specific
+    skills`` heading. The model doesn't need to reason about the split.
 
     Args:
         project_id (str): Displayed in the header so the user can tell
-            which project's playbook is in effect.
-        playbooks (Iterable[Any]): Iterable of ``UserPlaybook`` objects
-            (or dicts with the same fields).
-        profiles (Iterable[Any]): Iterable of ``UserProfile`` objects
-            (or dicts).
+            which project is in effect.
+        user_playbooks (Iterable[Any]): Skill records scoped to this project.
+        agent_playbooks (Iterable[Any]): Skill records shared across projects.
+        profiles (Iterable[Any]): Iterable of preference records
+            (``UserProfile`` objects or dicts).
 
     Returns:
         tuple[str, list[dict[str, Any]]]: ``(markdown, registry_entries)``.
-            When both playbook and profile lists are empty the markdown
-            is ``""`` and the registry is ``[]``.
+            When all input lists are empty the markdown is ``""`` and the
+            registry is ``[]``.
     """
-    playbook_lines, playbook_entries = _format_playbooks(playbooks)
+    playbook_lines, playbook_entries = _format_combined_playbooks(
+        agent_playbooks=agent_playbooks, user_playbooks=user_playbooks
+    )
     profile_lines, profile_entries = _format_profiles(profiles)
     if not playbook_lines and not profile_lines:
         return "", []
 
     sections: list[str] = [f"## claude-smart — project `{project_id}`"]
     if playbook_lines:
-        sections.append("### Playbook")
+        sections.append("### Project-specific skills")
         sections.extend(playbook_lines)
     if profile_lines:
         sections.append("### Project preferences")
@@ -86,28 +100,32 @@ def render_with_registry(
 def render_inline(
     *,
     project_id: str,
-    playbooks: Iterable[Any],
+    user_playbooks: Iterable[Any],
+    agent_playbooks: Iterable[Any],
     profiles: Iterable[Any],
 ) -> str:
-    """Render playbooks + profiles for mid-session (PreToolUse) injection.
+    """Render skills + preferences for mid-session injection.
 
     Same bullet format as ``render`` but with no top-level project header —
     this block is injected just-in-time alongside an in-flight tool call, not
     at session start, so the caller already has project context.
 
     Args:
-        project_id (str): Reserved for future use (e.g. multi-project
-            diagnostics); currently unused in the output.
-        playbooks (Iterable[Any]): Relevance-ranked playbook hits.
-        profiles (Iterable[Any]): Relevance-ranked profile hits.
+        project_id (str): Reserved for future use; currently unused.
+        user_playbooks (Iterable[Any]): Relevance-ranked project-scoped hits.
+        agent_playbooks (Iterable[Any]): Relevance-ranked global hits.
+        profiles (Iterable[Any]): Relevance-ranked preference hits.
 
     Returns:
-        str: Markdown with ``### Relevant playbook rules`` and/or
+        str: Markdown with ``### Relevant project-specific skills`` and/or
             ``### Relevant project preferences`` sub-sections, or ``""``
-            when both inputs are empty.
+            when all inputs are empty.
     """
     markdown, _ = render_inline_with_registry(
-        project_id=project_id, playbooks=playbooks, profiles=profiles
+        project_id=project_id,
+        user_playbooks=user_playbooks,
+        agent_playbooks=agent_playbooks,
+        profiles=profiles,
     )
     return markdown
 
@@ -115,30 +133,33 @@ def render_inline(
 def render_inline_with_registry(
     *,
     project_id: str,
-    playbooks: Iterable[Any],
+    user_playbooks: Iterable[Any],
+    agent_playbooks: Iterable[Any],
     profiles: Iterable[Any],
 ) -> tuple[str, list[dict[str, Any]]]:
     """Variant of ``render_inline`` that also returns the citation registry.
 
     Args:
-        project_id (str): Reserved for future use; currently unused in
-            the output.
-        playbooks (Iterable[Any]): Relevance-ranked playbook hits.
-        profiles (Iterable[Any]): Relevance-ranked profile hits.
+        project_id (str): Reserved for future use; currently unused.
+        user_playbooks (Iterable[Any]): Relevance-ranked project-scoped hits.
+        agent_playbooks (Iterable[Any]): Relevance-ranked global hits.
+        profiles (Iterable[Any]): Relevance-ranked preference hits.
 
     Returns:
         tuple[str, list[dict[str, Any]]]: ``(markdown, registry_entries)``.
-            When both playbook and profile lists are empty the markdown
-            is ``""`` and the registry is ``[]``.
+            When all input lists are empty the markdown is ``""`` and the
+            registry is ``[]``.
     """
     del project_id  # kept for symmetry with ``render_with_registry``.
-    playbook_lines, playbook_entries = _format_playbooks(playbooks)
+    playbook_lines, playbook_entries = _format_combined_playbooks(
+        agent_playbooks=agent_playbooks, user_playbooks=user_playbooks
+    )
     profile_lines, profile_entries = _format_profiles(profiles)
     if not playbook_lines and not profile_lines:
         return "", []
     sections: list[str] = []
     if playbook_lines:
-        sections.append("### Relevant playbook rules")
+        sections.append("### Relevant project-specific skills")
         sections.extend(playbook_lines)
     if profile_lines:
         sections.append("### Relevant project preferences")
@@ -147,38 +168,60 @@ def render_inline_with_registry(
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
 
 
-def _format_playbooks(
-    playbooks: Iterable[Any],
+def _format_combined_playbooks(
+    *,
+    agent_playbooks: Iterable[Any],
+    user_playbooks: Iterable[Any],
 ) -> tuple[list[str], list[dict[str, Any]]]:
+    """Render agent playbooks first, then user playbooks, with one shared rank counter."""
     lines: list[str] = []
     entries: list[dict[str, Any]] = []
     rank = 0
-    for pb in playbooks:
-        content = _first_nonempty(_field(pb, "content"))
-        if not content:
-            continue
-        rank += 1
-        trigger = _first_nonempty(_field(pb, "trigger"))
-        rationale = _first_nonempty(_field(pb, "rationale"))
-        real_id = _field(pb, "user_playbook_id")
-        item_id = cs_cite.rank_id("playbook", rank, real_id)
-        title = _title_from_content(content)
-        bullet = f"- [cs:{item_id}] {content}"
-        if trigger:
-            bullet += f" _(when: {trigger})_"
-        if rationale:
-            bullet += f" — *why:* {rationale}"
-        lines.append(bullet)
-        entries.append(
-            {
-                "id": item_id,
-                "kind": "playbook",
-                "title": title,
-                "content": content,
-                "real_id": str(real_id) if real_id is not None else None,
-            }
+    for pb in agent_playbooks:
+        rank = _append_playbook_bullet(
+            pb, "agent_playbook_id", "agent_playbook", rank, lines, entries
+        )
+    for pb in user_playbooks:
+        rank = _append_playbook_bullet(
+            pb, "user_playbook_id", "user_playbook", rank, lines, entries
         )
     return lines, entries
+
+
+def _append_playbook_bullet(
+    pb: Any,
+    id_field: str,
+    source_kind: str,
+    rank: int,
+    lines: list[str],
+    entries: list[dict[str, Any]],
+) -> int:
+    content = _first_nonempty(_field(pb, "content"))
+    if not content:
+        return rank
+    rank += 1
+    trigger = _first_nonempty(_field(pb, "trigger"))
+    rationale = _first_nonempty(_field(pb, "rationale"))
+    real_id = _field(pb, id_field)
+    item_id = cs_cite.rank_id("playbook", rank, real_id)
+    title = _title_from_content(content)
+    bullet = f"- [cs:{item_id}] {content}"
+    if trigger:
+        bullet += f" _(when: {trigger})_"
+    if rationale:
+        bullet += f" — *why:* {rationale}"
+    lines.append(bullet)
+    entries.append(
+        {
+            "id": item_id,
+            "kind": "playbook",
+            "title": title,
+            "content": content,
+            "real_id": str(real_id) if real_id is not None else None,
+            "source_kind": source_kind,
+        }
+    )
+    return rank
 
 
 def _format_profiles(

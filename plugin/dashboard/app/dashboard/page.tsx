@@ -17,12 +17,14 @@ import { Badge } from "@/components/ui/badge";
 import { reflexio } from "@/lib/reflexio-client";
 import { useSettings } from "@/hooks/use-settings";
 import { formatRelative, truncateId } from "@/lib/format";
-import type { SessionSummary, UserPlaybook } from "@/lib/types";
+import { agentPlaybookStatusLabel } from "@/lib/status";
+import type { AgentPlaybook, SessionSummary, UserPlaybook } from "@/lib/types";
 
 export default function DashboardPage() {
   const { reflexioUrl } = useSettings();
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
-  const [playbooks, setPlaybooks] = useState<UserPlaybook[] | null>(null);
+  const [projectSkills, setProjectSkills] = useState<UserPlaybook[] | null>(null);
+  const [sharedSkills, setSharedSkills] = useState<AgentPlaybook[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -30,15 +32,19 @@ export default function DashboardPage() {
     async function load() {
       setError(null);
       try {
-        const [sRes, pRes] = await Promise.all([
+        const [sRes, projectRes, sharedRes] = await Promise.all([
           fetch("/api/sessions", { cache: "no-store" }).then((r) => r.json()),
           reflexio
             .getUserPlaybooks({ reflexioUrl })
             .catch(() => ({ user_playbooks: [] as UserPlaybook[] })),
+          reflexio
+            .getAgentPlaybooks({ reflexioUrl })
+            .catch(() => ({ agent_playbooks: [] as AgentPlaybook[] })),
         ]);
         if (cancelled) return;
         setSessions(sRes.sessions ?? []);
-        setPlaybooks(pRes.user_playbooks ?? []);
+        setProjectSkills(projectRes.user_playbooks ?? []);
+        setSharedSkills(sharedRes.agent_playbooks ?? []);
       } catch (e) {
         if (!cancelled)
           setError(e instanceof Error ? e.message : "failed to load");
@@ -50,19 +56,16 @@ export default function DashboardPage() {
     };
   }, [reflexioUrl]);
 
-  // CURRENT playbooks arrive as `status: null` (response_model_exclude_none
+  // CURRENT project-specific skills arrive as `status: null` (response_model_exclude_none
   // strips the field). Anything else (e.g. "archived", "pending") is excluded.
-  const currentPlaybooks = (playbooks ?? []).filter((p) => p.status == null);
+  const currentProjectSkills = (projectSkills ?? []).filter((p) => p.status == null);
+  const approvedSharedSkills = (sharedSkills ?? []).filter(
+    (p) => agentPlaybookStatusLabel(p) === "APPROVED",
+  );
   const learningInteractionTotal = (sessions ?? []).reduce(
     (acc, s) => acc + s.learning_interaction_count,
     0,
   );
-  const lastActivity =
-    (sessions ?? []).reduce<number | null>(
-      (acc, s) => Math.max(acc ?? 0, s.last_activity ?? 0) || null,
-      null,
-    );
-
   return (
     <div className="flex-1 overflow-auto">
       <PageHeader
@@ -79,21 +82,22 @@ export default function DashboardPage() {
             icon={Activity}
           />
           <StatCard
-            label="Current playbooks"
-            value={currentPlaybooks.length || "—"}
-            hint="cross-session rules"
+            label="Project-specific skills"
+            value={currentProjectSkills.length || "—"}
+            hint="current project-specific rules"
+            icon={BookOpen}
+          />
+          <StatCard
+            label="Shared skills"
+            value={approvedSharedSkills.length || "—"}
+            hint="approved shared rules"
             icon={BookOpen}
           />
           <StatCard
             label="Interactions with learnings applied"
             value={learningInteractionTotal}
-            hint="turns where a playbook or profile was cited"
+            hint="turns where a skill or preference was cited"
             icon={Sparkles}
-          />
-          <StatCard
-            label="Last activity"
-            value={formatRelative(lastActivity)}
-            icon={MessageSquare}
           />
         </div>
 
@@ -146,26 +150,56 @@ export default function DashboardPage() {
 
         <section>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold">Recent playbooks</h2>
+            <h2 className="text-sm font-semibold">Recent skills</h2>
             <Link
-              href="/playbooks"
+              href="/skills"
               className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
             >
               View all <ExternalLink className="h-3 w-3" />
             </Link>
           </div>
-          {currentPlaybooks.length > 0 ? (
+          {currentProjectSkills.length > 0 || approvedSharedSkills.length > 0 ? (
             <div className="grid gap-3 sm:grid-cols-2">
-              {currentPlaybooks.slice(0, 4).map((p) => (
+              {currentProjectSkills.slice(0, 2).map((p) => (
                 <Link
-                  key={p.user_playbook_id}
-                  href={`/playbooks/${p.user_playbook_id}`}
+                  key={`project:${p.user_playbook_id}`}
+                  href={`/skills/project/${p.user_playbook_id}`}
                   className="block rounded-xl border border-border bg-card p-4 hover:bg-accent/40 transition-colors"
                 >
                   <div className="flex items-center justify-between gap-2 mb-2">
                     <Badge variant="outline" className="font-mono text-[10px]">
                       {p.agent_version || "default"}
                     </Badge>
+                    <Badge variant="secondary" className="text-[10px]">
+                      project-specific
+                    </Badge>
+                    <span className="text-[11px] text-muted-foreground">
+                      {formatRelative(p.created_at)}
+                    </span>
+                  </div>
+                  <p className="text-sm line-clamp-3">{p.content}</p>
+                  {p.trigger && (
+                    <p className="text-xs text-muted-foreground mt-2 line-clamp-1">
+                      <span className="font-medium">trigger:</span> {p.trigger}
+                    </p>
+                  )}
+                </Link>
+              ))}
+              {approvedSharedSkills.slice(0, 2).map((p) => (
+                <Link
+                  key={`shared:${p.agent_playbook_id}`}
+                  href={`/skills/shared/${p.agent_playbook_id}`}
+                  className="block rounded-xl border border-border bg-card p-4 hover:bg-accent/40 transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="font-mono text-[10px]">
+                        {p.agent_version || "default"}
+                      </Badge>
+                      <Badge variant="secondary" className="text-[10px]">
+                        shared
+                      </Badge>
+                    </div>
                     <span className="text-[11px] text-muted-foreground">
                       {formatRelative(p.created_at)}
                     </span>
@@ -182,8 +216,8 @@ export default function DashboardPage() {
           ) : (
             <EmptyState
               icon={BookOpen}
-              title="No playbooks yet"
-              description="Keep using Claude with claude-smart enabled — playbooks will be extracted automatically from your interactions when patterns emerge."
+              title="No skills yet"
+              description="Keep using Claude with claude-smart enabled. Skills are extracted automatically when patterns emerge."
             />
           )}
         </section>

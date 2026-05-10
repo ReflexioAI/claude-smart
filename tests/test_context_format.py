@@ -7,7 +7,7 @@ from claude_smart import context_format, cs_cite
 
 def test_render_with_registry_empty_returns_empty_tuple() -> None:
     md, registry = context_format.render_with_registry(
-        project_id="demo", playbooks=[], profiles=[]
+        project_id="demo", user_playbooks=[], agent_playbooks=[], profiles=[]
     )
     assert md == ""
     assert registry == []
@@ -17,7 +17,8 @@ def test_render_with_registry_empty_content_items_ignored() -> None:
     """Items whose ``content`` is blank contribute neither bullet nor registry entry."""
     md, registry = context_format.render_with_registry(
         project_id="demo",
-        playbooks=[{"content": ""}, {"content": "   "}],
+        user_playbooks=[{"content": ""}, {"content": "   "}],
+        agent_playbooks=[{"content": None}],
         profiles=[{"content": None}],
     )
     assert md == ""
@@ -28,15 +29,15 @@ def test_render_with_registry_ids_match_between_markdown_and_registry() -> None:
     pbs = [{"content": "use pathlib", "user_playbook_id": 17}]
     prs = [{"content": "prefers anyio", "profile_id": "uuid-profile-1"}]
     md, registry = context_format.render_with_registry(
-        project_id="demo", playbooks=pbs, profiles=prs
+        project_id="demo", user_playbooks=pbs, agent_playbooks=[], profiles=prs
     )
-    assert "[cs:r1-17]" in md
+    assert "[cs:s1-17]" in md
     assert "[cs:p1-uuid]" in md
-    assert {e["id"] for e in registry} == {"r1-17", "p1-uuid"}
+    assert {e["id"] for e in registry} == {"s1-17", "p1-uuid"}
     by_id = {e["id"]: e for e in registry}
-    assert by_id["r1-17"]["kind"] == "playbook"
+    assert by_id["s1-17"]["kind"] == "playbook"
     assert by_id["p1-uuid"]["kind"] == "profile"
-    assert by_id["r1-17"]["real_id"] == "17"
+    assert by_id["s1-17"]["real_id"] == "17"
     assert by_id["p1-uuid"]["real_id"] == "uuid-profile-1"
 
 
@@ -51,13 +52,13 @@ def test_render_with_registry_ranks_increase_in_order() -> None:
         {"content": "second pref", "profile_id": "b"},
     ]
     md, registry = context_format.render_with_registry(
-        project_id="demo", playbooks=pbs, profiles=prs
+        project_id="demo", user_playbooks=pbs, agent_playbooks=[], profiles=prs
     )
-    assert "[cs:r1-1] first rule" in md
-    assert "[cs:r2-2] second rule" in md
+    assert "[cs:s1-1] first rule" in md
+    assert "[cs:s2-2] second rule" in md
     assert "[cs:p1-a] first pref" in md
     assert "[cs:p2-b] second pref" in md
-    assert [e["id"] for e in registry] == ["r1-1", "r2-2", "p1-a", "p2-b"]
+    assert [e["id"] for e in registry] == ["s1-1", "s2-2", "p1-a", "p2-b"]
 
 
 def test_render_with_registry_omits_fingerprint_when_real_id_missing() -> None:
@@ -65,34 +66,37 @@ def test_render_with_registry_omits_fingerprint_when_real_id_missing() -> None:
     pbs = [{"content": "orphan rule"}]
     prs = [{"content": "orphan pref"}]
     md, registry = context_format.render_with_registry(
-        project_id="demo", playbooks=pbs, profiles=prs
+        project_id="demo", user_playbooks=pbs, agent_playbooks=[], profiles=prs
     )
-    assert "[cs:r1] orphan rule" in md
+    assert "[cs:s1] orphan rule" in md
     assert "[cs:p1] orphan pref" in md
     ids = {e["id"] for e in registry}
-    assert ids == {"r1", "p1"}
+    assert ids == {"s1", "p1"}
 
 
 def test_render_with_registry_fingerprint_disambiguates_same_rank() -> None:
     """Two renders with the same rank but different real ids → distinct tags."""
     md_a, _ = context_format.render_with_registry(
         project_id="demo",
-        playbooks=[{"content": "rule A", "user_playbook_id": 100}],
+        user_playbooks=[{"content": "rule A", "user_playbook_id": 100}],
+        agent_playbooks=[],
         profiles=[],
     )
     md_b, _ = context_format.render_with_registry(
         project_id="demo",
-        playbooks=[{"content": "rule B", "user_playbook_id": 200}],
+        user_playbooks=[{"content": "rule B", "user_playbook_id": 200}],
+        agent_playbooks=[],
         profiles=[],
     )
-    assert "[cs:r1-100]" in md_a
-    assert "[cs:r1-200]" in md_b
+    assert "[cs:s1-100]" in md_a
+    assert "[cs:s1-200]" in md_b
 
 
 def test_render_with_registry_emits_citation_instruction() -> None:
     md, _ = context_format.render_with_registry(
         project_id="demo",
-        playbooks=[{"content": "x"}],
+        user_playbooks=[{"content": "x"}],
+        agent_playbooks=[],
         profiles=[],
     )
     assert cs_cite.CITATION_INSTRUCTION in md
@@ -107,19 +111,43 @@ def test_render_with_registry_playbook_trigger_and_rationale_emitted() -> None:
         }
     ]
     md, _ = context_format.render_with_registry(
-        project_id="demo", playbooks=pbs, profiles=[]
+        project_id="demo", user_playbooks=pbs, agent_playbooks=[], profiles=[]
     )
     assert "_(when: writing a script)_" in md
     assert "*why:* os.path is error-prone" in md
 
 
+def test_render_with_registry_agent_playbooks_render_first_and_use_agent_id() -> None:
+    """Agent playbooks (cross-project) are listed before user playbooks under
+    one heading; the citation registry stamps them with the agent_playbook_id."""
+    md, registry = context_format.render_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "user-scope rule", "user_playbook_id": 7}],
+        agent_playbooks=[{"content": "global rule", "agent_playbook_id": 42}],
+        profiles=[],
+    )
+    # Agent playbook bullet appears before the user one.
+    agent_idx = md.find("global rule")
+    user_idx = md.find("user-scope rule")
+    assert 0 < agent_idx < user_idx
+    # Both share the same playbook namespace; ranks are 1 then 2.
+    assert "[cs:s1-42] global rule" in md
+    assert "[cs:s2-7] user-scope rule" in md
+    by_id = {e["id"]: e for e in registry}
+    assert by_id["s1-42"]["real_id"] == "42"
+    assert by_id["s1-42"]["source_kind"] == "agent_playbook"
+    assert by_id["s2-7"]["real_id"] == "7"
+    assert by_id["s2-7"]["source_kind"] == "user_playbook"
+
+
 def test_render_inline_with_registry_uses_inline_headers() -> None:
     md, registry = context_format.render_inline_with_registry(
         project_id="demo",
-        playbooks=[{"content": "use pathlib"}],
+        user_playbooks=[{"content": "use pathlib"}],
+        agent_playbooks=[],
         profiles=[{"content": "prefers anyio"}],
     )
-    assert "### Relevant playbook rules" in md
+    assert "### Relevant project-specific skills" in md
     assert "### Relevant project preferences" in md
     assert len(registry) == 2
 

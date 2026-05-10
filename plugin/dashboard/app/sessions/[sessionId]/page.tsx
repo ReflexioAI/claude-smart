@@ -238,15 +238,17 @@ function CitedItemsRow({ items }: { items: CitedItem[] }) {
           const targetId = item.real_id ?? item.id;
           const href =
             item.kind === "playbook"
-              ? `/playbooks/${encodeURIComponent(targetId)}`
-              : `/profiles/${encodeURIComponent(targetId)}`;
+              ? item.source_kind === "agent_playbook"
+                ? `/skills/shared/${encodeURIComponent(targetId)}`
+                : `/skills/project/${encodeURIComponent(targetId)}`
+              : `/preferences/${encodeURIComponent(targetId)}`;
           return (
             <Link
               key={item.id}
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              title={`${item.kind} • id=${targetId}`}
+              title={`${item.kind === "playbook" ? "skill" : "preference"} • id=${targetId}`}
             >
               <Badge
                 variant="outline"

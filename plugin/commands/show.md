@@ -1,5 +1,5 @@
 ---
-description: Show the current project playbook and session user profiles
+description: Show current project-specific skills and session preferences
 allowed-tools: Bash(bash:*)
 ---
 

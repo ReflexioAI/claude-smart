@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  It learns both corrections and successful execution patterns—so Claude Code avoids repeating mistakes and reuses what works. Playbook rules travel with you across every project; per-project profiles capture how you like to work on each repo.
+  It learns both corrections and successful execution patterns—so Claude Code avoids repeating mistakes and reuses what works. Project-specific skills capture repo-local rules, and shared skills roll up durable patterns for reuse across projects.
 </p>
 
 <p align="center">
@@ -57,7 +57,7 @@ Most memory solutions are still mostly informative—Claude remembers what happe
 
 Four ways this changes what Claude Code can do for you:
 
-- 💡 **Stop repeating the same mistakes:** Produces actionable playbooks Claude can follow next time; memory only records what happened.
+- 💡 **Stop repeating the same mistakes:** Produces actionable skills Claude can follow next time; memory only records what happened.
 
   > *Example:* a deploy fails after Claude bumps `prisma` from 5.x to 6.0; you tell it to roll back because 6.0 breaks nested writes in your order flow.<br>
   > **Memory:** “deploy broke after prisma bump; user rolled back”<br>
@@ -70,9 +70,9 @@ Four ways this changes what Claude Code can do for you:
 
   Instead of re-exploring, Claude starts from the proven path—reducing planning steps, latency, and token usage.
 
-- 🌐 **Global playbook, project-scoped profiles:** Session memory disappears with the conversation. The playbook persists *globally* — rules learned in one repo are available in every repo you work in — while user profiles stay scoped to the current project so per-repo preferences don't leak across projects.
+- 🌐 **Project-specific and shared skills:** Session memory disappears with the conversation. Project-specific skills preserve repo-local rules, while shared skills roll up patterns that should transfer across projects. Preferences stay scoped to the current project so per-repo preferences don't leak across projects.
 
-- 🪶 **Better context without prompt bloat:** Distilled, deduplicated playbooks stay in dozens of tokens—not thousands—even as the project grows.
+- 🪶 **Better context without prompt bloat:** Distilled, deduplicated skills stay in dozens of tokens—not thousands—even as the project grows.
 
 ---
 
@@ -121,8 +121,8 @@ Developing the plugin itself? See [DEVELOPER.md](./DEVELOPER.md#developing-local
 - ⚡ **Fully automatic learning** — Every user turn, tool call, and assistant response is captured via lifecycle hooks and extracted into rules without you running anything.
 - 📈 **Continuously self-tuning, not just append-on-conflict** — Existing rules are continuously refined, not just appended to. Wording gets clearer, *when-to-apply* triggers tighten or broaden as evidence accumulates, near-duplicates merge, stale rules are superseded, and dead ones are archived. The library gets sharper, not just bigger.
   > *e.g.* correct the same `npm test --run` gotcha twice → consolidated into one rule. New evidence shows it applies to `vitest` too → scope broadened. Switch policy to `pnpm test` → old rule archived, new one supersedes it.
-- 🔌 **No external API call** — semantic search runs on an in-process ONNX embedder (all-MiniLM-L6-v2), and all data (profiles, playbooks, interaction buffers) is stored locally on your machine (`~/.reflexio/` and `~/.claude-smart/`).
-- 🔎 **Hybrid search** — Playbooks and profiles are indexed with vector + BM25 search for fast, robust retrieval.
+- 🔌 **No external API call** — semantic search runs on an in-process ONNX embedder (all-MiniLM-L6-v2), and all data (preferences, skills, interaction buffers) is stored locally on your machine (`~/.reflexio/` and `~/.claude-smart/`).
+- 🔎 **Hybrid search** — Skills and preferences are indexed with vector + BM25 search for fast, robust retrieval.
 - 🧪 **Offline resilience** — If the reflexio backend is down, hooks buffer to disk; the next successful publish drains them.
 - 🧰 **Manual correction marker** — `/claude-smart:learn` flags the last turn as a correction so the extractor weights it heavily.
 
@@ -130,36 +130,37 @@ Developing the plugin itself? See [DEVELOPER.md](./DEVELOPER.md#developing-local
 
 ## Dashboard
 
-A web UI for browsing session histories, inspecting user profiles, and editing playbook rules. The dashboard auto-starts alongside the backend, so you can open **http://localhost:3001** directly. Or run `/claude-smart:dashboard` in Claude Code to launch dashboard in browser.
+A web UI for browsing session histories, inspecting preferences, and editing project-specific and shared skills. The dashboard auto-starts alongside the backend, so you can open **http://localhost:3001** directly. Or run `/claude-smart:dashboard` in Claude Code to launch dashboard in browser.
 
 <p align="center">
-  <img src="assets/profile_dashboard.png" alt="Profile dashboard" width="49%">
-  <img src="assets/playbook_dashboard.png" alt="Playbook dashboard" width="49%">
+  <img src="assets/preferences_dashboard.png" alt="Preferences dashboard" width="49%">
+  <img src="assets/skills_dashboard.png" alt="Skills dashboard" width="49%">
 </p>
 
 ---
 
 ## How It Works
 
-claude-smart builds two artifacts as you work and injects them into Claude at the start of every new session:
+claude-smart builds three artifacts as you work and injects the relevant ones into Claude:
 
-- **User profile** (project-scoped) — preferences about how you work in this specific repo (stack, role, small quirks). *e.g.* "uses pnpm, not npm"; "prefers terse answers"; "backend engineer — explain frontend with backend analogues."
-- **Playbook** (global, cross-project) — durable, generalized rules accumulated across every session, shared across every project you use claude-smart in. Each rule says when it applies and why, so a rule learned in one repo only fires in the contexts where it's relevant. *e.g.* "always pass `--run` to `npm test` — watch mode hangs CI"; "use real Postgres for integration tests — mocks once hid a broken migration."
+- **Preferences** (project-scoped) — how you work in this specific repo (stack, role, small quirks). *e.g.* "uses pnpm, not npm"; "prefers terse answers"; "backend engineer — explain frontend with backend analogues."
+- **Project-specific skills** — durable rules with triggers and rationales learned from corrections in a project. *e.g.* "always pass `--run` to `npm test` — watch mode hangs CI."
+- **Shared skills** — optimized rollups of project-specific skills that should transfer across projects. *e.g.* "use real Postgres for integration tests — mocks once hid a broken migration."
 
-Playbooks clean themselves up: correct the same thing twice and they merge; change your mind and the old one is archived.
+Skills clean themselves up: correct the same thing twice and they merge; change your mind and the old one is archived.
 
-Under the hood: hooks watch your turns, tool calls, and Claude's replies, auto-flagging corrections (or anything you flag with `/learn`). At session end (or on `/learn`), [reflexio](https://github.com/ReflexioAI/reflexio) — the self-improving engine that powers claude-smart — extracts profile entries and playbook rules. Next session, both get injected into the system prompt — run `/show` to see what Claude is being told. Everything runs on your machine.
+Under the hood: hooks watch your turns, tool calls, and Claude's replies, auto-flagging corrections (or anything you flag with `/learn`). At session end (or on `/learn`), [reflexio](https://github.com/ReflexioAI/reflexio) — the self-improving engine that powers claude-smart — extracts preferences and project-specific skills, then rolls durable patterns into shared skills. Next session, the relevant context gets injected into the system prompt — run `/show` to see what Claude is being told. Everything runs on your machine.
 
 **Citations (`cs-cite`).** At the end of a reply, Claude may run:
 
 ```
-⏺ Bash(cs-cite r1-252,p1-5aed)
+⏺ Bash(cs-cite s1-252,p1-5aed)
   ⎿  (No output)
 
 ⏺ ✨ 2 claude-smart learnings applied
 ```
 
-That signals a profile entry (`p…`) or playbook rule (`r…`) materially shaped the reply. Open the interaction's detail page in the [dashboard](#dashboard) to see the exact cited item.
+That signals a preference (`p…`) or skill (`s…`) materially shaped the reply. Open the interaction's detail page in the [dashboard](#dashboard) to see the exact cited item.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for hooks, data flow, and reflexio details.
 
@@ -170,10 +171,10 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for hooks, data flow, and reflexio deta
 | Command | What it does |
 | --- | --- |
 | `/dashboard` | Open the dashboard in your browser, auto-starting the reflexio backend and dashboard services if they aren't already running. |
-| `/show` | Print the current (global) playbook plus the current project's user profiles (same markdown that `SessionStart` injects). Use it to audit what playbooks and preferences Claude is being told to follow. |
+| `/show` | Print current project-specific skills plus the current project's preferences (same markdown that `SessionStart` injects). Use it to audit what skills and preferences Claude is being told to follow. |
 | `/learn [note]` | Flag the most recent turn as a correction (for cases the automatic heuristic missed) and force reflexio to run extraction *now* on the session's unpublished interactions. The optional note becomes the correction description the extractor sees. |
 | `/restart` | Restart the reflexio backend and dashboard to pick up new changes (e.g. after upgrading the plugin or editing local reflexio code). |
-| `/clear-all` | **Destructive.** Delete *all* reflexio interactions, profiles, and user playbooks. Use when you want to wipe learned state and start fresh. |
+| `/clear-all` | **Destructive.** Delete *all* reflexio interactions, preferences, and skills. Use when you want to wipe learned state and start fresh. |
 
 ---
 
@@ -185,8 +186,9 @@ Advanced users can tune claude-smart via environment variables — see [DEVELOPE
 
 | Path | What |
 | --- | --- |
-| `~/.reflexio/data/reflexio.db` | Source of truth — profiles, user_playbooks, interactions, FTS5 indexes, and vec0 embedding tables (plus `.db-shm` / `.db-wal` WAL sidecars). Inspect with `sqlite3`. |
+| `~/.reflexio/data/reflexio.db` | Source of truth for learned preferences, skills, interactions, full-text indexes, and embedding tables (plus `.db-shm` / `.db-wal` WAL sidecars). Inspect with `sqlite3`. |
 | `~/.reflexio/.env` | Provider config — `CLAUDE_SMART_USE_LOCAL_CLI`, `CLAUDE_SMART_USE_LOCAL_EMBEDDING`, any optional API keys. |
+| `.claude/settings.local.json` or `~/.claude/settings.json` | Claude Code hook environment, such as `CLAUDE_SMART_ENABLE_OPTIMIZER`; use project-local settings for one repo or user settings for all projects. |
 | `~/.reflexio/plugin-root` | Self-healed symlink to the active plugin dir (managed by `ensure-plugin-root.sh` — written on install, refreshed each `SessionStart`). Slash commands resolve through it, so don't delete it; if you do, the next session will recreate it. |
 | `~/.claude-smart/sessions/{session_id}.jsonl` | Per-session buffer. User turns, assistant turns, tool invocations, `{"published_up_to": N}` watermarks. Safe to inspect and safe to delete — everything past the latest watermark has already been written to reflexio's DB. |
 | `~/.cache/chroma/onnx_models/all-MiniLM-L6-v2/` | Cached ONNX weights (~86 MB, downloaded once). Delete to force a re-download. |

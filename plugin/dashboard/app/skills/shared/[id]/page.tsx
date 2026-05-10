@@ -24,30 +24,61 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { reflexio } from "@/lib/reflexio-client";
 import { useSettings } from "@/hooks/use-settings";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { statusLabel } from "@/lib/status";
-import type { UserPlaybook } from "@/lib/types";
+import { agentPlaybookStatusLabel, statusLabel } from "@/lib/status";
+import type { AgentPlaybook, AgentPlaybookStatus } from "@/lib/types";
 
-type FormState = { content: string; trigger: string; rationale: string };
+type FormState = {
+  content: string;
+  trigger: string;
+  rationale: string;
+  playbookStatus: AgentPlaybookStatus;
+};
 
-function toForm(p: UserPlaybook): FormState {
+function toForm(p: AgentPlaybook): FormState {
   return {
     content: p.content,
     trigger: p.trigger ?? "",
     rationale: p.rationale ?? "",
+    playbookStatus: p.playbook_status,
   };
 }
 
 function displayName(name: string | null | undefined): string | null {
   if (!name) return null;
-  if (name === "default_playbook_extractor") return "playbook";
+  if (name === "default_playbook_extractor") return "shared skill";
   return name;
 }
 
-export default function PlaybookDetailPage({
+const REVIEW_STATUS_META: Record<
+  AgentPlaybookStatus,
+  { label: string; description: string }
+> = {
+  pending: {
+    label: "Auto generated",
+    description: "Auto-generated shared skill. It may be updated automatically.",
+  },
+  approved: {
+    label: "Persisted",
+    description: "Persisted shared skill. It will not be auto updated.",
+  },
+  rejected: {
+    label: "Rejected",
+    description: "Rejected shared skill. It will not be used in claude-smart.",
+  },
+};
+
+export default function SharedSkillDetailPage({
   params,
 }: {
   params: Promise<{ id: string }>;
@@ -56,26 +87,29 @@ export default function PlaybookDetailPage({
   const router = useRouter();
   const { reflexioUrl } = useSettings();
 
-  const [playbook, setPlaybook] = useState<UserPlaybook | null>(null);
+  const [playbook, setPlaybook] = useState<AgentPlaybook | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [reviewingStatus, setReviewingStatus] =
+    useState<AgentPlaybookStatus | null>(null);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<FormState>({
     content: "",
     trigger: "",
     rationale: "",
+    playbookStatus: "pending",
   });
 
   useEffect(() => {
     let cancelled = false;
     reflexio
-      .getUserPlaybooks({ reflexioUrl })
+      .getAgentPlaybooks({ reflexioUrl })
       .then((res) => {
         if (cancelled) return;
-        const found = (res.user_playbooks ?? []).find(
-          (p) => String(p.user_playbook_id) === id,
+        const found = (res.agent_playbooks ?? []).find(
+          (p) => String(p.agent_playbook_id) === id,
         );
         if (!found) {
           setNotFound(true);
@@ -98,7 +132,8 @@ export default function PlaybookDetailPage({
     return (
       orig.content !== form.content ||
       orig.trigger !== form.trigger ||
-      orig.rationale !== form.rationale
+      orig.rationale !== form.rationale ||
+      orig.playbookStatus !== form.playbookStatus
     );
   }, [playbook, form]);
 
@@ -107,12 +142,13 @@ export default function PlaybookDetailPage({
     setSaving(true);
     setError(null);
     try {
-      await reflexio.updateUserPlaybook(
+      await reflexio.updateAgentPlaybook(
         {
-          user_playbook_id: playbook.user_playbook_id,
+          agent_playbook_id: playbook.agent_playbook_id,
           content: form.content,
           trigger: form.trigger || null,
           rationale: form.rationale || null,
+          playbook_status: form.playbookStatus,
         },
         reflexioUrl,
       );
@@ -121,6 +157,7 @@ export default function PlaybookDetailPage({
         content: form.content,
         trigger: form.trigger || null,
         rationale: form.rationale || null,
+        playbook_status: form.playbookStatus,
       });
       setEditing(false);
     } catch (e) {
@@ -130,18 +167,50 @@ export default function PlaybookDetailPage({
     }
   };
 
+  const setReviewStatus = async (nextStatus: AgentPlaybookStatus) => {
+    if (!playbook || playbook.playbook_status === nextStatus) return;
+    if (
+      nextStatus === "rejected" &&
+      !confirm(
+        `Reject shared skill #${playbook.agent_playbook_id}? Rejected shared skills will not be used in claude-smart.`,
+      )
+    ) {
+      return;
+    }
+
+    setReviewingStatus(nextStatus);
+    setError(null);
+    try {
+      await reflexio.updateAgentPlaybook(
+        {
+          agent_playbook_id: playbook.agent_playbook_id,
+          playbook_status: nextStatus,
+        },
+        reflexioUrl,
+      );
+      setPlaybook((current) =>
+        current ? { ...current, playbook_status: nextStatus } : current,
+      );
+      setForm((current) => ({ ...current, playbookStatus: nextStatus }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReviewingStatus(null);
+    }
+  };
+
   const remove = async () => {
     if (!playbook) return;
     if (
       !confirm(
-        `Delete playbook #${playbook.user_playbook_id}? This cannot be undone.`,
+        `Delete shared skill #${playbook.agent_playbook_id}? This cannot be undone.`,
       )
     )
       return;
     setDeleting(true);
     try {
-      await reflexio.deleteUserPlaybook(playbook.user_playbook_id, reflexioUrl);
-      router.push("/playbooks");
+      await reflexio.deleteAgentPlaybook(playbook.agent_playbook_id, reflexioUrl);
+      router.push("/skills");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setDeleting(false);
@@ -156,17 +225,17 @@ export default function PlaybookDetailPage({
   if (notFound) {
     return (
       <div className="flex-1 overflow-auto">
-        <PageHeader title="Playbook not found" />
+        <PageHeader title="Shared skill not found" />
         <div className="p-6 max-w-2xl mx-auto">
           <EmptyState
             icon={AlertTriangle}
-            title="Playbook not found"
+            title="Shared skill not found"
             description="It may have been deleted, archived, or moved outside the first 100 results."
             action={
-              <Link href="/playbooks">
+              <Link href="/skills">
                 <Button variant="outline" size="sm">
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Back to playbooks
+                  Back to skills
                 </Button>
               </Link>
             }
@@ -176,16 +245,17 @@ export default function PlaybookDetailPage({
     );
   }
 
-  const status = playbook ? statusLabel(playbook) : null;
+  const lifecycleStatus = playbook ? statusLabel(playbook) : null;
+  const playbookStatus = playbook ? agentPlaybookStatusLabel(playbook) : null;
 
   return (
     <div className="flex-1 overflow-auto">
       <PageHeader
-        title={displayName(playbook?.playbook_name) || `Playbook #${id}`}
-        description="Cross-session rule learned by claude-smart."
+        title={`Shared skill #${playbook?.agent_playbook_id ?? id}`}
+        description="Shared skill rolled up from project-specific skills."
         actions={
           <div className="flex items-center gap-2">
-            <Link href="/playbooks">
+            <Link href="/skills">
               <Button variant="outline" size="sm">
                 <ArrowLeft className="h-3.5 w-3.5" />
                 Back
@@ -195,7 +265,7 @@ export default function PlaybookDetailPage({
               <Button
                 size="sm"
                 onClick={() => setEditing(true)}
-                disabled={!playbook}
+                disabled={!playbook || reviewingStatus !== null}
               >
                 <Pencil className="h-3.5 w-3.5" />
                 Edit
@@ -241,7 +311,23 @@ export default function PlaybookDetailPage({
                   <FolderGit2 className="h-3 w-3" />
                   {playbook.agent_version || "default"}
                 </Badge>
-                <StatusBadge status={status!} />
+                {editing ? (
+                  <ReviewStatusBadge
+                    status={playbook.playbook_status}
+                    displayStatus={playbookStatus!}
+                  />
+                ) : (
+                  <ReviewStatusSelect
+                    status={playbook.playbook_status}
+                    displayStatus={playbookStatus!}
+                    disabled={reviewingStatus !== null || deleting}
+                    busy={reviewingStatus !== null}
+                    onChange={setReviewStatus}
+                  />
+                )}
+                {lifecycleStatus !== "CURRENT" && (
+                  <StatusBadge status={lifecycleStatus!} />
+                )}
                 {displayName(playbook.playbook_name) && (
                   <Badge variant="secondary" className="font-mono text-[10px]">
                     {displayName(playbook.playbook_name)}
@@ -258,7 +344,7 @@ export default function PlaybookDetailPage({
             <Section
               icon={AlertTriangle}
               title="Trigger"
-              hint="When this rule should apply. Leave empty if it always applies."
+              hint="When this shared skill should apply. Leave empty if it always applies."
             >
               {editing ? (
                 <AutoTextarea
@@ -273,9 +359,64 @@ export default function PlaybookDetailPage({
             </Section>
 
             <Section
+              icon={Check}
+              title="Review status"
+              hint="Auto generated, persisted, or rejected."
+            >
+              {editing ? (
+                <Select
+                  value={form.playbookStatus}
+                  onValueChange={(v) =>
+                    setForm((f) => ({
+                      ...f,
+                      playbookStatus: v as AgentPlaybookStatus,
+                    }))
+                  }
+                >
+                  <SelectTrigger
+                    className="w-48 text-xs"
+                    title={REVIEW_STATUS_META[form.playbookStatus].description}
+                  >
+                    <SelectValue placeholder="Status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem
+                      value="pending"
+                      title={REVIEW_STATUS_META.pending.description}
+                    >
+                      {REVIEW_STATUS_META.pending.label}
+                    </SelectItem>
+                    <SelectItem
+                      value="approved"
+                      title={REVIEW_STATUS_META.approved.description}
+                    >
+                      {REVIEW_STATUS_META.approved.label}
+                    </SelectItem>
+                    <SelectItem
+                      value="rejected"
+                      title={REVIEW_STATUS_META.rejected.description}
+                    >
+                      {REVIEW_STATUS_META.rejected.label}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              ) : (
+                playbook && (
+                  <ReviewStatusSelect
+                    status={playbook.playbook_status}
+                    displayStatus={playbookStatus ?? "PENDING"}
+                    disabled={reviewingStatus !== null || deleting}
+                    busy={reviewingStatus !== null}
+                    onChange={setReviewStatus}
+                  />
+                )
+              )}
+            </Section>
+
+            <Section
               icon={BookMarked}
               title="Rule"
-              hint="What Claude should do. Injected into future sessions in this project."
+              hint="What Claude should do. Injected when relevant in future sessions."
             >
               {editing ? (
                 <AutoTextarea
@@ -331,7 +472,7 @@ export default function PlaybookDetailPage({
                   <Meta
                     icon={Hash}
                     label="ID"
-                    value={String(playbook.user_playbook_id)}
+                    value={String(playbook.agent_playbook_id)}
                     mono
                   />
                   <Meta
@@ -340,57 +481,24 @@ export default function PlaybookDetailPage({
                     value={formatTimestamp(playbook.created_at)}
                   />
                   <Meta
-                    label="Agent"
+                    label="Project"
                     value={playbook.agent_version || "default"}
                     mono
                   />
-                  {playbook.user_id && (
+                  <Meta
+                    label="Review"
+                    value={REVIEW_STATUS_META[playbook.playbook_status].label}
+                    mono
+                  />
+                  {playbook.playbook_metadata && (
                     <CopyMeta
-                      label="Project"
-                      value={playbook.user_id}
-                      display={truncateId(playbook.user_id, 32, 8)}
+                      label="Metadata"
+                      value={playbook.playbook_metadata}
+                      display={truncateId(playbook.playbook_metadata, 32, 8)}
                     />
-                  )}
-                  {playbook.request_id && (
-                    <CopyMeta
-                      label="Request"
-                      value={playbook.request_id}
-                      display={truncateId(playbook.request_id, 8, 4)}
-                    />
-                  )}
-                  {playbook.source && (
-                    <Meta label="Source" value={playbook.source} mono />
                   )}
                 </dl>
               </div>
-
-              {playbook.source_interaction_ids?.length > 0 && (
-                <div className="rounded-xl border border-border bg-card p-4">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
-                    Extracted from
-                  </h3>
-                  <p className="text-xs text-muted-foreground mb-2">
-                    {playbook.source_interaction_ids.length} interaction
-                    {playbook.source_interaction_ids.length === 1 ? "" : "s"}
-                  </p>
-                  <div className="flex flex-wrap gap-1">
-                    {playbook.source_interaction_ids.slice(0, 24).map((iid) => (
-                      <Badge
-                        key={iid}
-                        variant="outline"
-                        className="font-mono text-[10px]"
-                      >
-                        #{iid}
-                      </Badge>
-                    ))}
-                    {playbook.source_interaction_ids.length > 24 && (
-                      <Badge variant="ghost" className="text-[10px]">
-                        +{playbook.source_interaction_ids.length - 24} more
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-              )}
             </aside>
           )}
         </div>
@@ -473,12 +581,12 @@ function AutoTextarea({
 function StatusBadge({
   status,
 }: {
-  status: "CURRENT" | "ARCHIVED" | "PENDING";
+  status: "CURRENT" | "ARCHIVED" | "PENDING" | "APPROVED" | "REJECTED";
 }) {
   const variant =
-    status === "CURRENT"
+    status === "CURRENT" || status === "APPROVED"
       ? "secondary"
-      : status === "ARCHIVED"
+      : status === "ARCHIVED" || status === "REJECTED"
         ? "outline"
         : "default";
   return (
@@ -487,12 +595,137 @@ function StatusBadge({
         className={cn(
           "h-1.5 w-1.5 rounded-full",
           status === "CURRENT" && "bg-emerald-500",
+          status === "APPROVED" && "bg-emerald-500",
           status === "PENDING" && "bg-amber-500",
+          status === "REJECTED" && "bg-destructive",
           status === "ARCHIVED" && "bg-muted-foreground",
         )}
       />
       {status}
     </Badge>
+  );
+}
+
+function ReviewStatusSelect({
+  status,
+  displayStatus,
+  disabled,
+  busy,
+  onChange,
+}: {
+  status: AgentPlaybookStatus;
+  displayStatus: "PENDING" | "APPROVED" | "REJECTED";
+  disabled: boolean;
+  busy: boolean;
+  onChange: (status: AgentPlaybookStatus) => void;
+}) {
+  const meta = REVIEW_STATUS_META[status];
+
+  return (
+    <Select
+      value={status}
+      onValueChange={(value) => onChange(value as AgentPlaybookStatus)}
+      disabled={disabled}
+    >
+      <SelectTrigger
+        size="sm"
+        aria-label="Review status"
+        title={meta.description}
+        className={cn(
+          "h-7 w-fit gap-1.5 rounded-lg border px-2.5 py-0 text-xs font-medium",
+          "bg-background hover:bg-muted focus-visible:ring-3",
+          displayStatus === "APPROVED" &&
+            "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+          displayStatus === "PENDING" &&
+            "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+          displayStatus === "REJECTED" &&
+            "border-destructive/30 bg-destructive/10 text-destructive",
+        )}
+      >
+        <StatusPillContent
+          status={displayStatus}
+          label={busy ? "Updating" : meta.label}
+        />
+      </SelectTrigger>
+      <SelectContent align="start" alignItemWithTrigger={false}>
+        <SelectItem
+          value="pending"
+          title={REVIEW_STATUS_META.pending.description}
+        >
+          <StatusPillContent
+            status="PENDING"
+            label={REVIEW_STATUS_META.pending.label}
+          />
+        </SelectItem>
+        <SelectItem
+          value="approved"
+          title={REVIEW_STATUS_META.approved.description}
+        >
+          <StatusPillContent
+            status="APPROVED"
+            label={REVIEW_STATUS_META.approved.label}
+          />
+        </SelectItem>
+        <SelectItem
+          value="rejected"
+          title={REVIEW_STATUS_META.rejected.description}
+        >
+          <StatusPillContent
+            status="REJECTED"
+            label={REVIEW_STATUS_META.rejected.label}
+          />
+        </SelectItem>
+      </SelectContent>
+    </Select>
+  );
+}
+
+function ReviewStatusBadge({
+  status,
+  displayStatus,
+}: {
+  status: AgentPlaybookStatus;
+  displayStatus: "PENDING" | "APPROVED" | "REJECTED";
+}) {
+  const meta = REVIEW_STATUS_META[status];
+  return (
+    <Badge
+      variant={displayStatus === "REJECTED" ? "outline" : "secondary"}
+      className={cn(
+        "gap-1.5",
+        displayStatus === "APPROVED" &&
+          "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+        displayStatus === "PENDING" &&
+          "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+        displayStatus === "REJECTED" &&
+          "border-destructive/30 bg-destructive/10 text-destructive",
+      )}
+      title={meta.description}
+    >
+      <StatusPillContent status={displayStatus} label={meta.label} />
+    </Badge>
+  );
+}
+
+function StatusPillContent({
+  status,
+  label,
+}: {
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  label: string;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span
+        className={cn(
+          "h-1.5 w-1.5 rounded-full",
+          status === "APPROVED" && "bg-emerald-500",
+          status === "PENDING" && "bg-amber-500",
+          status === "REJECTED" && "bg-destructive",
+        )}
+      />
+      {label}
+    </span>
   );
 }
 
@@ -579,8 +812,8 @@ function DangerZone({
       <div className="min-w-0">
         <h3 className="text-sm font-semibold text-destructive">Danger zone</h3>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Deleting removes this playbook permanently. It will stop being
-          injected into future sessions.
+          Deleting removes this shared skill permanently. It will stop being
+          available in the dashboard.
         </p>
       </div>
       <Button

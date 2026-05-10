@@ -29,6 +29,7 @@ PORT=3001
 
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
+WORKSPACE_CWD="${PWD:-}"
 
 STATE_DIR="$HOME/.claude-smart"
 PID_FILE="$STATE_DIR/dashboard.pid"
@@ -129,6 +130,7 @@ case "$CMD" in
     #   - Windows: nohup alone (no process groups; tree-kill via taskkill).
     # Caller-side `>>file 2>&1` redirection is honoured before the child
     # detaches, so per-OS log paths stay identical.
+    export CLAUDE_SMART_DASHBOARD_WORKSPACE="$WORKSPACE_CWD"
     claude_smart_spawn_detached "$NPM_BIN" run start >>"$LOG_FILE" 2>&1
     dash_pid=$!
     # Record the spawned pid, not a pgid sampled with ps. On POSIX,

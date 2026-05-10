@@ -14,9 +14,9 @@ from claude_smart import cs_cite
 
 
 def test_parse_citation_command_accepts_bare_invocation() -> None:
-    assert cs_cite.parse_citation_command("cs-cite p1-ab12,r2-cd34") == [
+    assert cs_cite.parse_citation_command("cs-cite p1-ab12,s2-cd34") == [
         "p1-ab12",
-        "r2-cd34",
+        "s2-cd34",
     ]
 
 
@@ -25,15 +25,15 @@ def test_parse_citation_command_accepts_single_id() -> None:
 
 
 def test_parse_citation_command_accepts_id_without_fingerprint() -> None:
-    """Bare ``p1`` / ``r1`` still parse — fingerprint is optional."""
+    """Bare ``p1`` / ``s1`` still parse — fingerprint is optional."""
     assert cs_cite.parse_citation_command("cs-cite p1") == ["p1"]
-    assert cs_cite.parse_citation_command("cs-cite p1,r2") == ["p1", "r2"]
+    assert cs_cite.parse_citation_command("cs-cite p1,s2") == ["p1", "s2"]
 
 
 def test_parse_citation_command_accepts_absolute_path_prefix() -> None:
     """The regex documents an optional path prefix for bare TUI rendering."""
-    cmd = "/Users/me/.claude-smart/bin/cs-cite r3-abcd"
-    assert cs_cite.parse_citation_command(cmd) == ["r3-abcd"]
+    cmd = "/Users/me/.claude-smart/bin/cs-cite s3-abcd"
+    assert cs_cite.parse_citation_command(cmd) == ["s3-abcd"]
 
 
 def test_parse_citation_command_rejects_chained_commands() -> None:
@@ -56,51 +56,51 @@ def test_parse_citation_command_rejects_malformed_ids() -> None:
 def test_parse_citation_command_normalizes_uppercase() -> None:
     """Uppercase ids (prefix, kind, fingerprint) are normalized to lowercase."""
     assert cs_cite.parse_citation_command("cs-cite P1-AB12") == ["p1-ab12"]
-    assert cs_cite.parse_citation_command("cs-cite P1-AB12,R2-CD34") == [
+    assert cs_cite.parse_citation_command("cs-cite P1-AB12,S2-CD34") == [
         "p1-ab12",
-        "r2-cd34",
+        "s2-cd34",
     ]
 
 
 def test_parse_citation_command_strips_cs_prefix() -> None:
     """The `cs:` prefix from `[cs:xxxx]` tags is stripped automatically."""
     assert cs_cite.parse_citation_command("cs-cite cs:p1-ab12") == ["p1-ab12"]
-    assert cs_cite.parse_citation_command("cs-cite cs:p1-ab12,cs:r2-cd34") == [
+    assert cs_cite.parse_citation_command("cs-cite cs:p1-ab12,cs:s2-cd34") == [
         "p1-ab12",
-        "r2-cd34",
+        "s2-cd34",
     ]
-    assert cs_cite.parse_citation_command("cs-cite cs:p1-ab12,r2-cd34") == [
+    assert cs_cite.parse_citation_command("cs-cite cs:p1-ab12,s2-cd34") == [
         "p1-ab12",
-        "r2-cd34",
+        "s2-cd34",
     ]
 
 
 def test_parse_citation_command_accepts_uppercase_cs_prefix() -> None:
     """An uppercase `CS:` prefix is tolerated — the bin script accepts it too."""
     assert cs_cite.parse_citation_command("cs-cite CS:p1-ab12") == ["p1-ab12"]
-    assert cs_cite.parse_citation_command("cs-cite CS:P1-AB12,Cs:R2-CD34") == [
+    assert cs_cite.parse_citation_command("cs-cite CS:P1-AB12,Cs:S2-CD34") == [
         "p1-ab12",
-        "r2-cd34",
+        "s2-cd34",
     ]
 
 
 def test_parse_citation_command_accepts_whitespace_separators() -> None:
     """Whitespace between ids is accepted alongside commas."""
-    assert cs_cite.parse_citation_command("cs-cite p1-ab12 r2-cd34") == [
+    assert cs_cite.parse_citation_command("cs-cite p1-ab12 s2-cd34") == [
         "p1-ab12",
-        "r2-cd34",
+        "s2-cd34",
     ]
-    assert cs_cite.parse_citation_command("cs-cite p1-ab12, r2-cd34") == [
+    assert cs_cite.parse_citation_command("cs-cite p1-ab12, s2-cd34") == [
         "p1-ab12",
-        "r2-cd34",
+        "s2-cd34",
     ]
 
 
 def test_parse_citation_command_accepts_multi_digit_ranks() -> None:
     """Rank numbers may grow beyond single digits."""
-    assert cs_cite.parse_citation_command("cs-cite p10-abcd,r42-ef01") == [
+    assert cs_cite.parse_citation_command("cs-cite p10-abcd,s42-ef01") == [
         "p10-abcd",
-        "r42-ef01",
+        "s42-ef01",
     ]
 
 
@@ -112,15 +112,15 @@ def test_parse_citation_command_rejects_embedded_path_traversal() -> None:
 def test_rank_id_without_real_id_omits_fingerprint() -> None:
     assert cs_cite.rank_id("profile", 1) == "p1"
     assert cs_cite.rank_id("profile", 7) == "p7"
-    assert cs_cite.rank_id("playbook", 1) == "r1"
-    assert cs_cite.rank_id("playbook", 12) == "r12"
+    assert cs_cite.rank_id("playbook", 1) == "s1"
+    assert cs_cite.rank_id("playbook", 12) == "s12"
 
 
 def test_rank_id_appends_fingerprint_from_real_id() -> None:
     """Fingerprint is the first 4 alphanumeric chars of ``str(real_id)``, lowercased."""
     assert cs_cite.rank_id("profile", 1, 17) == "p1-17"
-    assert cs_cite.rank_id("playbook", 2, "uuid-profile-1") == "r2-uuid"
-    assert cs_cite.rank_id("playbook", 3, "AbCdEfGh") == "r3-abcd"
+    assert cs_cite.rank_id("playbook", 2, "uuid-profile-1") == "s2-uuid"
+    assert cs_cite.rank_id("playbook", 3, "AbCdEfGh") == "s3-abcd"
 
 
 def test_rank_id_disambiguates_across_injections() -> None:
@@ -128,8 +128,8 @@ def test_rank_id_disambiguates_across_injections() -> None:
     a = cs_cite.rank_id("playbook", 1, 100)
     b = cs_cite.rank_id("playbook", 1, 200)
     assert a != b
-    assert a == "r1-100"
-    assert b == "r1-200"
+    assert a == "s1-100"
+    assert b == "s1-200"
 
 
 def test_rank_id_real_id_without_alphanumeric_falls_back_to_rank() -> None:
@@ -201,7 +201,7 @@ def test_cs_cite_script_is_silent_on_success() -> None:
 
 
 def test_cs_cite_script_silent_for_multiple_ids() -> None:
-    r = _run_cs_cite("p1-ab12,r2-cd34,p3-ef56")
+    r = _run_cs_cite("p1-ab12,s2-cd34,p3-ef56")
     assert r.returncode == 0
     assert r.stdout == ""
 
@@ -214,20 +214,20 @@ def test_cs_cite_script_rejects_no_args() -> None:
 
 def test_cs_cite_script_accepts_space_separated_argv() -> None:
     """Multiple argv tokens are joined; Stop-side regex tolerates the shape."""
-    r = _run_cs_cite("p1-ab12", "r2-cd34")
+    r = _run_cs_cite("p1-ab12", "s2-cd34")
     assert r.returncode == 0
     assert r.stdout == ""
 
 
 def test_cs_cite_script_strips_cs_prefix() -> None:
     """Ids copied verbatim from `[cs:xxxx]` tags are accepted."""
-    r = _run_cs_cite("cs:p1-ab12,cs:r2-cd34,cs:p3-ef56")
+    r = _run_cs_cite("cs:p1-ab12,cs:s2-cd34,cs:p3-ef56")
     assert r.returncode == 0
     assert r.stdout == ""
 
 
 def test_cs_cite_script_normalizes_uppercase() -> None:
-    r = _run_cs_cite("P1-AB12,R2-CD34")
+    r = _run_cs_cite("P1-AB12,S2-CD34")
     assert r.returncode == 0
     assert r.stdout == ""
 
@@ -235,7 +235,7 @@ def test_cs_cite_script_normalizes_uppercase() -> None:
 def test_cs_cite_script_accepts_bare_rank_without_fingerprint() -> None:
     """Fingerprint-less ids remain valid for back-compat with registry entries
     that had no real id."""
-    r = _run_cs_cite("p1,r2")
+    r = _run_cs_cite("p1,s2")
     assert r.returncode == 0
     assert r.stdout == ""
 
@@ -248,7 +248,7 @@ def test_cs_cite_script_rejects_malformed_ids() -> None:
 
 def test_cs_cite_script_warns_on_mixed_valid_and_invalid() -> None:
     """Valid ids still succeed (silently); invalid tokens are flagged on stderr."""
-    r = _run_cs_cite("p1-ab12,notarank,r3-cd34")
+    r = _run_cs_cite("p1-ab12,notarank,s3-cd34")
     assert r.returncode == 0
     assert r.stdout == ""
     assert "notarank" in r.stderr

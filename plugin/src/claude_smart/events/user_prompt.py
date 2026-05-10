@@ -5,8 +5,8 @@ Two responsibilities, in order:
 1. Buffer the prompt into the session JSONL (this is the sole source of
    "User" role turns downstream — Claude Code replays the rest of the
    transcript via tool events, not UserPromptSubmit).
-2. Use the prompt text as a search query against reflexio's profiles +
-   playbooks and emit the top hits as ``hookSpecificOutput.additionalContext``
+2. Use the prompt text as a search query against reflexio's preferences +
+   skills and emit the top hits as ``hookSpecificOutput.additionalContext``
    so Claude sees relevant rules before planning the response.
 
 The PreToolUse hook does similar retrieval keyed to tool-call text; this

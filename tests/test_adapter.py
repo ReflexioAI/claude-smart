@@ -16,11 +16,13 @@ class _FakeClient:
         self,
         *,
         publish_ok: bool = True,
-        playbook_resp=None,
+        user_playbook_resp=None,
+        agent_playbook_resp=None,
         profile_resp=None,
     ):
         self._publish_ok = publish_ok
-        self._playbook_resp = playbook_resp
+        self._user_playbook_resp = user_playbook_resp
+        self._agent_playbook_resp = agent_playbook_resp
         self._profile_resp = profile_resp
         self.published_kwargs: dict[str, Any] = {}
 
@@ -30,7 +32,10 @@ class _FakeClient:
             raise RuntimeError("reflexio unreachable")
 
     def search_user_playbooks(self, **_kw):
-        return self._playbook_resp
+        return self._user_playbook_resp
+
+    def search_agent_playbooks(self, **_kw):
+        return self._agent_playbook_resp
 
     def search_user_profiles(self, **_kw):
         return self._profile_resp
@@ -52,7 +57,7 @@ def test_publish_returns_true_on_success() -> None:
         force_extraction=True,
     )
     assert ok is True
-    # After the project-scoped-profiles refactor (commit 88cb150), reflexio's
+    # After the project-scoped preferences refactor (commit 88cb150), reflexio's
     # ``user_id`` is the project slug and ``session_id`` is sent separately.
     assert client.published_kwargs["user_id"] == "p1"
     assert client.published_kwargs["session_id"] == "s1"
@@ -76,10 +81,35 @@ def test_publish_trivially_true_when_no_interactions() -> None:
     assert a.publish(session_id="s", project_id="p", interactions=[]) is True
 
 
-def test_fetch_playbooks_reads_user_playbooks_field() -> None:
+def test_fetch_user_playbooks_reads_user_playbooks_field() -> None:
     resp = SimpleNamespace(user_playbooks=[{"content": "rule"}])
-    a = _adapter_with(_FakeClient(playbook_resp=resp))
-    assert a.fetch_playbooks() == [{"content": "rule"}]
+    a = _adapter_with(_FakeClient(user_playbook_resp=resp))
+    assert a.fetch_user_playbooks(project_id="p1") == [{"content": "rule"}]
+
+
+def test_fetch_agent_playbooks_reads_agent_playbooks_field() -> None:
+    resp = SimpleNamespace(
+        agent_playbooks=[{"content": "global rule", "playbook_status": "approved"}]
+    )
+    a = _adapter_with(_FakeClient(agent_playbook_resp=resp))
+    assert a.fetch_agent_playbooks() == [
+        {"content": "global rule", "playbook_status": "approved"}
+    ]
+
+
+def test_fetch_agent_playbooks_filters_rejected_status() -> None:
+    resp = SimpleNamespace(
+        agent_playbooks=[
+            {"content": "pending", "playbook_status": "pending"},
+            {"content": "approved", "playbook_status": "approved"},
+            {"content": "rejected", "playbook_status": "rejected"},
+        ]
+    )
+    a = _adapter_with(_FakeClient(agent_playbook_resp=resp))
+    assert a.fetch_agent_playbooks() == [
+        {"content": "pending", "playbook_status": "pending"},
+        {"content": "approved", "playbook_status": "approved"},
+    ]
 
 
 def test_fetch_profiles_reads_user_profiles_field() -> None:
@@ -89,8 +119,15 @@ def test_fetch_profiles_reads_user_profiles_field() -> None:
 
 
 def test_fetch_helpers_return_empty_on_unknown_shape() -> None:
-    a = _adapter_with(_FakeClient(playbook_resp=object(), profile_resp=object()))
-    assert a.fetch_playbooks() == []
+    a = _adapter_with(
+        _FakeClient(
+            user_playbook_resp=object(),
+            agent_playbook_resp=object(),
+            profile_resp=object(),
+        )
+    )
+    assert a.fetch_user_playbooks(project_id="p1") == []
+    assert a.fetch_agent_playbooks() == []
     assert a.fetch_project_profiles("p1") == []
 
 
@@ -108,124 +145,242 @@ def test_publish_returns_false_when_client_unavailable(monkeypatch) -> None:
 
 
 # -----------------------------------------------------------------------------
-# Query-aware search
+# Query-aware unified search and broad fetch
 # -----------------------------------------------------------------------------
 
 
 class _RecordingClient:
     """Captures kwargs of every search call; returns the canned response."""
 
-    def __init__(self, *, playbook_resp=None, profile_resp=None):
-        self._playbook_resp = playbook_resp
+    def __init__(
+        self,
+        *,
+        unified_resp=None,
+        user_playbook_resp=None,
+        agent_playbook_resp=None,
+        profile_resp=None,
+    ):
+        self._unified_resp = unified_resp
+        self._user_playbook_resp = user_playbook_resp
+        self._agent_playbook_resp = agent_playbook_resp
         self._profile_resp = profile_resp
-        self.playbook_kwargs: dict[str, Any] = {}
+        self.search_kwargs: dict[str, Any] = {}
+        self.search_call_count = 0
+        self.user_playbook_kwargs: dict[str, Any] = {}
+        self.agent_playbook_kwargs: dict[str, Any] = {}
         self.profile_kwargs: dict[str, Any] = {}
 
+    def search(self, **kwargs):
+        self.search_kwargs = kwargs
+        self.search_call_count += 1
+        return self._unified_resp
+
     def search_user_playbooks(self, **kwargs):
-        self.playbook_kwargs = kwargs
-        return self._playbook_resp
+        self.user_playbook_kwargs = kwargs
+        return self._user_playbook_resp
+
+    def search_agent_playbooks(self, **kwargs):
+        self.agent_playbook_kwargs = kwargs
+        return self._agent_playbook_resp
 
     def search_user_profiles(self, **kwargs):
         self.profile_kwargs = kwargs
         return self._profile_resp
 
 
-def test_search_playbooks_passes_query_and_hybrid_mode() -> None:
+def test_search_all_calls_unified_endpoint_with_project_scope() -> None:
     client = _RecordingClient(
-        playbook_resp=SimpleNamespace(user_playbooks=[{"content": "rule"}])
+        unified_resp=SimpleNamespace(
+            user_playbooks=[{"content": "u"}],
+            agent_playbooks=[
+                {"content": "a-pending", "playbook_status": "pending"},
+                {"content": "a-approved", "playbook_status": "approved"},
+                {"content": "a-rejected", "playbook_status": "rejected"},
+            ],
+            profiles=[{"content": "p"}],
+        )
     )
     a = _adapter_with(client)
-    result = a.search_playbooks(query="config.toml", top_k=3)
-    assert result == [{"content": "rule"}]
-    # Playbooks are retrieved globally: no agent_version / user_id filter.
-    assert "agent_version" not in client.playbook_kwargs
-    assert client.playbook_kwargs["user_id"] is None
-    assert client.playbook_kwargs["query"] == "config.toml"
-    assert client.playbook_kwargs["top_k"] == 3
-    assert client.playbook_kwargs["search_mode"] == "hybrid"
-    assert client.playbook_kwargs["status_filter"] == [None]
+    user_pb, agent_pb, profiles = a.search_all(
+        project_id="proj", query="config.toml", top_k=3
+    )
+    assert user_pb == [{"content": "u"}]
+    assert agent_pb == [
+        {"content": "a-pending", "playbook_status": "pending"},
+        {"content": "a-approved", "playbook_status": "approved"},
+    ]
+    assert profiles == [{"content": "p"}]
+    # user_id scopes user playbooks + preferences; agent playbooks have no
+    # user_id field so the same filter no-ops on that leg server-side.
+    assert client.search_kwargs["user_id"] == "proj"
+    assert client.search_kwargs["agent_version"] == "claude-code"
+    assert client.search_kwargs["query"] == "config.toml"
+    assert client.search_kwargs["top_k"] == 3
+    assert client.search_kwargs["search_mode"] == "hybrid"
+    assert client.search_kwargs["entity_types"] == [
+        "profiles",
+        "user_playbooks",
+        "agent_playbooks",
+    ]
+    assert client.search_kwargs["agent_playbook_status_filter"] == [
+        "pending",
+        "approved",
+    ]
+    assert client.search_kwargs["enable_agent_answer"] is False
 
 
-def test_search_profiles_scopes_to_project_id() -> None:
-    """After commit 88cb150 profiles are project-scoped: user_id = project slug."""
+def test_search_all_makes_one_client_call() -> None:
+    """Server-side fan-out: a single /api/search hits all three legs."""
     client = _RecordingClient(
-        profile_resp=SimpleNamespace(user_profiles=[{"content": "pref"}])
+        unified_resp=SimpleNamespace(
+            user_playbooks=[], agent_playbooks=[], profiles=[]
+        )
     )
     a = _adapter_with(client)
-    assert a.search_profiles(project_id="proj", query="q") == [{"content": "pref"}]
-    assert client.profile_kwargs["user_id"] == "proj"
-    assert client.profile_kwargs["query"] == "q"
+    a.search_all(project_id="p", query="q")
+    assert client.search_call_count == 1
 
 
-def test_search_both_returns_both_lists() -> None:
+def test_search_all_returns_three_empty_lists_on_error() -> None:
+    class BrokenSearch:
+        def search(self, **_kw):
+            raise RuntimeError("unified search down")
+
+    a = _adapter_with(BrokenSearch())
+    user_pb, agent_pb, profiles = a.search_all(project_id="p", query="q")
+    assert (user_pb, agent_pb, profiles) == ([], [], [])
+
+
+def test_search_all_returns_three_empty_lists_when_client_unavailable(
+    monkeypatch,
+) -> None:
+    a = reflexio_adapter.Adapter()
+    monkeypatch.setattr(a, "_get_client", lambda: None)
+    assert a.search_all(project_id="p", query="q") == ([], [], [])
+
+
+def test_fetch_all_returns_three_lists() -> None:
     client = _RecordingClient(
-        playbook_resp=SimpleNamespace(user_playbooks=[{"content": "r"}]),
+        user_playbook_resp=SimpleNamespace(user_playbooks=[{"content": "u"}]),
+        agent_playbook_resp=SimpleNamespace(agent_playbooks=[{"content": "a"}]),
         profile_resp=SimpleNamespace(user_profiles=[{"content": "p"}]),
     )
     a = _adapter_with(client)
-    playbooks, profiles = a.search_both(project_id="proj", query="q", top_k=2)
-    assert playbooks == [{"content": "r"}]
+    user_pb, agent_pb, profiles = a.fetch_all(project_id="proj")
+    assert user_pb == [{"content": "u"}]
+    assert agent_pb == [{"content": "a"}]
     assert profiles == [{"content": "p"}]
-    # Both legs see the same query.
-    assert client.playbook_kwargs["query"] == "q"
-    assert client.profile_kwargs["query"] == "q"
+    # User playbooks scoped to project_id; agent playbooks have no user_id
+    # filter (global); preferences use empty query for recency fallback.
+    assert client.user_playbook_kwargs["user_id"] == "proj"
+    assert "user_id" not in client.agent_playbook_kwargs
+    assert client.agent_playbook_kwargs["agent_version"] == "claude-code"
+    assert client.profile_kwargs["query"] == ""
 
 
-def test_search_both_runs_legs_in_parallel() -> None:
-    """Serial would be ~0.4s; parallel should be ~0.2s."""
+def test_fetch_all_runs_legs_in_parallel() -> None:
+    """Serial would be ~0.6s across three legs; parallel should stay near 0.2s."""
 
     class SlowClient:
         def search_user_playbooks(self, **_kw):
             time.sleep(0.2)
             return SimpleNamespace(user_playbooks=[])
 
-        def search_profiles(self, **_kw):
+        def search_agent_playbooks(self, **_kw):
+            time.sleep(0.2)
+            return SimpleNamespace(agent_playbooks=[])
+
+        def search_user_profiles(self, **_kw):
             time.sleep(0.2)
             return SimpleNamespace(user_profiles=[])
 
     a = _adapter_with(SlowClient())
     t0 = time.perf_counter()
-    a.search_both(project_id="p", query="q")
+    a.fetch_all(project_id="p")
     elapsed = time.perf_counter() - t0
     assert elapsed < 0.35, f"legs did not run in parallel (elapsed={elapsed:.3f}s)"
 
 
-def test_search_both_absorbs_one_leg_failure() -> None:
+def test_fetch_all_absorbs_per_leg_failure() -> None:
     class HalfBroken:
         def search_user_playbooks(self, **_kw):
-            raise RuntimeError("playbook search down")
+            raise RuntimeError("user playbook search down")
+
+        def search_agent_playbooks(self, **_kw):
+            return SimpleNamespace(agent_playbooks=[{"content": "a"}])
 
         def search_user_profiles(self, **_kw):
             return SimpleNamespace(user_profiles=[{"content": "p"}])
 
     a = _adapter_with(HalfBroken())
-    playbooks, profiles = a.search_both(project_id="p", query="q")
-    assert playbooks == []
+    user_pb, agent_pb, profiles = a.fetch_all(project_id="p")
+    assert user_pb == []
+    assert agent_pb == [{"content": "a"}]
     assert profiles == [{"content": "p"}]
 
 
-def test_fetch_both_parallelizes_broad_fetch() -> None:
+def test_fetch_user_playbooks_passes_project_id_and_default_top_k() -> None:
+    """SessionStart's broad inject used to be 50; narrowed because PreToolUse carries specificity."""
     client = _RecordingClient(
-        playbook_resp=SimpleNamespace(user_playbooks=[{"content": "r"}]),
-        profile_resp=SimpleNamespace(user_profiles=[{"content": "p"}]),
+        user_playbook_resp=SimpleNamespace(user_playbooks=[])
     )
     a = _adapter_with(client)
-    playbooks, profiles = a.fetch_both(project_id="proj")
-    assert playbooks == [{"content": "r"}]
-    assert profiles == [{"content": "p"}]
-    # Broad fetch path does NOT set `query` — confirm the empty-query recency fallback is used.
-    assert "query" not in client.playbook_kwargs
-    assert client.profile_kwargs["query"] == ""
+    a.fetch_user_playbooks(project_id="proj")
+    assert client.user_playbook_kwargs["user_id"] == "proj"
+    assert client.user_playbook_kwargs["top_k"] == 10
+    assert client.user_playbook_kwargs["status_filter"] == [None]
 
 
-def test_fetch_playbooks_default_top_k_is_tightened() -> None:
-    """SessionStart's broad inject used to be 50; narrowed because PreToolUse carries specificity."""
-    client = _RecordingClient(playbook_resp=SimpleNamespace(user_playbooks=[]))
+def test_fetch_agent_playbooks_is_global() -> None:
+    client = _RecordingClient(
+        agent_playbook_resp=SimpleNamespace(agent_playbooks=[])
+    )
     a = _adapter_with(client)
-    a.fetch_playbooks()
-    assert client.playbook_kwargs["top_k"] == 10
-    # Retrieval is global: no agent_version filter.
-    assert "agent_version" not in client.playbook_kwargs
+    a.fetch_agent_playbooks()
+    assert "user_id" not in client.agent_playbook_kwargs
+    assert client.agent_playbook_kwargs["agent_version"] == "claude-code"
+    assert client.agent_playbook_kwargs["status_filter"] == [None]
+    assert client.agent_playbook_kwargs["top_k"] == 10
+
+
+def test_search_all_filters_rejected_locally() -> None:
+    """Belt-and-suspenders: if the unified search backend ignores
+    ``agent_playbook_status_filter`` (older reflexio, future regression), the
+    plugin still drops REJECTED agent playbooks before they reach injection."""
+    client = _RecordingClient(
+        unified_resp=SimpleNamespace(
+            user_playbooks=[{"content": "u"}],
+            agent_playbooks=[
+                {"content": "approved", "playbook_status": "approved"},
+                {"content": "rejected", "playbook_status": "rejected"},
+                {"content": "pending", "playbook_status": "pending"},
+            ],
+            profiles=[],
+        )
+    )
+    a = _adapter_with(client)
+    _, agent_pb, _ = a.search_all(project_id="p", query="q")
+    contents = [pb["content"] for pb in agent_pb]
+    assert contents == ["approved", "pending"]
+    assert "rejected" not in contents
+
+
+def test_fetch_agent_playbooks_filters_rejected_locally() -> None:
+    """Same defensive filter on the no-query SessionStart path."""
+
+    class StubClient:
+        def search_agent_playbooks(self, **_kw):
+            return SimpleNamespace(
+                agent_playbooks=[
+                    {"content": "approved", "playbook_status": "approved"},
+                    {"content": "rejected", "playbook_status": "REJECTED"},  # case-insensitive
+                ]
+            )
+
+    a = _adapter_with(StubClient())
+    agent_pb = a.fetch_agent_playbooks()
+    contents = [pb["content"] for pb in agent_pb]
+    assert contents == ["approved"]
 
 
 # -----------------------------------------------------------------------------
@@ -335,7 +490,7 @@ def test_apply_optimizer_defaults_writes_required_fields() -> None:
     assert opt.optimize_agent_playbooks is True
     assert opt.auto_update_user_playbooks is True
     assert opt.min_commit_windows == 1
-    assert opt.max_metric_calls == 5
+    assert opt.max_metric_calls == 15
     assert opt.assistant_script_path == "/venv/bin/assistant"
     assert opt.assistant_script_args == []
     assert opt.webhook_url is None
@@ -349,7 +504,7 @@ def test_apply_optimizer_defaults_skips_set_when_values_match() -> None:
         optimize_agent_playbooks=True,
         auto_update_user_playbooks=True,
         min_commit_windows=1,
-        max_metric_calls=5,
+        max_metric_calls=15,
         assistant_script_path="/venv/bin/assistant",
         assistant_script_args=[],
         webhook_url=None,

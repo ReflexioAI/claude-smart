@@ -2,7 +2,7 @@
 """cs-cite — claude-smart citation tool.
 
 Claude invokes this via Bash at the end of a reply when an injected
-playbook or profile materially shaped the response. The script silently
+skill or preference materially shaped the response. The script silently
 validates the id tokens and exits; the Stop hook reads the citation IDs
 off the Bash ``tool_use`` block when it scans the session transcript —
 no session_id, no sidecar file, no state. The confirmation line
@@ -13,9 +13,9 @@ so the model has a natural, bounded turn-closer after the tool returns.
 Usage:
     cs-cite <id> [<id>...]            # space- or comma-separated
 
-Accepts one or more rank ids: ``p<N>[-<fp>]`` for profile preferences
-and ``r<N>[-<fp>]`` for playbook rules, as emitted in ``[cs:p1-ab12]``
-/ ``[cs:r2-cd34]`` tags. The optional ``-<fp>`` suffix is a 1–4 char
+Accepts one or more rank ids: ``p<N>[-<fp>]`` for preferences
+and ``s<N>[-<fp>]`` for skills, as emitted in ``[cs:p1-ab12]``
+/ ``[cs:s2-cd34]`` tags. The optional ``-<fp>`` suffix is a 1–4 char
 alphanumeric fingerprint of the underlying real id. Tokens may be
 separated by commas and/or whitespace. An optional ``cs:`` prefix is
 stripped for convenience since the model often copies the tag
@@ -27,11 +27,11 @@ from __future__ import annotations
 import re
 import sys
 
-_TOKEN_RE = re.compile(r"^(?:cs:)?([pr]\d+(?:-[a-z0-9]{1,4})?)$", re.IGNORECASE)
+_TOKEN_RE = re.compile(r"^(?:cs:)?([ps]\d+(?:-[a-z0-9]{1,4})?)$", re.IGNORECASE)
 _SPLIT_RE = re.compile(r"[,\s]+")
 _USAGE = (
     "cs-cite: expected one or more rank ids "
-    "(e.g. `cs-cite p1-ab12,r2-cd34` or `cs-cite cs:p1-ab12`)\n"
+    "(e.g. `cs-cite p1-ab12,s2-cd34` or `cs-cite cs:p1-ab12`)\n"
 )
 
 
@@ -65,7 +65,7 @@ def main() -> int:
     if bad:
         sys.stderr.write(
             "cs-cite: ignoring invalid tokens (expected rank ids like "
-            f"`p1` or `r2`, optionally 'cs:'-prefixed): {', '.join(bad)}\n"
+            f"`p1` or `s2`, optionally 'cs:'-prefixed): {', '.join(bad)}\n"
         )
     if not ids:
         sys.stderr.write(_USAGE)

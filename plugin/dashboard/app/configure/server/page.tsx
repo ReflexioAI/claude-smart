@@ -40,19 +40,19 @@ export default function ConfigureServerPage() {
 
   useEffect(() => {
     let alive = true;
-    setSrvLoading(true);
-    setSrvError(null);
-    fetchSrvConfig()
-      .then((data) => {
+    async function load() {
+      setSrvLoading(true);
+      setSrvError(null);
+      try {
+        const data = await fetchSrvConfig();
         if (alive) setSrvConfig(data);
-      })
-      .catch((e) => {
-        if (alive)
-          setSrvError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
+      } catch (e) {
+        if (alive) setSrvError(e instanceof Error ? e.message : String(e));
+      } finally {
         if (alive) setSrvLoading(false);
-      });
+      }
+    }
+    void load();
     return () => {
       alive = false;
     };
@@ -198,9 +198,9 @@ export default function ConfigureServerPage() {
             </div>
 
             <div className="space-y-2">
-              <Label>Profile focus area</Label>
+              <Label>Preference focus area</Label>
               <p className="text-xs text-muted-foreground">
-                What the user-profile extractor should focus on.
+                What the preference extractor should focus on.
               </p>
               {srvConfig.profile_extractor_configs &&
               srvConfig.profile_extractor_configs.length > 0 ? (
@@ -219,15 +219,15 @@ export default function ConfigureServerPage() {
                 />
               ) : (
                 <div className="text-xs text-muted-foreground italic">
-                  No profile extractor configured on the server.
+                  No preference extractor configured on the server.
                 </div>
               )}
             </div>
 
             <div className="space-y-2">
-              <Label>Playbook focus area</Label>
+              <Label>Project-specific skill focus area</Label>
               <p className="text-xs text-muted-foreground">
-                What the user-playbook extractor should focus on.
+                What the project-specific skill extractor should focus on.
               </p>
               {srvConfig.user_playbook_extractor_configs &&
               srvConfig.user_playbook_extractor_configs.length > 0 ? (
@@ -246,7 +246,7 @@ export default function ConfigureServerPage() {
                 />
               ) : (
                 <div className="text-xs text-muted-foreground italic">
-                  No playbook extractor configured on the server.
+                  No project-specific skill extractor configured on the server.
                 </div>
               )}
             </div>

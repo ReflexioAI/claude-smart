@@ -16,17 +16,18 @@ Internal notes for maintainers of `claude-smart`. End-user install instructions 
 | `plugin/.claude-plugin/plugin.json` | Plugin metadata read by Claude Code |
 | `.claude-plugin/marketplace.json` | Marketplace entry — `claude plugin marketplace add` reads this |
 | `reflexio/` | Submodule — Apache 2.0, storage + search + extraction backend |
-| `plugin/dashboard/` | Next.js management UI for interactions, profiles, playbooks, configuration |
+| `plugin/dashboard/` | Next.js management UI for interactions, preferences, skills, configuration |
 | `Makefile` | Release automation |
 
 ## Environment variables
 
-Tunables read by the plugin at runtime. Most users don't need to touch these — the installer writes the local-provider flags to `~/.reflexio/.env` and sensible defaults cover the rest.
+Tunables read by the plugin at runtime. Most users don't need to touch these — the installer writes the local-provider flags to `~/.reflexio/.env` and sensible defaults cover the rest. Hook-side variables must be set in the Claude Code process environment, such as a project `.claude/settings.local.json` `env` block or user-scoped `~/.claude/settings.json`, because hooks do not read Reflexio's backend `.env` file.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CLAUDE_SMART_USE_LOCAL_CLI` | `0` (installer sets `1`) | Route generation through the local `claude` CLI. Written to `~/.reflexio/.env` by `claude-smart install`. |
 | `CLAUDE_SMART_USE_LOCAL_EMBEDDING` | `0` (installer sets `1`) | Use the in-process ONNX embedder (requires `chromadb`). Written to `~/.reflexio/.env` by `claude-smart install`. |
+| `CLAUDE_SMART_ENABLE_OPTIMIZER` | enabled unless set to `0` | Hook-side env var that controls shared skill optimization and rollups during `SessionStart`. Set it in Claude Code settings, not `~/.reflexio/.env`. |
 | `CLAUDE_SMART_CLI_PATH` | `shutil.which("claude")` | Override the path to the `claude` binary. |
 | `CLAUDE_SMART_STATE_DIR` | `~/.claude-smart/sessions/` | Where the per-session JSONL buffer lives. |
 | `CLAUDE_SMART_BACKEND_AUTOSTART` | `1` | Set to `0` to stop the SessionStart hook from spawning the reflexio backend on `localhost:8071`. |
@@ -41,12 +42,23 @@ claude-smart uses an in-process ONNX embedder (Chroma's `all-MiniLM-L6-v2`, 384-
 
 If you still want to use a cloud embedding provider (OpenAI, Gemini, etc.), omit `CLAUDE_SMART_USE_LOCAL_EMBEDDING` and set the corresponding API key in `~/.reflexio/.env` — reflexio will fall back to its standard provider-priority chain.
 
-## Scope: profile vs. playbook
+## Public terminology and storage names
 
-Profiles and playbooks have different scopes:
+User-facing surfaces should use these names:
 
-- **Profile** (reflexio's `user_id = project_id`) — project-scoped personal preferences ("prefers anyio over asyncio"). Free-form bullets.
-- **Playbook** (reflexio's `agent_version = project_id` on *write*; no filter on *read*) — rules with trigger and rationale ("when writing a script, use pathlib — os.path is error-prone"). Writes tag each rule by project for provenance, but `fetch_playbooks` / `search_playbooks` in `plugin/src/claude_smart/reflexio_adapter.py` drop the `agent_version` filter on retrieval, so lessons learned in one project surface in every other project on the same machine.
+- **Preference** — project-scoped facts or preferences ("prefers anyio over asyncio"). Free-form bullets.
+- **Project-specific skill** — project-scoped rules with trigger and rationale ("when writing a script, use pathlib because os.path is error-prone").
+- **Shared skill** — cross-project rollups of project-specific skills. Shared skills can be auto generated, persisted, or rejected.
+
+Reflexio still exposes legacy storage/API names, and claude-smart keeps those identifiers in code because they are wire-format names:
+
+| Public term | Reflexio storage/API term |
+| --- | --- |
+| Preference | `user_profiles`, `profile_id`, `UserProfile` |
+| Project-specific skill | `user_playbooks`, `user_playbook_id`, `UserPlaybook` |
+| Shared skill | `agent_playbooks`, `agent_playbook_id`, `AgentPlaybook` |
+
+Do not use the storage/API terms in README copy, dashboard labels, slash-command descriptions, or injected context unless documenting raw Reflexio fields for maintainers.
 
 ## Dashboard
 
@@ -56,12 +68,13 @@ claude-smart has learned:
 - **Interactions** — session list + transcript reader backed by
   `~/.claude-smart/sessions/*.jsonl` (read server-side in
   `plugin/dashboard/app/api/sessions/route.ts`).
-- **Profiles / Playbooks** — reflexio data fetched via a proxy route
+- **Preferences / Skills** — reflexio data fetched via a proxy route
   (`plugin/dashboard/app/api/reflexio/[...path]/route.ts`) that forwards to the URL
   configured in the top bar; defaults to `http://localhost:8071`.
-- **Configure** — reads and writes `~/.reflexio/.env`, but only the known
-  claude-smart keys. Unknown keys (API secrets, user additions) are preserved
-  on write and never returned to the browser.
+- **Configure** — reads and writes backend/provider settings in `~/.reflexio/.env`
+  and hook-side Claude Code settings in `.claude/settings.local.json`. Unknown
+  `.env` keys (API secrets, user additions) are preserved on write and never
+  returned to the browser.
 
 Stack mirrors `reflexio/docs/` exactly (Next.js 16, Tailwind v4, shadcn
 base-nova, Base UI primitives, Lucide icons, `next-themes`). Runs on port
@@ -371,7 +384,7 @@ Inside Claude Code:
 /show
 ```
 
-On a fresh project: `_No playbook or profiles yet for project <name>._`. Have a conversation, correct Claude on something (e.g. `"no, don't use X — use Y"`), then run `/learn` — this flags the previous turn as a correction and forces extraction immediately. After ~20–30 seconds, `/show` surfaces the new rule.
+On a fresh project: `_No skills or preferences yet for project <name>._`. Have a conversation, correct Claude on something (e.g. `"no, don't use X — use Y"`), then run `/learn` — this flags the previous turn as a correction and forces extraction immediately. After ~20–30 seconds, `/show` surfaces the new skill or preference.
 
 ### Verifying which mode is live
 

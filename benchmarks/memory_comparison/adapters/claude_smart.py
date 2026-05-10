@@ -1,10 +1,10 @@
 """claude-smart retrieval adapter for the benchmark.
 
 Reuses ``claude_smart.reflexio_adapter.Adapter`` to query the reflexio
-backend for the playbooks and profiles extracted during a scenario run.
+backend for the skills and preferences extracted during a scenario run.
 Publish is non-blocking (matches production), so the adapter exposes a
-``wait_for_extraction`` poll that waits until at least one profile or
-playbook materializes for the scenario.
+``wait_for_extraction`` poll that waits until at least one preference or
+project-specific skill materializes for the scenario.
 """
 
 from __future__ import annotations
@@ -38,31 +38,32 @@ def wait_for_extraction(
     still need to know when the data is queryable.
 
     Args:
-        project_dir (Path): Scenario project / reflexio agent_version.
-        session_id (str): Reflexio user_id and session_id (kept for symmetry
-            with the claude-mem adapter; no longer consumed by ``fetch_both``).
+        project_dir (Path): Scenario project_id (used as reflexio user_id).
+        session_id (str): Reflexio session_id (kept for symmetry with the
+            claude-mem adapter; not consumed by the read path).
         timeout_s (float): Max wait budget before giving up.
 
     Returns:
-        bool: True once any profile or playbook has materialized, False on
-            timeout. Callers still run their scored query either way.
+        bool: True once any preference or project-specific skill has
+            materialized, False on timeout. Callers still run their scored
+            query either way.
     """
     _ = session_id
     deadline = time.monotonic() + timeout_s
     adapter = Adapter()
     target = str(project_dir)
     while time.monotonic() < deadline:
-        # Profiles are project-scoped via fetch_project_profiles; playbooks
-        # are global, so we filter post-hoc by agent_version. Either signal
-        # is enough to confirm THIS scenario's extraction has produced
-        # something.
-        playbooks, profiles = adapter.fetch_both(
+        # Both user playbooks and preferences are scoped to this scenario via
+        # user_id=project_id (the publish path writes the same key). Agent
+        # playbooks are global; we don't gate readiness on them here because
+        # they're produced asynchronously by the optimizer well after extraction.
+        user_pb, _agent_pb, profiles = adapter.fetch_all(
             project_id=target,
-            playbook_top_k=50,
+            user_playbook_top_k=50,
+            agent_playbook_top_k=1,
             profile_top_k=1,
         )
-        scoped_playbooks = [p for p in playbooks if _get(p, "agent_version") == target]
-        if scoped_playbooks or profiles:
+        if user_pb or profiles:
             return True
         time.sleep(1.0)
     _LOGGER.warning(
@@ -74,12 +75,12 @@ def wait_for_extraction(
 
 
 def _render(items: list[Any], label: str) -> list[str]:
-    """Flatten playbook/profile records into plain strings for scoring.
+    """Flatten skill/preference records into plain strings for scoring.
 
     Args:
         items (list[Any]): Records returned by ``Adapter.search_*``.
-        label (str): Short tag (``playbook`` or ``profile``) prepended to each
-            line so the judge can tell them apart.
+        label (str): Storage tag (``playbook`` or ``profile``) prepended to
+            each line so the judge can tell them apart.
 
     Returns:
         list[str]: One string per item, non-empty fields joined.
@@ -113,33 +114,34 @@ def retrieve(
     probe_query: str,
     top_k: int = 5,
 ) -> list[str]:
-    """Search playbooks and profiles via reflexio, return flat text list.
+    """Search skills and preferences via reflexio, return flat text list.
 
     Both legs of the fan-out tolerate failure (the adapter returns ``[]`` on
     backend error), so this function never raises.
 
     Args:
         project_dir (Path): Scenario scratch dir = project_id.
-        session_id (str): Claude session id = reflexio user_id.
+        session_id (str): Claude session id (unused by retrieval).
         probe_query (str): Retrieval query from the scenario.
-        top_k (int): Results per side (playbooks, profiles).
+        top_k (int): Results per entity type.
 
     Returns:
-        list[str]: Rendered memory lines, playbooks first then profiles.
+        list[str]: Rendered memory lines, shared skills first, then
+            project-specific skills, then preferences.
     """
     _ = session_id
     adapter = Adapter()
-    # Pull more than top_k because playbooks are stored user-global (scoped
-    # only by agent_version, not project_id). We scope post-hoc to the
-    # scenario so contamination from the user's real claude-smart history
-    # doesn't dominate retrieval.
-    playbooks, profiles = adapter.search_both(
+    # User playbooks and preferences are scoped to this scenario server-side
+    # (user_id=project_id mirrors the publish path). Agent playbooks are
+    # global by design — they're aggregated cross-project lessons and join
+    # the result set unfiltered.
+    user_pb, agent_pb, profiles = adapter.search_all(
         project_id=str(project_dir),
         query=probe_query,
-        top_k=max(top_k * 6, 30),
+        top_k=top_k,
     )
-    target = str(project_dir)
-    scoped_playbooks = [p for p in playbooks if _get(p, "agent_version") == target][
-        :top_k
-    ]
-    return _render(scoped_playbooks, "playbook") + _render(profiles, "profile")
+    return (
+        _render(agent_pb, "playbook")
+        + _render(user_pb, "playbook")
+        + _render(profiles, "profile")
+    )

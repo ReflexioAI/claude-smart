@@ -9,7 +9,7 @@ Exposes the following subcommands:
 - ``uninstall``: remove the plugin from Claude Code via the native plugin
   CLI. Local data under ``~/.reflexio/`` and ``~/.claude-smart/`` is left
   in place.
-- ``show``: print the current project playbook and project user profiles
+- ``show``: print current project-specific skills and project preferences
   (as markdown).
 - ``learn``: publish unpublished interactions and force reflexio
   extraction now over the active session buffer.
@@ -187,28 +187,36 @@ def cmd_uninstall(_args: argparse.Namespace) -> int:
 
 
 def cmd_show(args: argparse.Namespace) -> int:
-    """Print the global playbook and this project's user profiles.
+    """Print this project's skills + preferences, plus globally-shared skills.
 
-    Playbooks are fetched globally (shared across every project) so lessons
-    learned anywhere are visible here. Profiles stay scoped to this project
-    (resolved from cwd via ``ids.resolve_project_id``).
+    User playbooks (this project's skills) and preferences are scoped via
+    ``project_id`` (resolved from cwd via ``ids.resolve_project_id``).
+    Agent playbooks are global by construction — they're aggregated across
+    every project, so lessons learned anywhere surface here.
 
     Args:
         args (argparse.Namespace): Parsed CLI args. Honors ``args.project``
-            (override project id for the profile fetch).
+            (override project id for the project-scoped fetches).
 
     Returns:
         int: 0 on success.
     """
     project_id = args.project or ids.resolve_project_id()
     adapter = Adapter()
-    playbooks = adapter.fetch_playbooks(top_k=3)
-    profiles = adapter.fetch_project_profiles(project_id, top_k=3)
+    user_playbooks, agent_playbooks, profiles = adapter.fetch_all(
+        project_id=project_id,
+        user_playbook_top_k=3,
+        agent_playbook_top_k=3,
+        profile_top_k=3,
+    )
     md = context_format.render(
-        project_id=project_id, playbooks=playbooks, profiles=profiles
+        project_id=project_id,
+        user_playbooks=user_playbooks,
+        agent_playbooks=agent_playbooks,
+        profiles=profiles,
     )
     sys.stdout.write(
-        md or f"_No playbook or profiles yet for project `{project_id}`._\n"
+        md or f"_No skills or preferences yet for project `{project_id}`._\n"
     )
     return 0
 
@@ -763,7 +771,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sh = sub.add_parser(
         "show",
-        help="Show the current project playbook and project user profiles",
+        help="Show current project-specific skills and project preferences",
     )
     sh.add_argument("--project", help="Override project id")
     sh.set_defaults(func=cmd_show)

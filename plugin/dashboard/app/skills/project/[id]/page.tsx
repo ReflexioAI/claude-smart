@@ -12,14 +12,11 @@ import {
   X,
   Copy,
   Check,
+  BookMarked,
   Hash,
-  Clock,
-  CalendarClock,
-  FileText,
-  Sparkles,
-  Tags,
-  Braces,
   FolderGit2,
+  Clock,
+  FileText,
 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
@@ -31,42 +28,61 @@ import { reflexio } from "@/lib/reflexio-client";
 import { useSettings } from "@/hooks/use-settings";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { statusLabel as status } from "@/lib/status";
-import type { UserProfile } from "@/lib/types";
+import { statusLabel } from "@/lib/status";
+import type { UserPlaybook } from "@/lib/types";
 
-export default function ProfileDetailPage({
+type FormState = { content: string; trigger: string; rationale: string };
+
+function toForm(p: UserPlaybook): FormState {
+  return {
+    content: p.content,
+    trigger: p.trigger ?? "",
+    rationale: p.rationale ?? "",
+  };
+}
+
+function displayName(name: string | null | undefined): string | null {
+  if (!name) return null;
+  if (name === "default_playbook_extractor") return "project-specific skill";
+  return name;
+}
+
+export default function ProjectSkillDetailPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { id: rawId } = use(params);
-  const id = decodeURIComponent(rawId);
+  const { id } = use(params);
   const router = useRouter();
   const { reflexioUrl } = useSettings();
 
-  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [playbook, setPlaybook] = useState<UserPlaybook | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [content, setContent] = useState("");
+  const [form, setForm] = useState<FormState>({
+    content: "",
+    trigger: "",
+    rationale: "",
+  });
 
   useEffect(() => {
     let cancelled = false;
     reflexio
-      .getAllProfiles({ reflexioUrl, limit: 500 })
+      .getUserPlaybooks({ reflexioUrl })
       .then((res) => {
         if (cancelled) return;
-        const found = (res.user_profiles ?? []).find(
-          (p) => p.profile_id === id,
+        const found = (res.user_playbooks ?? []).find(
+          (p) => String(p.user_playbook_id) === id,
         );
         if (!found) {
           setNotFound(true);
           return;
         }
-        setProfile(found);
-        setContent(found.content);
+        setPlaybook(found);
+        setForm(toForm(found));
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -76,25 +92,36 @@ export default function ProfileDetailPage({
     };
   }, [id, reflexioUrl]);
 
-  const dirty = useMemo(
-    () => !!profile && profile.content !== content,
-    [profile, content],
-  );
+  const dirty = useMemo(() => {
+    if (!playbook) return false;
+    const orig = toForm(playbook);
+    return (
+      orig.content !== form.content ||
+      orig.trigger !== form.trigger ||
+      orig.rationale !== form.rationale
+    );
+  }, [playbook, form]);
 
   const save = async () => {
-    if (!profile || !dirty) return;
+    if (!playbook || !dirty) return;
     setSaving(true);
     setError(null);
     try {
-      await reflexio.updateUserProfile(
+      await reflexio.updateUserPlaybook(
         {
-          user_id: profile.user_id,
-          profile_id: profile.profile_id,
-          content,
+          user_playbook_id: playbook.user_playbook_id,
+          content: form.content,
+          trigger: form.trigger || null,
+          rationale: form.rationale || null,
         },
         reflexioUrl,
       );
-      setProfile({ ...profile, content });
+      setPlaybook({
+        ...playbook,
+        content: form.content,
+        trigger: form.trigger || null,
+        rationale: form.rationale || null,
+      });
       setEditing(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -104,15 +131,17 @@ export default function ProfileDetailPage({
   };
 
   const remove = async () => {
-    if (!profile) return;
-    if (!confirm("Delete this profile? This cannot be undone.")) return;
+    if (!playbook) return;
+    if (
+      !confirm(
+        `Delete project-specific skill #${playbook.user_playbook_id}? This cannot be undone.`,
+      )
+    )
+      return;
     setDeleting(true);
     try {
-      await reflexio.deleteUserProfile(
-        { user_id: profile.user_id, profile_id: profile.profile_id },
-        reflexioUrl,
-      );
-      router.push("/profiles");
+      await reflexio.deleteUserPlaybook(playbook.user_playbook_id, reflexioUrl);
+      router.push("/skills");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setDeleting(false);
@@ -120,24 +149,24 @@ export default function ProfileDetailPage({
   };
 
   const cancelEdit = () => {
-    if (profile) setContent(profile.content);
+    if (playbook) setForm(toForm(playbook));
     setEditing(false);
   };
 
   if (notFound) {
     return (
       <div className="flex-1 overflow-auto">
-        <PageHeader title="Profile not found" />
+        <PageHeader title="Project-specific skill not found" />
         <div className="p-6 max-w-2xl mx-auto">
           <EmptyState
             icon={AlertTriangle}
-            title="Profile not found"
-            description="It may have been deleted, archived, or moved outside the retrieval window."
+            title="Project-specific skill not found"
+            description="It may have been deleted, archived, or moved outside the first 100 results."
             action={
-              <Link href="/profiles">
+              <Link href="/skills">
                 <Button variant="outline" size="sm">
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Back to profiles
+                  Back to skills
                 </Button>
               </Link>
             }
@@ -147,20 +176,16 @@ export default function ProfileDetailPage({
     );
   }
 
-  const customEntries = profile?.custom_features
-    ? Object.entries(profile.custom_features).filter(
-        ([, v]) => v !== null && v !== undefined && v !== "",
-      )
-    : [];
+  const status = playbook ? statusLabel(playbook) : null;
 
   return (
     <div className="flex-1 overflow-auto">
       <PageHeader
-        title="Profile"
-        description="Project-scoped preference extracted by claude-smart."
+        title={`Project-specific skill #${playbook?.user_playbook_id ?? id}`}
+        description="Project-specific skill learned by claude-smart."
         actions={
           <div className="flex items-center gap-2">
-            <Link href="/profiles">
+            <Link href="/skills">
               <Button variant="outline" size="sm">
                 <ArrowLeft className="h-3.5 w-3.5" />
                 Back
@@ -170,7 +195,7 @@ export default function ProfileDetailPage({
               <Button
                 size="sm"
                 onClick={() => setEditing(true)}
-                disabled={!profile}
+                disabled={!playbook}
               >
                 <Pencil className="h-3.5 w-3.5" />
                 Edit
@@ -186,7 +211,11 @@ export default function ProfileDetailPage({
                   <X className="h-3.5 w-3.5" />
                   Cancel
                 </Button>
-                <Button size="sm" onClick={save} disabled={saving || !dirty}>
+                <Button
+                  size="sm"
+                  onClick={save}
+                  disabled={saving || !dirty}
+                >
                   <Save className="h-3.5 w-3.5" />
                   {saving ? "Saving…" : "Save"}
                 </Button>
@@ -206,16 +235,16 @@ export default function ProfileDetailPage({
               </div>
             )}
 
-            {profile && (
+            {playbook && (
               <div className="flex items-center gap-2 flex-wrap">
-                <StatusBadge status={status(profile)} />
-                <Badge variant="outline" className="font-mono gap-1.5">
+                <Badge variant="outline" className="gap-1.5">
                   <FolderGit2 className="h-3 w-3" />
-                  {truncateId(profile.user_id, 32, 8)}
+                  {playbook.agent_version || "default"}
                 </Badge>
-                {profile.source && (
+                <StatusBadge status={status!} />
+                {displayName(playbook.playbook_name) && (
                   <Badge variant="secondary" className="font-mono text-[10px]">
-                    {profile.source}
+                    {displayName(playbook.playbook_name)}
                   </Badge>
                 )}
                 {dirty && (
@@ -227,72 +256,60 @@ export default function ProfileDetailPage({
             )}
 
             <Section
-              icon={Sparkles}
-              title="Preference"
-              hint="Project-scoped preference. Reinjected into future sessions in this project; expires with profile_time_to_live."
+              icon={AlertTriangle}
+              title="Trigger"
+              hint="When this rule should apply. Leave empty if it always applies."
             >
               {editing ? (
-                <textarea
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  rows={6}
-                  placeholder="e.g. Project bans pytest-asyncio; uses anyio with trio backend for async tests."
-                  className="w-full rounded-xl border border-input bg-transparent px-4 py-3 text-sm leading-relaxed font-sans resize-y outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 placeholder:text-muted-foreground"
+                <AutoTextarea
+                  value={form.trigger}
+                  onChange={(v) => setForm((f) => ({ ...f, trigger: v }))}
+                  rows={2}
+                  placeholder="e.g. When writing or running async Python tests."
                 />
               ) : (
-                <Prose text={profile?.content ?? ""} />
+                <Prose text={playbook?.trigger ?? ""} muted={!playbook?.trigger} />
               )}
             </Section>
 
-            {profile?.extractor_names && profile.extractor_names.length > 0 && (
-              <Section
-                icon={Tags}
-                title="Extractors"
-                hint="Which reflexio extractor generated this profile."
-              >
-                <div className="flex flex-wrap gap-1.5">
-                  {profile.extractor_names.map((name) => (
-                    <Badge
-                      key={name}
-                      variant="outline"
-                      className="font-mono text-[10px]"
-                    >
-                      {name}
-                    </Badge>
-                  ))}
-                </div>
-              </Section>
-            )}
+            <Section
+              icon={BookMarked}
+              title="Rule"
+              hint="What Claude should do. Injected when relevant in future sessions."
+            >
+              {editing ? (
+                <AutoTextarea
+                  value={form.content}
+                  onChange={(v) => setForm((f) => ({ ...f, content: v }))}
+                  rows={6}
+                  placeholder="e.g. Use anyio with trio backend — never pytest-asyncio."
+                />
+              ) : (
+                <Prose text={playbook?.content ?? ""} />
+              )}
+            </Section>
 
-            {customEntries.length > 0 && (
-              <Section
-                icon={Braces}
-                title="Custom features"
-                hint="Structured metadata attached to this profile."
-              >
-                <div className="rounded-xl border border-border bg-card overflow-hidden">
-                  <dl className="divide-y divide-border">
-                    {customEntries.map(([k, v]) => (
-                      <div
-                        key={k}
-                        className="flex items-start justify-between gap-4 px-4 py-2.5"
-                      >
-                        <dt className="text-xs font-medium text-muted-foreground font-mono shrink-0">
-                          {k}
-                        </dt>
-                        <dd className="text-xs min-w-0 break-words text-right">
-                          {typeof v === "string"
-                            ? v
-                            : JSON.stringify(v, null, 0)}
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                </div>
-              </Section>
-            )}
+            <Section
+              icon={FileText}
+              title="Rationale"
+              hint="Why — the reason, constraint, or past incident behind this rule."
+            >
+              {editing ? (
+                <AutoTextarea
+                  value={form.rationale}
+                  onChange={(v) => setForm((f) => ({ ...f, rationale: v }))}
+                  rows={3}
+                  placeholder="e.g. pytest-asyncio deadlocked CI on project X — trio is the project standard."
+                />
+              ) : (
+                <Prose
+                  text={playbook?.rationale ?? ""}
+                  muted={!playbook?.rationale}
+                />
+              )}
+            </Section>
 
-            {!editing && profile && (
+            {!editing && playbook && (
               <>
                 <Separator />
                 <DangerZone
@@ -304,7 +321,7 @@ export default function ProfileDetailPage({
             )}
           </div>
 
-          {profile && (
+          {playbook && (
             <aside className="space-y-3 lg:sticky lg:top-6 lg:self-start">
               <div className="rounded-xl border border-border bg-card p-4">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
@@ -312,47 +329,68 @@ export default function ProfileDetailPage({
                 </h3>
                 <dl className="space-y-2.5 text-sm">
                   <Meta
-                    icon={Clock}
-                    label="Modified"
-                    value={formatTimestamp(profile.last_modified_timestamp)}
-                  />
-                  {profile.expiration_timestamp &&
-                    profile.expiration_timestamp > 0 && (
-                      <Meta
-                        icon={CalendarClock}
-                        label="Expires"
-                        value={formatTimestamp(profile.expiration_timestamp)}
-                      />
-                    )}
-                  {profile.profile_time_to_live && (
-                    <Meta
-                      label="TTL"
-                      value={profile.profile_time_to_live}
-                      mono
-                    />
-                  )}
-                  <CopyMeta
                     icon={Hash}
                     label="ID"
-                    value={profile.profile_id}
-                    display={truncateId(profile.profile_id, 8, 4)}
+                    value={String(playbook.user_playbook_id)}
+                    mono
                   />
-                  <CopyMeta
-                    icon={FolderGit2}
+                  <Meta
+                    icon={Clock}
+                    label="Created"
+                    value={formatTimestamp(playbook.created_at)}
+                  />
+                  <Meta
                     label="Project"
-                    value={profile.user_id}
-                    display={truncateId(profile.user_id, 32, 8)}
+                    value={playbook.agent_version || "default"}
+                    mono
                   />
-                  {profile.generated_from_request_id && (
+                  {playbook.user_id && (
                     <CopyMeta
-                      icon={FileText}
-                      label="Request"
-                      value={profile.generated_from_request_id}
-                      display={truncateId(profile.generated_from_request_id, 8, 4)}
+                      label="Project"
+                      value={playbook.user_id}
+                      display={truncateId(playbook.user_id, 32, 8)}
                     />
+                  )}
+                  {playbook.request_id && (
+                    <CopyMeta
+                      label="Request"
+                      value={playbook.request_id}
+                      display={truncateId(playbook.request_id, 8, 4)}
+                    />
+                  )}
+                  {playbook.source && (
+                    <Meta label="Source" value={playbook.source} mono />
                   )}
                 </dl>
               </div>
+
+              {playbook.source_interaction_ids?.length > 0 && (
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+                    Extracted from
+                  </h3>
+                  <p className="text-xs text-muted-foreground mb-2">
+                    {playbook.source_interaction_ids.length} interaction
+                    {playbook.source_interaction_ids.length === 1 ? "" : "s"}
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {playbook.source_interaction_ids.slice(0, 24).map((iid) => (
+                      <Badge
+                        key={iid}
+                        variant="outline"
+                        className="font-mono text-[10px]"
+                      >
+                        #{iid}
+                      </Badge>
+                    ))}
+                    {playbook.source_interaction_ids.length > 24 && (
+                      <Badge variant="ghost" className="text-[10px]">
+                        +{playbook.source_interaction_ids.length - 24} more
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              )}
             </aside>
           )}
         </div>
@@ -374,28 +412,61 @@ function Section({
 }) {
   return (
     <section className="space-y-2">
-      <div className="flex items-baseline gap-2 flex-wrap">
+      <div className="flex items-baseline gap-2">
         <Label className="text-sm font-semibold flex items-center gap-1.5">
           <Icon className="h-3.5 w-3.5 text-muted-foreground" />
           {title}
         </Label>
-        {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
+        {hint && (
+          <span className="text-xs text-muted-foreground">{hint}</span>
+        )}
       </div>
       {children}
     </section>
   );
 }
 
-function Prose({ text }: { text: string }) {
+function Prose({ text, muted = false }: { text: string; muted?: boolean }) {
   if (!text) {
-    return <p className="text-sm text-muted-foreground italic">—</p>;
+    return (
+      <p className="text-sm text-muted-foreground italic">
+        {muted ? "Not set" : "—"}
+      </p>
+    );
   }
   return (
-    <div className="rounded-xl border border-border bg-card px-4 py-3">
+    <div
+      className={cn(
+        "rounded-xl border border-border bg-card px-4 py-3",
+        muted && "bg-muted/30",
+      )}
+    >
       <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
         {text}
       </p>
     </div>
+  );
+}
+
+function AutoTextarea({
+  value,
+  onChange,
+  rows = 3,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  rows?: number;
+  placeholder?: string;
+}) {
+  return (
+    <textarea
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      rows={rows}
+      placeholder={placeholder}
+      className="w-full rounded-xl border border-input bg-transparent px-4 py-3 text-sm leading-relaxed font-sans resize-y outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 placeholder:text-muted-foreground"
+    />
   );
 }
 
@@ -455,12 +526,10 @@ function Meta({
 }
 
 function CopyMeta({
-  icon: Icon,
   label,
   value,
   display,
 }: {
-  icon?: React.ComponentType<{ className?: string }>;
   label: string;
   value: string;
   display: string;
@@ -477,10 +546,7 @@ function CopyMeta({
   };
   return (
     <div className="flex items-start justify-between gap-3">
-      <dt className="text-xs text-muted-foreground shrink-0 flex items-center gap-1.5">
-        {Icon && <Icon className="h-3 w-3" />}
-        {label}
-      </dt>
+      <dt className="text-xs text-muted-foreground shrink-0">{label}</dt>
       <dd className="text-xs min-w-0 flex items-center gap-1.5">
         <code className="font-mono">{display}</code>
         <button
@@ -513,8 +579,8 @@ function DangerZone({
       <div className="min-w-0">
         <h3 className="text-sm font-semibold text-destructive">Danger zone</h3>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Deleting removes this profile permanently. Profiles regenerate from
-          fresh interactions, so this is safe but not reversible.
+          Deleting removes this project-specific skill permanently. It will stop being
+          injected into future sessions.
         </p>
       </div>
       <Button

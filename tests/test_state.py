@@ -139,12 +139,12 @@ def test_append_injected_roundtrip(session_dir) -> None:
     state.append_injected(
         "s1",
         [
-            {"id": "r1-ab12", "kind": "playbook", "title": "t1", "content": "c1"},
+            {"id": "s1-ab12", "kind": "playbook", "title": "t1", "content": "c1"},
             {"id": "p1-cd34", "kind": "profile", "title": "t2", "content": "c2"},
         ],
     )
     registry = state.read_injected("s1")
-    assert registry["r1-ab12"]["title"] == "t1"
+    assert registry["s1-ab12"]["title"] == "t1"
     assert registry["p1-cd34"]["kind"] == "profile"
 
 
@@ -162,41 +162,41 @@ def test_read_injected_last_entry_wins_on_duplicate_id(session_dir) -> None:
     """Same id injected twice → the later metadata shadows the earlier one."""
     state.append_injected(
         "s1",
-        [{"id": "r1-ab12", "kind": "playbook", "title": "old", "content": "c"}],
+        [{"id": "s1-ab12", "kind": "playbook", "title": "old", "content": "c"}],
     )
     state.append_injected(
         "s1",
-        [{"id": "r1-ab12", "kind": "playbook", "title": "new", "content": "c"}],
+        [{"id": "s1-ab12", "kind": "playbook", "title": "new", "content": "c"}],
     )
     registry = state.read_injected("s1")
-    assert registry["r1-ab12"]["title"] == "new"
+    assert registry["s1-ab12"]["title"] == "new"
 
 
 def test_read_injected_different_fingerprints_do_not_collide(session_dir) -> None:
     """Cross-injection disambiguation: same rank + different fingerprints coexist."""
     state.append_injected(
         "s1",
-        [{"id": "r1-0100", "kind": "playbook", "title": "older", "content": "c"}],
+        [{"id": "s1-0100", "kind": "playbook", "title": "older", "content": "c"}],
     )
     state.append_injected(
         "s1",
-        [{"id": "r1-0200", "kind": "playbook", "title": "newer", "content": "c"}],
+        [{"id": "s1-0200", "kind": "playbook", "title": "newer", "content": "c"}],
     )
     registry = state.read_injected("s1")
-    assert registry["r1-0100"]["title"] == "older"
-    assert registry["r1-0200"]["title"] == "newer"
+    assert registry["s1-0100"]["title"] == "older"
+    assert registry["s1-0200"]["title"] == "newer"
 
 
 def test_read_injected_skips_malformed_lines(session_dir) -> None:
     path = state.injected_path("s1")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        '{"id":"r1-ab12","kind":"playbook","title":"ok","content":"c"}\n'
+        '{"id":"s1-ab12","kind":"playbook","title":"ok","content":"c"}\n'
         "not-json\n"
         '{"id":"p1-cd34","kind":"profile","title":"ok2","content":"c"}\n'
     )
     registry = state.read_injected("s1")
-    assert set(registry.keys()) == {"r1-ab12", "p1-cd34"}
+    assert set(registry.keys()) == {"s1-ab12", "p1-cd34"}
 
 
 def test_read_injected_drops_entries_without_id(session_dir) -> None:
@@ -205,10 +205,10 @@ def test_read_injected_drops_entries_without_id(session_dir) -> None:
     path.write_text(
         '{"kind":"playbook","title":"ok","content":"c"}\n'
         '{"id":"","kind":"playbook","title":"ok","content":"c"}\n'
-        '{"id":"r1-ab12","kind":"playbook","title":"ok","content":"c"}\n'
+        '{"id":"s1-ab12","kind":"playbook","title":"ok","content":"c"}\n'
     )
     registry = state.read_injected("s1")
-    assert set(registry.keys()) == {"r1-ab12"}
+    assert set(registry.keys()) == {"s1-ab12"}
 
 
 def test_unpublished_slice_truncates_overlong_tool_fields_to_cap() -> None:
@@ -286,7 +286,7 @@ def test_unpublished_slice_strips_cited_items(session_dir) -> None:
         {
             "role": "Assistant",
             "content": "ok",
-            "cited_items": [{"id": "r1-ab12", "kind": "playbook", "title": "t"}],
+            "cited_items": [{"id": "s1-ab12", "kind": "playbook", "title": "t"}],
         },
     ]
     _, turns = state.unpublished_slice(records)
@@ -302,7 +302,7 @@ def test_unpublished_slice_maps_cited_items_to_citations() -> None:
             "content": "ok",
             "cited_items": [
                 {
-                    "id": "r1-ab12",
+                    "id": "s1-ab12",
                     "kind": "playbook",
                     "title": "rule X",
                     "real_id": "pb_42",
@@ -318,7 +318,7 @@ def test_unpublished_slice_maps_cited_items_to_citations() -> None:
     ]
     _, turns = state.unpublished_slice(records)
     assert turns[-1]["citations"] == [
-        {"kind": "playbook", "real_id": "pb_42", "tag": "r1-ab12", "title": "rule X"},
+        {"kind": "playbook", "real_id": "pb_42", "tag": "s1-ab12", "title": "rule X"},
         {
             "kind": "profile",
             "real_id": "prof_7",
@@ -339,7 +339,7 @@ def test_unpublished_slice_omits_citations_when_empty() -> None:
         {
             "role": "Assistant",
             "content": "no real_id",
-            "cited_items": [{"id": "r1-ab12", "kind": "playbook", "title": "t"}],
+            "cited_items": [{"id": "s1-ab12", "kind": "playbook", "title": "t"}],
         },
         {
             "role": "Assistant",
@@ -359,7 +359,7 @@ def test_unpublished_slice_omits_citations_when_empty() -> None:
 def test_to_wire_citations_filters_invalid_kinds() -> None:
     """Items with unknown ``kind`` are dropped (server has a Literal there)."""
     items = [
-        {"id": "r1-ab12", "kind": "playbook", "title": "ok", "real_id": "pb_1"},
+        {"id": "s1-ab12", "kind": "playbook", "title": "ok", "real_id": "pb_1"},
         {"id": "x1-0001", "kind": "agent_playbook", "title": "junk", "real_id": "ap_1"},
         {"id": "y1-0002", "kind": "", "title": "junk2", "real_id": "z_1"},
     ]
@@ -371,9 +371,9 @@ def test_to_wire_citations_filters_invalid_kinds() -> None:
 def test_to_wire_citations_drops_unresolved_real_id() -> None:
     """Entries without ``real_id`` (unresolved injections) cannot round-trip."""
     items = [
-        {"id": "r1-ab12", "kind": "playbook", "title": "no real_id"},
+        {"id": "s1-ab12", "kind": "playbook", "title": "no real_id"},
         {"id": "p1-cd34", "kind": "profile", "title": "empty", "real_id": ""},
-        {"id": "r1-9999", "kind": "playbook", "title": "ok", "real_id": "pb_9"},
+        {"id": "s1-9999", "kind": "playbook", "title": "ok", "real_id": "pb_9"},
     ]
     result = state._to_wire_citations(items)
     assert len(result) == 1
@@ -383,7 +383,7 @@ def test_to_wire_citations_drops_unresolved_real_id() -> None:
 def test_to_wire_citations_handles_non_list_input() -> None:
     """None / dict / str inputs return ``[]`` without raising."""
     assert state._to_wire_citations(None) == []
-    assert state._to_wire_citations({"id": "r1-ab12"}) == []
+    assert state._to_wire_citations({"id": "s1-ab12"}) == []
     assert state._to_wire_citations("oops") == []
 
 
@@ -393,11 +393,11 @@ def test_to_wire_citations_skips_non_dict_items() -> None:
         "a-string",
         None,
         42,
-        {"id": "r1-ab12", "kind": "playbook", "title": "ok", "real_id": "pb_1"},
+        {"id": "s1-ab12", "kind": "playbook", "title": "ok", "real_id": "pb_1"},
     ]
     result = state._to_wire_citations(items)
     assert len(result) == 1
-    assert result[0]["tag"] == "r1-ab12"
+    assert result[0]["tag"] == "s1-ab12"
 
 
 def _append_worker(state_dir: str, session_id: str, payload: str) -> None:

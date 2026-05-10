@@ -6,7 +6,13 @@
  * FastAPI route mounted under the /api prefix.
  */
 
-import type { Interaction, UserPlaybook, UserProfile } from "./types";
+import type {
+  AgentPlaybook,
+  AgentPlaybookStatus,
+  Interaction,
+  UserPlaybook,
+  UserProfile,
+} from "./types";
 
 type Json = Record<string, unknown>;
 
@@ -62,9 +68,28 @@ export const reflexio = {
     return post("get_user_playbooks", body, opts.reflexioUrl);
   },
 
+  /** POST /api/get_agent_playbooks — all filters are optional. */
+  async getAgentPlaybooks(
+    opts: Opts & {
+      agentVersion?: string;
+      playbookName?: string;
+      statusFilter?: (string | null)[];
+      playbookStatusFilter?: AgentPlaybookStatus;
+      limit?: number;
+    },
+  ): Promise<{ agent_playbooks: AgentPlaybook[] }> {
+    const body: Json = { limit: opts.limit ?? 100 };
+    if (opts.agentVersion) body.agent_version = opts.agentVersion;
+    if (opts.playbookName) body.playbook_name = opts.playbookName;
+    if (opts.statusFilter) body.status_filter = opts.statusFilter;
+    if (opts.playbookStatusFilter)
+      body.playbook_status_filter = opts.playbookStatusFilter;
+    return post("get_agent_playbooks", body, opts.reflexioUrl);
+  },
+
   /**
    * GET /api/get_all_profiles — no per-user filter required. Returns all
-   * profiles across sessions, which is what the dashboard wants.
+   * preferences across sessions, which is what the dashboard wants.
    */
   async getAllProfiles(
     opts: Opts & { limit?: number; statusFilter?: string } = {},
@@ -84,7 +109,7 @@ export const reflexio = {
     return get(`get_all_interactions?${qs.toString()}`, opts.reflexioUrl);
   },
 
-  /** PUT /api/update_user_playbook — partial update of one playbook. */
+  /** PUT /api/update_user_playbook — partial update of one project-specific skill. */
   async updateUserPlaybook(
     update: {
       user_playbook_id: number;
@@ -102,6 +127,25 @@ export const reflexio = {
     );
   },
 
+  /** PUT /api/update_agent_playbook — partial update of one shared skill. */
+  async updateAgentPlaybook(
+    update: {
+      agent_playbook_id: number;
+      playbook_name?: string | null;
+      content?: string | null;
+      trigger?: string | null;
+      rationale?: string | null;
+      playbook_status?: AgentPlaybookStatus | null;
+    },
+    reflexioUrl?: string,
+  ): Promise<Json> {
+    return request(
+      "update_agent_playbook",
+      { method: "PUT", body: JSON.stringify(update) },
+      reflexioUrl,
+    );
+  },
+
   /** DELETE /api/delete_user_playbook — body carries the id. */
   async deleteUserPlaybook(
     userPlaybookId: number,
@@ -112,6 +156,21 @@ export const reflexio = {
       {
         method: "DELETE",
         body: JSON.stringify({ user_playbook_id: userPlaybookId }),
+      },
+      reflexioUrl,
+    );
+  },
+
+  /** DELETE /api/delete_agent_playbook — body carries the id. */
+  async deleteAgentPlaybook(
+    agentPlaybookId: number,
+    reflexioUrl?: string,
+  ): Promise<Json> {
+    return request(
+      "delete_agent_playbook",
+      {
+        method: "DELETE",
+        body: JSON.stringify({ agent_playbook_id: agentPlaybookId }),
       },
       reflexioUrl,
     );
@@ -163,6 +222,15 @@ export const reflexio = {
   async deleteAllUserPlaybooks(reflexioUrl?: string): Promise<Json> {
     return request(
       "delete_all_user_playbooks",
+      { method: "DELETE" },
+      reflexioUrl,
+    );
+  },
+
+  /** DELETE /api/delete_all_agent_playbooks — org-wide shared skill purge. */
+  async deleteAllAgentPlaybooks(reflexioUrl?: string): Promise<Json> {
+    return request(
+      "delete_all_agent_playbooks",
       { method: "DELETE" },
       reflexioUrl,
     );

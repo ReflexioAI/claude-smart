@@ -14,7 +14,7 @@ A head-to-head comparison of two Claude Code memory plugins on how well they cap
 
 Specificity averages track recall closely (overall: smart 2.81, mem 2.06). Source: `benchmarks/memory_comparison/results/report-20260507T221433Z.md`.
 
-**One-line takeaway.** claude-smart wins every category. The gap is widest on **corrections** (3.00 vs 0.88), which is claude-smart's design center: when a user pushes back on something the agent did or proposed, claude-smart's playbook extractor fires on that signal directly and produces a rule the next session sees, every time. On **general context** and **future-facing rules**, claude-smart also leads cleanly. **Personalization** is the closest category, where both systems capture user-stated preferences reliably.
+**One-line takeaway.** claude-smart wins every category. The gap is widest on **corrections** (3.00 vs 0.88), which is claude-smart's design center: when a user pushes back on something the agent did or proposed, claude-smart's skill extractor fires on that signal directly and produces a rule the next session sees, every time. On **general context** and **future-facing rules**, claude-smart also leads cleanly. **Personalization** is the closest category, where both systems capture user-stated preferences reliably.
 
 claude-mem's lower scores reflect a different design: it writes a per-turn narrative observation, which depends on rich assistant content to anchor extraction. The benchmark's stub replies are short, so claude-mem's worker often produces nothing for correction-style turns where the user's signal is the whole story.
 
@@ -52,8 +52,8 @@ The fundamental mismatch: those benchmarks measure how an LLM uses a transcript 
          ▼ non-blocking publish          ▼ async queue
  ┌──────────────────┐          ┌────────────────────┐
  │ extract →        │          │ per-session worker │
- │ profile +        │          │ subprocess pool →  │
- │ playbook         │          │ observations       │
+ │ preferences +    │          │ subprocess pool →  │
+ │ skills           │          │ observations       │
  └──────────────────┘          └────────────────────┘
          │                               │
          └─────── probe query ───────────┘
@@ -104,12 +104,12 @@ Both sides trigger their *real* LLM extraction pipeline on identical inputs.
 
 ### Drain semantics
 
-- **claude-smart** publishes are non-blocking (matches production). The harness polls until at least one project-scoped playbook or profile materializes (150 s budget).
+- **claude-smart** publishes are non-blocking (matches production). The harness polls until at least one project-specific skill or preference materializes (150 s budget).
 - **claude-mem** has no documented drain-on-demand hook. The harness polls `pending_messages.status IN ('pending','processing')` for the scenario's `content_session_id` AND verifies at least one observation row has been committed to the project (180 s budget). The dual check fixes a race where pending_messages flipped to `completed` slightly before the observation row became visible to readers.
 
 ### Retrieval
 
-- **claude-smart**: `Adapter.search_both(project_id, query, top_k=5)` — hybrid BM25 + vector over playbooks and profiles, then post-filtered to the scenario's `agent_version` to exclude playbooks from other projects (claude-smart playbooks are user-global by design).
+- **claude-smart**: `Adapter.search_all(project_id, query, top_k=5)` — hybrid BM25 + vector over project-specific skills, shared skills, and preferences.
 - **claude-mem**: SQLite FTS5 `MATCH` over `observations_fts`, ranked by BM25, scoped to the scenario's project basename. Falls back to recency scan if FTS returns nothing.
 
 ### Scoring
@@ -131,9 +131,9 @@ Judge runs in an isolated `/tmp/membench-judge/` CWD so its own plugin-captured 
 - **Equal call surface.** Both systems are invoked through their own native ingestion path (not a shimmed CLI), and each gets the same retrieval-API call shape (FTS+BM25 over its own store, top-k = 5).
 - **Same identical text** is fed to both. The single point of asymmetry remaining is each system's extraction prompt — which is exactly what we're measuring.
 - **Drain races eliminated.** Both systems are polled until their destination store actually has a project-scoped row, not just until the queue clears.
-- **Cross-project contamination filtered.** claude-smart playbooks are stored user-globally; the harness scopes retrieval to the scenario's `agent_version` so the operator's real coding history can't bleed into scenario probes.
+- **Cross-project contamination controlled.** claude-smart project-specific skills and preferences are scoped to the scenario project. Shared skills are cross-project by design, so the benchmark records that behavior explicitly.
 - **Inter-scenario pause** of 4 s reduces queue contention against claude-mem's worker pool (capped at 10 concurrent sessions).
-- **Neutral assistant stub.** Replies are a content-free `"Got it."` so neither extractor is biased by the synthetic assistant text. (An earlier verbatim-echo template was distorting both sides — claude-mem benefited from extra extractable text; claude-smart's playbook extractor was generating meta-playbooks about agent echoing.)
+- **Neutral assistant stub.** Replies are a content-free `"Got it."` so neither extractor is biased by the synthetic assistant text. (An earlier verbatim-echo template was distorting both sides — claude-mem benefited from extra extractable text; claude-smart's skill extractor was generating meta-rules about agent echoing.)
 
 ## Running it
 
@@ -158,7 +158,7 @@ Both systems captured user-stated preferences reliably. claude-smart was perfect
 
 ### 2. Correction (3.00 vs 0.88) — claude-smart wins decisively
 
-claude-smart was 3/3 on all 8 correction scenarios. claude-mem returned 0/0 on 5 of 8 — `corr-verbose`, `corr-lib`, `corr-mocks`, `corr-summary`, `corr-overeng` — because the user's correction was short and the synthetic assistant reply contained no extractable content. claude-mem's narrative observations need rich assistant text to anchor against; claude-smart's playbook extractor fires on the *user's* correction signal directly.
+claude-smart was 3/3 on all 8 correction scenarios. claude-mem returned 0/0 on 5 of 8 — `corr-verbose`, `corr-lib`, `corr-mocks`, `corr-summary`, `corr-overeng` — because the user's correction was short and the synthetic assistant reply contained no extractable content. claude-mem's narrative observations need rich assistant text to anchor against; claude-smart's skill extractor fires on the *user's* correction signal directly.
 
 ### 3. General context (2.50 vs 1.62) — claude-smart wins
 
@@ -170,11 +170,11 @@ claude-smart scored 3/3 on 7 of 8 learning scenarios. claude-mem scored 3/3 on 5
 
 ### 5. Architectural differences the benchmark surfaces
 
-- **Capture breadth.** With wiring fixed, claude-smart catches general/personalization facts as profiles AND corrections/learnings as playbooks. The two output shapes complement each other.
-- **Output shape.** claude-smart playbooks embed explicit `trigger` + `rationale` fields, which the judge treats as high-specificity. claude-smart profiles are short user-fact strings ("uses 4-space indents and double quotes in Python code; never tabs or single quotes"). claude-mem observations are narrative + facts + concepts — readable, but less directly actionable as a rule.
-- **Reactivity to assistant turns.** claude-mem extraction depends on assistant content as much as user content. claude-smart's playbook extractor fires on user signals (corrections, learnings) regardless of assistant verbosity, which is why it dominates on correction-style scenarios.
+- **Capture breadth.** With wiring fixed, claude-smart catches general/personalization facts as preferences and corrections/learnings as skills. The two output shapes complement each other.
+- **Output shape.** claude-smart skills embed explicit trigger + rationale fields, which the judge treats as high-specificity. claude-smart preferences are short user-fact strings ("uses 4-space indents and double quotes in Python code; never tabs or single quotes"). claude-mem observations are narrative + facts + concepts — readable, but less directly actionable as a rule.
+- **Reactivity to assistant turns.** claude-mem extraction depends on assistant content as much as user content. claude-smart's skill extractor fires on user signals (corrections, learnings) regardless of assistant verbosity, which is why it dominates on correction-style scenarios.
 - **Drain semantics.** claude-smart's publish path has a documented "wait for extraction" handle (used here at 150 s); claude-mem has no drain-on-demand and has to be polled via the database, with a write-after-queue-drain race the harness compensates for.
-- **Scoping.** claude-smart playbooks are user-global by design (rules transfer across projects); claude-mem observations are project-scoped.
+- **Scoping.** claude-smart separates project-specific skills from shared skills; claude-mem observations are project-scoped.
 
 ## Caveats
 

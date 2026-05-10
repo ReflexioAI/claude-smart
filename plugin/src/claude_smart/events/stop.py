@@ -266,7 +266,7 @@ def _scan_transcript_for_cs_cite_ids(entries: list[dict[str, Any]]) -> list[str]
         entries (list[dict[str, Any]]): Pre-parsed transcript entries.
 
     Returns:
-        list[str]: Rank ids (e.g. ``"r1-ab12"``, ``"p2-cd34"``) in
+        list[str]: Rank ids (e.g. ``"s1-ab12"``, ``"p2-cd34"``) in
             emission order. Empty when no ``cs-cite`` call is found.
     """
     out: list[str] = []
@@ -322,6 +322,9 @@ def _resolve_cited_items(session_id: str, cited_ids: list[str]) -> list[dict[str
         real_id = entry.get("real_id")
         if real_id:
             item["real_id"] = real_id
+        source_kind = entry.get("source_kind")
+        if isinstance(source_kind, str) and source_kind:
+            item["source_kind"] = source_kind
         resolved.append(item)
     return resolved
 

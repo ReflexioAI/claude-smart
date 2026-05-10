@@ -1,31 +1,31 @@
 """Support helpers for the ``cs-cite`` citation channel.
 
-Context injected at SessionStart / PreToolUse tags each playbook and
-profile bullet with a rank-based id fingerprinted by the underlying
-real id (``[cs:r1-1a2b]`` for the first playbook rule whose
+Context injected at SessionStart / PreToolUse tags each skill and
+preference bullet with a rank-based id fingerprinted by the underlying
+real id (``[cs:s1-1a2b]`` for the first skill whose
 ``user_playbook_id`` starts with ``1a2b``, ``[cs:p2-c3d4]`` for the
-second profile preference). The injected instruction asks Claude to
+second preference). The injected instruction asks Claude to
 end impactful replies with a call like::
 
-    cs-cite p1-c3d4,r2-1a2b
+    cs-cite p1-c3d4,s2-1a2b
 
 via the Bash tool. The Stop hook later scans the session transcript for
 those tool calls and resolves the ids against a per-session registry
 persisted at ``~/.claude-smart/sessions/<session_id>.injected.jsonl``.
 
 Why rank + fingerprint: rank alone resets at every injection, so a
-later injection's ``r1`` would silently overwrite an earlier entry in
-the append-only registry — if Claude cited ``r1`` across a turn
-boundary, the resolver would pick the wrong playbook. Appending the
+later injection's ``s1`` would silently overwrite an earlier entry in
+the append-only registry — if Claude cited ``s1`` across a turn
+boundary, the resolver would pick the wrong skill. Appending the
 first four alphanumeric chars of the real id makes the id stable
 across injections in the common case (distinct real ids → distinct
 fingerprints), so cross-injection collisions become rare.
 
 This module holds:
 
-- ``rank_id``: ``p{n}-{fp}`` / ``r{n}-{fp}`` tag for a given
+- ``rank_id``: ``p{n}-{fp}`` / ``s{n}-{fp}`` tag for a given
   (kind, rank, real_id) tuple. Fingerprint is omitted when no real id
-  is available.
+  is available. ``p`` is preference, ``s`` is skill.
 - ``CITATION_CMD_RE``: regex matching a valid ``cs-cite`` command line.
 - ``ensure_installed``: idempotent copy of ``plugin/bin/cs-cite`` to
   ``~/.claude-smart/bin/cs-cite`` with the executable bit set.
@@ -53,7 +53,7 @@ INSTALL_PATH = _INSTALL_DIR / "cs-cite"
 _FINGERPRINT_LEN = 4
 
 # Match a bare `cs-cite <ids>` invocation. Ids are rank tokens of the
-# form `p<N>` (profile) or `r<N>` (playbook rule) with an optional
+# form `p<N>` (preference) or `s<N>` (skill) with an optional
 # `-<fp>` fingerprint (1-4 alphanumeric chars), optionally
 # `cs:`-prefixed (since bullets render as `[cs:p1-ab12]` and the model
 # often copies the tag verbatim). The `(?i:...)` inline flags make the
@@ -63,12 +63,12 @@ _FINGERPRINT_LEN = 4
 # Chained commands (&&, |, ;) and extra trailing tokens remain rejected
 # by the anchored `\s*$` terminator so accidental mentions don't
 # register as citations.
-_ID_TOKEN = r"(?i:cs:)?(?i:[pr])\d+(?:-(?i:[a-z0-9]){1,4})?"
+_ID_TOKEN = r"(?i:cs:)?(?i:[ps])\d+(?:-(?i:[a-z0-9]){1,4})?"
 _ID_SEP = r"[,\s]+"
 CITATION_CMD_RE = re.compile(
     rf"^\s*(?:[^\s]*/)?cs-cite\s+({_ID_TOKEN}(?:{_ID_SEP}{_ID_TOKEN})*)\s*$"
 )
-_CLEAN_ID_RE = re.compile(r"^(?i:cs:)?((?i:[pr])\d+(?:-(?i:[a-z0-9]){1,4})?)$")
+_CLEAN_ID_RE = re.compile(r"^(?i:cs:)?((?i:[ps])\d+(?:-(?i:[a-z0-9]){1,4})?)$")
 _SPLIT_RE = re.compile(_ID_SEP)
 
 CITATION_INSTRUCTION = (
@@ -77,10 +77,10 @@ CITATION_INSTRUCTION = (
     "only if — an injected `[cs:…]` item materially changed your reply "
     "(different wording, action, or conclusion than you would have produced "
     "without it), call `cs-cite <id>` via the Bash tool. Ids come verbatim "
-    "from the `[cs:…]` tags — keep the leading `p` (profile) or `r` "
-    "(playbook) and the `-<fp>` suffix, e.g. `cs-cite r1-ab12`. List "
+    "from the `[cs:…]` tags — keep the leading `p` (preference) or `s` "
+    "(skill) and the `-<fp>` suffix, e.g. `cs-cite s1-ab12`. List "
     "multiple ids only when each shaped a different part of the answer, "
-    "e.g. `cs-cite r1-ab12,p2-cd34`. Ids only, no prose, one Bash call. "
+    "e.g. `cs-cite s1-ab12,p2-cd34`. Ids only, no prose, one Bash call. "
     "Default is to skip. If an item is merely on-topic, confirms what you "
     "already planned, or your reply would read the same without it, do not "
     "cite — end the turn normally with your reply. When unsure, skip. "
@@ -97,7 +97,7 @@ def _fingerprint(real_id: Any) -> str:
     """Return the first ``_FINGERPRINT_LEN`` alphanumeric chars of ``real_id``.
 
     The fingerprint disambiguates rank ids across injections: two
-    injections both producing ``r1`` for different playbooks will still
+    injections both producing ``s1`` for different skills will still
     yield distinct tags when their real ids have different prefixes.
 
     Args:
@@ -115,14 +115,14 @@ def _fingerprint(real_id: Any) -> str:
 
 
 def rank_id(kind: str, rank: int, real_id: Any = None) -> str:
-    """Return the citation id for a playbook or profile item.
+    """Return the citation id for a skill or preference item.
 
     Format is ``{letter}{rank}-{fingerprint}`` where ``letter`` is ``p``
-    for profiles and ``r`` for playbooks, ``rank`` is the 1-based
+    for preferences and ``s`` for skills, ``rank`` is the 1-based
     position within the current retrieval batch, and ``fingerprint`` is
     up to 4 alphanumeric chars derived from ``real_id``. The fingerprint
     is omitted when no real id is available (falling back to the rank
-    form ``r1`` / ``p1``).
+    form ``s1`` / ``p1``).
 
     Args:
         kind: ``"playbook"`` or ``"profile"``. Unknown values raise
@@ -133,8 +133,8 @@ def rank_id(kind: str, rank: int, real_id: Any = None) -> str:
             used to derive the fingerprint suffix. Optional.
 
     Returns:
-        str: ``p<rank>-<fp>`` for profiles, ``r<rank>-<fp>`` for
-            playbooks. Suffix is omitted when the real id yields no
+        str: ``p<rank>-<fp>`` for preferences, ``s<rank>-<fp>`` for
+            skills. Suffix is omitted when the real id yields no
             alphanumeric fingerprint.
 
     Raises:
@@ -143,7 +143,7 @@ def rank_id(kind: str, rank: int, real_id: Any = None) -> str:
     if kind == "profile":
         prefix = "p"
     elif kind == "playbook":
-        prefix = "r"
+        prefix = "s"
     else:
         raise ValueError(f"unknown citation kind: {kind!r}")
     fp = _fingerprint(real_id)
@@ -163,7 +163,7 @@ def parse_citation_command(command: str) -> list[str]:
             block.
 
     Returns:
-        list[str]: Lowercase rank ids (e.g. ``"p1"``, ``"r3"``), in the
+        list[str]: Lowercase rank ids (e.g. ``"p1"``, ``"s3"``), in the
             order Claude cited them. Empty when the command does not
             match.
     """

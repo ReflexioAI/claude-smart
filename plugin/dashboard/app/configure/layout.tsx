@@ -1,12 +1,24 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { cn } from "@/lib/utils";
+import { Server, SlidersHorizontal } from "lucide-react";
+import { PageTabs } from "@/components/common/page-tabs";
 
 const tabs = [
-  { href: "/configure/env", label: "Environment" },
-  { href: "/configure/server", label: "Reflexio server" },
+  {
+    id: "env",
+    href: "/configure/env",
+    label: "Environment",
+    description: "Local plugin paths and runtime flags",
+    icon: SlidersHorizontal,
+  },
+  {
+    id: "server",
+    href: "/configure/server",
+    label: "Reflexio server",
+    description: "Extraction settings from the backend",
+    icon: Server,
+  },
 ];
 
 export default function ConfigureLayout({
@@ -18,27 +30,16 @@ export default function ConfigureLayout({
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="border-b border-border px-6 pt-4">
-        <nav className="flex gap-1 -mb-px">
-          {tabs.map((tab) => {
-            const active =
-              pathname === tab.href || pathname.startsWith(`${tab.href}/`);
-            return (
-              <Link
-                key={tab.href}
-                href={tab.href}
-                className={cn(
-                  "px-3 py-2 text-sm rounded-t-md border-b-2 transition-colors",
-                  active
-                    ? "border-foreground text-foreground font-medium"
-                    : "border-transparent text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {tab.label}
-              </Link>
-            );
-          })}
-        </nav>
+      <div className="border-b border-border bg-muted/20 px-6 py-4">
+        <PageTabs
+          items={tabs}
+          activeId={
+            tabs.find(
+              (tab) =>
+                pathname === tab.href || pathname.startsWith(`${tab.href}/`),
+            )?.id ?? "env"
+          }
+        />
       </div>
       <div className="flex-1 overflow-auto">{children}</div>
     </div>

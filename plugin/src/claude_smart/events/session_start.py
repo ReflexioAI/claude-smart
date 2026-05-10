@@ -1,4 +1,4 @@
-"""SessionStart hook — inject the project playbook + session profile as additionalContext."""
+"""SessionStart hook — inject project-specific skills + session preferences."""
 
 from __future__ import annotations
 
@@ -17,7 +17,9 @@ from claude_smart.reflexio_adapter import Adapter
 # on every SessionStart via Adapter.apply_extraction_defaults.
 _CLAUDE_SMART_WINDOW_SIZE = 5
 _CLAUDE_SMART_STRIDE_SIZE = 3
-_ENABLE_OPTIMIZER_ENV = "CLAUDE_SMART_ENABLE_OPTIMIZER"
+# Optimizer is on by default. Set this env var to "0" to skip pushing the
+# claude-smart optimizer defaults on SessionStart (kill switch).
+_DISABLE_OPTIMIZER_ENV = "CLAUDE_SMART_ENABLE_OPTIMIZER"
 _OPTIMIZER_TIMEOUT_SECONDS = 300
 
 
@@ -34,20 +36,22 @@ def handle(payload: dict[str, Any]) -> None:
         window_size=_CLAUDE_SMART_WINDOW_SIZE,
         stride_size=_CLAUDE_SMART_STRIDE_SIZE,
     )
-    if os.environ.get(_ENABLE_OPTIMIZER_ENV) == "1":
+    if os.environ.get(_DISABLE_OPTIMIZER_ENV) != "0":
         adapter.apply_optimizer_defaults(
             script_path=_optimizer_assistant_path(),
             timeout_seconds=_OPTIMIZER_TIMEOUT_SECONDS,
         )
-    playbooks, profiles = adapter.fetch_both(
+    user_playbooks, agent_playbooks, profiles = adapter.fetch_all(
         project_id=project_id,
-        playbook_top_k=1,
+        user_playbook_top_k=1,
+        agent_playbook_top_k=1,
         profile_top_k=1,
     )
 
     markdown, registry = context_format.render_with_registry(
         project_id=project_id,
-        playbooks=playbooks,
+        user_playbooks=user_playbooks,
+        agent_playbooks=agent_playbooks,
         profiles=profiles,
     )
     if not markdown:

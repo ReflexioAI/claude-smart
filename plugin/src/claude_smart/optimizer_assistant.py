@@ -17,7 +17,6 @@ from typing import Any
 
 from claude_smart import internal_call
 
-_ENV_ENABLE_OPTIMIZER = "CLAUDE_SMART_ENABLE_OPTIMIZER"
 _CLAUDE_TIMEOUT_SECONDS = 300
 _READ_ONLY_TOOLS = "Read,Grep,Glob,LS"
 _MUTATING_TOOLS = "Bash,Edit,Write,MultiEdit,NotebookEdit"
@@ -161,7 +160,6 @@ def _run_claude(*, prompt: str, system_prompt: str) -> str:
     env = os.environ.copy()
     env[internal_call._ENV_MARKER] = "1"  # noqa: SLF001 - shared guard constant.
     env[internal_call._ENTRYPOINT_VAR] = "optimizer"  # noqa: SLF001
-    env[_ENV_ENABLE_OPTIMIZER] = "0"
 
     try:
         proc = subprocess.run(  # noqa: S603 - command is fixed plus resolved executable.

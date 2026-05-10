@@ -1,11 +1,11 @@
 """Compose a reflexio search query from a PreToolUse payload.
 
 Deterministic — no LLM call — so the PreToolUse hook can stay inside its
-latency budget. The output is fed to
-``ReflexioClient.search_user_playbooks(query=...)`` and
-``search_profiles(query=...)``, which tokenize via reflexio's FTS5 sanitizer
-(OR-joined, stemmed) plus a vector-similarity leg. Short, meaning-dense
-strings give the most selective hybrid ranking.
+latency budget. The output is fed to ``ReflexioClient.search(query=...)``
+(the unified ``/api/search`` endpoint, which fans out to user playbooks,
+agent playbooks, and preferences server-side), which tokenizes via reflexio's
+FTS5 sanitizer (OR-joined, stemmed) plus a vector-similarity leg. Short,
+meaning-dense strings give the most selective hybrid ranking.
 """
 
 from __future__ import annotations
