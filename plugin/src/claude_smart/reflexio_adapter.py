@@ -16,6 +16,7 @@ _LOGGER = logging.getLogger(__name__)
 
 _ENV_URL = "REFLEXIO_URL"
 _DEFAULT_URL = "http://localhost:8071/"
+_AGENT_VERSION = "claude-code"
 _SEARCH_MODE_HYBRID = "hybrid"  # reflexio.models.config_schema.SearchMode.HYBRID
 
 
@@ -77,7 +78,7 @@ class Adapter:
             client.publish_interaction(
                 user_id=project_id,
                 interactions=list(interactions),
-                agent_version="claude-code",
+                agent_version=_AGENT_VERSION,
                 session_id=session_id,
                 wait_for_response=False,
                 force_extraction=force_extraction,

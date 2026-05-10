@@ -9,4 +9,4 @@ note is provided after the command, it is appended as a neutral User turn
 before extraction so reflexio can learn from it directly.
 Run the bash command below and show its output verbatim.
 
-!`bash "$HOME/.reflexio/plugin-root/scripts/cli.sh" learn ${ARGUMENTS:+--note "$ARGUMENTS"}`
+!`bash "$HOME/.reflexio/plugin-root/scripts/cli.sh" learn --note "$ARGUMENTS"`
