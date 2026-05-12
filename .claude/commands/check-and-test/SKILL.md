@@ -1,15 +1,15 @@
 ---
 name: check-and-test
-description: Run lint checks (ruff for Python, Biome for TS/JS), type checks (pyright for Python, tsc for TS/JS), and all tests including e2e tests and tests skipped during pre-commit. Investigates failures to determine if they are application bugs or test issues, and fixes application bugs rather than weakening tests.
+description: Run lint checks (ruff for Python, Biome for TS/JS), type checks (pyright for Python, tsc for TS/JS), and the standard pytest tiers (unit + e2e + tests skipped during pre-commit). Investigates failures to determine if they are application bugs or test issues, and fixes application bugs rather than weakening tests. Does not run paid-LLM real-API tests or scenario probes from the test-* command family.
 ---
 
 # Check and Test
 
-Run the complete test suite including tests that are normally skipped during pre-commit hooks.
+Run the standard check-and-test flow (lint + type-check + pytest tiers), including tests normally skipped during pre-commit hooks.
 
 ## Overview
 
-This command runs all tests in the repository:
+This command runs the standard check-and-test tiers:
 - **Python lint checks** via ruff (code quality, security, complexity)
 - **Python type checks** via pyright (type safety)
 - **TypeScript/JavaScript lint checks** via Biome (code quality, formatting, import sorting)
