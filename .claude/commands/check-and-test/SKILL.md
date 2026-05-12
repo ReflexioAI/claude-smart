@@ -1,9 +1,9 @@
 ---
-name: test-all
+name: check-and-test
 description: Run lint checks (ruff for Python, Biome for TS/JS), type checks (pyright for Python, tsc for TS/JS), and all tests including e2e tests and tests skipped during pre-commit. Investigates failures to determine if they are application bugs or test issues, and fixes application bugs rather than weakening tests.
 ---
 
-# Test All
+# Check and Test
 
 Run the complete test suite including tests that are normally skipped during pre-commit hooks.
 
