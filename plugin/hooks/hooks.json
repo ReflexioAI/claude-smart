@@ -24,7 +24,7 @@
           },
           {
             "type": "command",
-            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/hook_entry.sh\" session-start",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/hook_entry.sh\" claude-code session-start",
             "timeout": 30
           },
           {
@@ -45,7 +45,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/hook_entry.sh\" user-prompt",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/hook_entry.sh\" claude-code user-prompt",
             "timeout": 15
           }
         ]
@@ -57,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/hook_entry.sh\" pre-tool",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/hook_entry.sh\" claude-code pre-tool",
             "timeout": 10
           }
         ]
@@ -69,7 +69,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/hook_entry.sh\" post-tool",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/hook_entry.sh\" claude-code post-tool",
             "timeout": 15
           }
         ]
@@ -80,7 +80,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/hook_entry.sh\" stop",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/hook_entry.sh\" claude-code stop",
             "timeout": 30
           }
         ]
@@ -91,7 +91,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/hook_entry.sh\" session-end",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/hook_entry.sh\" claude-code session-end",
             "timeout": 60
           },
           {

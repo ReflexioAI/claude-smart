@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,9 @@ from claude_smart.reflexio_adapter import Adapter
 _REFLEXIO_ENV_PATH = Path.home() / ".reflexio" / ".env"
 _DEFAULT_MARKETPLACE_SOURCE = "ReflexioAI/claude-smart"
 _PLUGIN_SPEC = "claude-smart@reflexioai"
+_CODEX_MARKETPLACE_NAME = "reflexioai"
+_CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
+_CODEX_CLI_TIMEOUT_SECONDS = 30
 _REFLEXIO_UNREACHABLE_MSG = (
     "Failed to reach reflexio. Check ~/.claude-smart/backend.log "
     "or restart Claude Code.\n"
@@ -44,6 +48,7 @@ _REFLEXIO_UNREACHABLE_MSG = (
 
 _THIS_DIR = Path(__file__).resolve().parent
 _PLUGIN_ROOT = _THIS_DIR.parents[1]  # plugin/src/claude_smart/ -> plugin/
+_REPO_ROOT = _PLUGIN_ROOT.parent
 _SCRIPTS_DIR = _PLUGIN_ROOT / "scripts"
 _DASHBOARD_DIR = _PLUGIN_ROOT / "dashboard"
 _BACKEND_SCRIPT = _SCRIPTS_DIR / "backend-service.sh"
@@ -52,6 +57,12 @@ _REFLEXIO_DIR = Path.home() / ".reflexio"
 _DEFAULT_STORAGE_ROOT = _REFLEXIO_DIR / "data"
 _REFLEXIO_CONFIG_PATH = _REFLEXIO_DIR / "configs" / "config_self-host-org.json"
 _LOCAL_STORAGE_ENV = "LOCAL_STORAGE_PATH"
+_CODEX_REQUIRED_FILES = (
+    Path(".agents/plugins/marketplace.json"),
+    Path("plugin/.codex-plugin/plugin.json"),
+    Path("plugin/hooks/codex-hooks.json"),
+    Path("plugin/scripts/_codex_env.sh"),
+)
 
 
 def _latest_session_id() -> str | None:
@@ -84,6 +95,169 @@ def _seed_reflexio_env() -> list[str]:
     return missing
 
 
+def _missing_codex_marketplace_files(root: Path) -> list[Path]:
+    return [entry for entry in _CODEX_REQUIRED_FILES if not (root / entry).is_file()]
+
+
+def _run_codex(args: list[str]) -> subprocess.CompletedProcess[str]:
+    command = ["codex", *args]
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_CODEX_CLI_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            command,
+            124,
+            "",
+            f"Codex CLI timed out after {_CODEX_CLI_TIMEOUT_SECONDS}s: {' '.join(command)}",
+        )
+
+
+def _set_toml_feature(path: Path, feature: str, value: bool) -> bool:
+    """Set one boolean under ``[features]`` in a minimal TOML file."""
+    desired = f"{feature} = {'true' if value else 'false'}"
+    section_re = re.compile(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$")
+    feature_re = re.compile(rf"^\s*{re.escape(feature)}\s*=")
+    try:
+        text = path.read_text() if path.exists() else ""
+    except OSError:
+        return False
+
+    lines = text.splitlines()
+    in_features = False
+    features_idx: int | None = None
+    insert_idx: int | None = None
+    changed = False
+    out: list[str] = []
+
+    for line in lines:
+        section_match = section_re.match(line)
+        if section_match:
+            if in_features and insert_idx is None:
+                insert_idx = len(out)
+            in_features = section_match.group(1).strip() == "features"
+            if in_features:
+                features_idx = len(out)
+            out.append(line)
+            continue
+        if in_features and feature_re.match(line):
+            out.append(desired)
+            changed = changed or line != desired
+            continue
+        out.append(line)
+
+    if features_idx is None:
+        if out and out[-1].strip():
+            out.append("")
+        out.extend(["[features]", desired])
+        changed = True
+    else:
+        section_end = insert_idx if insert_idx is not None else len(out)
+        if not any(
+            feature_re.match(line) for line in out[features_idx + 1 : section_end]
+        ):
+            idx = insert_idx if insert_idx is not None else len(out)
+            out.insert(idx, desired)
+            changed = True
+
+    if not changed and text.endswith("\n"):
+        return True
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(out) + "\n")
+    except OSError:
+        return False
+    return True
+
+
+def _enable_codex_plugin_hooks() -> tuple[bool, str]:
+    result = _run_codex(["features", "enable", "plugin_hooks"])
+    if result.returncode == 0:
+        return True, "codex features enable plugin_hooks"
+    if _set_toml_feature(_CODEX_CONFIG_PATH, "plugin_hooks", True):
+        return True, f"set plugin_hooks = true in {_CODEX_CONFIG_PATH}"
+    return False, (
+        result.stderr or result.stdout or "could not update Codex config"
+    ).strip()
+
+
+def _register_codex_marketplace(root: Path) -> tuple[bool, str]:
+    result = _run_codex(["plugin", "marketplace", "add", str(root)])
+    if result.returncode == 0:
+        upgrade = _run_codex(
+            ["plugin", "marketplace", "upgrade", _CODEX_MARKETPLACE_NAME]
+        )
+        suffix = " and refreshed cache" if upgrade.returncode == 0 else ""
+        return True, f"registered Codex marketplace{suffix}"
+    output = (result.stderr or result.stdout or "").strip()
+    if "different source" in output:
+        removed = _run_codex(
+            ["plugin", "marketplace", "remove", _CODEX_MARKETPLACE_NAME]
+        )
+        if removed.returncode == 0:
+            added = _run_codex(["plugin", "marketplace", "add", str(root)])
+            if added.returncode == 0:
+                return True, "replaced stale Codex marketplace registration"
+    return False, output or "Codex CLI does not expose plugin marketplace commands"
+
+
+def cmd_install_codex(_args: argparse.Namespace) -> int:
+    """Install the local claude-smart plugin marketplace for Codex."""
+    if not shutil.which("codex"):
+        sys.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n")
+        return 1
+    if not shutil.which("uv"):
+        sys.stderr.write(
+            "error: 'uv' not found on PATH. Install uv or restart your shell.\n"
+        )
+        return 1
+
+    missing = _missing_codex_marketplace_files(_REPO_ROOT)
+    if missing:
+        formatted = ", ".join(str(path) for path in missing)
+        sys.stderr.write(f"error: Codex marketplace files missing: {formatted}\n")
+        return 1
+
+    added = _seed_reflexio_env()
+    if added:
+        sys.stdout.write(f"Seeded {_REFLEXIO_ENV_PATH} with {', '.join(added)}.\n")
+
+    hooks_ok, hooks_msg = _enable_codex_plugin_hooks()
+    if hooks_ok:
+        sys.stdout.write(f"Enabled Codex plugin hooks ({hooks_msg}).\n")
+    else:
+        sys.stderr.write(f"warning: could not enable Codex plugin hooks: {hooks_msg}\n")
+
+    registered, registration_msg = _register_codex_marketplace(_REPO_ROOT)
+    if registered:
+        sys.stdout.write(f"{registration_msg}.\n")
+    else:
+        sys.stderr.write(f"warning: {registration_msg}\n")
+
+    if registered:
+        sys.stdout.write(
+            "\nclaude-smart Codex support is prepared.\n"
+            "Open Codex in this repo, run /plugins, install claude-smart from "
+            "the claude-smart (local) marketplace if it is not already installed, "
+            "then restart Codex so hooks reload. Uninstall removes the marketplace "
+            "registration but leaves shared claude-smart data and Codex's global "
+            "plugin_hooks feature intact.\n"
+        )
+    else:
+        sys.stdout.write(
+            "\nCodex hooks enabled; marketplace registration failed.\n"
+            f"Install manually with `codex plugin marketplace add {_REPO_ROOT}`, "
+            "then open Codex, run /plugins, install claude-smart from the "
+            "claude-smart (local) marketplace, and restart Codex so hooks reload.\n"
+        )
+    return 0 if hooks_ok and registered else 1
+
+
 def cmd_install(args: argparse.Namespace) -> int:
     """Install claude-smart into Claude Code via the native plugin CLI.
 
@@ -98,6 +272,9 @@ def cmd_install(args: argparse.Namespace) -> int:
     Returns:
         int: 0 on success, non-zero if the ``claude`` CLI is missing or fails.
     """
+    if getattr(args, "host", "claude-code") == "codex":
+        return cmd_install_codex(args)
+
     if not shutil.which("claude"):
         sys.stderr.write(
             "error: 'claude' CLI not found on PATH. "
@@ -164,6 +341,9 @@ def cmd_uninstall(_args: argparse.Namespace) -> int:
     Returns:
         int: 0 on success, non-zero if the ``claude`` CLI is missing or fails.
     """
+    if getattr(_args, "host", "claude-code") == "codex":
+        return cmd_uninstall_codex(_args)
+
     if not shutil.which("claude"):
         sys.stderr.write(
             "error: 'claude' CLI not found on PATH. "
@@ -182,6 +362,27 @@ def cmd_uninstall(_args: argparse.Namespace) -> int:
         "\nclaude-smart uninstalled. Restart Claude Code to apply.\n"
         "Local data in ~/.reflexio/ and ~/.claude-smart/ was left in place — "
         "remove manually if desired.\n"
+    )
+    return 0
+
+
+def cmd_uninstall_codex(_args: argparse.Namespace) -> int:
+    if not shutil.which("codex"):
+        sys.stdout.write("Codex CLI not found; skipping marketplace removal.\n")
+        return 0
+    result = _run_codex(["plugin", "marketplace", "remove", _CODEX_MARKETPLACE_NAME])
+    if result.returncode != 0:
+        output = (result.stderr or result.stdout or "").strip()
+        sys.stderr.write(
+            "warning: Codex marketplace removal failed"
+            + (f": {output}" if output else "")
+            + "\n"
+        )
+        return 1
+    sys.stdout.write(
+        "claude-smart Codex marketplace removed. Restart Codex to apply. "
+        "Codex's global plugin_hooks feature and local data under ~/.reflexio "
+        "and ~/.claude-smart were left in place.\n"
     )
     return 0
 
@@ -755,7 +956,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="claude-smart")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    inst = sub.add_parser("install", help="Install claude-smart into Claude Code")
+    inst = sub.add_parser("install", help="Install claude-smart")
+    inst.add_argument(
+        "--host",
+        choices=("claude-code", "codex"),
+        default="claude-code",
+        help="Install target host",
+    )
     inst.add_argument(
         "--source",
         default=_DEFAULT_MARKETPLACE_SOURCE,
@@ -766,7 +973,13 @@ def _build_parser() -> argparse.ArgumentParser:
     upd = sub.add_parser("update", help="Update claude-smart to the latest version")
     upd.set_defaults(func=cmd_update)
 
-    uni = sub.add_parser("uninstall", help="Remove claude-smart from Claude Code")
+    uni = sub.add_parser("uninstall", help="Remove claude-smart")
+    uni.add_argument(
+        "--host",
+        choices=("claude-code", "codex"),
+        default="claude-code",
+        help="Uninstall target host",
+    )
     uni.set_defaults(func=cmd_uninstall)
 
     sh = sub.add_parser(

@@ -1,0 +1,35 @@
+{
+  "name": "claude-smart",
+  "version": "0.2.22",
+  "description": "Self-improving coding assistant plugin — learns from corrections across sessions via reflexio",
+  "author": {
+    "name": "Yi Lu"
+  },
+  "homepage": "https://github.com/ReflexioAI/claude-smart#readme",
+  "repository": "https://github.com/ReflexioAI/claude-smart",
+  "license": "Apache-2.0",
+  "keywords": [
+    "claude",
+    "codex",
+    "plugin",
+    "reflexio",
+    "self-improvement",
+    "playbook",
+    "learning"
+  ],
+  "hooks": "./hooks/codex-hooks.json",
+  "interface": {
+    "displayName": "claude-smart",
+    "shortDescription": "Persistent learning across coding sessions",
+    "longDescription": "claude-smart captures user preferences and project-specific skills into a local reflexio backend, then injects relevant learnings back into future Claude Code and Codex sessions.",
+    "developerName": "ReflexioAI",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/ReflexioAI/claude-smart",
+    "brandColor": "#2563EB",
+    "screenshots": []
+  }
+}

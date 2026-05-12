@@ -36,6 +36,28 @@ def test_parse_citation_command_accepts_absolute_path_prefix() -> None:
     assert cs_cite.parse_citation_command(cmd) == ["s3-abcd"]
 
 
+def test_parse_text_citations_accepts_codex_learning_marker() -> None:
+    text = (
+        "The real answer remains visible.\n\n"
+        "✨ 2 claude-smart learnings applied [cs:s2-cd34,p1-ab12]"
+    )
+    assert cs_cite.parse_text_citations(text) == ["s2-cd34", "p1-ab12"]
+
+
+def test_parse_text_citations_ignores_plain_inline_tags() -> None:
+    text = "This mentions [cs:s2-cd34] but has no learning marker."
+    assert cs_cite.parse_text_citations(text) == []
+
+
+def test_parse_text_citations_uses_last_marker_line() -> None:
+    text = (
+        "✨ 1 claude-smart learning applied [cs:s1-1111]\n"
+        "answer\n"
+        "✨ 1 claude-smart learning applied [cs:p2-2222]"
+    )
+    assert cs_cite.parse_text_citations(text) == ["p2-2222"]
+
+
 def test_parse_citation_command_rejects_chained_commands() -> None:
     assert cs_cite.parse_citation_command("cs-cite p1-ab12 && echo ok") == []
     assert cs_cite.parse_citation_command("cs-cite p1-ab12 | cat") == []
@@ -158,6 +180,20 @@ def test_ensure_installed_is_idempotent_and_executable(tmp_path, monkeypatch) ->
     # copy2 preserves the source mtime, so the file's mtime should be stable
     # across repeated calls (guards against a re-download/re-build loop).
     assert target.stat().st_mtime_ns == first_mtime
+
+
+def test_ensure_installed_refreshes_stale_executable(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cs_cite, "_INSTALL_DIR", tmp_path / "bin")
+    monkeypatch.setattr(cs_cite, "INSTALL_PATH", tmp_path / "bin" / "cs-cite")
+    target = tmp_path / "bin" / "cs-cite"
+    target.parent.mkdir()
+    target.write_text("#!/bin/sh\nexit 1\n")
+    target.chmod(0o755)
+
+    cs_cite.ensure_installed()
+
+    assert target.read_bytes() == cs_cite._SOURCE_SCRIPT.read_bytes()
+    assert target.stat().st_mode & stat.S_IXUSR
 
 
 def test_ensure_installed_tolerates_readonly_target_parent(

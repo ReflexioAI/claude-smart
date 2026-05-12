@@ -15,7 +15,7 @@ import subprocess
 import sys
 from typing import Any
 
-from claude_smart import internal_call
+from claude_smart import internal_call, runtime
 
 _CLAUDE_TIMEOUT_SECONDS = 300
 _READ_ONLY_TOOLS = "Read,Grep,Glob,LS"
@@ -158,7 +158,7 @@ def _run_claude(*, prompt: str, system_prompt: str) -> str:
         cmd.extend(["--append-system-prompt", system_prompt])
 
     env = os.environ.copy()
-    env[internal_call._ENV_MARKER] = "1"  # noqa: SLF001 - shared guard constant.
+    env[runtime.INTERNAL_ENV] = "1"
     env[internal_call._ENTRYPOINT_VAR] = "optimizer"  # noqa: SLF001
 
     try:

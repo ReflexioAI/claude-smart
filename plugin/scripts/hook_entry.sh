@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dispatch a Claude Code hook event to the claude_smart Python package.
+# Dispatch a Claude Code or Codex hook event to the claude_smart Python package.
 # CLAUDE_PLUGIN_ROOT points at the plugin dir (dev: <repo>/plugin;
 # installed: ~/.claude/plugins/cache/reflexioai/claude-smart/<version>),
 # which is also the Python project root with pyproject.toml + uv.lock.
@@ -10,7 +10,14 @@
 # message instead of trying to run uv and failing silently.
 set -eu
 
+HOST="claude-code"
 EVENT="${1:-}"
+case "$EVENT" in
+  claude-code|codex)
+    HOST="$EVENT"
+    EVENT="${2:-}"
+    ;;
+esac
 if [ -z "$EVENT" ]; then
   echo '{"continue":true,"suppressOutput":true}'
   exit 0
@@ -40,7 +47,7 @@ print(json.dumps({
         "hookEventName": "SessionStart",
         "additionalContext": (
             f"> **claude-smart is not installed correctly:** {msg}\n"
-            "> Re-run the plugin's Setup (restart Claude Code) "
+            "> Re-run the plugin's Setup (restart your coding assistant) "
             "or fix the underlying issue and delete "
             "`~/.claude-smart/install-failed` to retry."
         ),
@@ -60,4 +67,4 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 # Stdin is the hook payload JSON — stream it through to the Python CLI.
-exec uv run --project "$PLUGIN_ROOT" --quiet python -m claude_smart.hook "$EVENT"
+exec uv run --project "$PLUGIN_ROOT" --quiet python -m claude_smart.hook "$HOST" "$EVENT"

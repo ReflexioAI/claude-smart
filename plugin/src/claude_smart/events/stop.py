@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from claude_smart import cs_cite, ids, publish, state
+from claude_smart import cs_cite, ids, publish, runtime, state
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -250,7 +250,9 @@ def _parse_plan_decision(text: str) -> str | None:
         _, sep, tail = text.partition(_PLAN_REJECTION_COMMENT_MARKER)
         comment = tail.strip() if sep else ""
         return (
-            f"Rejected the plan. Instead: {comment}" if comment else "Rejected the plan."
+            f"Rejected the plan. Instead: {comment}"
+            if comment
+            else "Rejected the plan."
         )
     return None
 
@@ -348,8 +350,17 @@ def handle(payload: dict[str, Any]) -> None:
         if path.is_file():
             entries = _load_transcript_with_retry(path)
 
-    assistant_text = _scan_transcript_for_assistant_text(entries)
-    cited_ids = _scan_transcript_for_cs_cite_ids(entries)
+    last_assistant_message = payload.get("last_assistant_message")
+    assistant_text = (
+        last_assistant_message
+        if runtime.is_codex()
+        and isinstance(last_assistant_message, str)
+        and last_assistant_message
+        else _scan_transcript_for_assistant_text(entries)
+    )
+    transcript_cited_ids = _scan_transcript_for_cs_cite_ids(entries)
+    text_cited_ids = cs_cite.parse_text_citations(assistant_text)
+    cited_ids = [*text_cited_ids, *transcript_cited_ids]
     cited_items = _resolve_cited_items(session_id, cited_ids)
     plan_decisions = _scan_transcript_for_plan_decisions(entries)
 

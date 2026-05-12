@@ -1,0 +1,67 @@
+{
+  "description": "claude-smart hooks for Codex — learn from sessions via reflexio",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; [ -z \"$_R\" ] && _R=$(ls -dt \"$HOME/plugins/claude-smart\" \"$HOME/.codex/plugins/cache/reflexioai/claude-smart\"/*/ 2>/dev/null | head -n 1); [ -n \"$_R\" ] && . \"${_R%/}/scripts/_codex_env.sh\" && bash \"$_R/scripts/ensure-plugin-root.sh\" \"$_R\" || true",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; [ -z \"$_R\" ] && _R=$(ls -dt \"$HOME/plugins/claude-smart\" \"$HOME/.codex/plugins/cache/reflexioai/claude-smart\"/*/ 2>/dev/null | head -n 1); [ -n \"$_R\" ] && . \"${_R%/}/scripts/_codex_env.sh\" && bash \"$_R/scripts/backend-service.sh\" start",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; [ -z \"$_R\" ] && _R=$(ls -dt \"$HOME/plugins/claude-smart\" \"$HOME/.codex/plugins/cache/reflexioai/claude-smart\"/*/ 2>/dev/null | head -n 1); [ -n \"$_R\" ] && . \"${_R%/}/scripts/_codex_env.sh\" && bash \"$_R/scripts/dashboard-service.sh\" start",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; [ -z \"$_R\" ] && _R=$(ls -dt \"$HOME/plugins/claude-smart\" \"$HOME/.codex/plugins/cache/reflexioai/claude-smart\"/*/ 2>/dev/null | head -n 1); [ -n \"$_R\" ] && . \"${_R%/}/scripts/_codex_env.sh\" && bash \"$_R/scripts/hook_entry.sh\" codex session-start",
+            "timeout": 30,
+            "statusMessage": "Loading claude-smart context"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; [ -z \"$_R\" ] && _R=$(ls -dt \"$HOME/plugins/claude-smart\" \"$HOME/.codex/plugins/cache/reflexioai/claude-smart\"/*/ 2>/dev/null | head -n 1); [ -n \"$_R\" ] && . \"${_R%/}/scripts/_codex_env.sh\" && bash \"$_R/scripts/hook_entry.sh\" codex user-prompt",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; [ -z \"$_R\" ] && _R=$(ls -dt \"$HOME/plugins/claude-smart\" \"$HOME/.codex/plugins/cache/reflexioai/claude-smart\"/*/ 2>/dev/null | head -n 1); [ -n \"$_R\" ] && . \"${_R%/}/scripts/_codex_env.sh\" && bash \"$_R/scripts/hook_entry.sh\" codex post-tool",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; [ -z \"$_R\" ] && _R=$(ls -dt \"$HOME/plugins/claude-smart\" \"$HOME/.codex/plugins/cache/reflexioai/claude-smart\"/*/ 2>/dev/null | head -n 1); [ -n \"$_R\" ] && . \"${_R%/}/scripts/_codex_env.sh\" && bash \"$_R/scripts/hook_entry.sh\" codex stop",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

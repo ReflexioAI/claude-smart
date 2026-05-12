@@ -1,0 +1,20 @@
+{
+  "name": "reflexioai",
+  "interface": {
+    "displayName": "ReflexioAI"
+  },
+  "plugins": [
+    {
+      "name": "claude-smart",
+      "source": {
+        "source": "local",
+        "path": "./plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

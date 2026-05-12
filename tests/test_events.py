@@ -1062,6 +1062,50 @@ def test_stop_records_cs_cite_ids_as_cited_items(
     ]
 
 
+def test_stop_records_text_marker_ids_as_cited_items(
+    session_dir, tmp_path, monkeypatch
+) -> None:
+    """The current citation path resolves ids from the final assistant marker."""
+    _prime_injected_registry("s1")
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            {"type": "user", "message": {"content": "do the thing"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Done.\n\n"
+                                "✨ 2 claude-smart learnings applied [cs:s1-42,p1-uuid]"
+                            ),
+                        }
+                    ]
+                },
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
+    )
+    stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
+    records = state.read_all("s1")
+    assert records[-1]["content"] == (
+        "Done.\n\n✨ 2 claude-smart learnings applied [cs:s1-42,p1-uuid]"
+    )
+    assert records[-1].get("cited_items") == [
+        {"id": "s1-42", "kind": "playbook", "title": "use pathlib", "real_id": "42"},
+        {
+            "id": "p1-uuid",
+            "kind": "profile",
+            "title": "prefers anyio",
+            "real_id": "uuid-anyio",
+        },
+    ]
+
+
 def test_stop_preserves_cited_item_source_kind(
     session_dir, tmp_path, monkeypatch
 ) -> None:

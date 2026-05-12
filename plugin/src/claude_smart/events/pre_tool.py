@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from claude_smart import context_inject, hook, ids, query_compose
+from claude_smart import context_inject, hook, ids, query_compose, runtime
 
 _LOGGER = logging.getLogger(__name__)
 _TOP_K = 3
@@ -20,6 +20,10 @@ _TOP_K = 3
 
 def handle(payload: dict[str, Any]) -> None:
     """PreToolUse dispatcher — never raises; degrades to ``emit_continue``."""
+    if runtime.is_codex():
+        hook.emit_continue()
+        return
+
     session_id = payload.get("session_id")
     tool_name = payload.get("tool_name")
     tool_input = payload.get("tool_input") or {}

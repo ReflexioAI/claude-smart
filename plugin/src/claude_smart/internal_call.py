@@ -37,7 +37,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-_ENV_MARKER = "CLAUDE_SMART_INTERNAL"
+from claude_smart import runtime
+
 _ENTRYPOINT_VAR = "CLAUDE_CODE_ENTRYPOINT"
 _INTERACTIVE_ENTRYPOINT = "cli"
 
@@ -69,7 +70,7 @@ def is_internal_invocation(payload: dict[str, Any]) -> bool:
             the reflexio submodule. False otherwise, including when
             ``cwd`` is missing or unresolvable.
     """
-    if os.environ.get(_ENV_MARKER) == "1":
+    if runtime.is_internal_invocation_env():
         return True
     entrypoint = os.environ.get(_ENTRYPOINT_VAR)
     if entrypoint and entrypoint != _INTERACTIVE_ENTRYPOINT:

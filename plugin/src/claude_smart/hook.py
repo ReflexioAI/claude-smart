@@ -1,10 +1,10 @@
-"""Dispatch table for Claude Code hook events.
+"""Dispatch table for claude-smart hook events.
 
-The plugin's ``hook_entry.sh`` calls ``python -m claude_smart.hook <event>``
-once per hook invocation. This module reads the hook JSON from stdin,
-routes to the matching handler in ``claude_smart.events``, and makes sure
-no unhandled exception ever propagates (that would break the user's
-session).
+The plugin's ``hook_entry.sh`` calls either
+``python -m claude_smart.hook <event>`` (legacy Claude Code shape) or
+``python -m claude_smart.hook <host> <event>`` once per hook invocation.
+This module reads the hook JSON from stdin, routes to the matching handler,
+and makes sure no unhandled exception ever propagates.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import logging
 import sys
 from typing import Any, Callable
 
+from claude_smart import runtime
 from claude_smart.internal_call import is_internal_invocation
 
 _LOGGER = logging.getLogger(__name__)
@@ -58,19 +59,32 @@ def _read_stdin_json() -> dict[str, Any]:
 
 def emit_continue() -> None:
     """Fallback stdout — tells Claude Code to keep going without injection."""
-    sys.stdout.write(json.dumps({"continue": True, "suppressOutput": True}))
+    payload = {"continue": True}
+    if not runtime.is_codex():
+        payload["suppressOutput"] = True
+    sys.stdout.write(json.dumps(payload))
     sys.stdout.write("\n")
+
+
+def _parse_args(argv: list[str]) -> tuple[str, str]:
+    """Return ``(host, event)`` for old and new hook argv shapes."""
+    if not argv:
+        return runtime.HOST_CLAUDE_CODE, ""
+    if len(argv) >= 2 and argv[0] in runtime.VALID_HOSTS:
+        return argv[0], argv[1]
+    return runtime.HOST_CLAUDE_CODE, argv[0]
 
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point used by ``python -m claude_smart.hook`` and the console script."""
     argv = argv if argv is not None else sys.argv[1:]
-    if not argv:
+    host, event = _parse_args(argv)
+    runtime.set_host(host)
+    if not event:
         _LOGGER.warning("hook dispatcher called with no event name")
         emit_continue()
         return 0
 
-    event = argv[0]
     payload = _read_stdin_json()
 
     # Self-feedback guard: when this hook fires inside reflexio's own

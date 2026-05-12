@@ -1,17 +1,18 @@
-"""Support helpers for the ``cs-cite`` citation channel.
+"""Support helpers for claude-smart citation tracking.
 
 Context injected by UserPromptSubmit / PreToolUse tags each skill and
 preference bullet with a rank-based id fingerprinted by the underlying
 real id (``[cs:s1-1a2b]`` for the first skill whose
 ``user_playbook_id`` starts with ``1a2b``, ``[cs:p2-c3d4]`` for the
-second preference). The injected instruction asks Claude to
-end impactful replies with a call like::
+second preference). The injected instruction asks the assistant to end
+impactful replies with a marker like::
 
-    cs-cite p1-c3d4,s2-1a2b
+    ✨ 1 claude-smart learning applied [cs:s1-1a2b]
 
-via the Bash tool. The Stop hook later scans the session transcript for
-those tool calls and resolves the ids against a per-session registry
-persisted at ``~/.claude-smart/sessions/<session_id>.injected.jsonl``.
+The Stop hook later scans the assistant text for those markers and resolves
+the ids against a per-session registry persisted at
+``~/.claude-smart/sessions/<session_id>.injected.jsonl``. Legacy ``cs-cite``
+Bash tool calls are still accepted as a fallback for older instructions.
 
 Why rank + fingerprint: rank alone resets at every injection, so a
 later injection's ``s1`` would silently overwrite an earlier entry in
@@ -26,11 +27,11 @@ This module holds:
 - ``rank_id``: ``p{n}-{fp}`` / ``s{n}-{fp}`` tag for a given
   (kind, rank, real_id) tuple. Fingerprint is omitted when no real id
   is available. ``p`` is preference, ``s`` is skill.
-- ``CITATION_CMD_RE``: regex matching a valid ``cs-cite`` command line.
+- ``CITATION_CMD_RE``: regex matching a valid legacy ``cs-cite`` command line.
 - ``ensure_installed``: idempotent copy of ``plugin/bin/cs-cite`` to
   ``~/.claude-smart/bin/cs-cite`` with the executable bit set.
-- ``CITATION_INSTRUCTION``: the trailer text appended to injected
-  context so Claude knows when and how to call the tool.
+- ``CITATION_INSTRUCTION``: the trailer text appended to injected context
+  so the assistant knows when and how to emit the citation marker.
 """
 
 from __future__ import annotations
@@ -70,26 +71,28 @@ CITATION_CMD_RE = re.compile(
 )
 _CLEAN_ID_RE = re.compile(r"^(?i:cs:)?((?i:[ps])\d+(?:-(?i:[a-z0-9]){1,4})?)$")
 _SPLIT_RE = re.compile(_ID_SEP)
+_TEXT_CITATION_LINE_RE = re.compile(
+    r"(?im)^\s*✨\s+\d+\s+claude-smart learning(?:s)? applied\s+"
+    r"\[cs:(?P<ids>[^\]]+)\]\s*$"
+)
 
 CITATION_INSTRUCTION = (
     "_First, fully answer the user — citation does not change what or how "
     "you reply. Then, as a final step, consider whether to cite: if — and "
     "only if — an injected `[cs:…]` item materially changed your reply "
     "(different wording, action, or conclusion than you would have produced "
-    "without it), call `cs-cite <id>` via the Bash tool. Ids come verbatim "
+    "without it), append exactly one final citation line after your answer. "
+    "Do not call `cs-cite` or any other tool for citations. Ids come verbatim "
     "from the `[cs:…]` tags — keep the leading `p` (preference) or `s` "
-    "(skill) and the `-<fp>` suffix, e.g. `cs-cite s1-ab12`. List "
-    "multiple ids only when each shaped a different part of the answer, "
-    "e.g. `cs-cite s1-ab12,p2-cd34`. Ids only, no prose, one Bash call. "
+    "(skill) and the `-<fp>` suffix. Use this exact format for one id: "
+    "`✨ 1 claude-smart learning applied [cs:s1-ab12]`. Use this exact format "
+    "for multiple ids: `✨ 2 claude-smart learnings applied [cs:s1-ab12,p2-cd34]`, "
+    "where the number is the count of ids in the brackets. "
     "Default is to skip. If an item is merely on-topic, confirms what you "
     "already planned, or your reply would read the same without it, do not "
-    "cite — end the turn normally with your reply. When unsure, skip. "
-    "The `cs-cite` Bash call produces no stdout output. After it returns, "
-    "emit exactly one short line as the final content of your assistant "
-    "message, then stop: `✨ N claude-smart learning applied` when N=1, or "
-    "`✨ N claude-smart learnings applied` when N>1, where N is the count "
-    "of ids you passed. Do not add any other text, tool calls, or role "
-    "markers after that line._"
+    "cite — end the turn normally with your reply. When unsure, skip. Do "
+    "not add any other text, tool calls, or role markers after the final "
+    "citation line._"
 )
 
 
@@ -170,8 +173,27 @@ def parse_citation_command(command: str) -> list[str]:
     match = CITATION_CMD_RE.match(command or "")
     if not match:
         return []
+    return _parse_id_tokens(match.group(1))
+
+
+def parse_text_citations(text: str) -> list[str]:
+    """Extract Codex text-only citation ids from a final learning marker line.
+
+    The parser intentionally only accepts lines containing the visual
+    ``claude-smart learning(s) applied`` marker, so ordinary references to
+    injected ``[cs:...]`` ids inside an answer do not count as citations.
+    When multiple matching lines exist, the last one wins because the
+    instruction requires the citation marker to be final.
+    """
+    matches = list(_TEXT_CITATION_LINE_RE.finditer(text or ""))
+    if not matches:
+        return []
+    return _parse_id_tokens(matches[-1].group("ids"))
+
+
+def _parse_id_tokens(raw_ids: str) -> list[str]:
     ids: list[str] = []
-    for tok in _SPLIT_RE.split(match.group(1).strip()):
+    for tok in _SPLIT_RE.split(raw_ids.strip()):
         if clean := _CLEAN_ID_RE.match(tok):
             ids.append(clean.group(1).lower())
     return ids
@@ -195,7 +217,12 @@ def ensure_installed() -> Path:
         Path: Target path, whether or not install succeeded.
     """
     try:
-        if INSTALL_PATH.is_file() and INSTALL_PATH.stat().st_mode & stat_.S_IXUSR:
+        if (
+            INSTALL_PATH.is_file()
+            and INSTALL_PATH.stat().st_mode & stat_.S_IXUSR
+            and _SOURCE_SCRIPT.is_file()
+            and INSTALL_PATH.read_bytes() == _SOURCE_SCRIPT.read_bytes()
+        ):
             return INSTALL_PATH
         _INSTALL_DIR.mkdir(parents=True, exist_ok=True)
         if _SOURCE_SCRIPT.is_file():

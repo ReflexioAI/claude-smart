@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from claude_smart import context_format, cs_cite
+from claude_smart import context_format, cs_cite, runtime
 
 
 def test_render_with_registry_empty_returns_empty_tuple() -> None:
@@ -99,6 +99,23 @@ def test_render_with_registry_emits_citation_instruction() -> None:
         agent_playbooks=[],
         profiles=[],
     )
+    assert cs_cite.CITATION_INSTRUCTION in md
+    assert "Do not call `cs-cite`" in md
+    assert "✨ 1 claude-smart learning applied [cs:s1-ab12]" in md
+    assert "✨ 2 claude-smart learnings applied [cs:s1-ab12,p2-cd34]" in md
+    assert "`✨ N claude-smart" not in md
+
+
+def test_render_with_registry_uses_same_citation_instruction_for_codex() -> None:
+    runtime.set_host(runtime.HOST_CODEX)
+
+    md, _ = context_format.render_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "x"}],
+        agent_playbooks=[],
+        profiles=[],
+    )
+
     assert cs_cite.CITATION_INSTRUCTION in md
 
 

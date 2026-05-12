@@ -12,11 +12,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from claude_smart import runtime
+
 _LOGGER = logging.getLogger(__name__)
 
 _ENV_URL = "REFLEXIO_URL"
 _DEFAULT_URL = "http://localhost:8071/"
-_AGENT_VERSION = "claude-code"
 _SEARCH_MODE_HYBRID = "hybrid"  # reflexio.models.config_schema.SearchMode.HYBRID
 _UNIFIED_ENTITY_TYPES = ("profiles", "user_playbooks", "agent_playbooks")
 _AGENT_PLAYBOOK_APPROVAL_STATUSES = ("pending", "approved")
@@ -81,7 +82,7 @@ class Adapter:
             client.publish_interaction(
                 user_id=project_id,
                 interactions=list(interactions),
-                agent_version=_AGENT_VERSION,
+                agent_version=runtime.agent_version(),
                 session_id=session_id,
                 wait_for_response=False,
                 force_extraction=force_extraction,
@@ -225,7 +226,7 @@ class Adapter:
             return []
         try:
             response = client.search_agent_playbooks(
-                agent_version=_AGENT_VERSION,
+                agent_version=runtime.agent_version(),
                 status_filter=[None],
                 top_k=top_k,
             )
@@ -285,7 +286,7 @@ class Adapter:
             response = client.search(
                 query=query,
                 user_id=project_id,
-                agent_version=_AGENT_VERSION,
+                agent_version=runtime.agent_version(),
                 entity_types=list(_UNIFIED_ENTITY_TYPES),
                 agent_playbook_status_filter=list(_AGENT_PLAYBOOK_APPROVAL_STATUSES),
                 enable_agent_answer=False,
