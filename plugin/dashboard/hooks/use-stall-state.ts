@@ -33,13 +33,17 @@ export function useStallState(): StallState | null {
     const base = reflexioUrl.replace(/\/$/, "");
 
     const tick = async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
       try {
-        const resp = await fetch(`${base}/stall_state`);
+        const resp = await fetch(`${base}/stall_state`, { signal: controller.signal });
         if (!resp.ok) return;
         const body: StallState = await resp.json();
         if (!cancelled) setState(body);
       } catch {
-        // Reflexio offline — leave previous state in place.
+        // Reflexio offline / aborted — leave previous state in place.
+      } finally {
+        clearTimeout(timer);
       }
     };
 
