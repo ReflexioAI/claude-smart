@@ -65,7 +65,7 @@ def _stall_banner(adapter: Any) -> str:
             reason=getattr(state_obj, "reason", None),
             reset_estimate=getattr(state_obj, "reset_estimate", None),
         )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — render_banner bug must not block playbook injection.
         return ""
 
 

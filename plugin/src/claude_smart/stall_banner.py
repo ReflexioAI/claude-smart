@@ -14,12 +14,13 @@ StallReason = Literal["billing_error", "auth_error"]
 _DASHBOARD = "localhost:3001"
 
 
-def render_banner(*, reason: str, reset_estimate: datetime | None) -> str:
+def render_banner(*, reason: str | None, reset_estimate: datetime | None) -> str:
     """Format the SessionStart banner for the given stall reason.
 
     Args:
-        reason (str): ``"billing_error"`` or ``"auth_error"``. Other values
-            yield an empty string so callers can pass raw DB values safely.
+        reason (str | None): ``"billing_error"`` or ``"auth_error"``. Other values
+            (including ``None``) yield an empty string so callers can pass raw DB
+            values safely.
         reset_estimate (datetime | None): Best-effort credit reset time;
             included in the billing-error banner when present.
 

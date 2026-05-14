@@ -86,13 +86,42 @@ def test_clean_state_no_banner(clean_state, monkeypatch, session_dir):
     assert "learning paused" not in text
 
 
-def test_adapter_unreachable_does_not_crash(monkeypatch, session_dir):
+def test_state_none_does_not_crash(monkeypatch, session_dir):
     monkeypatch.setattr(
         "claude_smart.events.session_start._adapter",
         lambda: _AdapterStub(None),
     )
     text = _capture_output({"session_id": "s1", "cwd": "/tmp"})
     assert "learning paused" not in text  # silent skip
+
+
+def test_fetch_stall_state_raises_does_not_crash(monkeypatch, session_dir):
+    """When fetch_stall_state raises (e.g., reflexio server unreachable),
+    session_start must still emit normally with no banner."""
+
+    class _RaisingAdapter(_AdapterStub):
+        def fetch_stall_state(self):  # noqa: D102
+            raise ConnectionRefusedError("reflexio down")
+
+    monkeypatch.setattr(
+        "claude_smart.events.session_start._adapter",
+        lambda: _RaisingAdapter(None),
+    )
+    text = _capture_output({"session_id": "s1", "cwd": "/tmp"})
+    assert "learning paused" not in text
+
+
+def test_banner_only_emits_just_banner(stalled_state, monkeypatch, session_dir):
+    """Banner-only path: when there's no playbook/profile markdown, the
+    additionalContext is exactly the banner — no leading/trailing whitespace."""
+    monkeypatch.setattr(
+        "claude_smart.events.session_start._adapter",
+        lambda: _AdapterStub(stalled_state),
+    )
+    text = _capture_output({"session_id": "s1", "cwd": "/tmp"})
+    assert text.startswith("claude-smart: learning paused")
+    # No double-newline trailing — banner is the only content
+    assert "\n\n" not in text or text.split("\n\n")[1:] == [""]  # tolerate trailing newline
 
 
 class _AdapterStub:
