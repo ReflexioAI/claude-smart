@@ -176,6 +176,41 @@ class Adapter:
             return False
 
     # -----------------------------------------------------------------
+    # Stall-state reads/writes (used by SessionStart banner)
+    # -----------------------------------------------------------------
+
+    def fetch_stall_state(self) -> Any | None:
+        """Fetch the current learning-stall snapshot from reflexio.
+
+        Returns:
+            Any | None: ``StallStateResponse``-shaped object (attribute access
+                for stalled/reason/etc), or None when the reflexio server is
+                unreachable. The caller must tolerate either case.
+        """
+        client = self._get_client()
+        if client is None:
+            return None
+        try:
+            return client.get_stall_state()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("get_stall_state failed: %s", exc)
+            return None
+
+    def mark_stall_notified(self) -> None:
+        """Idempotently flip ``notified_in_cc`` on the active stall row.
+
+        Returns:
+            None
+        """
+        client = self._get_client()
+        if client is None:
+            return
+        try:
+            client.mark_stall_notified()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("mark_stall_notified failed: %s", exc)
+
+    # -----------------------------------------------------------------
     # Broad reads (used by /show)
     # -----------------------------------------------------------------
 

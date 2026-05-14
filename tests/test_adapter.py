@@ -528,3 +528,47 @@ def test_apply_optimizer_defaults_absorbs_get_config_errors() -> None:
     a = _adapter_with(_OptimizerConfigClient(get_raises=RuntimeError("down")))
 
     assert a.apply_optimizer_defaults(script_path="/venv/bin/assistant") is False
+
+
+# -----------------------------------------------------------------------------
+# fetch_stall_state / mark_stall_notified
+# -----------------------------------------------------------------------------
+
+
+class _StubClientWithStallState:
+    def __init__(self, response):
+        self._response = response
+        self.notified_called = False
+
+    def get_stall_state(self):
+        return self._response
+
+    def mark_stall_notified(self):
+        self.notified_called = True
+
+
+def test_fetch_stall_state_returns_none_when_client_unavailable():
+    adapter = reflexio_adapter.Adapter(url="http://nope/")
+    adapter._client = None  # type: ignore[attr-defined]
+    # _get_client returns None when reflexio unimportable / unreachable
+    assert adapter.fetch_stall_state() is None
+
+
+def test_fetch_stall_state_passes_through_when_clean(monkeypatch):
+    stub = _StubClientWithStallState(SimpleNamespace(
+        stalled=False, reason=None, stalled_at=None,
+        reset_estimate=None, notified_in_cc=False, error_message=None,
+    ))
+    adapter = reflexio_adapter.Adapter(url="http://x/")
+    monkeypatch.setattr(adapter, "_get_client", lambda: stub)
+    state = adapter.fetch_stall_state()
+    assert state is not None
+    assert state.stalled is False
+
+
+def test_mark_stall_notified_calls_through(monkeypatch):
+    stub = _StubClientWithStallState(None)
+    adapter = reflexio_adapter.Adapter(url="http://x/")
+    monkeypatch.setattr(adapter, "_get_client", lambda: stub)
+    adapter.mark_stall_notified()
+    assert stub.notified_called is True
