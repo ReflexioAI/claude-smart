@@ -427,3 +427,33 @@ Useful for debugging without a live Claude Code session:
 echo '{"session_id":"dev-1","source":"startup","cwd":"'"$PWD"'"}' \
   | uv run --project plugin python -m claude_smart.hook session-start
 ```
+
+## Manual smoke tests — credit-stall notification
+
+These exercise the credit-stall detection path end-to-end against real reflexio state.
+
+### 1. Force a stall via SQLite
+
+```bash
+sqlite3 ~/.reflexio/data/reflexio.db <<'SQL'
+UPDATE stall_state SET stalled=1, reason='billing_error',
+  stalled_at=datetime('now'), notified_in_cc=0,
+  error_message='manual smoke test';
+SQL
+```
+
+Open `http://localhost:3001` — the banner should appear. Start a new Claude Code session — the SessionStart banner should appear once. Start a second session immediately — no banner (notified_in_cc was flipped).
+
+Clear:
+
+```bash
+sqlite3 ~/.reflexio/data/reflexio.db "UPDATE stall_state SET stalled=0, reason=NULL, notified_in_cc=0 WHERE id=1;"
+```
+
+### 2. Real auth stall
+
+`claude /logout`, then trigger any reflexio extraction (e.g. `/learn`). Expect `reason='auth_error'`, then a `/login` banner on the next SessionStart.
+
+### 3. Real billing stall
+
+Reproducible only against an exhausted Agent SDK credit pool. Capture the stream-json output as a fixture under `reflexio/tests/server/llm/fixtures/` so the integration test stays current as Anthropic's error format evolves.
