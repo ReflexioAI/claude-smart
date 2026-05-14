@@ -139,5 +139,8 @@ class _AdapterStub:
     def fetch_both(self, **kw):
         return [], []
 
-    def apply_batch_defaults(self, **kw):
+    def apply_extraction_defaults(self, **kw):
+        return True
+
+    def apply_optimizer_defaults(self, **kw):
         return True
