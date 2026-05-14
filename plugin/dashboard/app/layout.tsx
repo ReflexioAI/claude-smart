@@ -4,6 +4,7 @@ import "./globals.css";
 import { Providers } from "./providers";
 import { Sidebar } from "@/components/layout/sidebar";
 import { TopBar } from "@/components/layout/top-bar";
+import { StallBanner } from "@/components/stall-banner";
 
 const inter = Inter({
   variable: "--font-sans",
@@ -24,6 +25,7 @@ export default function RootLayout({
     <html lang="en" className={`${inter.variable} h-full`} suppressHydrationWarning>
       <body className="h-full flex flex-col antialiased font-sans">
         <Providers>
+          <StallBanner />
           <TopBar />
           <div className="flex flex-1 min-h-0">
             <aside className="hidden lg:block w-60 border-r border-border shrink-0">
