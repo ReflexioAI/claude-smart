@@ -48,5 +48,13 @@ def render_banner(*, reason: str, reset_estimate: datetime | None) -> str:
 
 
 def _format_reset(value: datetime) -> str:
-    """Format a reset datetime as e.g. ``Jun 12 09:00`` for the banner."""
-    return value.strftime("%b %d %H:%M").lstrip("0")
+    """Format a reset datetime as e.g. ``Jun 12 9:00`` for the banner.
+
+    Args:
+        value (datetime): The reset time to format.
+
+    Returns:
+        str: The banner-friendly representation, with the hour shown
+            without a leading zero (e.g. ``Jun 12 9:00``).
+    """
+    return f"{value.strftime('%b %d')} {value.hour}:{value.minute:02d}"

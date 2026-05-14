@@ -17,6 +17,7 @@ def test_billing_error_with_reset_estimate():
     assert "learning paused" in text
     assert "credit exhausted" in text
     assert "Jun 12" in text
+    assert "Jun 12 9:00" in text
     assert "localhost:3001" in text
 
 
