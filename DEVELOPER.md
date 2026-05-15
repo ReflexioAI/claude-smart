@@ -296,7 +296,7 @@ Codex local development creates a durable local marketplace wrapper at `~/.claud
 uv run --project plugin claude-smart install --host codex
 ```
 
-Then fully restart Codex so hooks reload. The command installs `claude-smart` into `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/` and enables `[plugins."claude-smart@reflexioai"]` in `~/.codex/config.toml`; `/plugins` should show it as installed from the **ReflexioAI** marketplace.
+Then fully restart Codex so hooks reload. The command installs `claude-smart` into `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/`, enables `[plugins."claude-smart@reflexioai"]`, enables Codex's hook feature flags, and seeds the per-hook trust entries in `~/.codex/config.toml`; `/plugins` should show it as installed from the **ReflexioAI** marketplace. Running `codex features enable plugin_hooks` by itself is not enough because it does not install the plugin or trust the individual hook entries.
 
 For live hook iteration, point Codex at this checkout before the cache:
 
@@ -493,7 +493,7 @@ uv run --project plugin claude-smart install --host codex      # Codex repo-loca
 node bin/claude-smart.js install --host codex                  # Codex packaged-marketplace path
 ```
 
-The Claude Code install commands accept either a GitHub `owner/repo` ref or an absolute path to a local directory containing `.claude-plugin/marketplace.json`. The Codex Python path creates a local marketplace wrapper that copies this checkout's `plugin/`; the Codex Node path exercises the packaged no-clone flow by copying the bundled plugin into `~/.claude/plugins/marketplaces/reflexioai/plugins/claude-smart` before registering it with Codex.
+The Claude Code install commands accept either a GitHub `owner/repo` ref or an absolute path to a local directory containing `.claude-plugin/marketplace.json`. The Codex Python path creates a local marketplace wrapper that copies this checkout's `plugin/`; the Codex Node path exercises the packaged no-clone flow by copying the bundled plugin into `~/.claude/plugins/marketplaces/reflexioai/plugins/claude-smart` before registering it with Codex. Both Codex paths ask `codex app-server` for the current claude-smart hook hashes and write matching trust state to `~/.codex/config.toml`.
 
 ## Tests
 

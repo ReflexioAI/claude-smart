@@ -35,7 +35,19 @@ def test_codex_manifest_points_at_codex_hooks() -> None:
     manifest = _read_json("plugin/.codex-plugin/plugin.json")
     assert manifest["name"] == "claude-smart"
     assert manifest["hooks"] == "./hooks/codex-hooks.json"
+    assert manifest["skills"] == "./skills/"
     assert manifest["interface"]["displayName"] == "claude-smart"
+
+
+def test_codex_skill_documents_command_mapping() -> None:
+    skill = (REPO_ROOT / "plugin" / "skills" / "claude-smart" / "SKILL.md").read_text()
+
+    assert "name: claude-smart" in skill
+    assert "Codex does not currently support plugin-provided slash commands" in skill
+    assert "bash ~/.reflexio/plugin-root/scripts/cli.sh show" in skill
+    assert "bash ~/.reflexio/plugin-root/scripts/cli.sh learn --note" in skill
+    assert "bash ~/.reflexio/plugin-root/scripts/cli.sh restart" in skill
+    assert "bash ~/.reflexio/plugin-root/scripts/cli.sh clear-all --yes" in skill
 
 
 def test_codex_marketplace_points_at_plugin_root() -> None:
@@ -303,6 +315,7 @@ def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
     monkeypatch.setattr(cli, "_CODEX_LOCAL_MARKETPLACE_ROOT", marketplace_root)
     monkeypatch.setattr(cli, "_CODEX_PLUGIN_CACHE_DIR", plugin_cache)
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
+    trusted_cwds: list[Path] = []
 
     calls: list[list[str]] = []
 
@@ -315,6 +328,11 @@ def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
         return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(cli, "_run_codex", fake_run_codex)
+    monkeypatch.setattr(
+        cli,
+        "_trust_codex_plugin_hooks",
+        lambda cwd: trusted_cwds.append(cwd) or (True, "trusted 7 hooks"),
+    )
 
     rc = cli.cmd_install(argparse.Namespace(host="codex", source="unused"))
 
@@ -332,8 +350,11 @@ def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
         "add",
         str(marketplace_root),
     ] in calls
+    assert ["features", "enable", "hooks"] in calls
+    assert trusted_cwds
     out = capsys.readouterr().out
     assert "Codex support is installed" in out
+    assert "trusted 7 hooks" in out
     assert "should show claude-smart as installed" in out
 
 
@@ -358,7 +379,9 @@ def test_codex_install_fails_when_marketplace_registration_fails(
     rc = cli.cmd_install(argparse.Namespace(host="codex", source="unused"))
 
     assert rc == 1
-    assert "plugin_hooks = true" in config_path.read_text()
+    text = config_path.read_text()
+    assert "hooks = true" in text
+    assert "plugin_hooks = true" in text
     out = capsys.readouterr().out
     assert "marketplace registration failed" in out
     assert "ReflexioAI marketplace" in out
@@ -499,6 +522,181 @@ def test_codex_uninstall_cleans_plugin_config_cache_and_marketplace(
     assert '[plugins."browser@openai-bundled"]' in text
     assert "[marketplaces.openai-bundled]" in text
     assert "plugin and marketplace state removed" in capsys.readouterr().out
+
+
+def test_set_codex_hook_states_replaces_only_claude_smart_hooks(tmp_path) -> None:
+    config = tmp_path / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text(
+        "[hooks.state]\n"
+        "\n"
+        '[hooks.state."claude-smart@reflexioai:hooks/codex-hooks.json:stop:0:0"]\n'
+        'trusted_hash = "sha256:old"\n'
+        "\n"
+        '[hooks.state."other@market:hooks.json:stop:0:0"]\n'
+        'trusted_hash = "sha256:other"\n'
+    )
+
+    ok = cli._set_codex_hook_states(
+        config,
+        {
+            "claude-smart@reflexioai:hooks/codex-hooks.json:post_tool_use:0:0": (
+                "sha256:new"
+            ),
+            "claude-smart@reflexioai:hooks/codex-hooks.json:session_start:0:0": (
+                "sha256:start"
+            ),
+        },
+    )
+
+    assert ok is True
+    text = config.read_text()
+    assert "sha256:old" not in text
+    assert "sha256:new" in text
+    assert "sha256:start" in text
+    assert "enabled = true" in text
+    assert "other@market" in text
+
+
+def test_trust_codex_plugin_hooks_uses_app_server_current_hashes(
+    monkeypatch, tmp_path
+) -> None:
+    config = tmp_path / ".codex" / "config.toml"
+    monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", config)
+
+    def fake_list(_cwd: Path):
+        return (
+            True,
+            [
+                {
+                    "pluginId": "claude-smart@reflexioai",
+                    "key": "claude-smart@reflexioai:hooks/codex-hooks.json:stop:0:0",
+                    "currentHash": "sha256:stop",
+                },
+                {
+                    "pluginId": "other@market",
+                    "key": "other@market:hooks.json:stop:0:0",
+                    "currentHash": "sha256:other",
+                },
+            ],
+            "ok",
+        )
+
+    monkeypatch.setattr(cli, "_list_codex_plugin_hooks", fake_list)
+
+    ok, message = cli._trust_codex_plugin_hooks(tmp_path)
+
+    assert ok is True
+    assert "1 claude-smart Codex hooks" in message
+    text = config.read_text()
+    assert "sha256:stop" in text
+    assert "sha256:other" not in text
+
+
+def test_set_codex_hook_states_preserves_unrelated_hooks_state_root_table(
+    tmp_path,
+) -> None:
+    config = tmp_path / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text(
+        "[hooks.state]\n"
+        "\n"
+        '[hooks.state."other@market:hooks.json:stop:0:0"]\n'
+        'trusted_hash = "sha256:other"\n'
+        "enabled = false\n"
+        'extra = "preserved"\n'
+    )
+
+    ok = cli._set_codex_hook_states(
+        config,
+        {
+            "claude-smart@reflexioai:hooks/codex-hooks.json:stop:0:0": "sha256:cs",
+        },
+    )
+
+    assert ok is True
+    text = config.read_text()
+    # The unrelated plugin's full body must survive intact.
+    assert '[hooks.state."other@market:hooks.json:stop:0:0"]' in text
+    assert 'trusted_hash = "sha256:other"' in text
+    assert "enabled = false" in text
+    assert 'extra = "preserved"' in text
+    # New entry was appended.
+    assert (
+        '[hooks.state."claude-smart@reflexioai:hooks/codex-hooks.json:stop:0:0"]'
+        in text
+    )
+    assert "sha256:cs" in text
+
+
+def test_trust_codex_plugin_hooks_returns_failure_when_app_server_lists_no_hooks(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", tmp_path / "config.toml")
+    monkeypatch.setattr(
+        cli,
+        "_list_codex_plugin_hooks",
+        lambda _cwd: (True, [], "found 0 claude-smart hooks"),
+    )
+
+    ok, message = cli._trust_codex_plugin_hooks(tmp_path)
+
+    assert ok is False
+    assert "did not report trust hashes" in message
+
+
+def test_trust_codex_plugin_hooks_returns_failure_when_app_server_subprocess_errors(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", tmp_path / "config.toml")
+
+    def fake_popen(*_args, **_kwargs):
+        raise OSError("codex not on PATH")
+
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+
+    ok, message = cli._trust_codex_plugin_hooks(tmp_path)
+
+    assert ok is False
+    assert "could not start Codex app-server" in message
+
+
+def test_codex_install_exits_nonzero_when_only_trust_fails(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    env_path = tmp_path / "reflexio" / ".env"
+    config_path = tmp_path / ".codex" / "config.toml"
+    marketplace_root = tmp_path / "marketplaces" / "reflexioai"
+    plugin_cache = (
+        tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    )
+    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
+    monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", config_path)
+    monkeypatch.setattr(cli, "_CODEX_LOCAL_MARKETPLACE_ROOT", marketplace_root)
+    monkeypatch.setattr(cli, "_CODEX_PLUGIN_CACHE_DIR", plugin_cache)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+
+    def fake_run_codex(_args: list[str]):
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    trust_calls = {"n": 0}
+
+    def fake_trust(_cwd: Path):
+        trust_calls["n"] += 1
+        return False, "Codex did not report trust hashes for claude-smart hooks"
+
+    monkeypatch.setattr(cli, "_run_codex", fake_run_codex)
+    monkeypatch.setattr(cli, "_trust_codex_plugin_hooks", fake_trust)
+
+    rc = cli.cmd_install(argparse.Namespace(host="codex", source="unused"))
+
+    assert rc == 1
+    # Trust must have been retried at least once.
+    assert trust_calls["n"] >= 2
+    captured = capsys.readouterr()
+    assert "hook trust could not be completed" in captured.out
+    assert "did not report trust hashes" in captured.err
 
 
 def test_run_codex_times_out(monkeypatch) -> None:

@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -337,6 +338,191 @@ def _set_codex_plugin_enabled(path: Path) -> bool:
     return True
 
 
+def _toml_dotted_quoted(name: str) -> str:
+    """Quote a TOML bare-key segment whose name may contain ``"`` or ``\\``."""
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _set_codex_hook_states(path: Path, states: dict[str, str]) -> bool:
+    """Trust and enable Codex hook state entries for the given hook hashes."""
+    if not states:
+        return False
+    if not _remove_toml_sections(
+        path,
+        exact=set(),
+        prefixes=(f'hooks.state."{_CODEX_PLUGIN_ID}:',),
+    ):
+        return False
+    try:
+        text = path.read_text() if path.exists() else ""
+    except OSError:
+        return False
+    if text and not text.endswith("\n"):
+        text += "\n"
+    if "[hooks.state]" not in text:
+        if text.strip():
+            text += "\n"
+        text += "[hooks.state]\n"
+    if text.strip():
+        text += "\n"
+    for key, current_hash in sorted(states.items()):
+        text += (
+            f"[hooks.state.{_toml_dotted_quoted(key)}]\n"
+            "enabled = true\n"
+            f'trusted_hash = "{current_hash}"\n\n'
+        )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text.rstrip() + "\n")
+    except OSError:
+        return False
+    return True
+
+
+def _read_codex_app_server_response(
+    proc: subprocess.Popen[str], response_id: int, deadline: float
+) -> dict[str, object]:
+    """Read JSON-RPC lines from ``proc.stdout`` until ``response_id`` arrives.
+
+    Skips unrelated notifications and non-JSON output. Raises ``RuntimeError``
+    if the child exits, ``TimeoutError`` once ``deadline`` is reached, or
+    re-raises Codex's own error payload as ``RuntimeError``.
+    """
+    if proc.stdout is None:
+        raise RuntimeError("Codex app-server stdout pipe is not available")
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([proc.stdout], [], [], 0.2)
+        if not ready:
+            if proc.poll() is not None:
+                raise RuntimeError("Codex app-server exited before responding")
+            continue
+        line = proc.stdout.readline()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if message.get("id") == response_id:
+            if "error" in message:
+                raise RuntimeError(str(message["error"]))
+            return message
+    raise TimeoutError("Codex app-server did not respond in time")
+
+
+def _codex_app_server_request(
+    proc: subprocess.Popen[str],
+    response_id: int,
+    method: str,
+    params: dict[str, object],
+    deadline: float,
+) -> dict[str, object]:
+    """Send one JSON-RPC request to the Codex app-server and await the response."""
+    if proc.stdin is None:
+        raise RuntimeError("Codex app-server stdin pipe is not available")
+    proc.stdin.write(
+        json.dumps({"id": response_id, "method": method, "params": params})
+    )
+    proc.stdin.write("\n")
+    proc.stdin.flush()
+    return _read_codex_app_server_response(proc, response_id, deadline)
+
+
+def _list_codex_plugin_hooks(cwd: Path) -> tuple[bool, list[dict[str, object]], str]:
+    """Ask Codex for discovered hook metadata, including current trust hashes."""
+    try:
+        popen = subprocess.Popen(
+            ["codex", "app-server", "--listen", "stdio://"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError as exc:
+        return False, [], f"could not start Codex app-server: {exc}"
+
+    proc = popen
+    try:
+        deadline = time.monotonic() + _CODEX_CLI_TIMEOUT_SECONDS
+        _codex_app_server_request(
+            proc,
+            1,
+            "initialize",
+            {
+                "clientInfo": {
+                    "name": "claude_smart_installer",
+                    "title": "claude-smart installer",
+                    "version": "0.0.0",
+                },
+                "capabilities": {"experimentalApi": True},
+            },
+            deadline,
+        )
+        if proc.stdin is None:
+            return False, [], "Codex app-server stdin pipe is not available"
+        proc.stdin.write(json.dumps({"method": "initialized", "params": {}}) + "\n")
+        proc.stdin.flush()
+        response = _codex_app_server_request(
+            proc,
+            2,
+            "hooks/list",
+            {"cwds": [str(cwd)]},
+            deadline,
+        )
+    except (OSError, RuntimeError, TimeoutError) as exc:
+        return False, [], str(exc)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+
+    result = response.get("result")
+    data = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(data, list) or not data:
+        return False, [], "Codex app-server returned no hook metadata"
+    hooks = data[0].get("hooks") if isinstance(data[0], dict) else None
+    if not isinstance(hooks, list):
+        return False, [], "Codex app-server hook metadata was malformed"
+    plugin_hooks = [
+        hook
+        for hook in hooks
+        if isinstance(hook, dict)
+        and (
+            hook.get("pluginId") == _CODEX_PLUGIN_ID
+            or str(hook.get("key", "")).startswith(f"{_CODEX_PLUGIN_ID}:")
+        )
+    ]
+    return True, plugin_hooks, f"found {len(plugin_hooks)} claude-smart hooks"
+
+
+def _trust_codex_plugin_hooks(cwd: Path) -> tuple[bool, str]:
+    """Seed Codex per-hook trust state for the installed claude-smart plugin."""
+    ok, hooks, message = _list_codex_plugin_hooks(cwd)
+    if not ok:
+        return False, message
+    states: dict[str, str] = {}
+    for hook in hooks:
+        key = hook.get("key")
+        current_hash = hook.get("currentHash")
+        if (
+            isinstance(key, str)
+            and key.startswith(f"{_CODEX_PLUGIN_ID}:")
+            and isinstance(current_hash, str)
+        ):
+            states[key] = current_hash
+    if not states:
+        return False, "Codex did not report trust hashes for claude-smart hooks"
+    if not _set_codex_hook_states(_CODEX_CONFIG_PATH, states):
+        return (
+            False,
+            f"could not write claude-smart hook trust state to {_CODEX_CONFIG_PATH}",
+        )
+    return True, f"trusted and enabled {len(states)} claude-smart Codex hooks"
+
+
 def _codex_plugin_version(plugin_root: Path) -> str | None:
     try:
         manifest = json.loads(
@@ -401,21 +587,28 @@ def _cleanup_codex_install_state() -> bool:
 
 
 def _enable_codex_plugin_hooks() -> tuple[bool, str]:
-    """Enable Codex's ``plugin_hooks`` feature, falling back to editing config.toml.
+    """Enable Codex hook feature flags, falling back to editing config.toml.
 
     Returns:
         tuple[bool, str]: ``(success, message)``. The message describes
-            either the successful path taken (CLI vs. direct config write)
-            or the failure mode.
+        either the successful path taken (CLI vs. direct config write)
+        or the failure mode.
     """
-    result = _run_codex(["features", "enable", "plugin_hooks"])
-    if result.returncode == 0:
-        return True, "codex features enable plugin_hooks"
-    if _set_toml_feature(_CODEX_CONFIG_PATH, "plugin_hooks", True):
-        return True, f"set plugin_hooks = true in {_CODEX_CONFIG_PATH}"
-    return False, (
-        result.stderr or result.stdout or "could not update Codex config"
-    ).strip()
+    messages: list[str] = []
+    for feature in ("hooks", "plugin_hooks"):
+        result = _run_codex(["features", "enable", feature])
+        if result.returncode == 0:
+            messages.append(f"codex features enable {feature}")
+            continue
+        if _set_toml_feature(_CODEX_CONFIG_PATH, feature, True):
+            messages.append(f"set {feature} = true in {_CODEX_CONFIG_PATH}")
+            continue
+        detail = (
+            result.stderr or result.stdout or "could not update Codex config"
+        ).strip()
+        prior = f" (succeeded earlier: {'; '.join(messages)})" if messages else ""
+        return False, f"{feature}: {detail}{prior}"
+    return True, "; ".join(messages)
 
 
 def _register_codex_marketplace(root: Path) -> tuple[bool, str]:
@@ -501,22 +694,41 @@ def cmd_install_codex(_args: argparse.Namespace) -> int:
 
     installed = False
     install_msg = "marketplace registration failed"
+    trusted = False
+    trust_msg = "plugin was not installed"
     if registered:
         installed, install_msg = _install_codex_plugin_cache(
             marketplace_root / _CODEX_LOCAL_PLUGIN_PATH
         )
         if installed:
             sys.stdout.write(f"{install_msg}.\n")
+            trusted, trust_msg = _trust_codex_plugin_hooks(Path.cwd())
+            if not trusted:
+                # The app-server can race against the just-installed cache.
+                # Retry once before giving up; the manual /hooks recovery is
+                # available either way.
+                time.sleep(0.5)
+                trusted, trust_msg = _trust_codex_plugin_hooks(Path.cwd())
+            if trusted:
+                sys.stdout.write(f"{trust_msg}.\n")
+            else:
+                sys.stderr.write(f"warning: {trust_msg}\n")
         else:
             sys.stderr.write(f"warning: {install_msg}\n")
 
-    if registered and installed:
+    if registered and installed and trusted:
         sys.stdout.write(
             "\nclaude-smart Codex support is installed.\n"
-            "Restart Codex so the installed plugin and hooks reload. /plugins should "
+            "Restart Codex so the installed plugin and trusted hooks reload. /plugins should "
             f"show claude-smart as installed from the {_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace. "
             "Uninstall removes the plugin cache and marketplace registration but leaves "
-            "shared claude-smart data and Codex's global plugin_hooks feature intact.\n"
+            "shared claude-smart data and Codex's global hook feature flags intact.\n"
+        )
+    elif registered and installed:
+        sys.stdout.write(
+            "\nclaude-smart Codex support is installed, but hook trust could not be completed.\n"
+            "Fully quit and reopen Codex in this repo, run /hooks, trust the claude-smart hooks, "
+            "and restart Codex so hooks reload.\n"
         )
     elif registered:
         sys.stdout.write(
@@ -531,7 +743,7 @@ def cmd_install_codex(_args: argparse.Namespace) -> int:
             "then fully quit and reopen Codex, run /plugins, install claude-smart from the "
             f"{_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, and restart Codex so hooks reload.\n"
         )
-    return 0 if hooks_ok and registered and installed else 1
+    return 0 if hooks_ok and registered and installed and trusted else 1
 
 
 def cmd_install(args: argparse.Namespace) -> int:
@@ -674,7 +886,7 @@ def cmd_uninstall_codex(_args: argparse.Namespace) -> int:
         sys.stderr.write(f"warning: could not update {_CODEX_CONFIG_PATH}\n")
     sys.stdout.write(
         "claude-smart Codex plugin and marketplace state removed. Restart Codex to apply. "
-        "Codex's global plugin_hooks feature and local data under ~/.reflexio "
+        "Codex's global hook feature flags and local data under ~/.reflexio "
         "and ~/.claude-smart were left in place.\n"
     )
     return 0

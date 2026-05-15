@@ -17,6 +17,7 @@
     "playbook",
     "learning"
   ],
+  "skills": "./skills/",
   "hooks": "./hooks/codex-hooks.json",
   "interface": {
     "displayName": "claude-smart",

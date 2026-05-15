@@ -205,9 +205,10 @@ function printHelp() {
       "Codex install:",
       `  1. Copies the bundled marketplace to ${CODEX_MARKETPLACE_DIR}`,
       "  2. codex plugin marketplace add <copied marketplace>",
-      "  3. codex features enable plugin_hooks",
+      "  3. codex features enable hooks && codex features enable plugin_hooks",
       "  4. Installs claude-smart into Codex's plugin cache and enables it",
-      "  5. Restart Codex.",
+      "  5. Trusts and enables claude-smart hook entries in ~/.codex/config.toml",
+      "  6. Restart Codex.",
       "",
       "Update:",
       "  npx claude-smart update                        Update to the latest version",
@@ -357,6 +358,227 @@ function setCodexPluginEnabled() {
   next += `[${sectionName}]\nenabled = true\n`;
   mkdirSync(dirname(CODEX_CONFIG_PATH), { recursive: true });
   writeFileSync(CODEX_CONFIG_PATH, next);
+}
+
+function tomlDottedQuoted(name) {
+  return `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function setTomlFeature(feature, value) {
+  // Minimal port of `_set_toml_feature` in plugin/src/claude_smart/cli.py:
+  // ensures `[features]\n<feature> = <bool>\n` is present in
+  // ~/.codex/config.toml, replacing any prior value for the same key.
+  const desired = `${feature} = ${value ? "true" : "false"}`;
+  const sectionRe = /^\s*\[([^\]]+)\]\s*(?:#.*)?$/;
+  const featureRe = new RegExp(`^\\s*${feature.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*=`);
+  const text = existsSync(CODEX_CONFIG_PATH)
+    ? readFileSync(CODEX_CONFIG_PATH, "utf8")
+    : "";
+  const lines = text.split("\n");
+  let inFeatures = false;
+  let featuresIdx = null;
+  let insertIdx = null;
+  let changed = false;
+  const out = [];
+  for (const line of lines) {
+    const sectionMatch = line.match(sectionRe);
+    if (sectionMatch) {
+      if (inFeatures && insertIdx === null) insertIdx = out.length;
+      inFeatures = sectionMatch[1].trim() === "features";
+      if (inFeatures) featuresIdx = out.length;
+      out.push(line);
+      continue;
+    }
+    if (inFeatures && featureRe.test(line)) {
+      out.push(desired);
+      changed = changed || line !== desired;
+      continue;
+    }
+    out.push(line);
+  }
+  if (featuresIdx === null) {
+    if (out.length && out[out.length - 1].trim()) out.push("");
+    out.push("[features]", desired);
+    changed = true;
+  } else {
+    const sectionEnd = insertIdx !== null ? insertIdx : out.length;
+    let hasFeature = false;
+    for (let i = featuresIdx + 1; i < sectionEnd; i++) {
+      if (featureRe.test(out[i])) { hasFeature = true; break; }
+    }
+    if (!hasFeature) {
+      const idx = insertIdx !== null ? insertIdx : out.length;
+      out.splice(idx, 0, desired);
+      changed = true;
+    }
+  }
+  if (!changed && text.endsWith("\n")) return true;
+  mkdirSync(dirname(CODEX_CONFIG_PATH), { recursive: true });
+  let payload = out.join("\n");
+  if (!payload.endsWith("\n")) payload += "\n";
+  writeFileSync(CODEX_CONFIG_PATH, payload);
+  return true;
+}
+
+function setCodexHookStates(states) {
+  const entries = Object.entries(states);
+  if (entries.length === 0) return false;
+  removeTomlSections(CODEX_CONFIG_PATH, {
+    exact: new Set(),
+    prefixes: [`hooks.state."${CODEX_PLUGIN_ID}:`],
+  });
+  const existing = existsSync(CODEX_CONFIG_PATH)
+    ? readFileSync(CODEX_CONFIG_PATH, "utf8")
+    : "";
+  let next = existing;
+  if (next && !next.endsWith("\n")) next += "\n";
+  if (!next.includes("[hooks.state]")) {
+    if (next.trim()) next += "\n";
+    next += "[hooks.state]\n";
+  }
+  if (next.trim()) next += "\n";
+  for (const [key, currentHash] of entries.sort(([a], [b]) => a.localeCompare(b))) {
+    next += `[hooks.state.${tomlDottedQuoted(key)}]\n`;
+    next += "enabled = true\n";
+    next += `trusted_hash = "${currentHash}"\n\n`;
+  }
+  mkdirSync(dirname(CODEX_CONFIG_PATH), { recursive: true });
+  writeFileSync(CODEX_CONFIG_PATH, next.trimEnd() + "\n");
+  return true;
+}
+
+function createCodexAppServerClient(child) {
+  // A single long-lived stdout listener that demultiplexes JSON-RPC responses
+  // by id. Avoids losing messages between sequential requests.
+  const pending = new Map();
+  let buffer = "";
+  let exited = false;
+
+  const onData = (chunk) => {
+    buffer += chunk.toString();
+    let newline;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (!line.trim()) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const entry = pending.get(message.id);
+      if (!entry) continue;
+      pending.delete(message.id);
+      clearTimeout(entry.timer);
+      if (message.error) {
+        entry.reject(new Error(JSON.stringify(message.error)));
+      } else {
+        entry.resolve(message);
+      }
+    }
+  };
+  const onExit = () => {
+    exited = true;
+    for (const entry of pending.values()) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error("Codex app-server exited before responding"));
+    }
+    pending.clear();
+  };
+  child.stdout.on("data", onData);
+  child.on("exit", onExit);
+
+  return {
+    request(id, method, params, timeoutMs) {
+      return new Promise((resolve, reject) => {
+        if (exited) {
+          reject(new Error("Codex app-server exited before responding"));
+          return;
+        }
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`Codex app-server ${method} timed out`));
+        }, timeoutMs);
+        pending.set(id, { resolve, reject, timer });
+        child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
+      });
+    },
+    notify(method, params) {
+      if (exited) return;
+      child.stdin.write(JSON.stringify({ method, params }) + "\n");
+    },
+    close() {
+      child.stdout.off("data", onData);
+      child.off("exit", onExit);
+    },
+  };
+}
+
+async function listCodexPluginHooks(cwd) {
+  const child = spawn("codex", ["app-server", "--listen", "stdio://"], {
+    stdio: ["pipe", "pipe", "ignore"],
+  });
+  const client = createCodexAppServerClient(child);
+  try {
+    await client.request(
+      1,
+      "initialize",
+      {
+        clientInfo: {
+          name: "claude_smart_installer",
+          title: "claude-smart installer",
+          version: "0.0.0",
+        },
+        capabilities: { experimentalApi: true },
+      },
+      CODEX_CLI_TIMEOUT_MS,
+    );
+    client.notify("initialized", {});
+    const response = await client.request(
+      2,
+      "hooks/list",
+      { cwds: [cwd] },
+      CODEX_CLI_TIMEOUT_MS,
+    );
+    const hooks = response.result?.data?.[0]?.hooks;
+    if (!Array.isArray(hooks)) {
+      throw new Error("Codex app-server hook metadata was malformed");
+    }
+    return hooks.filter(
+      (hook) =>
+        hook &&
+        (hook.pluginId === CODEX_PLUGIN_ID ||
+          String(hook.key || "").startsWith(`${CODEX_PLUGIN_ID}:`)),
+    );
+  } finally {
+    client.close();
+    child.stdin.destroy();
+    child.stdout.destroy();
+    child.kill("SIGTERM");
+    child.unref();
+  }
+}
+
+async function trustCodexPluginHooks(cwd) {
+  const hooks = await listCodexPluginHooks(cwd);
+  const states = {};
+  for (const hook of hooks) {
+    if (
+      typeof hook.key === "string" &&
+      hook.key.startsWith(`${CODEX_PLUGIN_ID}:`) &&
+      typeof hook.currentHash === "string"
+    ) {
+      states[hook.key] = hook.currentHash;
+    }
+  }
+  if (Object.keys(states).length === 0) {
+    throw new Error("Codex did not report trust hashes for claude-smart hooks");
+  }
+  if (!setCodexHookStates(states)) {
+    throw new Error(`could not write claude-smart hook trust state to ${CODEX_CONFIG_PATH}`);
+  }
+  return Object.keys(states).length;
 }
 
 function codexPluginVersion(pluginRoot) {
@@ -515,13 +737,26 @@ async function runInstallCodex() {
     process.exit(code);
   }
 
-  code = await runCodex(["features", "enable", "plugin_hooks"]);
-  if (code !== 0) {
-    process.stderr.write("error: could not enable Codex plugin_hooks feature.\n");
-    process.exit(code);
+  for (const feature of ["hooks", "plugin_hooks"]) {
+    code = await runCodex(["features", "enable", feature]);
+    if (code !== 0) {
+      // Older Codex builds may not recognize the `hooks` feature name; fall
+      // through to writing the flag directly under [features] in config.toml.
+      try {
+        setTomlFeature(feature, true);
+        process.stdout.write(`Enabled Codex ${feature} via ${CODEX_CONFIG_PATH}.\n`);
+      } catch (err) {
+        process.stderr.write(
+          `error: could not enable Codex ${feature} feature: ${err && err.message ? err.message : err}\n`,
+        );
+        process.exit(code);
+      }
+    }
   }
 
   let cacheDir = null;
+  let trustedHookCount = 0;
+  let trustError = null;
   try {
     cacheDir = installCodexPluginCache(join(marketplaceRoot, CODEX_MARKETPLACE_PLUGIN_PATH));
     process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
@@ -530,9 +765,31 @@ async function runInstallCodex() {
       `error: automatic Codex plugin install failed: ${err && err.message ? err.message : err}\n`,
     );
     process.stderr.write(
-      `Open Codex, run /plugins, and install claude-smart from the ${CODEX_MARKETPLACE_DISPLAY_NAME} marketplace manually.\n`,
+      `Open Codex, run /plugins, install claude-smart from the ${CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, and restart Codex.\n`,
     );
     process.exit(1);
+  }
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      trustedHookCount = await trustCodexPluginHooks(process.cwd());
+      trustError = null;
+      break;
+    } catch (err) {
+      trustError = err;
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  if (trustError) {
+    process.stderr.write(
+      `warning: ${trustError && trustError.message ? trustError.message : trustError}\n`,
+    );
+    process.stderr.write(
+      `Fully quit and reopen Codex in this repo, run /hooks, trust the claude-smart hooks, and restart Codex.\n`,
+    );
+    process.exit(1);
+  } else {
+    process.stdout.write(`Trusted and enabled ${trustedHookCount} claude-smart Codex hooks.\n`);
   }
 
   const added = seedReflexioEnv();
@@ -544,7 +801,7 @@ async function runInstallCodex() {
     [
       "",
       "claude-smart Codex support is installed.",
-      `Restart Codex so the installed plugin and hooks reload. /plugins should show claude-smart as installed from the ${CODEX_MARKETPLACE_DISPLAY_NAME} marketplace.`,
+      `Restart Codex so the installed plugin and trusted hooks reload. /plugins should show claude-smart as installed from the ${CODEX_MARKETPLACE_DISPLAY_NAME} marketplace.`,
       "Local data is shared with Claude Code under ~/.reflexio/ and ~/.claude-smart/.",
       "",
     ].join("\n"),
@@ -570,7 +827,7 @@ async function runUninstallCodex() {
     [
       "",
       "claude-smart Codex plugin and marketplace state removed. Restart Codex to apply.",
-      "Codex's global plugin_hooks feature and local data under ~/.reflexio/ and ~/.claude-smart/ were left in place.",
+      "Codex's global hook feature flags and local data under ~/.reflexio/ and ~/.claude-smart/ were left in place.",
       "",
     ].join("\n"),
   );
