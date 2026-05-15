@@ -119,12 +119,12 @@ npx claude-smart install --host codex
 ```
 
 The helper registers the bundled **ReflexioAI** marketplace with Codex and
-enables Codex plugin hooks. Then:
+enables Codex plugin hooks, installs `claude-smart` into Codex's local plugin
+cache, and enables it in `~/.codex/config.toml`. Then:
 
-1. Fully quit and reopen Codex in your project.
-2. Run `/plugins`.
-3. Install `claude-smart` from the **ReflexioAI** marketplace.
-4. Restart Codex again so hooks reload.
+1. Fully quit and reopen Codex in your project so hooks reload.
+2. Run `/plugins` only if you want to verify `claude-smart` shows as installed
+   from the **ReflexioAI** marketplace.
 
 Do not create a `~/plugins/claude-smart` symlink for a normal `npx` install;
 that symlink is only for plugin development from a cloned checkout.

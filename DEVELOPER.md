@@ -296,7 +296,7 @@ Codex local development creates a durable local marketplace wrapper at `~/.claud
 uv run --project plugin claude-smart install --host codex
 ```
 
-Then fully restart Codex, open `/plugins`, and install `claude-smart` from the **ReflexioAI** marketplace. Restart Codex again after installation so hooks reload. Codex caches the installed plugin under `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/`.
+Then fully restart Codex so hooks reload. The command installs `claude-smart` into `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/` and enables `[plugins."claude-smart@reflexioai"]` in `~/.codex/config.toml`; `/plugins` should show it as installed from the **ReflexioAI** marketplace.
 
 For live hook iteration, point Codex at this checkout before the cache:
 

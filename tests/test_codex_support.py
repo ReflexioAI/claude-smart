@@ -295,9 +295,13 @@ def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
     env_path = tmp_path / "reflexio" / ".env"
     config_path = tmp_path / ".codex" / "config.toml"
     marketplace_root = tmp_path / "marketplaces" / "reflexioai"
+    plugin_cache = (
+        tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    )
     monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
     monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", config_path)
     monkeypatch.setattr(cli, "_CODEX_LOCAL_MARKETPLACE_ROOT", marketplace_root)
+    monkeypatch.setattr(cli, "_CODEX_PLUGIN_CACHE_DIR", plugin_cache)
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
 
     calls: list[list[str]] = []
@@ -316,7 +320,12 @@ def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
 
     assert rc == 0
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in env_path.read_text()
-    assert "plugin_hooks = true" in config_path.read_text()
+    config = config_path.read_text()
+    assert "plugin_hooks = true" in config
+    assert '[plugins."claude-smart@reflexioai"]' in config
+    assert "enabled = true" in config
+    version = _read_json("plugin/.codex-plugin/plugin.json")["version"]
+    assert (plugin_cache / version / ".codex-plugin" / "plugin.json").is_file()
     assert [
         "plugin",
         "marketplace",
@@ -324,8 +333,8 @@ def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
         str(marketplace_root),
     ] in calls
     out = capsys.readouterr().out
-    assert "run /plugins" in out
-    assert "ReflexioAI marketplace" in out
+    assert "Codex support is installed" in out
+    assert "should show claude-smart as installed" in out
 
 
 def test_codex_install_fails_when_marketplace_registration_fails(
@@ -353,6 +362,36 @@ def test_codex_install_fails_when_marketplace_registration_fails(
     out = capsys.readouterr().out
     assert "marketplace registration failed" in out
     assert "ReflexioAI marketplace" in out
+
+
+def test_install_codex_plugin_cache_enables_plugin_and_copies_versioned_cache(
+    monkeypatch, tmp_path
+) -> None:
+    plugin_root = tmp_path / "plugin"
+    (plugin_root / ".codex-plugin").mkdir(parents=True)
+    (plugin_root / ".codex-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "claude-smart", "version": "9.8.7"})
+    )
+    (plugin_root / "hooks").mkdir()
+    (plugin_root / "hooks" / "codex-hooks.json").write_text("{}")
+    config = tmp_path / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text('[plugins."browser@openai-bundled"]\nenabled = true\n')
+    plugin_cache = (
+        tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    )
+    monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", config)
+    monkeypatch.setattr(cli, "_CODEX_PLUGIN_CACHE_DIR", plugin_cache)
+
+    ok, message = cli._install_codex_plugin_cache(plugin_root)
+
+    assert ok is True
+    assert "9.8.7" in message
+    assert (plugin_cache / "9.8.7" / "hooks" / "codex-hooks.json").is_file()
+    text = config.read_text()
+    assert '[plugins."browser@openai-bundled"]' in text
+    assert '[plugins."claude-smart@reflexioai"]' in text
+    assert "enabled = true" in text
 
 
 def test_codex_install_fails_when_required_files_missing(monkeypatch, tmp_path) -> None:

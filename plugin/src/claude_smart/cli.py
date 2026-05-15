@@ -315,6 +315,59 @@ def _remove_toml_sections(
     return True
 
 
+def _set_codex_plugin_enabled(path: Path) -> bool:
+    """Write Codex's installed-plugin config section for claude-smart."""
+    section_name = f'plugins."{_CODEX_PLUGIN_ID}"'
+    if not _remove_toml_sections(path, exact={section_name}):
+        return False
+    try:
+        text = path.read_text() if path.exists() else ""
+    except OSError:
+        return False
+    if text and not text.endswith("\n"):
+        text += "\n"
+    if text.strip():
+        text += "\n"
+    text += f"[{section_name}]\nenabled = true\n"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    except OSError:
+        return False
+    return True
+
+
+def _codex_plugin_version(plugin_root: Path) -> str | None:
+    try:
+        manifest = json.loads(
+            (plugin_root / ".codex-plugin" / "plugin.json").read_text()
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    version = manifest.get("version")
+    return version if isinstance(version, str) and version else None
+
+
+def _install_codex_plugin_cache(plugin_root: Path) -> tuple[bool, str]:
+    """Best-effort local install equivalent to selecting Install in /plugins."""
+    version = _codex_plugin_version(plugin_root)
+    if not version:
+        return (
+            False,
+            f"missing version in {plugin_root / '.codex-plugin' / 'plugin.json'}",
+        )
+    cache_dir = _CODEX_PLUGIN_CACHE_DIR / version
+    try:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        cache_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(plugin_root, cache_dir, symlinks=False, ignore=_COPYTREE_IGNORE)
+    except OSError as exc:
+        return False, f"could not write Codex plugin cache: {exc}"
+    if not _set_codex_plugin_enabled(_CODEX_CONFIG_PATH):
+        return False, f"could not enable {_CODEX_PLUGIN_ID} in {_CODEX_CONFIG_PATH}"
+    return True, f"installed Codex plugin cache at {cache_dir}"
+
+
 def _cleanup_codex_install_state() -> bool:
     """Remove Codex's local install artifacts while preserving shared learning data.
 
@@ -446,14 +499,30 @@ def cmd_install_codex(_args: argparse.Namespace) -> int:
     else:
         sys.stderr.write(f"warning: {registration_msg}\n")
 
+    installed = False
+    install_msg = "marketplace registration failed"
     if registered:
+        installed, install_msg = _install_codex_plugin_cache(
+            marketplace_root / _CODEX_LOCAL_PLUGIN_PATH
+        )
+        if installed:
+            sys.stdout.write(f"{install_msg}.\n")
+        else:
+            sys.stderr.write(f"warning: {install_msg}\n")
+
+    if registered and installed:
         sys.stdout.write(
-            "\nclaude-smart Codex support is prepared.\n"
+            "\nclaude-smart Codex support is installed.\n"
+            "Restart Codex so the installed plugin and hooks reload. /plugins should "
+            f"show claude-smart as installed from the {_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace. "
+            "Uninstall removes the plugin cache and marketplace registration but leaves "
+            "shared claude-smart data and Codex's global plugin_hooks feature intact.\n"
+        )
+    elif registered:
+        sys.stdout.write(
+            "\nclaude-smart Codex marketplace is prepared, but automatic plugin install failed.\n"
             "Fully quit and reopen Codex in this repo, run /plugins, install claude-smart from "
-            f"the {_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace if it is not already installed, "
-            "then restart Codex so hooks reload. Uninstall removes the marketplace "
-            "registration but leaves shared claude-smart data and Codex's global "
-            "plugin_hooks feature intact.\n"
+            f"the {_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, and restart Codex so hooks reload.\n"
         )
     else:
         sys.stdout.write(
@@ -462,7 +531,7 @@ def cmd_install_codex(_args: argparse.Namespace) -> int:
             "then fully quit and reopen Codex, run /plugins, install claude-smart from the "
             f"{_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, and restart Codex so hooks reload.\n"
         )
-    return 0 if hooks_ok and registered else 1
+    return 0 if hooks_ok and registered and installed else 1
 
 
 def cmd_install(args: argparse.Namespace) -> int:

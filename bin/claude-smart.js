@@ -206,7 +206,8 @@ function printHelp() {
       `  1. Copies the bundled marketplace to ${CODEX_MARKETPLACE_DIR}`,
       "  2. codex plugin marketplace add <copied marketplace>",
       "  3. codex features enable plugin_hooks",
-      "  4. Fully quit and reopen Codex, run /plugins, install claude-smart, then restart Codex.",
+      "  4. Installs claude-smart into Codex's plugin cache and enables it",
+      "  5. Restart Codex.",
       "",
       "Update:",
       "  npx claude-smart update                        Update to the latest version",
@@ -344,6 +345,50 @@ function cleanupCodexInstallState() {
   }
 }
 
+function setCodexPluginEnabled() {
+  const sectionName = `plugins."${CODEX_PLUGIN_ID}"`;
+  removeTomlSections(CODEX_CONFIG_PATH, { exact: new Set([sectionName]) });
+  const existing = existsSync(CODEX_CONFIG_PATH)
+    ? readFileSync(CODEX_CONFIG_PATH, "utf8")
+    : "";
+  let next = existing;
+  if (next && !next.endsWith("\n")) next += "\n";
+  if (next.trim()) next += "\n";
+  next += `[${sectionName}]\nenabled = true\n`;
+  mkdirSync(dirname(CODEX_CONFIG_PATH), { recursive: true });
+  writeFileSync(CODEX_CONFIG_PATH, next);
+}
+
+function codexPluginVersion(pluginRoot) {
+  try {
+    const manifest = JSON.parse(
+      readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
+    );
+    return typeof manifest.version === "string" && manifest.version
+      ? manifest.version
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function installCodexPluginCache(pluginRoot) {
+  const version = codexPluginVersion(pluginRoot);
+  if (!version) {
+    throw new Error(`missing version in ${join(pluginRoot, ".codex-plugin", "plugin.json")}`);
+  }
+  const cacheDir = join(CODEX_PLUGIN_CACHE_DIR, version);
+  rmSync(cacheDir, { recursive: true, force: true });
+  mkdirSync(dirname(cacheDir), { recursive: true });
+  cpSync(pluginRoot, cacheDir, {
+    recursive: true,
+    force: true,
+    verbatimSymlinks: false,
+  });
+  setCodexPluginEnabled();
+  return cacheDir;
+}
+
 async function runUpdate() {
   if (!hasClaudeCli()) {
     process.stderr.write(
@@ -476,6 +521,20 @@ async function runInstallCodex() {
     process.exit(code);
   }
 
+  let cacheDir = null;
+  try {
+    cacheDir = installCodexPluginCache(join(marketplaceRoot, CODEX_MARKETPLACE_PLUGIN_PATH));
+    process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
+  } catch (err) {
+    process.stderr.write(
+      `error: automatic Codex plugin install failed: ${err && err.message ? err.message : err}\n`,
+    );
+    process.stderr.write(
+      `Open Codex, run /plugins, and install claude-smart from the ${CODEX_MARKETPLACE_DISPLAY_NAME} marketplace manually.\n`,
+    );
+    process.exit(1);
+  }
+
   const added = seedReflexioEnv();
   if (added.length > 0) {
     process.stdout.write(`Seeded ${REFLEXIO_ENV_PATH} with ${added.join(", ")}.\n`);
@@ -484,8 +543,8 @@ async function runInstallCodex() {
   process.stdout.write(
     [
       "",
-      "claude-smart Codex support is prepared.",
-      `Fully quit and reopen Codex, run /plugins, install claude-smart from the ${CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, then restart Codex so hooks reload.`,
+      "claude-smart Codex support is installed.",
+      `Restart Codex so the installed plugin and hooks reload. /plugins should show claude-smart as installed from the ${CODEX_MARKETPLACE_DISPLAY_NAME} marketplace.`,
       "Local data is shared with Claude Code under ~/.reflexio/ and ~/.claude-smart/.",
       "",
     ].join("\n"),
