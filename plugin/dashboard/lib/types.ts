@@ -143,3 +143,18 @@ export interface ReflexioConfig {
   user_playbook_extractor_configs?: ReflexioExtractorConfig[] | null;
   [k: string]: unknown;
 }
+
+/**
+ * Per-rule citation counts from /api/get_playbook_application_stats. Mirrors
+ * the reflexio Pydantic model PlaybookApplicationStat. Timestamps are unix
+ * epoch seconds (matches the int-epoch convention used elsewhere in the
+ * dashboard, e.g. Interaction.created_at).
+ */
+export interface PlaybookApplicationStat {
+  real_id: string;
+  kind: "playbook" | "profile";
+  title: string;
+  applied_count: number;
+  last_applied_at: number | null;
+  last_interaction_id: number | null;
+}

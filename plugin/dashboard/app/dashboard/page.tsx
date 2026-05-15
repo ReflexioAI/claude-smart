@@ -16,15 +16,23 @@ import { EmptyState } from "@/components/common/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { reflexio } from "@/lib/reflexio-client";
 import { useSettings } from "@/hooks/use-settings";
-import { formatRelative, truncateId } from "@/lib/format";
+import { formatRelative, truncate, truncateId } from "@/lib/format";
 import { agentPlaybookStatusLabel } from "@/lib/status";
-import type { AgentPlaybook, SessionSummary, UserPlaybook } from "@/lib/types";
+import type {
+  AgentPlaybook,
+  PlaybookApplicationStat,
+  SessionSummary,
+  UserPlaybook,
+} from "@/lib/types";
 
 export default function DashboardPage() {
   const { reflexioUrl } = useSettings();
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [projectSkills, setProjectSkills] = useState<UserPlaybook[] | null>(null);
   const [sharedSkills, setSharedSkills] = useState<AgentPlaybook[] | null>(null);
+  const [topApplied, setTopApplied] = useState<PlaybookApplicationStat[] | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -32,7 +40,7 @@ export default function DashboardPage() {
     async function load() {
       setError(null);
       try {
-        const [sRes, projectRes, sharedRes] = await Promise.all([
+        const [sRes, projectRes, sharedRes, statsRes] = await Promise.all([
           fetch("/api/sessions", { cache: "no-store" }).then((r) => r.json()),
           reflexio
             .getUserPlaybooks({ reflexioUrl })
@@ -40,11 +48,18 @@ export default function DashboardPage() {
           reflexio
             .getAgentPlaybooks({ reflexioUrl })
             .catch(() => ({ agent_playbooks: [] as AgentPlaybook[] })),
+          reflexio
+            .getPlaybookApplicationStats({ reflexioUrl })
+            .catch(() => ({
+              success: false,
+              stats: [] as PlaybookApplicationStat[],
+            })),
         ]);
         if (cancelled) return;
         setSessions(sRes.sessions ?? []);
         setProjectSkills(projectRes.user_playbooks ?? []);
         setSharedSkills(sharedRes.agent_playbooks ?? []);
+        setTopApplied(statsRes.stats ?? []);
       } catch (e) {
         if (!cancelled)
           setError(e instanceof Error ? e.message : "failed to load");
@@ -218,6 +233,62 @@ export default function DashboardPage() {
               icon={BookOpen}
               title="No skills yet"
               description="Keep using Claude with claude-smart enabled. Skills are extracted automatically when patterns emerge."
+            />
+          )}
+        </section>
+
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">Top applied rules</h2>
+              <span className="text-[11px] text-muted-foreground">
+                last 30 days
+              </span>
+            </div>
+            <Link
+              href="/skills"
+              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+            >
+              View all skills <ExternalLink className="h-3 w-3" />
+            </Link>
+          </div>
+          {topApplied && topApplied.length > 0 ? (
+            <div className="rounded-xl border border-border divide-y divide-border bg-card">
+              {topApplied.slice(0, 5).map((s) => (
+                <div
+                  key={`${s.kind}:${s.real_id}`}
+                  className="flex items-center justify-between gap-3 px-4 py-3"
+                >
+                  <div className="min-w-0 flex items-center gap-3">
+                    <Sparkles className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-sm truncate">
+                        {s.title || (
+                          <span className="text-muted-foreground italic">
+                            (rule removed)
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">
+                        {s.kind === "playbook" ? "skill" : "preference"} ·{" "}
+                        {truncate(s.real_id, 12)}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
+                    <Badge variant="secondary" className="text-[10px]">
+                      Applied {s.applied_count}×
+                    </Badge>
+                    <span>{formatRelative(s.last_applied_at)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              icon={Sparkles}
+              title="No rules applied yet"
+              description="When a skill or preference shapes a response, it will show up here with its application count."
             />
           )}
         </section>

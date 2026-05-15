@@ -10,6 +10,7 @@ import type {
   AgentPlaybook,
   AgentPlaybookStatus,
   Interaction,
+  PlaybookApplicationStat,
   UserPlaybook,
   UserProfile,
 } from "./types";
@@ -233,6 +234,22 @@ export const reflexio = {
       "delete_all_agent_playbooks",
       { method: "DELETE" },
       reflexioUrl,
+    );
+  },
+
+  /**
+   * POST /api/get_playbook_application_stats — per-rule citation counts
+   * aggregated from interactions over the last `daysBack` days. Backs the
+   * "Top Applied Rules" card on the dashboard and the per-row Applied badge
+   * on the skills page.
+   */
+  async getPlaybookApplicationStats(
+    opts: Opts & { daysBack?: number } = {},
+  ): Promise<{ success: boolean; stats: PlaybookApplicationStat[]; msg?: string }> {
+    return post(
+      "get_playbook_application_stats",
+      { days_back: opts.daysBack ?? 30 },
+      opts.reflexioUrl,
     );
   },
 };

@@ -26,7 +26,11 @@ import {
   type AgentPlaybookStatusLabel,
   type StatusLabel,
 } from "@/lib/status";
-import type { AgentPlaybook, UserPlaybook } from "@/lib/types";
+import type {
+  AgentPlaybook,
+  PlaybookApplicationStat,
+  UserPlaybook,
+} from "@/lib/types";
 
 type SkillKind = "project" | "shared";
 type SkillStatus = StatusLabel | AgentPlaybookStatusLabel;
@@ -90,6 +94,9 @@ export default function SkillsPage() {
   const { reflexioUrl } = useSettings();
   const [projectSkills, setProjectSkills] = useState<UserPlaybook[] | null>(null);
   const [sharedSkills, setSharedSkills] = useState<AgentPlaybook[] | null>(null);
+  const [appStats, setAppStats] = useState<PlaybookApplicationStat[] | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [activeKind, setActiveKind] = useState<SkillKind>("project");
   const [agentVersion, setAgentVersion] = useState<string>("__all__");
@@ -100,13 +107,20 @@ export default function SkillsPage() {
     let cancelled = false;
     async function load() {
       try {
-        const [projectRes, sharedRes] = await Promise.all([
+        const [projectRes, sharedRes, statsRes] = await Promise.all([
           reflexio.getUserPlaybooks({ reflexioUrl, limit: 200 }),
           reflexio.getAgentPlaybooks({ reflexioUrl, limit: 200 }),
+          reflexio
+            .getPlaybookApplicationStats({ reflexioUrl })
+            .catch(() => ({
+              success: false,
+              stats: [] as PlaybookApplicationStat[],
+            })),
         ]);
         if (cancelled) return;
         setProjectSkills(projectRes.user_playbooks ?? []);
         setSharedSkills(sharedRes.agent_playbooks ?? []);
+        setAppStats(statsRes.stats ?? []);
         setError(null);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -117,6 +131,14 @@ export default function SkillsPage() {
       cancelled = true;
     };
   }, [reflexioUrl]);
+
+  const statsByRule = useMemo(() => {
+    const map = new Map<string, PlaybookApplicationStat>();
+    for (const s of appStats ?? []) {
+      map.set(`${s.kind}:${s.real_id}`, s);
+    }
+    return map;
+  }, [appStats]);
 
   const activeSkills = useMemo(() => {
     return activeKind === "project"
@@ -288,7 +310,12 @@ export default function SkillsPage() {
           />
         ) : (
           <div className="grid gap-3 lg:grid-cols-2">
-            {filtered.map((p) => (
+            {filtered.map((p) => {
+              // Both project-specific and shared rules are cited as kind="playbook" —
+              // the dashboard distinguishes user vs agent via real_id, which the
+              // backend captures as a stringified user_playbook_id / agent_playbook_id.
+              const stat = statsByRule.get(`playbook:${p.id}`);
+              return (
               <Link
                 key={`${p.kind}:${p.id}`}
                 href={`/skills/${p.kind}/${p.id}`}
@@ -303,6 +330,7 @@ export default function SkillsPage() {
                     <Badge variant="secondary" className="h-5 text-[10px]">
                       {p.kind === "project" ? "project-specific" : "shared"}
                     </Badge>
+                    <ApplicationStatBadge stat={stat} />
                   </div>
                   <span className="text-[11px] text-muted-foreground shrink-0">
                     {formatRelative(p.createdAt)}
@@ -325,11 +353,36 @@ export default function SkillsPage() {
                   </p>
                 )}
               </Link>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+function ApplicationStatBadge({ stat }: { stat: PlaybookApplicationStat | undefined }) {
+  if (!stat || stat.applied_count === 0) {
+    return (
+      <Badge
+        variant="outline"
+        className="h-5 text-[10px] text-muted-foreground"
+        title="No citations recorded yet for this rule. It will count once an assistant reply cites it."
+      >
+        Never applied
+      </Badge>
+    );
+  }
+  const last = formatRelative(stat.last_applied_at);
+  return (
+    <Badge
+      variant="secondary"
+      className="h-5 text-[10px]"
+      title={`Last applied ${last}`}
+    >
+      Applied {stat.applied_count}×{stat.last_applied_at ? ` · ${last}` : ""}
+    </Badge>
   );
 }
 
