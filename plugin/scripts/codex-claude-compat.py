@@ -29,7 +29,7 @@ _TIMEOUT_SECONDS = 120
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
-        system_prompt = _parse_supported_args(argv)
+        output_format, system_prompt = _parse_supported_args(argv)
         content = _run_codex(
             prompt=sys.stdin.read(),
             system_prompt=system_prompt,
@@ -38,12 +38,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"codex-claude-compat: {exc}", file=sys.stderr)
         return 1
 
-    json.dump({"result": content}, sys.stdout, ensure_ascii=False)
+    payload = {"result": content}
+    if output_format == "stream-json":
+        payload = {"type": "result", "subtype": "success", "result": content}
+    json.dump(payload, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")
     return 0
 
 
-def _parse_supported_args(argv: list[str]) -> str:
+def _parse_supported_args(argv: list[str]) -> tuple[str, str]:
+    output_format = "json"
     system_prompt = ""
     idx = 0
     while idx < len(argv):
@@ -51,9 +55,14 @@ def _parse_supported_args(argv: list[str]) -> str:
         if arg == "-p":
             idx += 1
         elif arg == "--output-format":
+            if idx + 1 >= len(argv):
+                raise ValueError("--output-format requires a value")
+            output_format = argv[idx + 1]
             idx += 2
         elif arg == "--model":
             idx += 2
+        elif arg in {"--verbose", "--include-partial-messages"}:
+            idx += 1
         elif arg == "--append-system-prompt":
             if idx + 1 >= len(argv):
                 raise ValueError("--append-system-prompt requires a value")
@@ -61,7 +70,9 @@ def _parse_supported_args(argv: list[str]) -> str:
             idx += 2
         else:
             raise ValueError(f"unsupported Claude CLI argument: {arg}")
-    return system_prompt
+    if output_format not in {"json", "stream-json"}:
+        raise ValueError(f"unsupported --output-format: {output_format}")
+    return output_format, system_prompt
 
 
 def _run_codex(*, prompt: str, system_prompt: str) -> str:

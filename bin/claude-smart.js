@@ -12,6 +12,7 @@
 "use strict";
 
 const { execSync, spawn } = require("child_process");
+const crypto = require("crypto");
 const {
   appendFileSync,
   cpSync,
@@ -21,7 +22,8 @@ const {
   rmSync,
   writeFileSync,
 } = require("fs");
-const { homedir } = require("os");
+const https = require("https");
+const { homedir, tmpdir } = require("os");
 const { dirname, join } = require("path");
 
 const DEFAULT_MARKETPLACE_SOURCE = "ReflexioAI/claude-smart";
@@ -52,6 +54,8 @@ const CODEX_REQUIRED_FILES = [
   ".agents/plugins/marketplace.json",
   "plugin/.codex-plugin/plugin.json",
   "plugin/hooks/codex-hooks.json",
+  "plugin/scripts/codex-claude-compat.py",
+  "plugin/scripts/codex-hook.js",
   "plugin/scripts/_codex_env.sh",
 ];
 const CODEX_CLI_TIMEOUT_MS = 30_000;
@@ -175,13 +179,256 @@ function seedReflexioEnv() {
   const existing = existsSync(REFLEXIO_ENV_PATH)
     ? readFileSync(REFLEXIO_ENV_PATH, "utf8")
     : "";
-  const flags = ["CLAUDE_SMART_USE_LOCAL_CLI", "CLAUDE_SMART_USE_LOCAL_EMBEDDING"];
+  const flags = [
+    "CLAUDE_SMART_USE_LOCAL_CLI",
+    "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
+  ];
   const missing = flags.filter((f) => !new RegExp(`^${f}=`, "m").test(existing));
   if (missing.length === 0) return [];
   const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
   const body = missing.map((f) => `${f}=1`).join("\n") + "\n";
   appendFileSync(REFLEXIO_ENV_PATH, prefix + body);
   return missing;
+}
+
+function isWindows() {
+  return process.platform === "win32";
+}
+
+function runChecked(command, args, options = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env || process.env,
+      shell: isWindows() && /\.(?:cmd|bat)$/i.test(command),
+      stdio: "inherit",
+      windowsHide: true,
+    });
+    child.on("exit", (code) => resolve(typeof code === "number" ? code : 1));
+    child.on("error", () => resolve(1));
+  });
+}
+
+function downloadFile(url, dest) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, (response) => {
+      if (
+        response.statusCode &&
+        response.statusCode >= 300 &&
+        response.statusCode < 400 &&
+        response.headers.location
+      ) {
+        downloadFile(new URL(response.headers.location, url).toString(), dest)
+          .then(resolve, reject);
+        response.resume();
+        return;
+      }
+      if (response.statusCode !== 200) {
+        response.resume();
+        reject(new Error(`download failed (${response.statusCode}) for ${url}`));
+        return;
+      }
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => {
+        writeFileSync(dest, Buffer.concat(chunks));
+        resolve();
+      });
+    });
+    request.on("error", reject);
+    request.setTimeout(120_000, () => request.destroy(new Error(`download timed out for ${url}`)));
+  });
+}
+
+function resolveCommand(names, extraDirs = []) {
+  const pathParts = [
+    ...extraDirs,
+    ...(process.env.PATH || "").split(process.platform === "win32" ? ";" : ":"),
+  ].filter(Boolean);
+  for (const dir of pathParts) {
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+function privateNodeRoot() {
+  return join(homedir(), ".claude-smart", "node", "current");
+}
+
+function privateNodeBinDirs() {
+  const root = privateNodeRoot();
+  return [join(root, "bin"), root];
+}
+
+function resolvePrivateNode() {
+  return resolveCommand(isWindows() ? ["node.exe", "node"] : ["node"], privateNodeBinDirs());
+}
+
+function resolvePrivateNpm() {
+  return resolveCommand(
+    isWindows() ? ["npm.cmd", "npm.exe", "npm"] : ["npm"],
+    privateNodeBinDirs(),
+  );
+}
+
+function runtimeEnv(extraDirs = []) {
+  const delimiter = process.platform === "win32" ? ";" : ":";
+  const dirs = [
+    ...extraDirs,
+    ...privateNodeBinDirs(),
+    join(homedir(), ".local", "bin"),
+    join(homedir(), ".cargo", "bin"),
+  ];
+  return {
+    ...process.env,
+    PATH: `${dirs.join(delimiter)}${delimiter}${process.env.PATH || ""}`,
+  };
+}
+
+async function ensureWindowsPrivateNode() {
+  if (!isWindows()) return null;
+  const existing = resolvePrivateNode();
+  const existingNpm = resolvePrivateNpm();
+  if (existing && existingNpm) return { node: existing, npm: existingNpm };
+
+  const major = process.env.CLAUDE_SMART_NODE_LTS_MAJOR || "22";
+  const arch = process.arch === "arm64" ? "arm64" : "x64";
+  const baseUrl = process.env.CLAUDE_SMART_NODE_BASE_URL || `https://nodejs.org/dist/latest-v${major}.x`;
+  const nodeRoot = join(homedir(), ".claude-smart", "node");
+  const temp = join(tmpdir(), `claude-smart-node-${process.pid}`);
+  mkdirSync(nodeRoot, { recursive: true });
+  rmSync(temp, { recursive: true, force: true });
+  mkdirSync(temp, { recursive: true });
+
+  const sumsPath = join(temp, "SHASUMS256.txt");
+  await downloadFile(`${baseUrl}/SHASUMS256.txt`, sumsPath);
+  const sums = readFileSync(sumsPath, "utf8");
+  const match = sums
+    .split(/\r?\n/)
+    .map((line) => line.trim().split(/\s+/))
+    .find((parts) => parts[1] && new RegExp(`^node-v[^ ]+-win-${arch}\\.zip$`).test(parts[1]));
+  if (!match) throw new Error(`could not resolve Node.js win-${arch} archive from ${baseUrl}`);
+  const [expectedHash, archiveName] = match;
+  const archivePath = join(temp, archiveName);
+  await downloadFile(`${baseUrl}/${archiveName}`, archivePath);
+  const actualHash = crypto.createHash("sha256").update(readFileSync(archivePath)).digest("hex");
+  if (actualHash !== expectedHash) {
+    throw new Error(`Node.js checksum verification failed for ${archiveName}`);
+  }
+
+  const powershell = resolveCommand(["powershell.exe", "powershell", "pwsh"]);
+  if (!powershell) throw new Error("PowerShell is required to extract private Node.js on Windows");
+  const extractDir = join(temp, "extract");
+  mkdirSync(extractDir, { recursive: true });
+  const code = await runChecked(
+    powershell,
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      "$ProgressPreference='SilentlyContinue'; Expand-Archive -LiteralPath $env:ARCHIVE_PATH -DestinationPath $env:DEST_DIR -Force",
+    ],
+    { env: { ...process.env, ARCHIVE_PATH: archivePath, DEST_DIR: extractDir } },
+  );
+  if (code !== 0) throw new Error(`Node.js archive extraction failed for ${archiveName}`);
+  const extracted = join(extractDir, archiveName.replace(/\.zip$/, ""));
+  const current = privateNodeRoot();
+  rmSync(current, { recursive: true, force: true });
+  cpSync(extracted, current, { recursive: true, force: true });
+  rmSync(temp, { recursive: true, force: true });
+
+  const node = resolvePrivateNode();
+  const npm = resolvePrivateNpm();
+  if (!node || !npm) throw new Error("private Node.js install completed but node/npm are not usable");
+  return { node, npm };
+}
+
+function resolveUv() {
+  return resolveCommand(isWindows() ? ["uv.exe", "uv"] : ["uv"], [
+    join(homedir(), ".local", "bin"),
+    join(homedir(), ".cargo", "bin"),
+  ]);
+}
+
+async function ensureWindowsUv() {
+  let uv = resolveUv();
+  if (uv) return uv;
+  const powershell = resolveCommand(["powershell.exe", "powershell", "pwsh"]);
+  if (!powershell) throw new Error("PowerShell is required to install uv on Windows");
+  const code = await runChecked(powershell, [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    "irm https://astral.sh/uv/install.ps1 | iex",
+  ]);
+  if (code !== 0) throw new Error("uv install via PowerShell failed");
+  uv = resolveUv();
+  if (!uv) throw new Error("uv install reported success but uv.exe was not found");
+  return uv;
+}
+
+function quoteCommandPart(part) {
+  return `"${String(part).replace(/"/g, '\\"')}"`;
+}
+
+function patchCodexHooksForWindows(pluginRoot, nodePath) {
+  const hookPath = join(pluginRoot, "hooks", "codex-hooks.json");
+  const parsed = JSON.parse(readFileSync(hookPath, "utf8"));
+  const runner = join(pluginRoot, "scripts", "codex-hook.js");
+  const command = (...args) => [nodePath, runner, ...args].map(quoteCommandPart).join(" ");
+  const sessionHooks = parsed.hooks.SessionStart?.[0]?.hooks || [];
+  if (sessionHooks[0]) sessionHooks[0].command = command("ensure-root");
+  if (sessionHooks[1]) sessionHooks[1].command = command("backend");
+  if (sessionHooks[2]) sessionHooks[2].command = command("dashboard");
+  if (sessionHooks[3]) sessionHooks[3].command = command("hook", "session-start");
+  const userPrompt = parsed.hooks.UserPromptSubmit?.[0]?.hooks?.[0];
+  if (userPrompt) userPrompt.command = command("hook", "user-prompt");
+  const postTool = parsed.hooks.PostToolUse?.[0]?.hooks?.[0];
+  if (postTool) postTool.command = command("hook", "post-tool");
+  const stop = parsed.hooks.Stop?.[0]?.hooks?.[0];
+  if (stop) stop.command = command("hook", "stop");
+  writeFileSync(hookPath, JSON.stringify(parsed, null, 2) + "\n");
+}
+
+function ensureWindowsPluginRoot(pluginRoot) {
+  const reflexioDir = dirname(REFLEXIO_ENV_PATH);
+  const link = join(reflexioDir, "plugin-root");
+  mkdirSync(reflexioDir, { recursive: true });
+  rmSync(link, { recursive: true, force: true });
+  try {
+    require("fs").symlinkSync(pluginRoot, link, "junction");
+  } catch {
+    writeFileSync(join(reflexioDir, "plugin-root.txt"), `${pluginRoot}\n`);
+  }
+}
+
+async function bootstrapWindowsCodexCache(pluginRoot) {
+  if (!isWindows()) return;
+  process.stdout.write("Preparing Windows Codex runtime for claude-smart hooks...\n");
+  const nodeRuntime = await ensureWindowsPrivateNode();
+  patchCodexHooksForWindows(pluginRoot, nodeRuntime.node);
+  ensureWindowsPluginRoot(pluginRoot);
+  const uv = await ensureWindowsUv();
+  const env = runtimeEnv([dirname(uv), ...privateNodeBinDirs()]);
+  let code = await runChecked(
+    uv,
+    ["sync", "--locked", "--python", "3.12", "--quiet"],
+    { cwd: pluginRoot, env },
+  );
+  if (code !== 0) throw new Error(`uv sync failed in ${pluginRoot}`);
+
+  const dashboardDir = join(pluginRoot, "dashboard");
+  if (existsSync(dashboardDir)) {
+    code = await runChecked(nodeRuntime.npm, ["ci"], { cwd: dashboardDir, env });
+    if (code !== 0) throw new Error(`npm ci failed in ${dashboardDir}`);
+    code = await runChecked(nodeRuntime.npm, ["run", "build"], { cwd: dashboardDir, env });
+    if (code !== 0) throw new Error(`npm run build failed in ${dashboardDir}`);
+  }
 }
 
 function printHelp() {
@@ -760,6 +1007,7 @@ async function runInstallCodex() {
   try {
     cacheDir = installCodexPluginCache(join(marketplaceRoot, CODEX_MARKETPLACE_PLUGIN_PATH));
     process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
+    await bootstrapWindowsCodexCache(cacheDir);
   } catch (err) {
     process.stderr.write(
       `error: automatic Codex plugin install failed: ${err && err.message ? err.message : err}\n`,

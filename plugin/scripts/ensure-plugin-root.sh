@@ -51,7 +51,8 @@ if [ "$FOLLOW" = "1" ]; then
 fi
 
 # Cache-tracking: if the link currently resolves to a path under the
-# managed plugin cache (~/.claude/plugins/cache/), always retarget it to
+# managed plugin cache (~/.claude/plugins/cache/ or ~/.codex/plugins/cache/),
+# always retarget it to
 # $TARGET. Plugin updates leave old version directories behind, so a
 # valid pyproject.toml at the stale target is not proof the link is
 # fresh. Links pointing outside the cache (e.g., a user's local-dev
@@ -60,7 +61,7 @@ if [ -L "$LINK" ]; then
     # Literal target string, not realpath: we compare against what was written by ln -s.
     CURRENT="$(readlink "$LINK" 2>/dev/null || true)"
     case "$CURRENT" in
-        "$HOME/.claude/plugins/cache/"*)
+        "$HOME/.claude/plugins/cache/"*|"$HOME/.codex/plugins/cache/"*)
             CURRENT_NORM="${CURRENT%/}"
             TARGET_NORM="${TARGET%/}"
             if [ "$CURRENT_NORM" != "$TARGET_NORM" ]; then

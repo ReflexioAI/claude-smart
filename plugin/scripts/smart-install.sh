@@ -311,7 +311,6 @@ if ! grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
   printf '# Use the in-process ONNX embedder (chromadb) — no API key for semantic search\nCLAUDE_SMART_USE_LOCAL_EMBEDDING=1\n' >> "$REFLEXIO_ENV"
   echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 to $REFLEXIO_ENV" >&2
 fi
-
 # Migrate stale REFLEXIO_URL from reflexio's library default (8081) to the
 # plugin backend port (8071). Matches the quoted and unquoted forms but
 # requires paired quotes, so malformed or deliberately different values

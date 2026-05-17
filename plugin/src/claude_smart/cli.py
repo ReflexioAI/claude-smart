@@ -76,6 +76,8 @@ _CODEX_REQUIRED_FILES = (
     Path(".agents/plugins/marketplace.json"),
     Path("plugin/.codex-plugin/plugin.json"),
     Path("plugin/hooks/codex-hooks.json"),
+    Path("plugin/scripts/codex-claude-compat.py"),
+    Path("plugin/scripts/codex-hook.js"),
     Path("plugin/scripts/_codex_env.sh"),
 )
 _COPYTREE_IGNORE = shutil.ignore_patterns(
@@ -110,7 +112,10 @@ def _seed_reflexio_env() -> list[str]:
     _REFLEXIO_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
     _REFLEXIO_ENV_PATH.touch(exist_ok=True)
     existing = _REFLEXIO_ENV_PATH.read_text()
-    flags = ("CLAUDE_SMART_USE_LOCAL_CLI", "CLAUDE_SMART_USE_LOCAL_EMBEDDING")
+    flags = (
+        "CLAUDE_SMART_USE_LOCAL_CLI",
+        "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
+    )
     missing = [f for f in flags if f"{f}=" not in existing]
     if not missing:
         return []

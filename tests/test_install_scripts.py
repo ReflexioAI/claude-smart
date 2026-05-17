@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
 SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
 CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat.py"
+CODEX_HOOK = REPO_ROOT / "plugin" / "scripts" / "codex-hook.js"
 
 
 def _minimal_path(tmp_path: Path, *names: str) -> str:
@@ -220,6 +221,89 @@ def test_codex_claude_compat_translates_claude_contract(tmp_path: Path) -> None:
     assert len(prompt_files) == 1
     assert prompt_files[0].read_text() == "system rules\n\n## Task\nanswer this"
     assert not output_file.exists()
+
+
+def test_codex_claude_compat_accepts_stream_json_flags(tmp_path: Path) -> None:
+    codex = tmp_path / "codex"
+    codex.write_text(
+        "#!/bin/sh\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"--output-last-message\" ]; then\n"
+        "    shift\n"
+        "    out=\"$1\"\n"
+        "  fi\n"
+        "  shift || exit 1\n"
+        "done\n"
+        "printf 'stream reply' > \"$out\"\n"
+    )
+    codex.chmod(codex.stat().st_mode | stat.S_IXUSR)
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(tmp_path, "python3")
+    env["CLAUDE_SMART_CODEX_PATH"] = str(codex)
+    env["TMPDIR"] = str(tmp_path)
+
+    result = subprocess.run(
+        [
+            str(CODEX_COMPAT),
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--model",
+            "claude-sonnet-4-6",
+        ],
+        input="answer this",
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "type": "result",
+        "subtype": "success",
+        "result": "stream reply",
+    }
+
+
+def test_codex_hook_ensure_root_tracks_active_plugin_root(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for codex hook wrapper tests")
+
+    local_root = tmp_path / "repo" / "plugin"
+    cache_root = (
+        tmp_path
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.26"
+    )
+    local_root.mkdir(parents=True)
+    cache_root.mkdir(parents=True)
+    (local_root / "pyproject.toml").write_text("[project]\nname='local'\n")
+    (cache_root / "pyproject.toml").write_text("[project]\nname='cache'\n")
+    reflexio = tmp_path / ".reflexio"
+    reflexio.mkdir()
+    (reflexio / "plugin-root").symlink_to(local_root, target_is_directory=True)
+
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_PLUGIN_ROOT"] = str(cache_root)
+    result = subprocess.run(
+        [node, str(CODEX_HOOK), "ensure-root"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (reflexio / "plugin-root").resolve() == cache_root
+    assert json.loads(result.stdout) == {"continue": True, "suppressOutput": True}
 
 
 def test_install_private_node_installs_from_verified_archive(tmp_path: Path) -> None:

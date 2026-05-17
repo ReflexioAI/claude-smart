@@ -169,9 +169,8 @@ def test_codex_hooks_use_expected_events_and_marketplace_fallback() -> None:
     for command in _command_hooks("plugin/hooks/codex-hooks.json"):
         assert "_codex_env.sh" in command
         assert "printenv PATH" not in command
-        assert command.find("$HOME/plugins/claude-smart") < command.find(
-            ".codex/plugins/cache/reflexioai/claude-smart"
-        )
+        assert "$HOME/plugins/claude-smart" not in command
+        assert "CLAUDE_PLUGIN_ROOT" in command
         assert ".codex/plugins/cache/reflexioai/claude-smart" in command
 
 

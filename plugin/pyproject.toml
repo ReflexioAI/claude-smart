@@ -10,6 +10,7 @@ dependencies = [
     # Pulls in onnxruntime + tokenizers; the ~80 MB ONNX model itself is
     # downloaded on first use, not at install time.
     "chromadb>=0.5",
+    "einops>=0.8.0",
 ]
 
 [project.scripts]
