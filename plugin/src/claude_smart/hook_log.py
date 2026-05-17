@@ -20,6 +20,7 @@ or read-only ``$HOME`` must never abort an in-progress hook.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -35,6 +36,12 @@ _LOGGER = logging.getLogger(__name__)
 _LOG_PATH = Path.home() / ".claude-smart" / "hook.log"
 
 _TRUNCATE_LIMIT = 4096
+
+# Hard cap on ``hook.log`` size. At ~400 bytes/line and ~50 lines per
+# typical session, 5 MB ≈ 12k records ≈ a few hundred sessions of recent
+# forensic history — enough to debug the last week, bounded so a power
+# user's log can't grow unbounded.
+_MAX_LOG_BYTES = 5 * 1024 * 1024
 
 
 def log_event(
@@ -112,6 +119,13 @@ def log_event(
             fh.write(line)
     except OSError as exc:
         _LOGGER.debug("hook_log: write to %s failed: %s", path, exc)
+        return
+
+    # Rotate AFTER the append so the just-written record always survives,
+    # even on the call that crosses the cap. A single oversized record
+    # still gets through and is dropped by the *next* rotation when the
+    # file is read back.
+    _maybe_rotate(path)
 
 
 def log_path() -> Path:
@@ -143,3 +157,70 @@ def _truncate(value: Any) -> Any:
     if isinstance(value, str) and len(value) > _TRUNCATE_LIMIT:
         return value[:_TRUNCATE_LIMIT] + "…"
     return value
+
+
+def _maybe_rotate(path: Path) -> None:
+    """Cap ``path`` at ``_MAX_LOG_BYTES`` by dropping the oldest half in place.
+
+    The fast path is a single ``stat`` syscall — when the file is under
+    the cap (the overwhelmingly common case on every fire) we do nothing.
+    When over the cap we read the file, find the first newline at-or-after
+    the midpoint byte, and atomically replace the original with the bytes
+    *after* that newline. Splitting on a newline boundary preserves the
+    JSON Lines invariant: every retained line is a complete record.
+
+    We picked this over ``logging.handlers.RotatingFileHandler`` because:
+
+    1. ``hook_log`` deliberately avoids the ``logging`` framework — see
+       module docstring. Adding a handler reintroduces the configuration
+       fragility we were dodging.
+    2. ``RotatingFileHandler`` produces ``hook.log.1``, ``hook.log.2`` …
+       sidecar files; our forensic story is "one file, tail it". Users
+       have already wired up tooling around that path.
+    3. In-place truncate-to-second-half is O(n) on the rare rotation
+       event and zero-cost on every other write. Backup file management
+       would add steady-state inode pressure for no benefit.
+
+    Args:
+        path (Path): The log file to inspect. Need not exist — the
+            ``FileNotFoundError`` branch of the ``stat`` call returns
+            cleanly via the ``OSError`` guard.
+
+    Returns:
+        None
+    """
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        _LOGGER.debug("hook_log: stat for rotation failed: %s", exc)
+        return
+
+    if size < _MAX_LOG_BYTES:
+        return
+
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        _LOGGER.debug("hook_log: read for rotation failed: %s", exc)
+        return
+
+    midpoint = len(data) // 2
+    cut = data.find(b"\n", midpoint)
+    # ``find`` returns -1 when the second half has no newline at all,
+    # meaning the file is one giant record with no framing left to
+    # preserve. Drop the lot rather than split a record mid-byte.
+    tail = b"" if cut == -1 else data[cut + 1 :]
+
+    # Atomic replace: write to a sibling temp file then rename. This
+    # avoids the truncation window where a concurrent reader would see
+    # an empty file, and matches the contract that ``hook.log`` always
+    # contains complete JSONL framing.
+    tmp_path = path.with_name(path.name + ".rot")
+    try:
+        tmp_path.write_bytes(tail)
+        tmp_path.replace(path)
+    except OSError as exc:
+        _LOGGER.debug("hook_log: rotation rename failed: %s", exc)
+        # Best-effort cleanup of the temp file; ignore failures.
+        with contextlib.suppress(OSError):
+            tmp_path.unlink(missing_ok=True)
