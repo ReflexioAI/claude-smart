@@ -17,7 +17,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
 SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
-CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat.py"
+CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
 CODEX_HOOK = REPO_ROOT / "plugin" / "scripts" / "codex-hook.js"
 
 
@@ -193,7 +193,7 @@ def test_codex_claude_compat_translates_claude_contract(tmp_path: Path) -> None:
     )
     codex.chmod(codex.stat().st_mode | stat.S_IXUSR)
     env = _isolated_env(tmp_path)
-    env["PATH"] = _minimal_path(tmp_path, "cat", "python3")
+    env["PATH"] = _minimal_path(tmp_path, "cat", "node", "sh")
     env["CLAUDE_SMART_CODEX_PATH"] = str(codex)
     env["TMPDIR"] = str(tmp_path)
 
@@ -238,7 +238,7 @@ def test_codex_claude_compat_accepts_stream_json_flags(tmp_path: Path) -> None:
     )
     codex.chmod(codex.stat().st_mode | stat.S_IXUSR)
     env = _isolated_env(tmp_path)
-    env["PATH"] = _minimal_path(tmp_path, "python3")
+    env["PATH"] = _minimal_path(tmp_path, "node", "sh")
     env["CLAUDE_SMART_CODEX_PATH"] = str(codex)
     env["TMPDIR"] = str(tmp_path)
 

@@ -54,7 +54,9 @@ const CODEX_REQUIRED_FILES = [
   ".agents/plugins/marketplace.json",
   "plugin/.codex-plugin/plugin.json",
   "plugin/hooks/codex-hooks.json",
-  "plugin/scripts/codex-claude-compat.py",
+  "plugin/scripts/codex-claude-compat",
+  "plugin/scripts/codex-claude-compat.cmd",
+  "plugin/scripts/codex-claude-compat.js",
   "plugin/scripts/codex-hook.js",
   "plugin/scripts/_codex_env.sh",
 ];

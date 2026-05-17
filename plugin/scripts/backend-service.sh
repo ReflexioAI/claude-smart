@@ -41,9 +41,11 @@ PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 
 if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
   if [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ]; then
-    # Prefer the compatibility executable for older provider entrypoints; the
-    # provider can also resolve `codex` directly when this override is absent.
-    export CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat.py"
+    # Reflexio's provider still calls CLAUDE_SMART_CLI_PATH with Claude CLI
+    # flags. Use a small compatibility executable that translates that narrow
+    # contract to `codex exec`.
+    claude_smart_prepend_node_bins
+    export CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"
   elif _cs_cli_path=$(command -v claude 2>/dev/null) && [ -n "$_cs_cli_path" ]; then
     export CLAUDE_SMART_CLI_PATH="$_cs_cli_path"
   elif [ -x "$HOME/.local/bin/claude" ]; then

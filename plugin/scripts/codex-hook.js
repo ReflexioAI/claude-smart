@@ -95,7 +95,10 @@ function writeBackendUrl(port) {
 }
 
 function codexCompatPath(root) {
-  return path.join(root, "scripts", "codex-claude-compat.py");
+  const filename = process.platform === "win32"
+    ? "codex-claude-compat.cmd"
+    : "codex-claude-compat";
+  return path.join(root, "scripts", filename);
 }
 
 function readBackendUrl() {

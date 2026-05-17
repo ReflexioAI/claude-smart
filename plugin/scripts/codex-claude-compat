@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+set -eu
+
+case "$0" in
+  */*) SCRIPT_DIR=${0%/*} ;;
+  *) SCRIPT_DIR=. ;;
+esac
+SCRIPT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR" && pwd)
+exec node "$SCRIPT_DIR/codex-claude-compat.js" "$@"
