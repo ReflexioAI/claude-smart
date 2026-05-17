@@ -36,6 +36,7 @@ Detection signals, OR'd:
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -116,4 +117,26 @@ def is_codex_internal_prompt(prompt: Any) -> bool:
         text.startswith(_CODEX_SUGGESTIONS_PROMPT_PREFIX)
         and _CODEX_SUGGESTIONS_PROMPT_MARKER in text
         and _CODEX_SUGGESTIONS_APPS_MARKER in text
+    )
+
+
+def is_codex_title_response(content: Any) -> bool:
+    """True for Codex's title-generator response body.
+
+    Codex can run a separate title-generation task whose Stop payload contains
+    only the assistant response, e.g. ``{"title":"Fix tests"}``, with no
+    corresponding user turn. That metadata is useful to Codex's UI, but it is
+    not a user interaction and should not be published to reflexio.
+    """
+    if not isinstance(content, str):
+        return False
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return False
+    return (
+        isinstance(parsed, dict)
+        and set(parsed) == {"title"}
+        and isinstance(parsed.get("title"), str)
+        and bool(parsed["title"].strip())
     )

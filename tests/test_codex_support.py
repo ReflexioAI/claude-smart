@@ -289,6 +289,56 @@ def test_codex_stop_skips_internal_prompt_from_transcript(
     assert calls == []
 
 
+def test_codex_stop_skips_orphan_title_response(session_dir, monkeypatch) -> None:
+    runtime.set_host(runtime.HOST_CODEX)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        stop.publish, "publish_unpublished", lambda **kw: calls.append(kw)
+    )
+
+    stop.handle(
+        {
+            "session_id": "s1",
+            "cwd": str(REPO_ROOT),
+            "last_assistant_message": '{"title":"Find claude-smart install type"}',
+            "transcript_path": "/does/not/exist.jsonl",
+        }
+    )
+
+    assert state.read_all("s1") == []
+    assert calls == []
+
+
+def test_codex_stop_keeps_user_requested_title_json(session_dir, monkeypatch) -> None:
+    runtime.set_host(runtime.HOST_CODEX)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        stop.publish, "publish_unpublished", lambda **kw: calls.append(kw)
+    )
+    state.append(
+        "s1",
+        {
+            "role": "User",
+            "content": "Return only a JSON title for the task.",
+            "user_id": "demo",
+        },
+    )
+
+    stop.handle(
+        {
+            "session_id": "s1",
+            "cwd": str(REPO_ROOT),
+            "last_assistant_message": '{"title":"Fix docs"}',
+            "transcript_path": "/does/not/exist.jsonl",
+        }
+    )
+
+    records = state.read_all("s1")
+    assert records[-1]["role"] == "Assistant"
+    assert records[-1]["content"] == '{"title":"Fix docs"}'
+    assert calls
+
+
 def test_codex_stop_resolves_text_citations_from_last_assistant_message(
     session_dir, monkeypatch
 ) -> None:

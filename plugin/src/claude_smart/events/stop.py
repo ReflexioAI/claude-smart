@@ -267,6 +267,12 @@ def _parse_plan_decision(text: str) -> str | None:
     return None
 
 
+def _has_unpublished_user_turn(session_id: str) -> bool:
+    """True when the session buffer already has a user turn awaiting publish."""
+    _, interactions = state.unpublished_slice(state.read_all(session_id))
+    return any(item.get("role") == "User" for item in interactions)
+
+
 def _scan_transcript_for_cs_cite_ids(entries: list[dict[str, Any]]) -> list[str]:
     """Scan the current assistant turn for ``cs-cite`` Bash tool_use calls.
 
@@ -360,8 +366,10 @@ def handle(payload: dict[str, Any]) -> None:
         if path.is_file():
             entries = _load_transcript_with_retry(path)
 
+    prompt = payload.get("prompt") or (
+        _scan_transcript_for_user_text(entries) if runtime.is_codex() else ""
+    )
     if runtime.is_codex():
-        prompt = payload.get("prompt") or _scan_transcript_for_user_text(entries)
         if internal_call.is_codex_internal_prompt(prompt):
             return
 
@@ -373,6 +381,13 @@ def handle(payload: dict[str, Any]) -> None:
         and last_assistant_message
         else _scan_transcript_for_assistant_text(entries)
     )
+    if (
+        runtime.is_codex()
+        and internal_call.is_codex_title_response(assistant_text)
+        and not prompt
+        and not _has_unpublished_user_turn(session_id)
+    ):
+        return
     transcript_cited_ids = _scan_transcript_for_cs_cite_ids(entries)
     text_cited_ids = cs_cite.parse_text_citations(assistant_text)
     cited_ids = [*text_cited_ids, *transcript_cited_ids]

@@ -113,6 +113,32 @@ def test_returns_true_for_codex_title_prompt(monkeypatch: pytest.MonkeyPatch) ->
     )
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"title":"Find claude-smart install type"}',
+        '{ "title": "Install local claude-smart plugin" }',
+    ],
+)
+def test_detects_codex_title_response(content: str) -> None:
+    assert internal_call.is_codex_title_response(content) is True
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",
+        "not json",
+        '{"title": ""}',
+        '{"title": "real", "body": "extra"}',
+        '["title", "real"]',
+        {"title": "real"},
+    ],
+)
+def test_rejects_non_title_responses(content: object) -> None:
+    assert internal_call.is_codex_title_response(content) is False
+
+
 def test_returns_true_for_codex_suggestions_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
