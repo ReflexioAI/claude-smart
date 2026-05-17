@@ -13,7 +13,7 @@ Technical reference for how `claude-smart` wires Claude Code's lifecycle hooks t
    - `SessionEnd` — flushes the remaining buffer with `force_extraction=True`.
 2. **Local state buffer** — JSONL per session at `~/.claude-smart/sessions/{session_id}.jsonl`. Offline-safe.
 3. **Reflexio backend** (submodule at `reflexio/`) — SQLite storage, hybrid search, preference/skill extraction, dedup, status lifecycle (`CURRENT` → `ARCHIVED`). Runs on `localhost:8071`.
-4. **Claude Code LLM provider** — a LiteLLM custom provider registered inside reflexio. Every generation call (extraction, update, dedup, evaluation) subprocesses `claude -p --output-format json`, so no OpenAI/Anthropic key is needed for the learning loop.
+4. **Local host LLM provider** — a LiteLLM custom provider registered inside reflexio. Every generation call (extraction, update, dedup, evaluation) subprocesses the active host CLI (`claude -p` under Claude Code, `codex exec` under Codex), so no OpenAI/Anthropic key is needed for the learning loop.
 
 ## Data flow
 

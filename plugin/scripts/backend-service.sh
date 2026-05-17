@@ -41,9 +41,8 @@ PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 
 if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
   if [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ]; then
-    # Reflexio's provider still calls CLAUDE_SMART_CLI_PATH with Claude CLI
-    # flags. Use a small compatibility executable that translates that narrow
-    # contract to `codex exec`.
+    # Prefer the compatibility executable for older provider entrypoints; the
+    # provider can also resolve `codex` directly when this override is absent.
     export CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat.py"
   elif _cs_cli_path=$(command -v claude 2>/dev/null) && [ -n "$_cs_cli_path" ]; then
     export CLAUDE_SMART_CLI_PATH="$_cs_cli_path"
@@ -59,6 +58,37 @@ LOG_FILE="$STATE_DIR/backend.log"
 mkdir -p "$STATE_DIR"
 
 emit_ok() { echo '{"continue":true,"suppressOutput":true}'; }
+
+emit_start_failure() {
+  reason="$1"
+  if py=$(claude_smart_resolve_python 2>/dev/null); then
+    "$py" - "$reason" <<'PY'
+import json
+import sys
+
+reason = sys.argv[1].strip()
+message = (
+    "> **claude-smart learning backend is not running.** "
+    "Interactions are being buffered locally, but learning will not publish "
+    "until the backend starts.\n"
+)
+if reason:
+    message += f">\n> Last startup error: `{reason}`\n"
+message += (
+    ">\n> Make sure the local model provider is available: Claude Code needs "
+    "`claude`, Codex needs `codex`. Then run `/claude-smart:restart`."
+)
+print(json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": message,
+    }
+}))
+PY
+  else
+    emit_ok
+  fi
+}
 
 # Tree-kill the recorded process. Delegates to claude_smart_kill_tree
 # (POSIX: signal the process group; Windows: taskkill /T /F /PID).
@@ -189,6 +219,14 @@ case "$CMD" in
       backend_healthy && break
       sleep 1
     done
+    if ! backend_healthy; then
+      pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
+      if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+        reason=$(tail -n 120 "$LOG_FILE" 2>/dev/null | grep -E "No LLM provider available|No generation-capable LLM provider available|CLI not found|skipping provider registration|Application startup failed" | tail -n 1 | sed 's/^[[:space:]]*//')
+        emit_start_failure "$reason"
+        exit 0
+      fi
+    fi
     emit_ok
     ;;
   stop)
