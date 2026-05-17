@@ -1498,3 +1498,156 @@ def test_pre_tool_emits_continue_when_search_empty(session_dir, monkeypatch) -> 
         "continue": True,
         "suppressOutput": True,
     }
+
+
+# -----------------------------------------------------------------------------
+# session_end — synthesises Assistant anchor for orphan tool records
+# -----------------------------------------------------------------------------
+
+
+def test_session_end_synthesises_anchor_when_buffer_ends_with_orphan_tools(
+    session_dir, tmp_path, monkeypatch
+) -> None:
+    """When Stop never fires, the buffer ends with orphan Assistant_tool
+    records. SessionEnd must append a synthetic Assistant record so the
+    tool stream survives the publish."""
+    from claude_smart import state
+    from claude_smart.events import session_end
+
+    state.append("s_orphan", {"role": "User", "content": "go", "user_id": "p1"})
+    state.append(
+        "s_orphan",
+        {
+            "role": "Assistant_tool",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest"},
+            "tool_output": "passed",
+            "status": "success",
+        },
+    )
+    state.append(
+        "s_orphan",
+        {
+            "role": "Assistant_tool",
+            "tool_name": "Read",
+            "tool_input": {"file_path": "foo.py"},
+            "tool_output": "...",
+            "status": "success",
+        },
+    )
+
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            {"type": "user", "message": {"content": "go"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": "final assistant text"}]
+                },
+            },
+        ],
+    )
+
+    published_kwargs: dict[str, Any] = {}
+
+    def fake_publish(**kwargs):
+        published_kwargs.update(kwargs)
+        return ("ok", 1)
+
+    monkeypatch.setattr("claude_smart.publish.publish_unpublished", fake_publish)
+
+    result = session_end.handle(
+        {"session_id": "s_orphan", "cwd": "/tmp/p1", "transcript_path": str(transcript)}
+    )
+    assert result == ("ok", 1)
+
+    records = state.read_all("s_orphan")
+    synth = [r for r in records if r.get("synthesised_by") == "session_end_anchor"]
+    assert len(synth) == 1
+    assert synth[0]["role"] == "Assistant"
+    assert synth[0]["content"] == "final assistant text"
+    assert published_kwargs["session_id"] == "s_orphan"
+
+
+def test_session_end_uses_placeholder_when_transcript_missing(
+    session_dir, monkeypatch
+) -> None:
+    """No transcript_path → synthetic Assistant uses the placeholder string."""
+    from claude_smart import state
+    from claude_smart.events import session_end
+
+    state.append("s_nopath", {"role": "User", "content": "do it", "user_id": "p"})
+    state.append(
+        "s_nopath",
+        {
+            "role": "Assistant_tool",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "tool_output": "",
+            "status": "success",
+        },
+    )
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished", lambda **_: ("ok", 1)
+    )
+    session_end.handle({"session_id": "s_nopath", "cwd": "/tmp/p"})
+    records = state.read_all("s_nopath")
+    synth = [r for r in records if r.get("synthesised_by") == "session_end_anchor"]
+    assert len(synth) == 1
+    assert "session ended without final assistant response" in synth[0]["content"]
+
+
+def test_session_end_skips_anchor_when_assistant_already_present(
+    session_dir, monkeypatch
+) -> None:
+    """If the buffer tail already has an Assistant record (Stop fired
+    correctly), SessionEnd must not append a duplicate."""
+    from claude_smart import state
+    from claude_smart.events import session_end
+
+    state.append("s_clean", {"role": "User", "content": "do it", "user_id": "p"})
+    state.append(
+        "s_clean",
+        {
+            "role": "Assistant_tool",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "tool_output": "",
+            "status": "success",
+        },
+    )
+    state.append(
+        "s_clean",
+        {"role": "Assistant", "content": "done", "user_id": "p"},
+    )
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished", lambda **_: ("ok", 1)
+    )
+    session_end.handle({"session_id": "s_clean", "cwd": "/tmp/p"})
+    records = state.read_all("s_clean")
+    synth = [r for r in records if r.get("synthesised_by") == "session_end_anchor"]
+    assert synth == []
+
+
+def test_session_end_skips_anchor_when_no_tools(session_dir, monkeypatch) -> None:
+    """Empty buffer (no orphan tools) → no synthetic record appended."""
+    from claude_smart import state
+    from claude_smart.events import session_end
+
+    state.append("s_empty", {"role": "User", "content": "go", "user_id": "p"})
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished", lambda **_: ("ok", 0)
+    )
+    session_end.handle({"session_id": "s_empty", "cwd": "/tmp/p"})
+    records = state.read_all("s_empty")
+    synth = [r for r in records if r.get("synthesised_by") == "session_end_anchor"]
+    assert synth == []
+
+
+def test_session_end_without_session_id_returns_none(session_dir) -> None:
+    """No session_id in the payload → short-circuit, no publish, no state."""
+    from claude_smart.events import session_end
+
+    result = session_end.handle({})
+    assert result is None
