@@ -2,22 +2,24 @@
 
 Reflexio's ``LocalScriptAssistant`` sends one JSON payload on stdin and expects
 one JSON object on stdout. This module bridges that protocol to a guarded
-``claude -p`` subprocess so candidate playbooks can be evaluated against Claude
-Code without re-entering claude-smart/reflexio hooks.
+local CLI subprocess so candidate playbooks can be evaluated against the active
+host without re-entering claude-smart/reflexio hooks.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 from claude_smart import internal_call, runtime
 
-_CLAUDE_TIMEOUT_SECONDS = 300
+_CLI_TIMEOUT_SECONDS = 300
 _READ_ONLY_TOOLS = "Read,Grep,Glob,LS"
 _MUTATING_TOOLS = "Bash,Edit,Write,MultiEdit,NotebookEdit"
 
@@ -33,7 +35,7 @@ def main() -> int:
         messages = _validated_list(payload, "messages")
         playbooks = _validated_list(payload, "playbooks")
         prompt, system_prompt = _build_prompt(messages, playbooks)
-        content = _run_claude(prompt=prompt, system_prompt=system_prompt)
+        content = _run_local_cli(prompt=prompt, system_prompt=system_prompt)
     except Exception as exc:  # noqa: BLE001 - script errors become LocalScript failures.
         sys.stderr.write(f"{type(exc).__name__}: {exc}\n")
         return 1
@@ -134,6 +136,12 @@ def _render_transcript(messages: list[dict[str, str]]) -> str:
     )
 
 
+def _run_local_cli(*, prompt: str, system_prompt: str) -> str:
+    if runtime.is_codex():
+        return _run_codex(prompt=prompt, system_prompt=system_prompt)
+    return _run_claude(prompt=prompt, system_prompt=system_prompt)
+
+
 def _run_claude(*, prompt: str, system_prompt: str) -> str:
     cli_path = shutil.which("claude") or "claude"
     # This is an evaluation rollout, not a real user session: allow local
@@ -167,13 +175,13 @@ def _run_claude(*, prompt: str, system_prompt: str) -> str:
             input=prompt,
             capture_output=True,
             text=True,
-            timeout=_CLAUDE_TIMEOUT_SECONDS,
+            timeout=_CLI_TIMEOUT_SECONDS,
             check=False,
             env=env,
         )
     except subprocess.TimeoutExpired as exc:
         raise OptimizerAssistantError(
-            f"claude CLI timed out after {_CLAUDE_TIMEOUT_SECONDS}s"
+            f"claude CLI timed out after {_CLI_TIMEOUT_SECONDS}s"
         ) from exc
     except FileNotFoundError as exc:
         raise OptimizerAssistantError("claude CLI not found on PATH") from exc
@@ -197,6 +205,78 @@ def _run_claude(*, prompt: str, system_prompt: str) -> str:
     if not isinstance(content, str):
         raise OptimizerAssistantError("claude CLI JSON output missing result/response")
     return content
+
+
+def _run_codex(*, prompt: str, system_prompt: str) -> str:
+    cli_path = shutil.which("codex") or "codex"
+    output_path = _temporary_output_path()
+    cmd = [
+        cli_path,
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-rules",
+        "--output-last-message",
+        str(output_path),
+        "-",
+    ]
+
+    env = os.environ.copy()
+    env[runtime.HOST_ENV] = runtime.HOST_CODEX
+    env[runtime.INTERNAL_ENV] = "1"
+    env[internal_call._ENTRYPOINT_VAR] = "optimizer"  # noqa: SLF001
+
+    try:
+        proc = subprocess.run(  # noqa: S603 - command is fixed plus resolved executable.
+            cmd,
+            input=_codex_prompt(prompt=prompt, system_prompt=system_prompt),
+            capture_output=True,
+            text=True,
+            timeout=_CLI_TIMEOUT_SECONDS,
+            check=False,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise OptimizerAssistantError(
+            f"codex CLI timed out after {_CLI_TIMEOUT_SECONDS}s"
+        ) from exc
+    except FileNotFoundError as exc:
+        raise OptimizerAssistantError("codex CLI not found on PATH") from exc
+
+    try:
+        content = output_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise OptimizerAssistantError("codex CLI did not write output") from exc
+    finally:
+        try:
+            output_path.unlink()
+        except OSError:
+            pass
+
+    if proc.returncode != 0:
+        stderr = proc.stderr.strip()
+        raise OptimizerAssistantError(
+            f"codex CLI exited {proc.returncode}: {stderr[:500]}"
+        )
+    if not content:
+        raise OptimizerAssistantError("codex CLI returned empty output")
+    return content
+
+
+def _temporary_output_path() -> Path:
+    handle = tempfile.NamedTemporaryFile(prefix="claude-smart-codex-", delete=False)
+    try:
+        return Path(handle.name)
+    finally:
+        handle.close()
+
+
+def _codex_prompt(*, prompt: str, system_prompt: str) -> str:
+    if not system_prompt:
+        return prompt
+    return f"{system_prompt}\n\n## Task\n{prompt}"
 
 
 if __name__ == "__main__":

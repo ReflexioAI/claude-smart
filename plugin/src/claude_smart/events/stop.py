@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from claude_smart import cs_cite, ids, publish, runtime, state
+from claude_smart import cs_cite, ids, internal_call, publish, runtime, state
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -110,6 +110,16 @@ def _scan_transcript_for_assistant_text(entries: list[dict[str, Any]]) -> str:
         message = entry.get("message") or {}
         parts.extend(_extract_text_blocks(message.get("content")))
     return "\n\n".join(parts)
+
+
+def _scan_transcript_for_user_text(entries: list[dict[str, Any]]) -> str:
+    """Return the user text that opened the current transcript turn."""
+    for entry in reversed(entries):
+        if not _is_user_turn_boundary(entry):
+            continue
+        message = entry.get("message") or {}
+        return "\n\n".join(_extract_text_blocks(message.get("content")))
+    return ""
 
 
 def _is_user_turn_boundary(entry: dict[str, Any]) -> bool:
@@ -349,6 +359,11 @@ def handle(payload: dict[str, Any]) -> None:
         path = Path(transcript_path)
         if path.is_file():
             entries = _load_transcript_with_retry(path)
+
+    if runtime.is_codex():
+        prompt = payload.get("prompt") or _scan_transcript_for_user_text(entries)
+        if internal_call.is_codex_internal_prompt(prompt):
+            return
 
     last_assistant_message = payload.get("last_assistant_message")
     assistant_text = (

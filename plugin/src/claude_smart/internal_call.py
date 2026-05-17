@@ -29,6 +29,9 @@ Detection signals, OR'd:
   - ``payload.cwd`` resolves inside the reflexio submodule. Catches
     direct interactive ``claude`` runs from inside reflexio (manual
     debugging) that would otherwise pollute the corpus.
+  - Known Codex-internal prompt templates (title generation and home-screen
+    suggestions). These are model calls made by Codex itself, not user
+    coding turns, and must never be reflected into claude-smart memory.
 """
 
 from __future__ import annotations
@@ -41,6 +44,19 @@ from claude_smart import runtime
 
 _ENTRYPOINT_VAR = "CLAUDE_CODE_ENTRYPOINT"
 _INTERACTIVE_ENTRYPOINT = "cli"
+_CODEX_TITLE_PROMPT_PREFIX = (
+    "You are a helpful assistant. You will be presented with a user prompt, "
+    "and your job is to provide a short title for a task"
+)
+_CODEX_SUGGESTIONS_PROMPT_PREFIX = "# Overview\n\nGenerate 0 to 3 "
+_CODEX_SUGGESTIONS_PROMPT_MARKER = (
+    "hyperpersonalized suggestions for what this user can do with Codex "
+    "in this local project:"
+)
+_CODEX_SUGGESTIONS_APPS_MARKER = (
+    "Get an understanding of the user's intent and goals by deeply viewing "
+    "their connected apps."
+)
 
 # Reflexio submodule lives at <repo>/reflexio when this package runs from
 # a dev checkout (<repo>/plugin/src/claude_smart/internal_call.py); anchor
@@ -75,6 +91,8 @@ def is_internal_invocation(payload: dict[str, Any]) -> bool:
     entrypoint = os.environ.get(_ENTRYPOINT_VAR)
     if entrypoint and entrypoint != _INTERACTIVE_ENTRYPOINT:
         return True
+    if runtime.is_codex() and is_codex_internal_prompt(payload.get("prompt")):
+        return True
     cwd = payload.get("cwd")
     if not isinstance(cwd, str) or not cwd:
         return False
@@ -87,3 +105,15 @@ def is_internal_invocation(payload: dict[str, Any]) -> bool:
     except ValueError:
         return False
     return True
+
+
+def is_codex_internal_prompt(prompt: Any) -> bool:
+    """True for Codex's own UI/task prompts, not user-authored turns."""
+    if not isinstance(prompt, str):
+        return False
+    text = prompt.strip()
+    return text.startswith(_CODEX_TITLE_PROMPT_PREFIX) or (
+        text.startswith(_CODEX_SUGGESTIONS_PROMPT_PREFIX)
+        and _CODEX_SUGGESTIONS_PROMPT_MARKER in text
+        and _CODEX_SUGGESTIONS_APPS_MARKER in text
+    )

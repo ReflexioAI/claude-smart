@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from claude_smart import internal_call
+from claude_smart import internal_call, runtime
 from claude_smart.internal_call import is_internal_invocation
 
 
@@ -93,3 +93,61 @@ def test_returns_false_for_interactive_entrypoint(
     monkeypatch.delenv("CLAUDE_SMART_INTERNAL", raising=False)
     monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
     assert is_internal_invocation({}) is False
+
+
+def test_returns_true_for_codex_title_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLAUDE_SMART_INTERNAL", raising=False)
+    runtime.set_host(runtime.HOST_CODEX)
+
+    assert (
+        is_internal_invocation(
+            {
+                "prompt": (
+                    "You are a helpful assistant. You will be presented with a user "
+                    "prompt, and your job is to provide a short title for a task "
+                    "that will be created from that prompt."
+                )
+            }
+        )
+        is True
+    )
+
+
+def test_returns_true_for_codex_suggestions_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CLAUDE_SMART_INTERNAL", raising=False)
+    runtime.set_host(runtime.HOST_CODEX)
+
+    assert (
+        is_internal_invocation(
+            {
+                "prompt": (
+                    "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions "
+                    "for what this user can do with Codex in this local project: "
+                    "/tmp/repo\n\nGet an understanding of the user's intent and "
+                    "goals by deeply viewing their connected apps."
+                )
+            }
+        )
+        is True
+    )
+
+
+def test_codex_prompt_fingerprints_do_not_apply_to_claude_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CLAUDE_SMART_INTERNAL", raising=False)
+    runtime.set_host(runtime.HOST_CLAUDE_CODE)
+
+    assert (
+        is_internal_invocation(
+            {
+                "prompt": (
+                    "You are a helpful assistant. You will be presented with a user "
+                    "prompt, and your job is to provide a short title for a task."
+                )
+            }
+        )
+        is False
+    )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import stat
@@ -16,6 +17,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
 SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
+CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat.py"
 
 
 def _minimal_path(tmp_path: Path, *names: str) -> str:
@@ -171,6 +173,53 @@ def test_dashboard_build_writes_marker_when_npm_missing(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert marker.is_file()
     assert "npm is not on PATH" in marker.read_text()
+
+
+def test_codex_claude_compat_translates_claude_contract(tmp_path: Path) -> None:
+    output_file = tmp_path / "captured-output-path"
+    codex = tmp_path / "codex"
+    codex.write_text(
+        "#!/bin/sh\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"--output-last-message\" ]; then\n"
+        "    shift\n"
+        "    out=\"$1\"\n"
+        "  fi\n"
+        "  shift || exit 1\n"
+        "done\n"
+        "cat > \"$out.prompt\"\n"
+        "printf 'codex reply' > \"$out\"\n"
+    )
+    codex.chmod(codex.stat().st_mode | stat.S_IXUSR)
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(tmp_path, "cat", "python3")
+    env["CLAUDE_SMART_CODEX_PATH"] = str(codex)
+    env["TMPDIR"] = str(tmp_path)
+
+    result = subprocess.run(
+        [
+            str(CODEX_COMPAT),
+            "-p",
+            "--output-format",
+            "json",
+            "--model",
+            "claude-sonnet-4-6",
+            "--append-system-prompt",
+            "system rules",
+        ],
+        input="answer this",
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"result": "codex reply"}
+    prompt_files = list(tmp_path.glob("claude-smart-codex-*.prompt"))
+    assert len(prompt_files) == 1
+    assert prompt_files[0].read_text() == "system rules\n\n## Task\nanswer this"
+    assert not output_file.exists()
 
 
 def test_install_private_node_installs_from_verified_archive(tmp_path: Path) -> None:

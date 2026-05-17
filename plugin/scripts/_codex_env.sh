@@ -25,3 +25,4 @@ _R="${_R%/}"
 export _R
 export PLUGIN_ROOT="$_R"
 export CLAUDE_PLUGIN_ROOT="$_R"
+export CLAUDE_SMART_HOST="codex"

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from claude_smart import optimizer_assistant
+from claude_smart import optimizer_assistant, runtime
 
 
 def _run_main(monkeypatch, payload):
@@ -76,6 +76,56 @@ def test_optimizer_assistant_invokes_claude_and_emits_content(monkeypatch, key) 
     assert "Be concise." in system_prompt
     assert "User: first" in system_prompt
     assert "Assistant: seen" in system_prompt
+
+
+def test_optimizer_assistant_invokes_codex_for_codex_host(
+    monkeypatch, tmp_path
+) -> None:
+    runtime.set_host(runtime.HOST_CODEX)
+    calls = []
+    output_path = tmp_path / "last-message.txt"
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        output_path.write_text("codex reply")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(optimizer_assistant, "_temporary_output_path", lambda: output_path)
+    monkeypatch.setattr(
+        "claude_smart.optimizer_assistant.shutil.which",
+        lambda name: "/bin/codex" if name == "codex" else None,
+    )
+    monkeypatch.setattr("claude_smart.optimizer_assistant.subprocess.run", fake_run)
+
+    rc, stdout, stderr = _run_main(
+        monkeypatch,
+        {
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "seen"},
+                {"role": "user", "content": "answer now"},
+            ],
+            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": "summaries"}],
+        },
+    )
+
+    assert rc == 0
+    assert stderr == ""
+    assert json.loads(stdout) == {"content": "codex reply"}
+    cmd, kwargs = calls[0]
+    assert cmd[:2] == ["/bin/codex", "exec"]
+    assert "--output-last-message" in cmd
+    assert cmd[cmd.index("--sandbox") + 1] == "read-only"
+    assert "--ask-for-approval" not in cmd
+    assert "--skip-git-repo-check" in cmd
+    assert "--ephemeral" in cmd
+    assert "--ignore-rules" in cmd
+    assert kwargs["input"].endswith("## Task\nanswer now")
+    assert "Be concise." in kwargs["input"]
+    assert "Assistant: seen" in kwargs["input"]
+    assert kwargs["env"]["CLAUDE_SMART_HOST"] == "codex"
+    assert kwargs["env"]["CLAUDE_SMART_INTERNAL"] == "1"
+    assert kwargs["env"]["CLAUDE_CODE_ENTRYPOINT"] == "optimizer"
 
 
 def test_optimizer_assistant_rejects_invalid_stdin(monkeypatch) -> None:

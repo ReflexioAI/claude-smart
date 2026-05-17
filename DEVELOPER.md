@@ -25,10 +25,10 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CLAUDE_SMART_USE_LOCAL_CLI` | `0` (installer sets `1`) | Route generation through the local `claude` CLI. Written to `~/.reflexio/.env` by `claude-smart install`. |
+| `CLAUDE_SMART_USE_LOCAL_CLI` | `0` (installer sets `1`) | Route generation through the active host CLI (`claude` for Claude Code, `codex` for Codex). Written to `~/.reflexio/.env` by `claude-smart install`. |
 | `CLAUDE_SMART_USE_LOCAL_EMBEDDING` | `0` (installer sets `1`) | Use the in-process ONNX embedder (requires `chromadb`). Written to `~/.reflexio/.env` by `claude-smart install`. |
 | `CLAUDE_SMART_ENABLE_OPTIMIZER` | enabled unless set to `0` | Hook-side env var that controls shared skill optimization and rollups during `SessionStart`. Set it in Claude Code settings, not `~/.reflexio/.env`. |
-| `CLAUDE_SMART_CLI_PATH` | `shutil.which("claude")` | Override the path to the `claude` binary. |
+| `CLAUDE_SMART_CLI_PATH` | `claude` on Claude Code; Codex compatibility wrapper on Codex | Override the executable Reflexio calls for local generation. |
 | `CLAUDE_SMART_STATE_DIR` | `~/.claude-smart/sessions/` | Where the per-session JSONL buffer lives. |
 | `CLAUDE_SMART_BACKEND_AUTOSTART` | `1` | Set to `0` to stop the SessionStart hook from spawning the reflexio backend on `localhost:8071`. |
 | `CLAUDE_SMART_DASHBOARD_AUTOSTART` | `1` | Set to `0` to stop the SessionStart hook from spawning the Next.js dashboard on `localhost:3001`. |

@@ -156,8 +156,16 @@ def test_hook_commands_pass_explicit_host() -> None:
 
 def test_codex_hooks_use_expected_events_and_marketplace_fallback() -> None:
     hooks = _read_json("plugin/hooks/codex-hooks.json")["hooks"]
+    codex_env = (REPO_ROOT / "plugin" / "scripts" / "_codex_env.sh").read_text()
+    backend_service = (
+        REPO_ROOT / "plugin" / "scripts" / "backend-service.sh"
+    ).read_text()
     assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"}
     assert "PreToolUse" not in hooks
+    assert 'CLAUDE_SMART_HOST="codex"' in codex_env
+    assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat.py"' in (
+        backend_service
+    )
     for command in _command_hooks("plugin/hooks/codex-hooks.json"):
         assert "_codex_env.sh" in command
         assert "printenv PATH" not in command
@@ -238,6 +246,48 @@ def test_codex_stop_prefers_last_assistant_message(session_dir, monkeypatch) -> 
     assert records[-1]["role"] == "Assistant"
     assert records[-1]["content"] == "final answer from codex"
     assert calls and calls[0]["project_id"] == "demo"
+
+
+def test_codex_stop_skips_internal_prompt_from_transcript(
+    session_dir, tmp_path, monkeypatch
+) -> None:
+    runtime.set_host(runtime.HOST_CODEX)
+    calls: list[dict[str, Any]] = []
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "user",
+                        "message": {
+                            "content": (
+                                "You are a helpful assistant. You will be presented "
+                                "with a user prompt, and your job is to provide a "
+                                "short title for a task that will be created from "
+                                "that prompt."
+                            )
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {"content": [{"type": "text", "text": "Fix bug"}]},
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(
+        stop.publish, "publish_unpublished", lambda **kw: calls.append(kw)
+    )
+
+    stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
+
+    assert state.read_all("s1") == []
+    assert calls == []
 
 
 def test_codex_stop_resolves_text_citations_from_last_assistant_message(

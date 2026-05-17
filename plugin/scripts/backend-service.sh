@@ -29,24 +29,29 @@ PORT=8071
 # binds to PORT instead of reflexio's library default (8081).
 export BACKEND_PORT="$PORT"
 
-# Default: route extraction through the local claude CLI + ONNX embedder
+# Default: route extraction through the active host CLI + ONNX embedder
 # so claude-smart works without any LLM API key. Users can opt out by
 # pre-exporting these to 0.
 export CLAUDE_SMART_USE_LOCAL_CLI="${CLAUDE_SMART_USE_LOCAL_CLI:-1}"
 export CLAUDE_SMART_USE_LOCAL_EMBEDDING="${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}"
-# The backend can be spawned from contexts whose PATH lacks the claude
+# The backend can be spawned from contexts whose PATH lacks the host
 # CLI dir (commonly ~/.local/bin or /opt/homebrew/bin). Pin the CLI
 # explicitly if we can resolve it from our own (post-login-path) PATH.
+PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
+
 if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
-  if _cs_claude_path=$(command -v claude 2>/dev/null) && [ -n "$_cs_claude_path" ]; then
-    export CLAUDE_SMART_CLI_PATH="$_cs_claude_path"
+  if [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ]; then
+    # Reflexio's provider still calls CLAUDE_SMART_CLI_PATH with Claude CLI
+    # flags. Use a small compatibility executable that translates that narrow
+    # contract to `codex exec`.
+    export CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat.py"
+  elif _cs_cli_path=$(command -v claude 2>/dev/null) && [ -n "$_cs_cli_path" ]; then
+    export CLAUDE_SMART_CLI_PATH="$_cs_cli_path"
   elif [ -x "$HOME/.local/bin/claude" ]; then
     export CLAUDE_SMART_CLI_PATH="$HOME/.local/bin/claude"
   fi
-  unset _cs_claude_path
+  unset _cs_cli_path
 fi
-
-PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 
 STATE_DIR="$HOME/.claude-smart"
 PID_FILE="$STATE_DIR/backend.pid"
