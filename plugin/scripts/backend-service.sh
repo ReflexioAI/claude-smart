@@ -206,16 +206,21 @@ case "$CMD" in
     export INTERACTION_CLEANUP_THRESHOLD="${INTERACTION_CLEANUP_THRESHOLD:-500}"
     export INTERACTION_CLEANUP_DELETE_COUNT="${INTERACTION_CLEANUP_DELETE_COUNT:-200}"
 
-    # --no-reload: uvicorn's reloader forks a supervisor; makes
-    # bookkeeping harder and we don't need hot-reload for a user-facing
-    # service. Detach via claude_smart_spawn_detached so the same code
-    # path covers Linux (setsid), macOS (python3 os.setsid), and Windows
     # (nohup; no process groups). backend-log-runner.sh owns stdout/stderr
     # capture so process output cannot grow backend.log past its cap.
+    #
+    # --workers: reflexio defaults to 2 (zero-downtime worker recycling
+    # for server deployments). For a single-user Claude Code plugin
+    # that's pure overhead: ~1.1 GB extra RSS, periodic 5–10 s spawn
+    # hiccups during worker rotation, and SQLite can't accept concurrent
+    # writers anyway. Default to 1 here; opt in to N via
+    # CLAUDE_SMART_BACKEND_WORKERS for power users running concurrent
+    # Claude Code sessions or wanting zero-downtime recycling.
+    workers="${CLAUDE_SMART_BACKEND_WORKERS:-1}"
     claude_smart_spawn_detached bash "$HERE/backend-log-runner.sh" \
       "$LOG_FILE" "$LOG_MAX_BYTES" -- \
       uv run --project "$PLUGIN_ROOT" --quiet \
-      reflexio services start --only backend --no-reload
+      reflexio services start --only backend --no-reload --workers "$workers"
     svc_pid=$!
     # Record the spawned pid, not a pgid sampled with ps. On POSIX,
     # setsid/python os.setsid make this pid the new process group leader;
