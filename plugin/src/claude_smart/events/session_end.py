@@ -59,10 +59,18 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
         transcript_path=payload.get("transcript_path"),
     )
 
+    # ``force_extraction=True`` makes the reflexio server run the
+    # extractor synchronously for this publish, so by the time the HTTP
+    # call returns the playbook (if any) is already committed. SessionEnd
+    # is the final flush — the user/agent is already going away — so
+    # adding a few extra seconds here trades nothing for "snapshot_playbooks()
+    # reads after this point see the just-extracted rows." Stop hooks
+    # (the per-turn flushes) stay async so they don't slow interactive
+    # generation.
     return publish.publish_unpublished(
         session_id=session_id,
         project_id=project_id,
-        force_extraction=False,
+        force_extraction=True,
         skip_aggregation=False,
     )
 

@@ -1304,6 +1304,46 @@ def test_session_start_applies_claude_smart_extraction_defaults(
     assert applied == [{"window_size": 5, "stride_size": 3}]
 
 
+def test_session_start_honours_extraction_env_overrides(
+    session_dir, monkeypatch
+) -> None:
+    """CLAUDE_SMART_WINDOW_SIZE / STRIDE_SIZE env vars override the defaults."""
+    # The module-level constants are read at import time, so reload after
+    # monkeypatching the env to make the overrides take effect.
+    import importlib
+
+    monkeypatch.setenv("CLAUDE_SMART_WINDOW_SIZE", "2")
+    monkeypatch.setenv("CLAUDE_SMART_STRIDE_SIZE", "1")
+    import claude_smart.events.session_start as ss
+
+    importlib.reload(ss)
+
+    applied: list[dict[str, Any]] = []
+
+    class Stub:
+        def apply_extraction_defaults(self, **kwargs):
+            applied.append(kwargs)
+            return True
+
+        def apply_optimizer_defaults(self, **_kw):
+            return True
+
+        def fetch_all(self, **_kw):
+            return ([], [], [])
+
+    monkeypatch.setattr(ss, "Adapter", lambda *a, **kw: Stub())
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+    try:
+        ss.handle({"session_id": "s1", "source": "startup"})
+        assert applied == [{"window_size": 2, "stride_size": 1}]
+    finally:
+        # Reload again with env unset so other tests see the real defaults.
+        monkeypatch.delenv("CLAUDE_SMART_WINDOW_SIZE", raising=False)
+        monkeypatch.delenv("CLAUDE_SMART_STRIDE_SIZE", raising=False)
+        importlib.reload(ss)
+
+
 def test_session_start_skips_optimizer_defaults_when_opted_out(
     session_dir, monkeypatch
 ) -> None:
@@ -1568,6 +1608,30 @@ def test_session_end_synthesises_anchor_when_buffer_ends_with_orphan_tools(
     assert synth[0]["role"] == "Assistant"
     assert synth[0]["content"] == "final assistant text"
     assert published_kwargs["session_id"] == "s_orphan"
+    # SessionEnd publishes synchronously so the snapshot read after the
+    # hook returns sees any just-extracted rows.
+    assert published_kwargs["force_extraction"] is True
+
+
+def test_session_end_uses_force_extraction_for_final_flush(
+    session_dir, monkeypatch
+) -> None:
+    """Every SessionEnd publish must set force_extraction=True so the
+    extractor finishes before snapshot_playbooks() reads."""
+    from claude_smart import state
+    from claude_smart.events import session_end
+
+    state.append("s_force", {"role": "User", "content": "ping", "user_id": "p"})
+
+    published_kwargs: dict[str, Any] = {}
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished",
+        lambda **kwargs: (published_kwargs.update(kwargs) or ("ok", 1)),
+    )
+    session_end.handle({"session_id": "s_force", "cwd": "/tmp/p"})
+    assert published_kwargs["force_extraction"] is True
+    # And skip_aggregation stays False — the rollup still happens.
+    assert published_kwargs["skip_aggregation"] is False
 
 
 def test_session_end_uses_placeholder_when_transcript_missing(
