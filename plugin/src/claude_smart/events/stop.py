@@ -34,7 +34,7 @@ _EXIT_PLAN_MODE_TOOL = "ExitPlanMode"
 def _read_transcript_entries(path: Path) -> list[dict[str, Any]]:
     """Parse the transcript JSONL once into a list of entries.
 
-    Stop's three scanners (assistant text, cs-cite ids, plan decisions) all
+    Stop's scanners (assistant text and plan decisions) both
     need the same parsed view; reading once and passing the list around keeps
     the hook's wall-clock cost to a single ``read_text`` per fire even on
     multi-megabyte transcripts.
@@ -273,45 +273,6 @@ def _has_unpublished_user_turn(session_id: str) -> bool:
     return any(item.get("role") == "User" for item in interactions)
 
 
-def _scan_transcript_for_cs_cite_ids(entries: list[dict[str, Any]]) -> list[str]:
-    """Scan the current assistant turn for ``cs-cite`` Bash tool_use calls.
-
-    Collects citation ids from every matching Bash ``tool_use`` block in
-    the current turn. Multiple calls are merged; order follows Claude's
-    emission order (earliest first).
-
-    Args:
-        entries (list[dict[str, Any]]): Pre-parsed transcript entries.
-
-    Returns:
-        list[str]: Rank ids (e.g. ``"s1-ab12"``, ``"p2-cd34"``) in
-            emission order. Empty when no ``cs-cite`` call is found.
-    """
-    out: list[str] = []
-    for entry in _current_turn_assistant_entries(entries):
-        message = entry.get("message") or {}
-        out.extend(_extract_cs_cite_ids(message.get("content")))
-    return out
-
-
-def _extract_cs_cite_ids(content: Any) -> list[str]:
-    """Return citation ids from all Bash ``cs-cite`` tool_use blocks in ``content``."""
-    if not isinstance(content, list):
-        return []
-    out: list[str] = []
-    for block in content:
-        if not isinstance(block, dict) or block.get("type") != "tool_use":
-            continue
-        if block.get("name") != "Bash":
-            continue
-        tool_input = block.get("input") or {}
-        command = tool_input.get("command")
-        if not isinstance(command, str):
-            continue
-        out.extend(cs_cite.parse_citation_command(command))
-    return out
-
-
 def _resolve_cited_items(session_id: str, cited_ids: list[str]) -> list[dict[str, Any]]:
     """Map citation ids to ``{id, kind, title}`` entries via the session registry.
 
@@ -388,10 +349,8 @@ def handle(payload: dict[str, Any]) -> None:
         and not _has_unpublished_user_turn(session_id)
     ):
         return
-    transcript_cited_ids = _scan_transcript_for_cs_cite_ids(entries)
     text_cited_ids = cs_cite.parse_text_citations(assistant_text)
-    cited_ids = [*text_cited_ids, *transcript_cited_ids]
-    cited_items = _resolve_cited_items(session_id, cited_ids)
+    cited_items = _resolve_cited_items(session_id, text_cited_ids)
     plan_decisions = _scan_transcript_for_plan_decisions(entries)
 
     now = int(time.time())

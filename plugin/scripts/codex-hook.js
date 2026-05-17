@@ -13,6 +13,7 @@ const REFLEXIO_DIR = path.join(HOME, ".reflexio");
 const DEFAULT_BACKEND_PORT = 8071;
 const FALLBACK_BACKEND_PORT = 8072;
 const DASHBOARD_PORT = 3001;
+const LOG_MAX_BYTES = 10000000;
 
 function emitOk() {
   process.stdout.write('{"continue":true,"suppressOutput":true}\n');
@@ -22,9 +23,31 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+function trimLog(file) {
+  if (!Number.isFinite(LOG_MAX_BYTES) || LOG_MAX_BYTES < 1) return;
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    return;
+  }
+  if (!stat.isFile() || stat.size <= LOG_MAX_BYTES) return;
+  const fd = fs.openSync(file, "r");
+  try {
+    const buffer = Buffer.alloc(LOG_MAX_BYTES);
+    fs.readSync(fd, buffer, 0, LOG_MAX_BYTES, stat.size - LOG_MAX_BYTES);
+    fs.writeFileSync(file, buffer);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function appendLog(name, line) {
   ensureDir(STATE_DIR);
-  fs.appendFileSync(path.join(STATE_DIR, name), `${line}\n`);
+  const file = path.join(STATE_DIR, name);
+  trimLog(file);
+  fs.appendFileSync(file, `${line}\n`);
+  trimLog(file);
 }
 
 function pluginRoot() {
@@ -219,6 +242,7 @@ function ensurePluginRoot(root) {
 }
 
 async function startBackend(root) {
+  trimLog(path.join(STATE_DIR, "backend.log"));
   if (process.env.CLAUDE_SMART_BACKEND_AUTOSTART === "0") {
     emitOk();
     return;
@@ -329,6 +353,7 @@ async function startDashboard(root) {
 }
 
 function runHook(root, event) {
+  trimLog(path.join(STATE_DIR, "backend.log"));
   const uv = uvPath();
   if (!uv) {
     appendLog("backend.log", "[claude-smart] hook: uv not on PATH; skipping");

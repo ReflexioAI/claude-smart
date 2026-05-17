@@ -57,7 +57,9 @@ fi
 STATE_DIR="$HOME/.claude-smart"
 PID_FILE="$STATE_DIR/backend.pid"
 LOG_FILE="$STATE_DIR/backend.log"
+LOG_MAX_BYTES="$(claude_smart_log_max_bytes)"
 mkdir -p "$STATE_DIR"
+claude_smart_trim_log_file "$LOG_FILE" "$LOG_MAX_BYTES"
 
 emit_ok() { echo '{"continue":true,"suppressOutput":true}'; }
 
@@ -180,11 +182,11 @@ case "$CMD" in
     if port_occupied; then
       # Something answered the TCP probe but /health didn't — don't
       # start a second uvicorn on top of it.
-      echo "[claude-smart] backend: port $PORT held by another process; skipping" >>"$LOG_FILE"
+      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: port $PORT held by another process; skipping"
       emit_ok; exit 0
     fi
     if ! command -v uv >/dev/null 2>&1; then
-      echo "[claude-smart] backend: uv not on PATH; skipping" >>"$LOG_FILE"
+      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: uv not on PATH; skipping"
       emit_ok; exit 0
     fi
     cd "$PLUGIN_ROOT"
@@ -200,12 +202,12 @@ case "$CMD" in
     # bookkeeping harder and we don't need hot-reload for a user-facing
     # service. Detach via claude_smart_spawn_detached so the same code
     # path covers Linux (setsid), macOS (python3 os.setsid), and Windows
-    # (nohup; no process groups). Caller-side stdout/stderr redirection
-    # works across all three primitives — Git Bash routes the > and 2>&1
-    # through to the underlying CRT before nohup execs the child.
-    claude_smart_spawn_detached uv run --project "$PLUGIN_ROOT" --quiet \
-      reflexio services start --only backend --no-reload \
-      >>"$LOG_FILE" 2>&1
+    # (nohup; no process groups). backend-log-runner.sh owns stdout/stderr
+    # capture so process output cannot grow backend.log past its cap.
+    claude_smart_spawn_detached bash "$HERE/backend-log-runner.sh" \
+      "$LOG_FILE" "$LOG_MAX_BYTES" -- \
+      uv run --project "$PLUGIN_ROOT" --quiet \
+      reflexio services start --only backend --no-reload
     svc_pid=$!
     # Record the spawned pid, not a pgid sampled with ps. On POSIX,
     # setsid/python os.setsid make this pid the new process group leader;

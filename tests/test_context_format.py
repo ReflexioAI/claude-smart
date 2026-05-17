@@ -100,7 +100,7 @@ def test_render_with_registry_emits_citation_instruction() -> None:
         profiles=[],
     )
     assert cs_cite.CITATION_INSTRUCTION in md
-    assert "Do not call `cs-cite`" in md
+    assert "Do not call a shell command" in md
     assert "✨ 1 claude-smart learning applied [cs:s1-ab12]" in md
     assert "✨ 2 claude-smart learnings applied [cs:s1-ab12,p2-cd34]" in md
     assert "Never emit a standalone wrapper" in md

@@ -11,8 +11,7 @@ impactful replies with a marker like::
 
 The Stop hook later scans the assistant text for those markers and resolves
 the ids against a per-session registry persisted at
-``~/.claude-smart/sessions/<session_id>.injected.jsonl``. Legacy ``cs-cite``
-Bash tool calls are still accepted as a fallback for older instructions.
+``~/.claude-smart/sessions/<session_id>.injected.jsonl``.
 
 Why rank + fingerprint: rank alone resets at every injection, so a
 later injection's ``s1`` would silently overwrite an earlier entry in
@@ -27,48 +26,19 @@ This module holds:
 - ``rank_id``: ``p{n}-{fp}`` / ``s{n}-{fp}`` tag for a given
   (kind, rank, real_id) tuple. Fingerprint is omitted when no real id
   is available. ``p`` is preference, ``s`` is skill.
-- ``CITATION_CMD_RE``: regex matching a valid legacy ``cs-cite`` command line.
-- ``ensure_installed``: idempotent copy of ``plugin/bin/cs-cite`` to
-  ``~/.claude-smart/bin/cs-cite`` with the executable bit set.
 - ``CITATION_INSTRUCTION``: the trailer text appended to injected context
   so the assistant knows when and how to emit the citation marker.
 """
 
 from __future__ import annotations
 
-import logging
 import re
-import shutil
-import stat as stat_
-from pathlib import Path
 from typing import Any
-
-_LOGGER = logging.getLogger(__name__)
-
-_THIS_DIR = Path(__file__).resolve().parent
-_PLUGIN_ROOT = _THIS_DIR.parents[1]  # plugin/src/claude_smart/ -> plugin/
-_SOURCE_SCRIPT = _PLUGIN_ROOT / "bin" / "cs-cite"
-_INSTALL_DIR = Path.home() / ".claude-smart" / "bin"
-INSTALL_PATH = _INSTALL_DIR / "cs-cite"
 
 _FINGERPRINT_LEN = 4
 
-# Match a bare `cs-cite <ids>` invocation. Ids are rank tokens of the
-# form `p<N>` (preference) or `s<N>` (skill) with an optional
-# `-<fp>` fingerprint (1-4 alphanumeric chars), optionally
-# `cs:`-prefixed (since bullets render as `[cs:p1-ab12]` and the model
-# often copies the tag verbatim). The `(?i:...)` inline flags make the
-# prefix, kind letter, and fingerprint case-insensitive so `CS:P1-AB12`
-# is accepted — matching the `re.IGNORECASE` used by the standalone
-# `cs-cite` script. Tokens may be comma- and/or whitespace-separated.
-# Chained commands (&&, |, ;) and extra trailing tokens remain rejected
-# by the anchored `\s*$` terminator so accidental mentions don't
-# register as citations.
 _ID_TOKEN = r"(?i:cs:)?(?i:[ps])\d+(?:-(?i:[a-z0-9]){1,4})?"
 _ID_SEP = r"[,\s]+"
-CITATION_CMD_RE = re.compile(
-    rf"^\s*(?:[^\s]*/)?cs-cite\s+({_ID_TOKEN}(?:{_ID_SEP}{_ID_TOKEN})*)\s*$"
-)
 _CLEAN_ID_RE = re.compile(r"^(?i:cs:)?((?i:[ps])\d+(?:-(?i:[a-z0-9]){1,4})?)$")
 _SPLIT_RE = re.compile(_ID_SEP)
 _TEXT_CITATION_LINE_RE = re.compile(
@@ -82,7 +52,7 @@ CITATION_INSTRUCTION = (
     "only if — an injected `[cs:…]` item materially changed your reply "
     "(different wording, action, or conclusion than you would have produced "
     "without it), append exactly one final citation line after your answer. "
-    "Do not call `cs-cite` or any other tool for citations. Ids come verbatim "
+    "Do not call a shell command or any other tool for citations. Ids come verbatim "
     "from the `[cs:…]` tags — keep the leading `p` (preference) or `s` "
     "(skill) and the `-<fp>` suffix. Use this exact format for one id: "
     "`✨ 1 claude-smart learning applied [cs:s1-ab12]`. Use this exact format "
@@ -155,29 +125,6 @@ def rank_id(kind: str, rank: int, real_id: Any = None) -> str:
     return f"{prefix}{rank}-{fp}" if fp else f"{prefix}{rank}"
 
 
-def parse_citation_command(command: str) -> list[str]:
-    """Extract citation ids from a ``cs-cite`` Bash command string.
-
-    Returns an empty list when the command does not match the expected
-    shape (chained commands, extra arguments, or anything other than a
-    bare ``cs-cite <ids>`` invocation are rejected to avoid false
-    positives from accidental mentions).
-
-    Args:
-        command: The raw ``input.command`` value from a Bash tool_use
-            block.
-
-    Returns:
-        list[str]: Lowercase rank ids (e.g. ``"p1"``, ``"s3"``), in the
-            order Claude cited them. Empty when the command does not
-            match.
-    """
-    match = CITATION_CMD_RE.match(command or "")
-    if not match:
-        return []
-    return _parse_id_tokens(match.group(1))
-
-
 def parse_text_citations(text: str) -> list[str]:
     """Extract Codex text-only citation ids from a final learning marker line.
 
@@ -199,38 +146,3 @@ def _parse_id_tokens(raw_ids: str) -> list[str]:
         if clean := _CLEAN_ID_RE.match(tok):
             ids.append(clean.group(1).lower())
     return ids
-
-
-def ensure_installed() -> Path:
-    """Idempotently install ``cs-cite`` into ``~/.claude-smart/bin/``.
-
-    Called from every PreToolUse / UserPromptSubmit inject, so we
-    short-circuit when the target file already exists with
-    the executable bit set — the steady-state path is one ``stat`` syscall
-    instead of mkdir + copy + stat + chmod. Keying on filesystem state
-    (rather than a module-level boolean) keeps test isolation working when
-    tests monkeypatch ``INSTALL_PATH`` to a fresh tmpdir.
-
-    Never raises — filesystem errors are logged at DEBUG and the caller
-    proceeds with injection regardless (the citation feature degrades to
-    silent if the script is unreachable).
-
-    Returns:
-        Path: Target path, whether or not install succeeded.
-    """
-    try:
-        if (
-            INSTALL_PATH.is_file()
-            and INSTALL_PATH.stat().st_mode & stat_.S_IXUSR
-            and _SOURCE_SCRIPT.is_file()
-            and INSTALL_PATH.read_bytes() == _SOURCE_SCRIPT.read_bytes()
-        ):
-            return INSTALL_PATH
-        _INSTALL_DIR.mkdir(parents=True, exist_ok=True)
-        if _SOURCE_SCRIPT.is_file():
-            shutil.copy2(_SOURCE_SCRIPT, INSTALL_PATH)
-            mode = INSTALL_PATH.stat().st_mode
-            INSTALL_PATH.chmod(mode | stat_.S_IXUSR | stat_.S_IXGRP | stat_.S_IXOTH)
-    except OSError as exc:
-        _LOGGER.debug("cs-cite install failed: %s", exc)
-    return INSTALL_PATH

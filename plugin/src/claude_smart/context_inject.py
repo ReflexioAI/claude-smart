@@ -6,8 +6,7 @@ search, (b) render the hits with ``context_format.render_inline_with_registry``,
 (d) emit a Claude Code ``hookSpecificOutput.additionalContext`` envelope
 on stdout. This module owns that shared pipeline so the two hook
 handlers keep exactly one source of truth for the injection contract —
-the envelope shape, the registry schema, and the ordering of
-``ensure_installed`` / ``append_injected``.
+the envelope shape, the registry schema, and the injected context append.
 
 The caller remains responsible for handler-specific framing (PreToolUse
 needs ``hook.emit_continue()`` on the empty path; UserPromptSubmit wraps
@@ -21,7 +20,7 @@ import json
 import sys
 import time
 
-from claude_smart import context_format, cs_cite, state
+from claude_smart import context_format, state
 from claude_smart.reflexio_adapter import Adapter
 
 
@@ -69,7 +68,6 @@ def emit_context(
     if not markdown:
         return False
 
-    cs_cite.ensure_installed()
     state.append_injected(
         session_id,
         (dict(entry, ts=int(time.time())) for entry in registry),

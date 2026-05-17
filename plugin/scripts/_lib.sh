@@ -233,6 +233,44 @@ claude_smart_npm_available() {
   "$npm_bin" --version >/dev/null 2>&1
 }
 
+claude_smart_log_max_bytes() {
+  printf '%s\n' "10000000"
+}
+
+claude_smart_trim_log_file() {
+  local file max_bytes size tmp
+  file="$1"
+  max_bytes="${2:-$(claude_smart_log_max_bytes)}"
+  case "$max_bytes" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ -f "$file" ] || return 0
+  size=$(wc -c < "$file" 2>/dev/null | tr -d '[:space:]') || return 0
+  case "$size" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ "$size" -le "$max_bytes" ] && return 0
+
+  tmp="${file}.trim.$$"
+  if tail -c "$max_bytes" "$file" > "$tmp" 2>/dev/null; then
+    # Rewrite the existing path instead of replacing it, so a process with
+    # this file already open in append mode keeps writing to the capped file.
+    cat "$tmp" > "$file"
+  fi
+  rm -f "$tmp"
+}
+
+claude_smart_append_capped_log() {
+  local file max_bytes
+  file="$1"
+  max_bytes="${2:-$(claude_smart_log_max_bytes)}"
+  shift 2
+  mkdir -p "$(dirname "$file")"
+  claude_smart_trim_log_file "$file" "$max_bytes"
+  printf '%s\n' "$*" >> "$file"
+  claude_smart_trim_log_file "$file" "$max_bytes"
+}
+
 # Spawn a command fully detached from the current shell so a hook timeout
 # (Claude Code's install/SessionStart budget) cannot kill it mid-flight.
 # POSIX: setsid → python3 os.setsid → nohup (in that order of strength).

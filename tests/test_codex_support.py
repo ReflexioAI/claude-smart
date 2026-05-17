@@ -220,7 +220,7 @@ def test_codex_citation_instruction_uses_text_marker_not_tool_call() -> None:
 
     instruction = cs_cite.CITATION_INSTRUCTION
 
-    assert "Do not call `cs-cite`" in instruction
+    assert "Do not call a shell command" in instruction
     assert "✨ 1 claude-smart learning applied [cs:s1-ab12]" in instruction
 
 

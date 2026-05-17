@@ -131,7 +131,7 @@ def test_unpublished_slice_silent_assistant_placeholder_pins_tools() -> None:
 
 
 # -----------------------------------------------------------------------------
-# injected registry (cs-cite)
+# injected citation registry
 # -----------------------------------------------------------------------------
 
 

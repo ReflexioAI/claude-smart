@@ -8,7 +8,6 @@ Internal notes for maintainers of `claude-smart`. End-user install instructions 
 | --- | --- |
 | `plugin/` | Claude Code plugin — hooks, slash commands, install script, and the Python package |
 | `plugin/src/claude_smart/` | Python package — hook handler, CLI, reflexio adapter |
-| `plugin/bin/` | User-invoked helper scripts (e.g. `cs-cite`) installed into `~/.claude-smart/bin/` at runtime |
 | `plugin/pyproject.toml` | Python manifest — shipped to PyPI via `uv build --project plugin` |
 | `tests/` | Pytest suite for the Python package (run via `uv run --project plugin pytest tests/ -q` from repo root) |
 | `bin/claude-smart.js` | Node wrapper so `npx claude-smart install` works |

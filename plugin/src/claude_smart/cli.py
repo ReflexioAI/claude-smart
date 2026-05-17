@@ -80,6 +80,7 @@ _CODEX_REQUIRED_FILES = (
     Path("plugin/scripts/codex-claude-compat.cmd"),
     Path("plugin/scripts/codex-claude-compat.js"),
     Path("plugin/scripts/codex-hook.js"),
+    Path("plugin/scripts/backend-log-runner.sh"),
     Path("plugin/scripts/_codex_env.sh"),
 )
 _COPYTREE_IGNORE = shutil.ignore_patterns(

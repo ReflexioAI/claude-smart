@@ -19,6 +19,7 @@ LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
 SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
 CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
 CODEX_HOOK = REPO_ROOT / "plugin" / "scripts" / "codex-hook.js"
+BACKEND_LOG_RUNNER = REPO_ROOT / "plugin" / "scripts" / "backend-log-runner.sh"
 
 
 def _minimal_path(tmp_path: Path, *names: str) -> str:
@@ -130,6 +131,100 @@ def test_dashboard_unavailable_marker_contains_recovery(tmp_path: Path) -> None:
     assert "The learning backend and hooks can still work" in result.stdout
     assert "/claude-smart:restart" in result.stdout
     assert str(tmp_path / ".claude-smart" / "node" / "current") in result.stdout
+
+
+def test_trim_log_file_preserves_newest_bytes(tmp_path: Path) -> None:
+    log = tmp_path / ".claude-smart" / "backend.log"
+    log.parent.mkdir()
+    log.write_text("0123456789abcde")
+    env = _isolated_env(tmp_path)
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            f'. "{LIB}"; claude_smart_trim_log_file "{log}" 10',
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text() == "56789abcde"
+    assert log.stat().st_size == 10
+
+
+def test_append_capped_log_keeps_file_under_limit(tmp_path: Path) -> None:
+    log = tmp_path / ".claude-smart" / "backend.log"
+    log.parent.mkdir()
+    log.write_text("0123456789")
+    env = _isolated_env(tmp_path)
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            f'. "{LIB}"; claude_smart_append_capped_log "{log}" 12 "abcdef"',
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text() == "56789abcdef\n"
+    assert log.stat().st_size == 12
+
+
+def test_backend_log_runner_caps_streamed_output(tmp_path: Path) -> None:
+    log = tmp_path / ".claude-smart" / "backend.log"
+    env = _isolated_env(tmp_path)
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            str(BACKEND_LOG_RUNNER),
+            str(log),
+            "120",
+            "--",
+            "/bin/bash",
+            "-c",
+            (
+                "for i in 1 2 3 4 5 6 7 8 9 10; do "
+                "printf 'stdout-%02d-xxxxxxxxxx\\n' \"$i\"; "
+                "printf 'stderr-%02d-yyyyyyyyyy\\n' \"$i\" >&2; "
+                "done"
+            ),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    content = log.read_text()
+    assert log.stat().st_size <= 120
+    assert "stderr-10-yyyyyyyyyy" in content
+    assert "stdout-01-xxxxxxxxxx" not in content
+
+
+def test_backend_service_uses_capped_logging() -> None:
+    service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+
+    assert "backend-log-runner.sh" in service
+    assert "claude_smart_append_capped_log" in service
+    assert '>>"$LOG_FILE" 2>&1' not in service
+    assert '>>"$LOG_FILE"' not in service
 
 
 def test_resolve_npm_accepts_windows_cmd_shim(tmp_path: Path) -> None:
@@ -304,6 +399,32 @@ def test_codex_hook_ensure_root_tracks_active_plugin_root(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stderr
     assert (reflexio / "plugin-root").resolve() == cache_root
     assert json.loads(result.stdout) == {"continue": True, "suppressOutput": True}
+
+
+def test_codex_hook_caps_backend_log_appends(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for codex hook wrapper tests")
+
+    state_dir = tmp_path / ".claude-smart"
+    state_dir.mkdir()
+    log = state_dir / "backend.log"
+    log.write_text("0" * (10_000_000 + 200))
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = ""
+    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT / "plugin")
+    result = subprocess.run(
+        [node, str(CODEX_HOOK), "backend"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"continue": True, "suppressOutput": True}
+    assert log.stat().st_size <= 10_000_000
 
 
 def test_install_private_node_installs_from_verified_archive(tmp_path: Path) -> None:

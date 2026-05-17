@@ -327,57 +327,32 @@ if ! command -v claude >/dev/null 2>&1; then
   echo "[claude-smart] WARNING: 'claude' CLI not on PATH — reflexio extractors will have no LLM until it's installed" >&2
 fi
 
-# Allowlist cs-cite globally so Claude's citation Bash calls don't pop a
-# permission prompt mid-turn. Idempotent: no-ops when the entry is already
-# present. Uses Python to preserve the rest of settings.json intact.
-# Resolves python via claude_smart_resolve_python so we don't fire the
-# Windows App Execution Alias stub (which exits non-zero with "Python
-# was not found" when no real interpreter is installed).
+LEGACY_CS_CITE="$HOME/.claude-smart/bin/cs-cite"
+if [ -e "$LEGACY_CS_CITE" ]; then
+  rm -f "$LEGACY_CS_CITE"
+  echo "[claude-smart] removed legacy cs-cite helper at $LEGACY_CS_CITE" >&2
+fi
+
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
-PY_BIN=$(claude_smart_resolve_python || true)
-if [ -z "$PY_BIN" ]; then
-  echo "[claude-smart] WARNING: no working python interpreter found; skipping cs-cite allowlist" >&2
-elif "$PY_BIN" - "$CLAUDE_SETTINGS" <<'PY' >&2
-import json
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-entry = "Bash(cs-cite:*)"
-data: dict = {}
-if path.is_file():
-    try:
-        data = json.loads(path.read_text() or "{}")
-    except json.JSONDecodeError:
-        print(
-            f"[claude-smart] WARNING: {path} is not valid JSON; skipping cs-cite allowlist",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-def _warn_and_exit(reason: str) -> None:
-    print(
-        f"[claude-smart] WARNING: {path} {reason}; skipping cs-cite allowlist",
-        file=sys.stderr,
-    )
-    sys.exit(2)
-
-if not isinstance(data, dict):
-    _warn_and_exit("top-level is not a JSON object")
-permissions = data.setdefault("permissions", {})
-if not isinstance(permissions, dict):
-    _warn_and_exit("'permissions' is not a JSON object")
-allow = permissions.setdefault("allow", [])
-if not isinstance(allow, list):
-    _warn_and_exit("'permissions.allow' is not a JSON array")
-if entry in allow:
-    sys.exit(1)  # already present — convey via exit code so shell can skip the log
-allow.append(entry)
-path.write_text(json.dumps(data, indent=2) + "\n")
-sys.exit(0)
-PY
-then
-  echo "[claude-smart] added Bash(cs-cite:*) to $CLAUDE_SETTINGS permissions.allow" >&2
+if [ -f "$CLAUDE_SETTINGS" ] && command -v node >/dev/null 2>&1; then
+  node - "$CLAUDE_SETTINGS" <<'JS' >&2 || true
+const fs = require("fs");
+const path = process.argv[2];
+const entry = "Bash(cs-cite:*)";
+let data;
+try {
+  data = JSON.parse(fs.readFileSync(path, "utf8") || "{}");
+} catch {
+  process.exit(0);
+}
+const allow = data?.permissions?.allow;
+if (!Array.isArray(allow)) process.exit(0);
+const next = allow.filter((item) => item !== entry);
+if (next.length === allow.length) process.exit(0);
+data.permissions.allow = next;
+fs.writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`);
+console.error(`[claude-smart] removed legacy ${entry} permission from ${path}`);
+JS
 fi
 
 # Spawn the dashboard build detached so install returns immediately and

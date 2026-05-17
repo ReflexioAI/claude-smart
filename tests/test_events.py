@@ -926,7 +926,7 @@ def test_user_prompt_injects_context_when_hits_present(
     records = state.read_all("s1")
     assert records[-1]["role"] == "User"
     assert records[-1]["content"] == "edit pyproject.toml"
-    # The citation registry is populated so Stop can resolve cs-cite ids.
+    # The citation registry is populated so Stop can resolve text citation ids.
     registry = state.read_injected("s1")
     assert registry, "expected injected registry to hold at least one entry"
     kinds = {entry["kind"] for entry in registry.values()}
@@ -984,34 +984,8 @@ def test_stop_without_session_is_noop(session_dir) -> None:
 
 
 # -----------------------------------------------------------------------------
-# stop — cs-cite citation extraction
+# stop — text citation extraction
 # -----------------------------------------------------------------------------
-
-
-def _transcript_with_cs_cite_call(tmp_path, cs_cite_command: str):
-    """Build a transcript whose current turn ends with a cs-cite Bash call."""
-    return _write_transcript(
-        tmp_path,
-        [
-            {"type": "user", "message": {"content": "do the thing"}},
-            {
-                "type": "assistant",
-                "message": {"content": [{"type": "text", "text": "On it."}]},
-            },
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "name": "Bash",
-                            "input": {"command": cs_cite_command},
-                        }
-                    ]
-                },
-            },
-        ],
-    )
 
 
 def _prime_injected_registry(session_id: str) -> None:
@@ -1036,30 +1010,6 @@ def _prime_injected_registry(session_id: str) -> None:
             },
         ],
     )
-
-
-def test_stop_records_cs_cite_ids_as_cited_items(
-    session_dir, tmp_path, monkeypatch
-) -> None:
-    """A single cs-cite call resolves ids against the session registry."""
-    _prime_injected_registry("s1")
-    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite s1-42,p1-uuid")
-    monkeypatch.setattr(
-        "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
-    )
-    stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
-    records = state.read_all("s1")
-    assert records[-1]["role"] == "Assistant"
-    cited = records[-1].get("cited_items")
-    assert cited == [
-        {"id": "s1-42", "kind": "playbook", "title": "use pathlib", "real_id": "42"},
-        {
-            "id": "p1-uuid",
-            "kind": "profile",
-            "title": "prefers anyio",
-            "real_id": "uuid-anyio",
-        },
-    ]
 
 
 def test_stop_records_text_marker_ids_as_cited_items(
@@ -1124,7 +1074,26 @@ def test_stop_preserves_cited_item_source_kind(
             }
         ],
     )
-    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite s1-42")
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            {"type": "user", "message": {"content": "do the thing"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Done.\n\n"
+                                "✨ 1 claude-smart learning applied [cs:s1-42]"
+                            ),
+                        }
+                    ]
+                },
+            },
+        ],
+    )
     monkeypatch.setattr(
         "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
     )
@@ -1141,7 +1110,7 @@ def test_stop_preserves_cited_item_source_kind(
     ]
 
 
-def test_stop_omits_cited_items_when_no_cs_cite_call(
+def test_stop_omits_cited_items_when_no_citation_marker(
     session_dir, tmp_path, monkeypatch
 ) -> None:
     """Non-citing turns leave no cited_items key on the Assistant record."""
@@ -1164,25 +1133,8 @@ def test_stop_omits_cited_items_when_no_cs_cite_call(
     assert "cited_items" not in records[-1]
 
 
-def test_stop_drops_unknown_cs_cite_ids(session_dir, tmp_path, monkeypatch) -> None:
+def test_stop_drops_unknown_text_citation_ids(session_dir, tmp_path, monkeypatch) -> None:
     """Ids not present in the session registry are silently dropped."""
-    _prime_injected_registry("s1")
-    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite s1-42,s9-ffff")
-    monkeypatch.setattr(
-        "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
-    )
-    stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
-    records = state.read_all("s1")
-    cited = records[-1].get("cited_items")
-    assert cited == [
-        {"id": "s1-42", "kind": "playbook", "title": "use pathlib", "real_id": "42"},
-    ]
-
-
-def test_stop_merges_multiple_cs_cite_calls_dedup(
-    session_dir, tmp_path, monkeypatch
-) -> None:
-    """Multiple cs-cite calls within one turn merge; duplicate ids collapse."""
     _prime_injected_registry("s1")
     transcript = _write_transcript(
         tmp_path,
@@ -1193,21 +1145,11 @@ def test_stop_merges_multiple_cs_cite_calls_dedup(
                 "message": {
                     "content": [
                         {
-                            "type": "tool_use",
-                            "name": "Bash",
-                            "input": {"command": "cs-cite s1-42"},
-                        }
-                    ]
-                },
-            },
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "name": "Bash",
-                            "input": {"command": "cs-cite s1-42,p1-uuid"},
+                            "type": "text",
+                            "text": (
+                                "Done.\n\n"
+                                "✨ 2 claude-smart learnings applied [cs:s1-42,s9-ffff]"
+                            ),
                         }
                     ]
                 },
@@ -1222,32 +1164,7 @@ def test_stop_merges_multiple_cs_cite_calls_dedup(
     cited = records[-1].get("cited_items")
     assert cited == [
         {"id": "s1-42", "kind": "playbook", "title": "use pathlib", "real_id": "42"},
-        {
-            "id": "p1-uuid",
-            "kind": "profile",
-            "title": "prefers anyio",
-            "real_id": "uuid-anyio",
-        },
     ]
-
-
-def test_stop_rejects_chained_cs_cite_commands(
-    session_dir, tmp_path, monkeypatch
-) -> None:
-    """A Bash call that chains cs-cite with other commands is not parsed as a citation.
-
-    Guards against false positives when Claude wraps the citation in a
-    larger command (pipes, ``&&``, heredoc). The parser only accepts a
-    bare ``cs-cite <ids>`` invocation.
-    """
-    _prime_injected_registry("s1")
-    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite s1-42 && echo done")
-    monkeypatch.setattr(
-        "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
-    )
-    stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
-    records = state.read_all("s1")
-    assert "cited_items" not in records[-1]
 
 
 def test_stop_handles_missing_transcript_file(session_dir, monkeypatch) -> None:
@@ -1266,7 +1183,26 @@ def test_stop_citation_without_prior_registry_drops_all_ids(
     session_dir, tmp_path, monkeypatch
 ) -> None:
     """Citation with no ``.injected.jsonl`` (e.g. resumed session) → all ids drop."""
-    transcript = _transcript_with_cs_cite_call(tmp_path, "cs-cite s1-42")
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            {"type": "user", "message": {"content": "do the thing"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Done.\n\n"
+                                "✨ 1 claude-smart learning applied [cs:s1-42]"
+                            ),
+                        }
+                    ]
+                },
+            },
+        ],
+    )
     monkeypatch.setattr(
         "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
     )

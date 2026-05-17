@@ -77,7 +77,7 @@ def session_path(session_id: str) -> Path:
 
 
 def injected_path(session_id: str) -> Path:
-    """Return the JSONL path for the per-session cs-cite registry."""
+    """Return the JSONL path for the per-session citation registry."""
     return state_dir() / f"{session_id}.injected.jsonl"
 
 
@@ -85,8 +85,8 @@ def append_injected(session_id: str, entries: Iterable[dict[str, Any]]) -> None:
     """Append citation-registry entries to the per-session injected-items file.
 
     Each entry maps a short ``id`` (4-hex-char) back to the skill or
-    preference it came from so the Stop hook can resolve ids cited by
-    Claude via ``cs-cite`` into human-readable titles for the dashboard.
+    preference it came from so the Stop hook can resolve citation ids into
+    human-readable titles for the dashboard.
     Silently no-ops when ``entries`` is empty.
     """
     records = list(entries)
