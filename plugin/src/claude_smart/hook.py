@@ -5,6 +5,13 @@ The plugin's ``hook_entry.sh`` calls either
 ``python -m claude_smart.hook <host> <event>`` once per hook invocation.
 This module reads the hook JSON from stdin, routes to the matching handler,
 and makes sure no unhandled exception ever propagates.
+
+Every fire produces one structured JSON line in
+``~/.claude-smart/hook.log`` via ``hook_log.log_event`` — covers the
+event name, session id, internal-invocation skip, handler outcome
+(``ok`` / ``raised:<Exc>`` / ``unknown_event``), and for Stop/SessionEnd
+the publish status + count. The log is the forensic trail for chasing
+"hook didn't publish" mysteries from a single file.
 """
 
 from __future__ import annotations
@@ -12,15 +19,20 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from claude_smart import runtime
+from claude_smart import hook_log, ids, runtime
 from claude_smart.internal_call import is_internal_invocation
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def _load_handlers() -> dict[str, Callable[[dict[str, Any]], None]]:
+# Stop and SessionEnd return ``(PublishStatus, int)`` so the dispatcher can
+# log the publish outcome; the other handlers return ``None`` (or nothing).
+# Use ``Any`` here rather than two specialised typedefs — the dispatcher
+# narrows at the call site via ``isinstance(result, tuple)``.
+def _load_handlers() -> dict[str, Callable[[dict[str, Any]], Any]]:
     from claude_smart.events import (
         post_tool,
         pre_tool,
@@ -92,6 +104,15 @@ def main(argv: list[str] | None = None) -> int:
     # handlers so we don't publish the extractor's system prompt back
     # into reflexio. See claude_smart.internal_call for detection logic.
     if is_internal_invocation(payload):
+        hook_log.log_event(
+            event=event,
+            host=host,
+            session_id=payload.get("session_id"),
+            project_id=ids.resolve_project_id(payload.get("cwd")),
+            cwd=payload.get("cwd"),
+            internal_skipped=True,
+            handler_status="ok",
+        )
         emit_continue()
         return 0
 
@@ -99,14 +120,38 @@ def main(argv: list[str] | None = None) -> int:
     handler = handlers.get(event)
     if handler is None:
         _LOGGER.warning("unknown hook event: %s", event)
+        hook_log.log_event(
+            event=event,
+            host=host,
+            session_id=payload.get("session_id"),
+            project_id=ids.resolve_project_id(payload.get("cwd")),
+            cwd=payload.get("cwd"),
+            handler_status="unknown_event",
+        )
         emit_continue()
         return 0
 
+    handler_status = "ok"
+    publish_status: str | None = None
+    publish_count: int | None = None
     try:
-        handler(payload)
+        result = handler(payload)
+        if isinstance(result, tuple) and len(result) == 2:
+            publish_status, publish_count = result
     except Exception as exc:  # noqa: BLE001 — hooks must never crash the session.
         _LOGGER.exception("hook handler %s raised: %s", event, exc)
+        handler_status = f"raised:{type(exc).__name__}: {exc}"
         emit_continue()
+    hook_log.log_event(
+        event=event,
+        host=host,
+        session_id=payload.get("session_id"),
+        project_id=ids.resolve_project_id(payload.get("cwd")),
+        cwd=payload.get("cwd"),
+        handler_status=handler_status,
+        publish_status=publish_status,
+        publish_count=publish_count,
+    )
     return 0
 
 

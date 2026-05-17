@@ -308,10 +308,23 @@ def _resolve_cited_items(session_id: str, cited_ids: list[str]) -> list[dict[str
     return resolved
 
 
-def handle(payload: dict[str, Any]) -> None:
+def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
+    """Drain the buffered assistant turn to reflexio.
+
+    Args:
+        payload (dict[str, Any]): Claude Code hook payload.
+
+    Returns:
+        tuple[PublishStatus, int] | None: The ``(status, count)`` tuple
+            from ``publish.publish_unpublished`` so the dispatcher can
+            include it in the forensic hook log. ``None`` is returned
+            only when the handler short-circuits before publishing (no
+            ``session_id`` in the payload, or Codex internal-prompt
+            detection skipped the fire).
+    """
     session_id = payload.get("session_id")
     if not session_id:
-        return
+        return None
 
     # Always append an Assistant record, even when the turn emitted only
     # tool calls and no text. ``state.unpublished_slice`` folds any
@@ -332,7 +345,7 @@ def handle(payload: dict[str, Any]) -> None:
     )
     if runtime.is_codex():
         if internal_call.is_codex_internal_prompt(prompt):
-            return
+            return None
 
     last_assistant_message = payload.get("last_assistant_message")
     assistant_text = (
@@ -374,7 +387,7 @@ def handle(payload: dict[str, Any]) -> None:
     if cited_items:
         record["cited_items"] = cited_items
     state.append(session_id, record)
-    publish.publish_unpublished(
+    return publish.publish_unpublished(
         session_id=session_id,
         project_id=project_id,
         force_extraction=False,
