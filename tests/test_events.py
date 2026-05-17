@@ -1344,6 +1344,31 @@ def test_session_start_honours_extraction_env_overrides(
         importlib.reload(ss)
 
 
+def test_session_start_falls_back_to_defaults_on_garbage_env_values(
+    session_dir, monkeypatch
+) -> None:
+    """A non-integer env value must fall back to the default rather than
+    raising at import time. Addresses CodeRabbit review on PR #30:
+    SessionStart is the hook that wires every other hook, so an
+    import-time crash here silently disables the whole plugin.
+    """
+    import importlib
+
+    monkeypatch.setenv("CLAUDE_SMART_WINDOW_SIZE", "not-an-int")
+    monkeypatch.setenv("CLAUDE_SMART_STRIDE_SIZE", "")
+    import claude_smart.events.session_start as ss
+
+    # Must not raise on reload.
+    importlib.reload(ss)
+    try:
+        assert ss._CLAUDE_SMART_WINDOW_SIZE == 5  # default
+        assert ss._CLAUDE_SMART_STRIDE_SIZE == 3  # default
+    finally:
+        monkeypatch.delenv("CLAUDE_SMART_WINDOW_SIZE", raising=False)
+        monkeypatch.delenv("CLAUDE_SMART_STRIDE_SIZE", raising=False)
+        importlib.reload(ss)
+
+
 def test_session_start_skips_optimizer_defaults_when_opted_out(
     session_dir, monkeypatch
 ) -> None:

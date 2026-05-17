@@ -96,7 +96,15 @@ def log_event(
     }
     if publish_status is not None:
         record["publish_status"] = publish_status
-        record["publish_count"] = int(publish_count or 0)
+        try:
+            record["publish_count"] = int(
+                publish_count if publish_count is not None else 0
+            )
+        except (TypeError, ValueError):
+            # Defensive: a hostile caller passing an unparseable publish_count
+            # must not abort the hook fire. Treat as zero, the record still
+            # writes with publish_status preserved.
+            record["publish_count"] = 0
     if extra:
         for key, value in extra.items():
             if key in record:

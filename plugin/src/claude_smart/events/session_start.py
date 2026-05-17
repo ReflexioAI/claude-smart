@@ -22,8 +22,25 @@ from claude_smart.stall_banner import render_banner
 # out by the stride pre-filter (``new < stride_size``). Production users keep
 # the defaults; the values are only read on SessionStart, so a launcher that
 # sets the env var has predictable effect for the entire Claude Code session.
-_CLAUDE_SMART_WINDOW_SIZE = int(os.environ.get("CLAUDE_SMART_WINDOW_SIZE", "5"))
-_CLAUDE_SMART_STRIDE_SIZE = int(os.environ.get("CLAUDE_SMART_STRIDE_SIZE", "3"))
+#
+# Parsing is defensive: a non-integer env value falls back to the default
+# rather than raising at import time. SessionStart is the hook that wires up
+# every subsequent hook, so an import-time crash here would silently disable
+# the whole plugin for the session.
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+_CLAUDE_SMART_WINDOW_SIZE = _int_env("CLAUDE_SMART_WINDOW_SIZE", 5)
+_CLAUDE_SMART_STRIDE_SIZE = _int_env("CLAUDE_SMART_STRIDE_SIZE", 3)
 # Optimizer is on by default. Set this env var to "0" to skip pushing the
 # claude-smart optimizer defaults on SessionStart (kill switch).
 _DISABLE_OPTIMIZER_ENV = "CLAUDE_SMART_ENABLE_OPTIMIZER"

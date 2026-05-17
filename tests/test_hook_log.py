@@ -195,6 +195,35 @@ def test_dispatcher_logs_nothing_publish_status(
     assert rec["publish_count"] == 0
 
 
+def test_log_event_tolerates_unparseable_publish_count(hook_log_path) -> None:
+    """A non-int publish_count must not raise — the hook is best-effort.
+
+    Addresses CodeRabbit review on PR #30: ``int(publish_count or 0)``
+    used to raise TypeError on garbage callers, breaking the "never abort
+    a hook fire" contract. Defensive coercion falls back to 0.
+    """
+    # Object value with no usable int conversion.
+    hook_log.log_event(
+        event="stop",
+        host="claude-code",
+        publish_status="ok",
+        publish_count=object(),  # type: ignore[arg-type]
+    )
+    rec = _read_lines(hook_log_path)[0]
+    assert rec["publish_status"] == "ok"
+    assert rec["publish_count"] == 0  # fell back to default
+
+    # And a string that can't be parsed as int.
+    hook_log.log_event(
+        event="stop",
+        host="claude-code",
+        publish_status="ok",
+        publish_count="not-a-number",  # type: ignore[arg-type]
+    )
+    rec = _read_lines(hook_log_path)[1]
+    assert rec["publish_count"] == 0
+
+
 # -----------------------------------------------------------------------------
 # hook_log — bounded rotation
 # -----------------------------------------------------------------------------
