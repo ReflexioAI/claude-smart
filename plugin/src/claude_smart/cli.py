@@ -1561,6 +1561,104 @@ def cmd_clear_all(args: argparse.Namespace) -> int:
     return start_rc or 0
 
 
+def _resolve_reflexio_url() -> str:
+    """Return the URL endpoint for the local claude-smart reflexio backend.
+
+    Mirrors ``claude_smart.reflexio_adapter`` so the CLI's one-shot
+    ReflexioClient calls hit the same server as the long-lived adapter
+    used by hook handlers.
+
+    Returns:
+        str: The ``REFLEXIO_URL`` env var if set, otherwise the default
+            local backend endpoint.
+    """
+    return os.environ.get("REFLEXIO_URL", "http://localhost:8071/")
+
+
+def _format_deleted_counts(deleted_counts: object) -> str:
+    """Render ``deleted_counts`` from a ``clear_user_data`` response as a summary.
+
+    The backend returns one count per affected table. We surface the
+    total in the headline string (``"removed N row(s)"``) and append a
+    per-table breakdown when at least one bucket is populated, so the
+    operator can tell *what* got cleared at a glance.
+
+    Args:
+        deleted_counts (object): The ``deleted_counts`` field from the
+            backend response. Expected to be a mapping of
+            ``str -> int``; anything else is rendered as ``"unknown"``.
+
+    Returns:
+        str: A short human-readable summary suitable for echoing to
+            stdout (e.g. ``"3 row(s) (interactions=3)"``).
+    """
+    if not isinstance(deleted_counts, dict):
+        return "unknown row(s)"
+    pairs: list[tuple[str, int]] = []
+    for key, value in deleted_counts.items():
+        if isinstance(key, str) and isinstance(value, int):
+            pairs.append((key, value))
+    total = sum(value for _, value in pairs)
+    if not pairs:
+        return f"{total} row(s)"
+    breakdown = ", ".join(f"{name}={count}" for name, count in sorted(pairs))
+    return f"{total} row(s) ({breakdown})"
+
+
+def cmd_clear_user(args: argparse.Namespace) -> int:
+    """Delete one user_id's playbooks, profiles, and interactions via the backend.
+
+    Per-user-scoped counterpart of ``clear-all``. Where ``clear-all`` does
+    a filesystem-level wipe of the entire local storage root, ``clear-user``
+    routes through the running reflexio backend's ``clear_user_data``
+    endpoint so it can scope the deletion to a single ``user_id`` —
+    leaving other users' data and globally-shared ``agent_playbooks``
+    untouched. This is the primitive SWE-bench-style benchmark harnesses
+    need when running many parallel evaluations under distinct synthetic
+    user ids against one shared backend.
+
+    Args:
+        args (argparse.Namespace): Parsed CLI args. Requires
+            ``args.user_id`` (positional) and ``args.yes`` (the
+            destructive-action confirmation flag, matching ``clear-all``).
+
+    Returns:
+        int: 0 on success, 1 if confirmation is missing or the backend
+            call fails.
+    """
+    user_id = args.user_id
+    if not args.yes:
+        sys.stdout.write(
+            f"This will permanently delete all reflexio rows for user '{user_id}' "
+            "(playbooks, profiles, interactions). Other users' data and "
+            "agent_playbooks are not affected.\n"
+            "Re-run with --yes to confirm.\n"
+        )
+        return 1
+
+    try:
+        from reflexio import ReflexioClient  # type: ignore[import-not-found]
+    except ImportError as exc:
+        sys.stderr.write(f"error: reflexio is not installed: {exc}\n")
+        return 1
+
+    try:
+        client = ReflexioClient(url_endpoint=_resolve_reflexio_url())
+        # The companion reflexio PR adds ``clear_user_data``; keep the
+        # CLI buildable until both sides ship together.
+        response = client.clear_user_data(user_id)  # pyright: ignore[reportAttributeAccessIssue]
+    except Exception as exc:  # noqa: BLE001 — surface backend failure verbatim.
+        sys.stderr.write(f"error: clear-user failed: {exc}\n")
+        return 1
+
+    deleted_counts = (
+        response.get("deleted_counts") if isinstance(response, dict) else None
+    )
+    summary = _format_deleted_counts(deleted_counts)
+    sys.stdout.write(f"Cleared user '{user_id}': removed {summary}.\n")
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="claude-smart")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1624,6 +1722,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Confirm the destructive clear without prompting",
     )
     ca.set_defaults(func=cmd_clear_all)
+
+    cu = sub.add_parser(
+        "clear-user",
+        help=(
+            "Delete one user_id's playbooks, profiles, and interactions via "
+            "the backend (leaves other users and agent_playbooks intact)"
+        ),
+    )
+    cu.add_argument(
+        "user_id",
+        help="User id whose reflexio rows should be cleared",
+    )
+    cu.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Confirm the destructive clear without prompting",
+    )
+    cu.set_defaults(func=cmd_clear_user)
 
     rs = sub.add_parser(
         "restart",
