@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
+import re
 
+import pytest
 from claude_smart import cs_cite
 
 
@@ -83,3 +84,69 @@ def test_rank_id_real_id_without_alphanumeric_falls_back_to_rank() -> None:
 def test_rank_id_rejects_unknown_kind() -> None:
     with pytest.raises(ValueError):
         cs_cite.rank_id("other", 1)
+
+
+def test_citation_instruction_auto_returns_full_string() -> None:
+    text = cs_cite.citation_instruction("auto")
+    assert text == cs_cite.CITATION_INSTRUCTION
+    assert "citation block is up to two lines" in text
+    assert "marker line MUST be the very last line" in text
+
+
+def test_citation_instruction_marker_only_drops_counterfactual_paragraph() -> None:
+    text = cs_cite.citation_instruction("marker-only")
+    assert "citation block is up to two lines" not in text
+    assert "counterfactual" not in text.lower()
+    assert "marker line MUST be the very last line" in text
+
+
+def test_citation_instruction_off_returns_empty_string() -> None:
+    assert cs_cite.citation_instruction("off") == ""
+
+
+def test_citation_instruction_unknown_falls_back_to_auto() -> None:
+    """Env-var typos must not break injection — unknown modes behave like ``auto``."""
+    assert cs_cite.citation_instruction("typo") == cs_cite.citation_instruction("auto")
+
+
+def test_citation_instruction_auto_counterfactual_does_not_reference_rank_id() -> None:
+    """Regression: the counterfactual example must not show a bare ``s\\d+-`` /
+    ``p\\d+-`` token, or the assistant copies the cryptic id pattern."""
+    text = cs_cite.citation_instruction("auto")
+    # The marker paragraph starts here; rank-id examples are allowed in it
+    # but must not appear in the preceding counterfactual paragraph.
+    marker_para_start = text.index("End the message with exactly the marker line")
+    counterfactual_para_start = text.index("citation block is up to two lines")
+    counterfactual_para = text[counterfactual_para_start:marker_para_start]
+    assert not re.search(r"\b[sp]\d+-[a-z0-9]+\b", counterfactual_para)
+
+
+def test_strip_marker_lines_removes_single_marker() -> None:
+    text = (
+        "Here's the answer.\n\n"
+        "✨ 1 claude-smart learning applied [cs:s1-1a2b]"
+    )
+    assert cs_cite.strip_marker_lines(text) == "Here's the answer."
+
+
+def test_strip_marker_lines_removes_multiple_markers_inline() -> None:
+    text = (
+        "intro\n"
+        "✨ 1 claude-smart learning applied [cs:s1-1a2b]\n"
+        "middle\n"
+        "✨ 2 claude-smart learnings applied [cs:s1-1a2b,p2-cd34]\n"
+    )
+    out = cs_cite.strip_marker_lines(text)
+    assert "✨" not in out
+    assert "intro" in out
+    assert "middle" in out
+
+
+def test_strip_marker_lines_leaves_unrelated_text_alone() -> None:
+    text = "This mentions ✨ but is not a marker."
+    assert cs_cite.strip_marker_lines(text) == text
+
+
+def test_strip_marker_lines_handles_empty_input() -> None:
+    assert cs_cite.strip_marker_lines("") == ""
+    assert cs_cite.strip_marker_lines(None) == ""  # type: ignore[arg-type]

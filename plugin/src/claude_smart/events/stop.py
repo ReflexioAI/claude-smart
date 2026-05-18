@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -362,6 +363,8 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
         and not _has_unpublished_user_turn(session_id)
     ):
         return
+    if os.environ.get("CLAUDE_SMART_CITATIONS", "auto") == "off":
+        assistant_text = cs_cite.strip_marker_lines(assistant_text)
     text_cited_ids = cs_cite.parse_text_citations(assistant_text)
     cited_items = _resolve_cited_items(session_id, text_cited_ids)
     plan_decisions = _scan_transcript_for_plan_decisions(entries)

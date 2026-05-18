@@ -30,6 +30,7 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | `REFLEXIO_EMBEDDING_SERVICE_URL` | `http://127.0.0.1:$EMBEDDING_PORT` | OpenAI-compatible embedding endpoint used by `local_service` and `internal_service`. |
 | `EMBEDDING_PORT` | `8072` | Local embedding daemon port. Shared by Claude Code and Codex on the same machine. |
 | `CLAUDE_SMART_ENABLE_OPTIMIZER` | enabled unless set to `0` | Hook-side env var that controls shared skill optimization and rollups during `SessionStart`. Set it in Claude Code settings, not `~/.reflexio/.env`. |
+| `CLAUDE_SMART_CITATIONS` | `auto` | Controls the `✨ N claude-smart learning(s) applied [cs:…]` marker and the preceding counterfactual line. `auto` (default) keeps current behavior — first citation per session includes a counterfactual, subsequent only the marker. `marker-only` suppresses the counterfactual line; the marker still appears. `off` skips injection of the citation instruction entirely and strips any stray marker line from the assistant text before publishing. Set in Claude Code settings (hook env), not `~/.reflexio/.env`. |
 | `CLAUDE_SMART_CLI_PATH` | `claude` on Claude Code; Codex compatibility wrapper or `codex` on Codex | Override the executable Reflexio calls for local generation. |
 | `CLAUDE_SMART_STATE_DIR` | `~/.claude-smart/sessions/` | Where the per-session JSONL buffer lives. |
 | `CLAUDE_SMART_NODE_LTS_MAJOR` | `22` | Major version used when the installer downloads private Node.js/npm into `~/.claude-smart/node/current`. |

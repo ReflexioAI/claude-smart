@@ -26,8 +26,14 @@ This module holds:
 - ``rank_id``: ``p{n}-{fp}`` / ``s{n}-{fp}`` tag for a given
   (kind, rank, real_id) tuple. Fingerprint is omitted when no real id
   is available. ``p`` is preference, ``s`` is skill.
-- ``CITATION_INSTRUCTION``: the trailer text appended to injected context
-  so the assistant knows when and how to emit the citation marker.
+- ``citation_instruction(mode)``: the trailer text appended to injected
+  context so the assistant knows when and how to emit the citation marker.
+  ``mode`` is read from the ``CLAUDE_SMART_CITATIONS`` env var by the
+  caller; valid values are ``"auto"`` (default — counterfactual + marker),
+  ``"marker-only"`` (suppress the counterfactual), and ``"off"`` (no
+  instruction injected, no marker emitted).
+- ``CITATION_INSTRUCTION``: the full ``"auto"`` instruction string, kept
+  as a module-level constant for backward-compatible imports.
 """
 
 from __future__ import annotations
@@ -46,41 +52,95 @@ _TEXT_CITATION_LINE_RE = re.compile(
     r"\[cs:(?P<ids>[^\]]+)\]\s*$"
 )
 
-CITATION_INSTRUCTION = (
+_INTRO_AUTO = (
     "_First, fully answer the user — citation does not change what or how "
     "you reply. Then, as a final step, consider whether to cite: if — and "
     "only if — an injected `[cs:…]` item materially changed your reply "
     "(different wording, action, or conclusion than you would have produced "
     "without it), append a citation block at the very end of your message. "
-    "Do not call a shell command or any other tool for citations. Ids come verbatim "
-    "from the `[cs:…]` tags — keep the leading `p` (preference) or `s` "
-    "(skill) and the `-<fp>` suffix. "
-    "\n\n"
+    "Do not call a shell command or any other tool for citations. "
+    "Ids come verbatim from the `[cs:…]` tags above — the leading letter "
+    "is exactly `s` (skill) or `p` (preference); no other letter is valid. "
+    "If an id you want to cite is not literally present in a `[cs:…]` tag "
+    "in your context, skip the citation entirely rather than guess."
+)
+
+_INTRO_MARKER_ONLY = (
+    "_First, fully answer the user — citation does not change what or how "
+    "you reply. Then, as a final step, consider whether to cite: if — and "
+    "only if — an injected `[cs:…]` item materially changed your reply "
+    "(different wording, action, or conclusion than you would have produced "
+    "without it), append the marker line below at the very end of your "
+    "message. Do not call a shell command or any other tool for citations. "
+    "Ids come verbatim from the `[cs:…]` tags above — the leading letter "
+    "is exactly `s` (skill) or `p` (preference); no other letter is valid. "
+    "If an id you want to cite is not literally present in a `[cs:…]` tag "
+    "in your context, skip the citation entirely rather than guess."
+)
+
+_COUNTERFACTUAL_PARAGRAPH = (
     "The citation block is up to two lines: an optional counterfactual line "
     "followed by the marker line. Check your own prior assistant messages in "
     "this conversation — if you have NOT yet emitted a `✨ … claude-smart "
     "learning(s) applied` line earlier in this session, include the "
     "counterfactual line; otherwise skip it. The counterfactual is one short "
     "factual sentence contrasting your actual reply with the unlearned "
-    "baseline (e.g. `↳ Without s1-ab12 I would have answered '7–10 days' "
-    "instead of asking for your deadline. Run /claude-smart:show for the "
-    "full rule.`). Keep it factual, not promotional, and ≤ 30 words. "
-    "\n\n"
-    "Then end the message with exactly the marker line. Use this exact "
-    "format for one id: `✨ 1 claude-smart learning applied [cs:s1-ab12]`. "
-    "Use this exact format for multiple ids: "
+    "baseline. Refer to the skill by a short, human paraphrase (≤ 6 words) "
+    "of what it asks for — taken from the bullet's content — wrapped in "
+    "double quotes. Do not put the `[cs:…]` id in the counterfactual line; "
+    'the id appears only in the marker line below. Example: `↳ Without '
+    '"verify process state before suggesting kill" I would have told you '
+    "to kill 88040 as a runaway fork.` Keep it factual, not promotional, "
+    "and ≤ 30 words."
+)
+
+_MARKER_PARAGRAPH = (
+    "End the message with exactly the marker line. Use this exact format "
+    "for one id: `✨ 1 claude-smart learning applied [cs:s1-ab12]`. Use "
+    "this exact format for multiple ids: "
     "`✨ 2 claude-smart learnings applied [cs:s1-ab12,p2-cd34]`, where the "
-    "number is the count of ids in the brackets. The marker line MUST be the "
-    "very last line of your message and end with `]` — nothing after it. "
-    "Never emit a standalone wrapper like `✨s1-ab12✨` or `✨abc123✨`; "
-    "those are not claude-smart citations and cannot be resolved. "
-    "\n\n"
+    "number is the count of ids in the brackets. The marker line MUST be "
+    "the very last line of your message and end with `]` — nothing after "
+    "it. Never emit a standalone wrapper like `✨s1-ab12✨` or "
+    "`✨abc123✨`; those are not claude-smart citations and cannot be "
+    "resolved."
+)
+
+_DEFAULT_SKIP_PARAGRAPH = (
     "Default is to skip the whole block. If an item is merely on-topic, "
     "confirms what you already planned, or your reply would read the same "
     "without it, do not cite — end the turn normally with your reply. When "
     "unsure, skip. Do not add any other text, tool calls, or role markers "
     "after the final marker line._"
 )
+
+CITATION_MODES = ("auto", "marker-only", "off")
+
+
+def citation_instruction(mode: str) -> str:
+    """Return the citation prompt for ``mode``.
+
+    Args:
+        mode: One of ``"auto"`` (full instruction), ``"marker-only"``
+            (suppress the counterfactual paragraph), or ``"off"`` (return
+            an empty string so no instruction is injected). Unknown values
+            fall back to ``"auto"`` — env-var typos must not break
+            injection.
+
+    Returns:
+        str: The instruction text, or ``""`` for ``"off"``.
+    """
+    if mode == "off":
+        return ""
+    if mode == "marker-only":
+        return f"{_INTRO_MARKER_ONLY}\n\n{_MARKER_PARAGRAPH}\n\n{_DEFAULT_SKIP_PARAGRAPH}"
+    return (
+        f"{_INTRO_AUTO}\n\n{_COUNTERFACTUAL_PARAGRAPH}\n\n"
+        f"{_MARKER_PARAGRAPH}\n\n{_DEFAULT_SKIP_PARAGRAPH}"
+    )
+
+
+CITATION_INSTRUCTION = citation_instruction("auto")
 
 
 def _fingerprint(real_id: Any) -> str:
@@ -153,6 +213,27 @@ def parse_text_citations(text: str) -> list[str]:
     if not matches:
         return []
     return _parse_id_tokens(matches[-1].group("ids"))
+
+
+def strip_marker_lines(text: str) -> str:
+    """Remove any ``✨ N claude-smart learning(s) applied [cs:…]`` lines.
+
+    Used by the Stop hook when ``CLAUDE_SMART_CITATIONS=off`` to scrub
+    any marker the assistant emitted from a cached prompt fragment that
+    still contained the citation instruction. Returns ``text`` unchanged
+    when no marker line is present.
+
+    Args:
+        text: Assistant message text.
+
+    Returns:
+        str: ``text`` with marker lines removed, trailing blank lines
+            trimmed. ``""`` when ``text`` is falsy.
+    """
+    if not text:
+        return text or ""
+    cleaned = _TEXT_CITATION_LINE_RE.sub("", text)
+    return cleaned.rstrip("\n")
 
 
 def _parse_id_tokens(raw_ids: str) -> list[str]:

@@ -254,35 +254,60 @@ export default function DashboardPage() {
           </div>
           {topApplied && topApplied.length > 0 ? (
             <div className="rounded-xl border border-border divide-y divide-border bg-card">
-              {topApplied.slice(0, 5).map((s) => (
-                <div
-                  key={`${s.kind}:${s.real_id}`}
-                  className="flex items-center justify-between gap-3 px-4 py-3"
-                >
-                  <div className="min-w-0 flex items-center gap-3">
-                    <Sparkles className="h-4 w-4 text-muted-foreground shrink-0" />
-                    <div className="min-w-0">
-                      <p className="text-sm truncate">
-                        {s.title || (
-                          <span className="text-muted-foreground italic">
-                            (rule removed)
-                          </span>
-                        )}
-                      </p>
-                      <p className="text-[11px] text-muted-foreground">
-                        {s.kind === "playbook" ? "skill" : "preference"} ·{" "}
-                        {truncate(s.real_id, 12)}
-                      </p>
+              {topApplied.slice(0, 5).map((s) => {
+                // Preferences route directly to their detail page by profile_id.
+                // Skills route to the /skills list (which already shows
+                // applied_count badges); a direct link would need
+                // source_kind to pick project vs shared, which the stats
+                // endpoint doesn't surface yet.
+                const href = s.title
+                  ? s.kind === "profile"
+                    ? `/preferences/${s.real_id}`
+                    : "/skills"
+                  : null;
+                const rowBody = (
+                  <>
+                    <div className="min-w-0 flex items-center gap-3">
+                      <Sparkles className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-sm truncate">
+                          {s.title || (
+                            <span className="text-muted-foreground italic">
+                              (rule removed)
+                            </span>
+                          )}
+                        </p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {s.kind === "playbook" ? "skill" : "preference"} ·{" "}
+                          {truncate(s.real_id, 12)}
+                        </p>
+                      </div>
                     </div>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
+                      <Badge variant="secondary" className="text-[10px]">
+                        Applied {s.applied_count}×
+                      </Badge>
+                      <span>{formatRelative(s.last_applied_at)}</span>
+                    </div>
+                  </>
+                );
+                return href ? (
+                  <Link
+                    key={`${s.kind}:${s.real_id}`}
+                    href={href}
+                    className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-accent/40 transition-colors"
+                  >
+                    {rowBody}
+                  </Link>
+                ) : (
+                  <div
+                    key={`${s.kind}:${s.real_id}`}
+                    className="flex items-center justify-between gap-3 px-4 py-3"
+                  >
+                    {rowBody}
                   </div>
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
-                    <Badge variant="secondary" className="text-[10px]">
-                      Applied {s.applied_count}×
-                    </Badge>
-                    <span>{formatRelative(s.last_applied_at)}</span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <EmptyState

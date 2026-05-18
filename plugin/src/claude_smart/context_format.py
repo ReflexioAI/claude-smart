@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Iterable
 
 from claude_smart import cs_cite
@@ -164,7 +165,11 @@ def render_inline_with_registry(
     if profile_lines:
         sections.append("### Relevant project preferences")
         sections.extend(profile_lines)
-    sections.append(cs_cite.CITATION_INSTRUCTION)
+    instruction = cs_cite.citation_instruction(
+        os.environ.get("CLAUDE_SMART_CITATIONS", "auto")
+    )
+    if instruction:
+        sections.append(instruction)
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
 
 

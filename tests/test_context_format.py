@@ -170,6 +170,57 @@ def test_render_inline_with_registry_uses_inline_headers() -> None:
     assert len(registry) == 2
 
 
+def test_render_inline_with_registry_auto_mode_injects_full_instruction(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_CITATIONS", "auto")
+    md, _ = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "x"}],
+        agent_playbooks=[],
+        profiles=[],
+    )
+    assert cs_cite.CITATION_INSTRUCTION in md
+
+
+def test_render_inline_with_registry_default_is_auto(monkeypatch) -> None:
+    """No env var set → behave as ``auto`` so existing deployments don't change."""
+    monkeypatch.delenv("CLAUDE_SMART_CITATIONS", raising=False)
+    md, _ = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "x"}],
+        agent_playbooks=[],
+        profiles=[],
+    )
+    assert cs_cite.CITATION_INSTRUCTION in md
+
+
+def test_render_inline_with_registry_marker_only_drops_counterfactual(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_CITATIONS", "marker-only")
+    md, _ = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "x"}],
+        agent_playbooks=[],
+        profiles=[],
+    )
+    assert "marker line MUST be the very last line" in md
+    assert "citation block is up to two lines" not in md
+
+
+def test_render_inline_with_registry_off_omits_instruction(monkeypatch) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_CITATIONS", "off")
+    md, _ = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "x"}],
+        agent_playbooks=[],
+        profiles=[],
+    )
+    assert "marker line MUST be the very last line" not in md
+    assert "claude-smart learning" not in md
+
+
 def test_title_from_content_short_content_kept_intact() -> None:
     assert context_format._title_from_content("short content") == "short content"
 
