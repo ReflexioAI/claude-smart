@@ -26,6 +26,10 @@ fi
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
+if claude_smart_is_internal_invocation_env; then
+  echo '{"continue":true,"suppressOutput":true}'
+  exit 0
+fi
 # Pick up uv from the user's login-shell PATH (covers ~/.local/bin populated
 # by the astral.sh installer) so a fresh install works before the user
 # restarts their terminal. Matches the pattern used by smart-install.sh.

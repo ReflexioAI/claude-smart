@@ -242,6 +242,27 @@ def test_service_start_scripts_recover_missing_dependencies_without_cli_command(
     assert "npm is not on PATH after installer; dashboard cannot start" in dashboard
 
 
+def test_service_start_scripts_guard_internal_invocations() -> None:
+    lib = (REPO_ROOT / "plugin" / "scripts" / "_lib.sh").read_text()
+    hook_entry = HOOK_ENTRY.read_text()
+    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+    dashboard = (REPO_ROOT / "plugin" / "scripts" / "dashboard-service.sh").read_text()
+
+    assert "claude_smart_is_internal_invocation_env()" in lib
+    assert "CLAUDE_CODE_ENTRYPOINT" in lib
+    assert "if claude_smart_is_internal_invocation_env; then" in hook_entry
+    assert "if claude_smart_is_internal_invocation_env; then" in backend
+    assert "if claude_smart_is_internal_invocation_env; then" in dashboard
+
+
+def test_backend_service_configures_shared_embedding_daemon() -> None:
+    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+
+    assert 'EMBEDDING_PORT="${EMBEDDING_PORT:-8072}"' in backend
+    assert 'REFLEXIO_EMBEDDING_PROVIDER:-local_service' in backend
+    assert "REFLEXIO_EMBEDDING_SERVICE_URL" in backend
+
+
 def test_codex_hook_recovers_missing_dependencies_without_cli_command() -> None:
     script = CODEX_HOOK.read_text()
 

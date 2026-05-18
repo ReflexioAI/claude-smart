@@ -25,7 +25,10 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CLAUDE_SMART_USE_LOCAL_CLI` | `0` (installer sets `1`) | Route generation through the active host CLI (`claude` for Claude Code, `codex` for Codex). Written to `~/.reflexio/.env` by `claude-smart install`. |
-| `CLAUDE_SMART_USE_LOCAL_EMBEDDING` | `0` (installer sets `1`) | Use the in-process ONNX embedder (requires `chromadb`). Written to `~/.reflexio/.env` by `claude-smart install`. |
+| `CLAUDE_SMART_USE_LOCAL_EMBEDDING` | `0` (installer sets `1`) | Route embeddings to the shared local embedding daemon on `localhost:8072`. Written to `~/.reflexio/.env` by `claude-smart install`. |
+| `REFLEXIO_EMBEDDING_PROVIDER` | `local_service` when local embedding is enabled | Embedding provider mode: `cloud`, `local_service`, `internal_service`, `inprocess`, or `off`. |
+| `REFLEXIO_EMBEDDING_SERVICE_URL` | `http://127.0.0.1:$EMBEDDING_PORT` | OpenAI-compatible embedding endpoint used by `local_service` and `internal_service`. |
+| `EMBEDDING_PORT` | `8072` | Local embedding daemon port. Shared by Claude Code and Codex on the same machine. |
 | `CLAUDE_SMART_ENABLE_OPTIMIZER` | enabled unless set to `0` | Hook-side env var that controls shared skill optimization and rollups during `SessionStart`. Set it in Claude Code settings, not `~/.reflexio/.env`. |
 | `CLAUDE_SMART_CLI_PATH` | `claude` on Claude Code; Codex compatibility wrapper or `codex` on Codex | Override the executable Reflexio calls for local generation. |
 | `CLAUDE_SMART_STATE_DIR` | `~/.claude-smart/sessions/` | Where the per-session JSONL buffer lives. |
@@ -39,9 +42,11 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 
 ## Embeddings
 
-claude-smart uses an in-process ONNX embedder (Chroma's `all-MiniLM-L6-v2`, 384-dim, zero-padded to reflexio's 512-dim schema). The model weights are downloaded on first use (~80 MB, cached under `~/.cache/chroma/onnx_models/`) — after that, no network calls for embedding. Runtime cost is a few milliseconds per short document on CPU.
+claude-smart uses one shared local embedding daemon by default. The backend starts `reflexio embeddings serve` on `127.0.0.1:8072` when `CLAUDE_SMART_USE_LOCAL_EMBEDDING=1`, then every backend worker and host process calls its OpenAI-compatible `/v1/embeddings` endpoint instead of loading a model in each process.
 
-If you still want to use a cloud embedding provider (OpenAI, Gemini, etc.), omit `CLAUDE_SMART_USE_LOCAL_EMBEDDING` and set the corresponding API key in `~/.reflexio/.env` — reflexio will fall back to its standard provider-priority chain.
+Supported local models are `local/nomic-embed-v1.5`, `local/nomic-embed-text-v1.5`, and `local/minilm-l6-v2`. The daemon owns exactly one model for its lifetime; start a second daemon on another port if you need to serve a different model concurrently.
+
+If you still want to use a cloud embedding provider (OpenAI, Gemini, etc.), omit `CLAUDE_SMART_USE_LOCAL_EMBEDDING` and set the corresponding API key in `~/.reflexio/.env` — reflexio will fall back to its standard provider-priority chain. For hosted Reflexio, prefer a managed embedding provider or a scalable `REFLEXIO_EMBEDDING_PROVIDER=internal_service` endpoint instead of a single-machine daemon.
 
 ## Install dependency policy
 
@@ -482,10 +487,10 @@ grep -q '^CLAUDE_SMART_USE_LOCAL_CLI=' ~/.reflexio/.env 2>/dev/null \
   || echo 'CLAUDE_SMART_USE_LOCAL_CLI=1' >> ~/.reflexio/.env
 grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' ~/.reflexio/.env 2>/dev/null \
   || echo 'CLAUDE_SMART_USE_LOCAL_EMBEDDING=1' >> ~/.reflexio/.env
-# On first use the embedder downloads ~80 MB ONNX weights to ~/.cache/chroma/onnx_models/.
+# The backend starts one shared embedding daemon on 127.0.0.1:8072.
 
 # 4. (Optional) start the backend manually instead of letting SessionStart spawn it
-cd plugin && BACKEND_PORT=8071 uv run reflexio services start --only backend --no-reload
+cd plugin && BACKEND_PORT=8071 EMBEDDING_PORT=8072 uv run reflexio services start --only backend --no-reload
 # Health check: curl http://localhost:8071/health  →  {"status":"healthy"}
 # Stop:         uv run reflexio services stop
 ```

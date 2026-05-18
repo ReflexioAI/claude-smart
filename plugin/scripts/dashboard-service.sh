@@ -87,6 +87,9 @@ port_occupied() {
 
 case "$CMD" in
   start)
+    if claude_smart_is_internal_invocation_env; then
+      emit_ok; exit 0
+    fi
     # Opt-out: users who don't want the dashboard long-lived can set
     # CLAUDE_SMART_DASHBOARD_AUTOSTART=0 in their environment.
     if [ "${CLAUDE_SMART_DASHBOARD_AUTOSTART:-1}" = "0" ]; then

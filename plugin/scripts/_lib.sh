@@ -32,6 +32,16 @@ claude_smart_prepend_node_bins() {
   export PATH="$_CS_NODE_ROOT/bin:$_CS_NODE_ROOT:$PATH"
 }
 
+claude_smart_is_internal_invocation_env() {
+  if [ "${CLAUDE_SMART_INTERNAL:-}" = "1" ]; then
+    return 0
+  fi
+  if [ -n "${CLAUDE_CODE_ENTRYPOINT:-}" ] && [ "${CLAUDE_CODE_ENTRYPOINT:-}" != "cli" ]; then
+    return 0
+  fi
+  return 1
+}
+
 claude_smart_dashboard_unavailable_marker() {
   printf '%s\n' "$HOME/.claude-smart/dashboard-unavailable"
 }

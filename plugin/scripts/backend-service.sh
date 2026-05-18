@@ -25,15 +25,23 @@ claude_smart_prepend_astral_bins
 
 CMD="${1:-start}"
 PORT=8071
+EMBEDDING_PORT="${EMBEDDING_PORT:-8072}"
 # Pass through to `reflexio services start/stop` so the spawned backend
 # binds to PORT instead of reflexio's library default (8081).
 export BACKEND_PORT="$PORT"
+export EMBEDDING_PORT
 
 # Default: route extraction through the active host CLI + ONNX embedder
 # so claude-smart works without any LLM API key. Users can opt out by
 # pre-exporting these to 0.
 export CLAUDE_SMART_USE_LOCAL_CLI="${CLAUDE_SMART_USE_LOCAL_CLI:-1}"
 export CLAUDE_SMART_USE_LOCAL_EMBEDDING="${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}"
+case "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-}" in
+  1|true|True|yes|YES|on|ON)
+    export REFLEXIO_EMBEDDING_PROVIDER="${REFLEXIO_EMBEDDING_PROVIDER:-local_service}"
+    export REFLEXIO_EMBEDDING_SERVICE_URL="${REFLEXIO_EMBEDDING_SERVICE_URL:-http://127.0.0.1:$EMBEDDING_PORT}"
+    ;;
+esac
 # The backend can be spawned from contexts whose PATH lacks the host
 # CLI dir (commonly ~/.local/bin or /opt/homebrew/bin). Pin the CLI
 # explicitly if we can resolve it from our own (post-login-path) PATH.
@@ -173,6 +181,9 @@ full_stop() {
 
 case "$CMD" in
   start)
+    if claude_smart_is_internal_invocation_env; then
+      emit_ok; exit 0
+    fi
     # Opt-out: users who don't want the backend managed by the hook can
     # set CLAUDE_SMART_BACKEND_AUTOSTART=0.
     if [ "${CLAUDE_SMART_BACKEND_AUTOSTART:-1}" = "0" ]; then
