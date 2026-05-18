@@ -6,6 +6,7 @@ import io
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -364,3 +365,100 @@ def test_log_rotation_tolerates_read_failure(
     # Must not raise. The append succeeds; rotation's read fails and is
     # swallowed; the caller sees a clean return.
     hook_log.log_event(event="stop", host="claude-code", session_id="post")
+
+
+@pytest.mark.skipif(
+    not hasattr(hook_log, "_fcntl") or hook_log._fcntl is None,
+    reason="flock-based rotation lock is POSIX-only",
+)
+def test_log_event_lock_serialises_rotation_and_append(
+    hook_log_path, monkeypatch
+) -> None:
+    """A concurrent append fired mid-rotation must not be silently dropped.
+
+    Regression for CodeRabbit review on PR #30: the rotation
+    ``read_bytes → write tmp → rename`` sequence used to race with a
+    concurrent appender — a record landing in the original file between
+    the read and the rename was overwritten by the rename and lost. The
+    exclusive flock around append + rotate closes that gap.
+
+    Forces the race deterministically: thread A's ``log_event`` triggers
+    rotation and is paused inside ``Path.replace``; thread B's
+    ``log_event`` fires while A is paused. Without the lock, B would
+    append to the original file and A's pending replace would then
+    overwrite that append with the pre-B snapshot — B's record is lost.
+    With the lock, B blocks on the flock until A releases, then writes
+    to the post-rotation file. The test asserts both records survive.
+    """
+    # Prime with a high cap so no rotation fires during priming.
+    monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 100_000)
+    for i in range(8):
+        hook_log.log_event(
+            event="stop", host="claude-code", session_id=f"prime-{i:02d}"
+        )
+    primed_size = hook_log_path.stat().st_size
+    assert primed_size > 0
+
+    # Drop the cap below the primed size so the *next* log_event rotates.
+    monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", primed_size - 1)
+
+    # Pause ONLY the first ``Path.replace`` call on the log file — that's
+    # the rotator's. The appender is either blocked by the lock (good)
+    # or runs concurrently and never reaches ``replace`` itself (we let
+    # it finish a single append; rotation can happen freely afterwards).
+    replace_called = threading.Event()
+    replace_may_finish = threading.Event()
+    appender_finished = threading.Event()
+    call_count = {"n": 0}
+    real_replace = Path.replace
+
+    def paused_replace(self: Path, target: Any) -> Path:
+        if Path(target) == hook_log_path:
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                replace_called.set()
+                assert replace_may_finish.wait(timeout=5.0)
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", paused_replace)
+
+    def rotator() -> None:
+        hook_log.log_event(
+            event="stop", host="claude-code", session_id="rotator-record"
+        )
+
+    def appender() -> None:
+        assert replace_called.wait(timeout=5.0)
+        hook_log.log_event(
+            event="stop", host="claude-code", session_id="appender-record"
+        )
+        appender_finished.set()
+
+    t_rot = threading.Thread(target=rotator, name="rotator")
+    t_app = threading.Thread(target=appender, name="appender")
+    t_rot.start()
+    t_app.start()
+
+    # Rotator is paused at replace. With the lock held, the appender's
+    # log_event call is blocked acquiring the flock — give it generous
+    # wall time to attempt and queue.
+    assert replace_called.wait(timeout=5.0)
+    completed_early = appender_finished.wait(timeout=0.5)
+    assert not completed_early, (
+        "appender finished before rotator released the lock — the lock "
+        "isn't actually serialising rotation against concurrent appends, "
+        "so a record could be silently dropped under real concurrency."
+    )
+
+    replace_may_finish.set()
+    t_rot.join(timeout=5.0)
+    t_app.join(timeout=5.0)
+    assert not t_rot.is_alive()
+    assert not t_app.is_alive()
+
+    final = _read_lines(hook_log_path)
+    session_ids = {r["session_id"] for r in final}
+    assert "appender-record" in session_ids, (
+        "appender's record was dropped by rotation — the lock did not "
+        f"serialise the rotation/append. File has: {sorted(session_ids)}"
+    )

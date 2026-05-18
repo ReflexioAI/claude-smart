@@ -25,8 +25,17 @@ import json
 import logging
 import os
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
+
+# ``fcntl`` is POSIX-only. On Windows we skip the cross-process lock and
+# accept the unlikely rotation race (claude-smart is primarily a POSIX
+# tool for Claude Code's plugin runtime).
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover — exercised on Windows only
+    _fcntl = None  # type: ignore[assignment]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -120,20 +129,33 @@ def log_event(
     path = log_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Open mode "a" is atomic on POSIX for writes <= PIPE_BUF (4 KiB);
-        # we truncate fields above to stay below that and avoid a heavier
-        # ``flock`` dance that the hook fire path can't afford.
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(line)
     except OSError as exc:
-        _LOGGER.debug("hook_log: write to %s failed: %s", path, exc)
+        _LOGGER.debug("hook_log: mkdir for %s failed: %s", path.parent, exc)
         return
 
-    # Rotate AFTER the append so the just-written record always survives,
-    # even on the call that crosses the cap. A single oversized record
-    # still gets through and is dropped by the *next* rotation when the
-    # file is read back.
-    _maybe_rotate(path)
+    # Hold an exclusive cross-process flock through the entire append +
+    # rotate critical section. The original rationale ("POSIX atomic
+    # append below PIPE_BUF") protects the *append* alone but not the
+    # ``read_bytes → write tmp → rename`` rotation sequence: a concurrent
+    # appender that lands between rotation's read and rename has its
+    # record silently dropped by the rename. The lock closes that gap.
+    #
+    # On Windows ``_fcntl`` is None and writes proceed unlocked — same
+    # behaviour as before. The original PIPE_BUF-based append atomicity
+    # is preserved by ``_TRUNCATE_LIMIT`` keeping each record below 4 KiB.
+    with _rotation_lock(path):
+        try:
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(line)
+        except OSError as exc:
+            _LOGGER.debug("hook_log: write to %s failed: %s", path, exc)
+            return
+
+        # Rotate AFTER the append so the just-written record always survives,
+        # even on the call that crosses the cap. A single oversized record
+        # still gets through and is dropped by the *next* rotation when the
+        # file is read back.
+        _maybe_rotate(path)
 
 
 def log_path() -> Path:
@@ -165,6 +187,51 @@ def _truncate(value: Any) -> Any:
     if isinstance(value, str) and len(value) > _TRUNCATE_LIMIT:
         return value[:_TRUNCATE_LIMIT] + "…"
     return value
+
+
+@contextlib.contextmanager
+def _rotation_lock(path: Path) -> Iterator[None]:
+    """Hold an exclusive cross-process flock on a sibling ``.lock`` file.
+
+    Serialises every ``log_event`` call against itself so the rotation
+    ``read_bytes → write tmp → rename`` sequence cannot interleave with a
+    concurrent append. On Windows or when the lock cannot be acquired
+    (no ``fcntl``, read-only parent, etc.) the lock degrades to a no-op
+    and the caller proceeds unlocked — matches the pre-existing
+    best-effort policy of this module.
+
+    Args:
+        path (Path): The log file path; the lock file is a sibling at
+            ``<path>.lock``.
+
+    Yields:
+        None.
+    """
+    if _fcntl is None:
+        yield
+        return
+    lock_path = path.with_name(path.name + ".lock")
+    fh: IO[bytes] | None = None
+    try:
+        fh = lock_path.open("ab")
+    except OSError as exc:
+        _LOGGER.debug("hook_log: lock open %s failed: %s", lock_path, exc)
+        yield
+        return
+    try:
+        _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+    except OSError as exc:
+        _LOGGER.debug("hook_log: flock acquire failed: %s", exc)
+        fh.close()
+        yield
+        return
+    try:
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            fh.close()
 
 
 def _maybe_rotate(path: Path) -> None:
