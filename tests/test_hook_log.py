@@ -91,6 +91,8 @@ def test_log_event_truncates_oversized_strings(hook_log_path) -> None:
 
 def test_log_event_tolerates_readonly_log_dir(tmp_path, monkeypatch) -> None:
     """A read-only parent must not abort the hook fire."""
+    if not hasattr(os, "geteuid"):
+        pytest.skip("read-only permission semantics test is POSIX-specific")
     if os.geteuid() == 0:
         pytest.skip("root bypasses the read-only bit")
     locked = tmp_path / "locked"
@@ -193,6 +195,41 @@ def test_dispatcher_logs_nothing_publish_status(
     rec = _read_lines(hook_log_path)[0]
     assert rec["publish_status"] == "nothing"
     assert rec["publish_count"] == 0
+
+
+def test_dispatcher_emits_continue_on_handler_success(
+    hook_log_path, stdin_payload, monkeypatch, capsys
+) -> None:
+    """The success path must emit the ``{"continue": true}`` JSON on stdout.
+
+    Regression: an earlier version only emitted on the exception path,
+    leaving successful hook fires silent and blocking the parent session.
+    """
+
+    def stop_ok(_payload: dict[str, Any]) -> tuple[str, int]:
+        return ("ok", 1)
+
+    monkeypatch.setattr(hook, "_load_handlers", lambda: {"stop": stop_ok})
+    stdin_payload({"session_id": "s-success", "cwd": "/tmp"})
+    hook.main(["claude-code", "stop"])
+    out = capsys.readouterr().out
+    assert '"continue": true' in out
+
+
+def test_dispatcher_emits_continue_on_handler_exception(
+    hook_log_path, stdin_payload, monkeypatch, capsys
+) -> None:
+    """The exception path must also emit ``{"continue": true}`` — the
+    parent session never blocks regardless of handler outcome."""
+
+    def boom(_payload: dict[str, Any]) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(hook, "_load_handlers", lambda: {"stop": boom})
+    stdin_payload({"session_id": "s-exc", "cwd": "/tmp"})
+    hook.main(["claude-code", "stop"])
+    out = capsys.readouterr().out
+    assert '"continue": true' in out
 
 
 def test_log_event_tolerates_unparseable_publish_count(hook_log_path) -> None:

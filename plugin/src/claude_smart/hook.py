@@ -141,7 +141,11 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001 — hooks must never crash the session.
         _LOGGER.exception("hook handler %s raised: %s", event, exc)
         handler_status = f"raised:{type(exc).__name__}: {exc}"
-        emit_continue()
+    # Always emit the JSON continue response — Claude Code's hook contract
+    # expects one on stdout regardless of whether the handler succeeded or
+    # raised. Skipping it on the success path would leave the hook silent
+    # and the session would block waiting for a reply.
+    emit_continue()
     hook_log.log_event(
         event=event,
         host=host,
