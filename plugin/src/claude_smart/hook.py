@@ -20,6 +20,8 @@ import json
 import logging
 import sys
 from collections.abc import Callable
+from contextlib import redirect_stdout
+from io import StringIO
 from typing import Any
 
 from claude_smart import hook_log, ids, runtime
@@ -134,18 +136,25 @@ def main(argv: list[str] | None = None) -> int:
     handler_status = "ok"
     publish_status: str | None = None
     publish_count: int | None = None
+    handler_stdout = StringIO()
     try:
-        result = handler(payload)
+        with redirect_stdout(handler_stdout):
+            result = handler(payload)
         if isinstance(result, tuple) and len(result) == 2:
             publish_status, publish_count = result
     except Exception as exc:  # noqa: BLE001 — hooks must never crash the session.
         _LOGGER.exception("hook handler %s raised: %s", event, exc)
         handler_status = f"raised:{type(exc).__name__}: {exc}"
-    # Always emit the JSON continue response — Claude Code's hook contract
-    # expects one on stdout regardless of whether the handler succeeded or
-    # raised. Skipping it on the success path would leave the hook silent
-    # and the session would block waiting for a reply.
-    emit_continue()
+        emit_continue()
+    else:
+        # Handlers that inject context already emit the full hook JSON. Silent
+        # handlers still need the continue response so the parent session does
+        # not wait on an empty stdout payload.
+        captured = handler_stdout.getvalue()
+        if captured.strip():
+            sys.stdout.write(captured)
+        else:
+            emit_continue()
     hook_log.log_event(
         event=event,
         host=host,

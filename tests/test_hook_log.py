@@ -217,6 +217,39 @@ def test_dispatcher_emits_continue_on_handler_success(
     assert '"continue": true' in out
 
 
+def test_dispatcher_does_not_append_continue_after_handler_json(
+    hook_log_path, stdin_payload, monkeypatch, capsys
+) -> None:
+    """Context-injection handlers already emit hook JSON; don't append another."""
+
+    def inject_context(_payload: dict[str, Any]) -> None:
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "UserPromptSubmit",
+                        "additionalContext": "matched context",
+                    }
+                }
+            )
+        )
+        sys.stdout.write("\n")
+
+    monkeypatch.setattr(hook, "_load_handlers", lambda: {"user-prompt": inject_context})
+    stdin_payload({"session_id": "s-inject", "cwd": "/tmp"})
+    hook.main(["claude-code", "user-prompt"])
+    out = capsys.readouterr().out
+    lines = [json.loads(line) for line in out.splitlines()]
+    assert lines == [
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": "matched context",
+            }
+        }
+    ]
+
+
 def test_dispatcher_emits_continue_on_handler_exception(
     hook_log_path, stdin_payload, monkeypatch, capsys
 ) -> None:
