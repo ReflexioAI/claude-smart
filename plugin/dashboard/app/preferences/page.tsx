@@ -54,7 +54,7 @@ export default function PreferencesPage() {
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               placeholder="Filter"
-              className="h-8 w-56 text-xs"
+              className="h-9 w-56 text-xs bg-background/80"
             />
             <DeleteAllButton
               label={`Delete all${profiles && profiles.length > 0 ? ` (${profiles.length})` : ""}`}
@@ -90,7 +90,7 @@ export default function PreferencesPage() {
               <Link
                 key={p.profile_id}
                 href={`/preferences/project/${encodeURIComponent(p.profile_id)}`}
-                className="group block rounded-xl border border-border bg-card p-4 hover:bg-accent/40 transition-colors"
+                className="group block rounded-lg border border-border bg-card/92 p-4 shadow-sm transition-colors hover:border-primary/35 hover:bg-accent/45"
               >
                 <header className="flex items-center justify-between gap-2 mb-2">
                   <div className="flex items-center gap-2 min-w-0">
@@ -110,7 +110,9 @@ export default function PreferencesPage() {
                     <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/60 group-hover:text-foreground transition-colors" />
                   </div>
                 </header>
-                <p className="text-sm leading-relaxed line-clamp-4">{p.content}</p>
+                <p className="rounded-md border border-border bg-background/60 px-3 py-2 text-sm leading-relaxed line-clamp-4">
+                  {p.content}
+                </p>
                 {p.source && (
                   <p className="text-[11px] text-muted-foreground mt-2 font-mono">
                     source: {p.source}

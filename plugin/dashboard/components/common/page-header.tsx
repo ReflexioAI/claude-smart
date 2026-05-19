@@ -14,14 +14,16 @@ export function PageHeader({
   return (
     <div
       className={cn(
-        "border-b border-border px-6 py-5 flex flex-wrap items-start justify-between gap-4",
+        "border-b border-border bg-background/72 px-6 py-6 flex flex-wrap items-start justify-between gap-4 backdrop-blur",
         className,
       )}
     >
       <div className="min-w-[min(18rem,100%)] flex-1">
-        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+        <h1 className="text-2xl font-semibold">{title}</h1>
         {description && (
-          <p className="text-sm text-muted-foreground mt-0.5">{description}</p>
+          <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
+            {description}
+          </p>
         )}
       </div>
       {actions && (

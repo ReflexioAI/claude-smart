@@ -30,7 +30,7 @@ export default function ConfigureLayout({
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="border-b border-border bg-muted/20 px-6 py-4">
+      <div className="border-b border-border bg-background/72 px-6 py-4 backdrop-blur">
         <PageTabs
           items={tabs}
           activeId={

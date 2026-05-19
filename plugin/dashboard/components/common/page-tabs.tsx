@@ -75,11 +75,11 @@ export function PageTabs({
         );
 
         const className = cn(
-          "relative rounded-lg border px-3 py-2.5 text-left transition-colors",
-          "hover:border-foreground/25 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+          "relative rounded-lg border px-4 py-3 text-left transition-colors",
+          "hover:border-primary/35 hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
           active
-            ? "border-foreground/25 bg-card text-foreground shadow-sm before:absolute before:inset-x-3 before:top-0 before:h-0.5 before:rounded-full before:bg-foreground"
-            : "border-border bg-background/60 text-muted-foreground",
+            ? "border-primary/35 bg-card text-foreground shadow-sm before:absolute before:inset-x-4 before:top-0 before:h-0.5 before:rounded-full before:bg-primary"
+            : "border-border bg-background/70 text-muted-foreground",
         );
 
         if (item.href) {

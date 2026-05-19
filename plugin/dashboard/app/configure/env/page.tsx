@@ -111,7 +111,7 @@ export default function ConfigureEnvPage() {
         }
       />
 
-      <div className="p-6 max-w-2xl mx-auto space-y-6">
+      <div className="p-6 max-w-3xl mx-auto space-y-5">
         {error && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm">
             {error}
@@ -124,7 +124,7 @@ export default function ConfigureEnvPage() {
           </div>
         )}
 
-        <section className="space-y-4">
+        <section className="space-y-4 rounded-lg border border-border bg-card/92 p-5 shadow-sm">
           <div>
             <h2 className="text-sm font-semibold">Dashboard</h2>
             <p className="text-xs text-muted-foreground">
@@ -136,7 +136,7 @@ export default function ConfigureEnvPage() {
             <Input
               value={reflexioUrl}
               onChange={(e) => setReflexioUrl(e.target.value)}
-              className="font-mono text-xs"
+              className="font-mono text-xs bg-background/80"
               placeholder="http://localhost:8071"
             />
           </div>
@@ -144,7 +144,7 @@ export default function ConfigureEnvPage() {
 
         <Separator />
 
-        <section className="space-y-4">
+        <section className="space-y-4 rounded-lg border border-border bg-card/92 p-5 shadow-sm">
           <div>
             <h2 className="text-sm font-semibold">claude-smart environment</h2>
             <p className="text-xs text-muted-foreground">
@@ -162,7 +162,7 @@ export default function ConfigureEnvPage() {
                 <Input
                   value={config.REFLEXIO_URL}
                   onChange={(e) => update("REFLEXIO_URL", e.target.value)}
-                  className="font-mono text-xs"
+                  className="font-mono text-xs bg-background/80"
                   placeholder="http://localhost:8071/"
                 />
               </div>
@@ -206,7 +206,7 @@ export default function ConfigureEnvPage() {
                 <Input
                   value={String(config.CLAUDE_SMART_CLI_PATH ?? "")}
                   onChange={(e) => update("CLAUDE_SMART_CLI_PATH", e.target.value)}
-                  className="font-mono text-xs"
+                  className="font-mono text-xs bg-background/80"
                   placeholder="(empty — auto-detect via $PATH)"
                 />
               </div>
@@ -218,7 +218,7 @@ export default function ConfigureEnvPage() {
                   onChange={(e) =>
                     update("CLAUDE_SMART_CLI_TIMEOUT", e.target.value)
                   }
-                  className="font-mono text-xs"
+                  className="font-mono text-xs bg-background/80"
                   placeholder="120"
                 />
               </div>
@@ -230,7 +230,7 @@ export default function ConfigureEnvPage() {
                   onChange={(e) =>
                     update("CLAUDE_SMART_STATE_DIR", e.target.value)
                   }
-                  className="font-mono text-xs"
+                  className="font-mono text-xs bg-background/80"
                   placeholder="(empty — default ~/.claude-smart/sessions)"
                 />
               </div>
@@ -240,7 +240,7 @@ export default function ConfigureEnvPage() {
 
         <Separator />
 
-        <section className="space-y-4">
+        <section className="space-y-4 rounded-lg border border-border bg-card/92 p-5 shadow-sm">
           <div>
             <h2 className="text-sm font-semibold">Claude Code hook environment</h2>
             <p className="text-xs text-muted-foreground">
@@ -270,7 +270,7 @@ export default function ConfigureEnvPage() {
                   onCheckedChange={updateOptimizer}
                 />
               </div>
-              <div className="rounded-md border border-border bg-muted/20 p-3 text-xs text-muted-foreground space-y-2">
+              <div className="rounded-md border border-border bg-background/60 p-3 text-xs text-muted-foreground space-y-2">
                 <div className="flex items-center justify-between gap-4">
                   <span>Effective value</span>
                   <span className="font-medium text-foreground">

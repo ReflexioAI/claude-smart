@@ -60,12 +60,12 @@ export default function SessionsPage() {
         actions={
           <div className="flex items-center gap-2">
             <div className="relative">
-              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
                 placeholder="Search sessions…"
-                className="h-8 w-64 pl-7 text-xs"
+                className="h-9 w-64 pl-8 text-xs bg-background/80"
               />
             </div>
             <DeleteAllButton
@@ -108,14 +108,14 @@ export default function SessionsPage() {
             {grouped.map(([label, items]) => (
               <section key={label}>
                 <div className="flex items-center gap-2 mb-2 px-1">
-                  <h2 className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground">
+                  <h2 className="text-[11px] uppercase font-semibold text-muted-foreground">
                     {label}
                   </h2>
                   <span className="text-[11px] text-muted-foreground/70">
                     · {items.length}
                   </span>
                 </div>
-                <div className="rounded-xl border border-border divide-y divide-border bg-card overflow-hidden">
+                <div className="rounded-lg border border-border divide-y divide-border bg-card/90 overflow-hidden shadow-sm">
                   {items.map((s) => (
                     <div
                       key={s.session_id}
@@ -134,11 +134,14 @@ export default function SessionsPage() {
                           );
                         }
                       }}
-                      className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-accent/40 focus:bg-accent/40 focus:outline-none transition-colors"
+                      className="flex cursor-pointer flex-col gap-2 px-4 py-3 transition-colors hover:bg-accent/45 focus:bg-accent/45 focus:outline-none sm:flex-row sm:items-center"
                     >
-                      <MessageSquare className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
+                      <div className="flex min-w-0 items-start gap-3">
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                          <MessageSquare className="h-4 w-4" />
+                        </span>
+                        <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
                           <p className="text-sm truncate">
                             {s.preview ?? (
                               <span className="text-muted-foreground italic">
@@ -167,10 +170,11 @@ export default function SessionsPage() {
                                   {s.published_up_to} published
                                 </span>
                               </>
-                            )}
+                          )}
+                        </div>
                         </div>
                       </div>
-                      <div className="text-xs text-muted-foreground shrink-0 tabular-nums">
+                      <div className="self-end text-xs text-muted-foreground tabular-nums sm:shrink-0">
                         {formatRelative(s.last_activity)}
                       </div>
                     </div>

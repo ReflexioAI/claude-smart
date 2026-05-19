@@ -223,7 +223,7 @@ export default function ProjectSkillDetailPage({
         <div className="mx-auto max-w-5xl grid gap-6 lg:grid-cols-[1fr_280px]">
           <div className="space-y-6 min-w-0">
             {error && (
-              <div className="rounded-xl border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm flex items-start gap-2">
+              <div className="rounded-lg border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm flex items-start gap-2">
                 <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
                 <span>{error}</span>
               </div>
@@ -317,8 +317,8 @@ export default function ProjectSkillDetailPage({
 
           {playbook && (
             <aside className="space-y-3 lg:sticky lg:top-6 lg:self-start">
-              <div className="rounded-xl border border-border bg-card p-4">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+              <div className="rounded-lg border border-border bg-card p-4">
+                <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-3">
                   Metadata
                 </h3>
                 <dl className="space-y-2.5 text-sm">
@@ -359,8 +359,8 @@ export default function ProjectSkillDetailPage({
               </div>
 
               {playbook.source_interaction_ids?.length > 0 && (
-                <div className="rounded-xl border border-border bg-card p-4">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+                <div className="rounded-lg border border-border bg-card p-4">
+                  <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-3">
                     Extracted from
                   </h3>
                   <p className="text-xs text-muted-foreground mb-2">
@@ -431,7 +431,7 @@ function Prose({ text, muted = false }: { text: string; muted?: boolean }) {
   return (
     <div
       className={cn(
-        "rounded-xl border border-border bg-card px-4 py-3",
+        "rounded-lg border border-border bg-card px-4 py-3",
         muted && "bg-muted/30",
       )}
     >
@@ -459,7 +459,7 @@ function AutoTextarea({
       onChange={(e) => onChange(e.target.value)}
       rows={rows}
       placeholder={placeholder}
-      className="w-full rounded-xl border border-input bg-transparent px-4 py-3 text-sm leading-relaxed font-sans resize-y outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 placeholder:text-muted-foreground"
+      className="w-full rounded-lg border border-input bg-transparent px-4 py-3 text-sm leading-relaxed font-sans resize-y outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 placeholder:text-muted-foreground"
     />
   );
 }

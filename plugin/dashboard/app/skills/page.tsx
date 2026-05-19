@@ -191,7 +191,7 @@ export default function SkillsPage() {
               value={agentVersion}
               onValueChange={(v) => setAgentVersion(v ?? "__all__")}
             >
-              <SelectTrigger size="sm" className="w-40 text-xs">
+              <SelectTrigger size="sm" className="w-40 text-xs bg-background/80">
                 <SelectValue placeholder="Project" />
               </SelectTrigger>
               <SelectContent>
@@ -207,7 +207,7 @@ export default function SkillsPage() {
               value={statusFilter}
               onValueChange={(v) => setStatusFilter(v ?? "__all__")}
             >
-              <SelectTrigger size="sm" className="w-36 text-xs">
+              <SelectTrigger size="sm" className="w-36 text-xs bg-background/80">
                 <SelectValue placeholder="Status" />
               </SelectTrigger>
               <SelectContent>
@@ -246,7 +246,7 @@ export default function SkillsPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search"
-              className="h-8 w-48 text-xs"
+              className="h-9 w-48 text-xs bg-background/80"
             />
             <DeleteAllButton
               label={`Delete ${activeKind === "project" ? "project" : "shared"}${activeCount > 0 ? ` (${activeCount})` : ""}`}
@@ -320,7 +320,7 @@ export default function SkillsPage() {
               <Link
                 key={`${p.kind}:${p.id}`}
                 href={`/skills/${p.kind}/${p.id}`}
-                className="block rounded-xl border border-border bg-card p-4 hover:bg-accent/40 transition-colors"
+                className="block rounded-lg border border-border bg-card/92 p-4 shadow-sm transition-colors hover:border-primary/35 hover:bg-accent/45"
               >
                 <header className="flex items-center justify-between gap-2 mb-2">
                   <div className="flex items-center gap-2 min-w-0">
@@ -339,7 +339,7 @@ export default function SkillsPage() {
                 </header>
                 <p
                   className={cn(
-                    "text-sm leading-relaxed line-clamp-4",
+                    "rounded-md border border-border bg-background/60 px-3 py-2 text-sm leading-relaxed line-clamp-4",
                     !p.trigger && "text-muted-foreground italic",
                   )}
                 >

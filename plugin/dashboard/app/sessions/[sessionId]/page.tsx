@@ -121,7 +121,7 @@ export default function InteractionDetailPage({
                 <article
                   key={idx}
                   className={cn(
-                    "rounded-xl border px-4 py-3 bg-card",
+                    "rounded-lg border px-4 py-3 bg-card",
                     flagged
                       ? "border-destructive/30 bg-destructive/5"
                       : "border-border",
@@ -177,7 +177,7 @@ export default function InteractionDetailPage({
                                 <div className="mt-1 space-y-1.5">
                                   {hasInput && (
                                     <div>
-                                      <div className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground/70 mb-0.5">
+                                      <div className="text-[10px] font-mono uppercase text-muted-foreground/70 mb-0.5">
                                         input
                                       </div>
                                       <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-muted/40 px-2 py-1 text-[10px] font-mono text-muted-foreground">
@@ -187,7 +187,7 @@ export default function InteractionDetailPage({
                                   )}
                                   {hasOutput && (
                                     <div>
-                                      <div className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground/70 mb-0.5">
+                                      <div className="text-[10px] font-mono uppercase text-muted-foreground/70 mb-0.5">
                                         output
                                       </div>
                                       <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-muted/40 px-2 py-1 text-[10px] font-mono text-muted-foreground">

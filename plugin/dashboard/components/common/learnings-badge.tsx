@@ -17,7 +17,7 @@ export function LearningsBadge({
     <Badge
       variant="outline"
       className={cn(
-        "border-amber-500/40 gap-1",
+        "border-amber-500/45 bg-amber-500/10 text-amber-700 gap-1 dark:text-amber-300",
         isSmall ? "h-4 px-1.5 text-[10px] shrink-0" : "h-5",
         className,
       )}

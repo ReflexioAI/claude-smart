@@ -199,7 +199,7 @@ export default function PreferenceDetailPage({
         <div className="mx-auto max-w-5xl grid gap-6 lg:grid-cols-[1fr_280px]">
           <div className="space-y-6 min-w-0">
             {error && (
-              <div className="rounded-xl border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm flex items-start gap-2">
+              <div className="rounded-lg border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm flex items-start gap-2">
                 <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
                 <span>{error}</span>
               </div>
@@ -236,7 +236,7 @@ export default function PreferenceDetailPage({
                   onChange={(e) => setContent(e.target.value)}
                   rows={6}
                   placeholder="e.g. Project bans pytest-asyncio; uses anyio with trio backend for async tests."
-                  className="w-full rounded-xl border border-input bg-transparent px-4 py-3 text-sm leading-relaxed font-sans resize-y outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 placeholder:text-muted-foreground"
+                  className="w-full rounded-lg border border-input bg-transparent px-4 py-3 text-sm leading-relaxed font-sans resize-y outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 placeholder:text-muted-foreground"
                 />
               ) : (
                 <Prose text={profile?.content ?? ""} />
@@ -269,7 +269,7 @@ export default function PreferenceDetailPage({
                 title="Custom features"
                 hint="Structured metadata attached to this preference."
               >
-                <div className="rounded-xl border border-border bg-card overflow-hidden">
+                <div className="rounded-lg border border-border bg-card overflow-hidden">
                   <dl className="divide-y divide-border">
                     {customEntries.map(([k, v]) => (
                       <div
@@ -305,8 +305,8 @@ export default function PreferenceDetailPage({
 
           {profile && (
             <aside className="space-y-3 lg:sticky lg:top-6 lg:self-start">
-              <div className="rounded-xl border border-border bg-card p-4">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+              <div className="rounded-lg border border-border bg-card p-4">
+                <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-3">
                   Metadata
                 </h3>
                 <dl className="space-y-2.5 text-sm">
@@ -390,7 +390,7 @@ function Prose({ text }: { text: string }) {
     return <p className="text-sm text-muted-foreground italic">—</p>;
   }
   return (
-    <div className="rounded-xl border border-border bg-card px-4 py-3">
+    <div className="rounded-lg border border-border bg-card px-4 py-3">
       <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
         {text}
       </p>

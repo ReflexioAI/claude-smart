@@ -120,7 +120,7 @@ export default function ConfigureServerPage() {
         }
       />
 
-      <div className="p-6 max-w-2xl mx-auto space-y-6">
+      <div className="p-6 max-w-3xl mx-auto space-y-5">
         {srvError && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm">
             {srvError}
@@ -136,7 +136,7 @@ export default function ConfigureServerPage() {
         {srvLoading ? (
           <div className="text-sm text-muted-foreground">Loading…</div>
         ) : srvConfig ? (
-          <section className="space-y-5">
+          <section className="space-y-5 rounded-lg border border-border bg-card/92 p-5 shadow-sm">
             <div className="space-y-2">
               <Label>Additional agent description</Label>
               <p className="text-xs text-muted-foreground">
@@ -148,7 +148,7 @@ export default function ConfigureServerPage() {
                 onChange={(e) =>
                   updateSrv("agent_context_prompt", e.target.value || null)
                 }
-                className="w-full font-mono text-xs min-h-[80px] rounded-md border border-input bg-transparent px-3 py-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="w-full font-mono text-xs min-h-[80px] rounded-md border border-input bg-background/80 px-3 py-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 placeholder="(empty)"
               />
             </div>
@@ -170,7 +170,7 @@ export default function ConfigureServerPage() {
                     Number.isFinite(n) && n > 0 ? n : undefined,
                   );
                 }}
-                className="font-mono text-xs"
+                className="font-mono text-xs bg-background/80"
                 placeholder="10"
               />
             </div>
@@ -192,7 +192,7 @@ export default function ConfigureServerPage() {
                     Number.isFinite(n) && n > 0 ? n : undefined,
                   );
                 }}
-                className="font-mono text-xs"
+                className="font-mono text-xs bg-background/80"
                 placeholder="5"
               />
             </div>
@@ -215,7 +215,7 @@ export default function ConfigureServerPage() {
                       e.target.value,
                     )
                   }
-                  className="w-full font-mono text-xs min-h-[120px] rounded-md border border-input bg-transparent px-3 py-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="w-full font-mono text-xs min-h-[120px] rounded-md border border-input bg-background/80 px-3 py-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 />
               ) : (
                 <div className="text-xs text-muted-foreground italic">
@@ -242,7 +242,7 @@ export default function ConfigureServerPage() {
                       e.target.value,
                     )
                   }
-                  className="w-full font-mono text-xs min-h-[120px] rounded-md border border-input bg-transparent px-3 py-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="w-full font-mono text-xs min-h-[120px] rounded-md border border-input bg-background/80 px-3 py-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 />
               ) : (
                 <div className="text-xs text-muted-foreground italic">
