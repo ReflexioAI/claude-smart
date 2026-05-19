@@ -773,6 +773,56 @@ def test_codex_hook_caps_backend_log_appends(tmp_path: Path) -> None:
     assert log.stat().st_size <= 10_000_000
 
 
+def test_install_fingerprint_hash_tracks_lib_changes(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin"
+    scripts = plugin_root / "scripts"
+    dashboard = plugin_root / "dashboard"
+    scripts.mkdir(parents=True)
+    dashboard.mkdir()
+    (scripts / "smart-install.sh").write_text("#!/bin/sh\n")
+    (scripts / "_lib.sh").write_text("helper=v1\n")
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    (plugin_root / "uv.lock").write_text("version = 1\n")
+    (dashboard / "package.json").write_text("{}\n")
+    (dashboard / "package-lock.json").write_text("{}\n")
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(
+        tmp_path,
+        "awk",
+        "cksum",
+        "mktemp",
+        "rm",
+        "sha256sum",
+        "shasum",
+        "openssl",
+    )
+    command = (
+        f'. "{LIB}"; '
+        f'claude_smart_install_fingerprint_hash "{plugin_root}" "{scripts}"'
+    )
+    before = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", command],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    (scripts / "_lib.sh").write_text("helper=v2\n")
+    after = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", command],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert before.returncode == 0, before.stderr
+    assert after.returncode == 0, after.stderr
+    assert before.stdout.strip()
+    assert before.stdout != after.stdout
+
+
 def test_install_private_node_installs_from_verified_archive(tmp_path: Path) -> None:
     dist = _fake_node_dist(tmp_path)
     result = _run_private_node_install(tmp_path, f"file://{dist}")

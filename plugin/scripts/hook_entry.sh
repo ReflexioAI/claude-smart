@@ -43,10 +43,20 @@ PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 FAILURE_MARKER="$HOME/.claude-smart/install-failed"
 STATE_DIR="$HOME/.claude-smart"
 if [ -f "$FAILURE_MARKER" ]; then
-  if [ "$EVENT" = "session-start" ] && command -v python3 >/dev/null 2>&1; then
-    python3 - "$FAILURE_MARKER" <<'PY'
+  # Auto-clear the marker when install inputs have changed since the
+  # failure was recorded (pyproject.toml / uv.lock / smart-install.sh /
+  # python interpreter etc.). Without this the plugin stays muted forever
+  # after a transient sync failure even when the user has fixed it.
+  stored_fp="$(awk -F= '$1=="fingerprint"{print $2; exit}' "$FAILURE_MARKER" 2>/dev/null || true)"
+  current_fp="$(claude_smart_install_fingerprint_hash "$PLUGIN_ROOT" "$HERE" 2>/dev/null || true)"
+  if [ -z "$stored_fp" ] || [ "$stored_fp" != "$current_fp" ]; then
+    rm -f "$FAILURE_MARKER"
+  else
+    if [ "$EVENT" = "session-start" ] && command -v python3 >/dev/null 2>&1; then
+      python3 - "$FAILURE_MARKER" <<'PY'
 import json, pathlib, sys
-msg = pathlib.Path(sys.argv[1]).read_text().strip() or "unknown error"
+first = pathlib.Path(sys.argv[1]).read_text().splitlines()
+msg = (first[0].strip() if first else "") or "unknown error"
 print(json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "SessionStart",
@@ -59,10 +69,11 @@ print(json.dumps({
     }
 }))
 PY
-  else
-    echo '{"continue":true,"suppressOutput":true}'
+    else
+      echo '{"continue":true,"suppressOutput":true}'
+    fi
+    exit 0
   fi
-  exit 0
 fi
 
 if ! command -v uv >/dev/null 2>&1; then

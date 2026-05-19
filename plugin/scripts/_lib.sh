@@ -206,6 +206,61 @@ PY
   return 1
 }
 
+# Print a short fingerprint line for a file ("<cksum>:<size>" or "missing").
+claude_smart_fingerprint_file() {
+  local path
+  path="$1"
+  if [ -f "$path" ]; then
+    cksum "$path" 2>/dev/null | awk '{print $1 ":" $2}'
+  else
+    printf 'missing\n'
+  fi
+}
+
+# Print a multi-line fingerprint covering every input that determines
+# whether smart-install.sh can succeed. Order is stable so the hash is
+# reproducible. Args: $1 = plugin_root, $2 = scripts_dir.
+claude_smart_install_fingerprint() {
+  local plugin_root script_dir
+  plugin_root="$1"
+  script_dir="$2"
+  printf 'plugin_root=%s\n' "$plugin_root"
+  printf 'smart_install=%s\n' "$(claude_smart_fingerprint_file "$script_dir/smart-install.sh")"
+  printf 'lib=%s\n' "$(claude_smart_fingerprint_file "$script_dir/_lib.sh")"
+  printf 'pyproject=%s\n' "$(claude_smart_fingerprint_file "$plugin_root/pyproject.toml")"
+  printf 'uv_lock=%s\n' "$(claude_smart_fingerprint_file "$plugin_root/uv.lock")"
+  # Resolved python interpreter — catches a system upgrade (3.12.4 → 3.12.5)
+  # that would otherwise let install_complete return true against a venv
+  # built against a now-deleted interpreter.
+  if command -v uv >/dev/null 2>&1; then
+    printf 'python=%s\n' "$(uv python find 3.12 2>/dev/null || echo missing)"
+  else
+    printf 'python=no-uv\n'
+  fi
+  if [ -d "$plugin_root/dashboard" ]; then
+    printf 'dashboard_pkg=%s\n' "$(claude_smart_fingerprint_file "$plugin_root/dashboard/package.json")"
+    printf 'dashboard_lock=%s\n' "$(claude_smart_fingerprint_file "$plugin_root/dashboard/package-lock.json")"
+  else
+    printf 'dashboard_pkg=none\n'
+    printf 'dashboard_lock=none\n'
+  fi
+}
+
+# Hash the install fingerprint to a single short hex string. Used by the
+# install-failed marker so hook_entry.sh can detect when inputs change and
+# auto-clear a stale marker. Args: $1 = plugin_root, $2 = scripts_dir.
+claude_smart_install_fingerprint_hash() {
+  local plugin_root script_dir tmp rc
+  plugin_root="$1"
+  script_dir="$2"
+  tmp=$(mktemp 2>/dev/null) || return 1
+  claude_smart_install_fingerprint "$plugin_root" "$script_dir" > "$tmp"
+  claude_smart_sha256_file "$tmp"
+  rc=$?
+  rm -f "$tmp"
+  return $rc
+}
+
 # Return 0 if `node` exists and satisfies the minimum major/minor pair.
 # Patch versions are intentionally ignored because our requirement is a
 # floor, not an exact runtime pin.

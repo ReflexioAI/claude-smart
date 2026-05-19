@@ -80,45 +80,23 @@ acquire_install_lock
 rm -f "$FAILURE_MARKER"
 
 write_failure() {
-  local reason
+  local reason fp_hash
   reason="$1"
-  printf '%s\n' "$reason" > "$FAILURE_MARKER"
+  fp_hash="$(claude_smart_install_fingerprint_hash "$PLUGIN_ROOT" "$HERE" 2>/dev/null || true)"
+  {
+    printf '%s\n' "$reason"
+    if [ -n "$fp_hash" ]; then
+      printf 'fingerprint=%s\n' "$fp_hash"
+    fi
+  } > "$FAILURE_MARKER"
   rm -f "$SUCCESS_MARKER"
   echo "[claude-smart] install failed: $reason" >&2
   echo '{"continue":true,"suppressOutput":true}'
   exit 0
 }
 
-fingerprint_file() {
-  local path
-  path="$1"
-  if [ -f "$path" ]; then
-    cksum "$path" 2>/dev/null | awk '{print $1 ":" $2}'
-  else
-    printf 'missing\n'
-  fi
-}
-
 install_fingerprint() {
-  printf 'plugin_root=%s\n' "$PLUGIN_ROOT"
-  printf 'smart_install=%s\n' "$(fingerprint_file "$HERE/smart-install.sh")"
-  printf 'pyproject=%s\n' "$(fingerprint_file "$PLUGIN_ROOT/pyproject.toml")"
-  printf 'uv_lock=%s\n' "$(fingerprint_file "$PLUGIN_ROOT/uv.lock")"
-  # Resolved python interpreter — catches a system upgrade (3.12.4 → 3.12.5)
-  # that would otherwise let install_complete return true against a venv
-  # built against a now-deleted interpreter.
-  if command -v uv >/dev/null 2>&1; then
-    printf 'python=%s\n' "$(uv python find 3.12 2>/dev/null || echo missing)"
-  else
-    printf 'python=no-uv\n'
-  fi
-  if [ -d "$PLUGIN_ROOT/dashboard" ]; then
-    printf 'dashboard_pkg=%s\n' "$(fingerprint_file "$PLUGIN_ROOT/dashboard/package.json")"
-    printf 'dashboard_lock=%s\n' "$(fingerprint_file "$PLUGIN_ROOT/dashboard/package-lock.json")"
-  else
-    printf 'dashboard_pkg=none\n'
-    printf 'dashboard_lock=none\n'
-  fi
+  claude_smart_install_fingerprint "$PLUGIN_ROOT" "$HERE"
 }
 
 install_complete() {

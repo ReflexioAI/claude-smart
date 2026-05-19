@@ -24,7 +24,7 @@ PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 # on a broken install.
 FAILURE_MARKER="$HOME/.claude-smart/install-failed"
 if [ -f "$FAILURE_MARKER" ]; then
-  msg="$(cat "$FAILURE_MARKER" 2>/dev/null || echo "")"
+  msg="$(head -n 1 "$FAILURE_MARKER" 2>/dev/null || echo "")"
   [ -n "$msg" ] || msg="unknown error"
   echo "claude-smart is not installed correctly: $msg" >&2
   echo "Re-run the plugin's Setup (restart Claude Code) or fix the underlying issue and delete $FAILURE_MARKER to retry." >&2
@@ -50,7 +50,8 @@ if ! command -v uv >/dev/null 2>&1; then
   fi
   if ! command -v uv >/dev/null 2>&1; then
     if [ -f "$FAILURE_MARKER" ]; then
-      msg="$(cat "$FAILURE_MARKER" 2>/dev/null || echo "unknown error")"
+      msg="$(head -n 1 "$FAILURE_MARKER" 2>/dev/null || echo "")"
+      [ -n "$msg" ] || msg="unknown error"
       echo "claude-smart: install failed: $msg" >&2
       echo "Fix the underlying issue and delete $FAILURE_MARKER to retry." >&2
     else

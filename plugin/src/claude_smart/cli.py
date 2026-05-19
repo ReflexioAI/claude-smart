@@ -205,7 +205,8 @@ def _bootstrap_claude_code_install() -> tuple[bool, str]:
     if result.returncode != 0:
         return False, f"smart-install.sh failed in {plugin_root}"
     if _INSTALL_FAILURE_MARKER.is_file():
-        reason = _INSTALL_FAILURE_MARKER.read_text().strip() or "unknown error"
+        first_line = _INSTALL_FAILURE_MARKER.read_text().splitlines()
+        reason = (first_line[0].strip() if first_line else "") or "unknown error"
         return False, reason
     return True, str(plugin_root)
 
