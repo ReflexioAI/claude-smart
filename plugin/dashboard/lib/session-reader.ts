@@ -409,8 +409,10 @@ export async function listSessions(): Promise<SessionSummary[]> {
 
 export async function deleteSession(sessionId: string): Promise<boolean> {
   const file = path.join(stateDir(), `${sessionId}.jsonl`);
+  const injectedFile = path.join(stateDir(), `${sessionId}.injected.jsonl`);
   try {
     await fs.unlink(file);
+    await fs.unlink(injectedFile).catch(() => undefined);
     return true;
   } catch {
     return false;
