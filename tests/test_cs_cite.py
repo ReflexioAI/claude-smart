@@ -20,13 +20,12 @@ def test_parse_text_citations_accepts_human_dashboard_marker() -> None:
     text = (
         "The real answer remains visible.\n\n"
         "✨ claude-smart rules applied: "
-        "[git safety](http://localhost:3001/skills/project/7536), "
-        "[brief answer preference]"
-        "(http://localhost:3001/preferences/project/codex-pref-short-answer)"
+        "[git safety](http://localhost:3001/rules/s1-7536), "
+        "[brief answer preference](http://localhost:3001/rules/p1-code)"
     )
     assert cs_cite.parse_text_citations(text) == [
-        "route:playbook:user_playbook:7536",
-        "route:profile:profile:codex-pref-short-answer",
+        "s1-7536",
+        "p1-code",
     ]
 
 
@@ -52,8 +51,21 @@ def test_parse_text_citations_accepts_osc8_dashboard_links() -> None:
     text = (
         "Done.\n\n"
         "✨ claude-smart rules applied: "
-        "\x1b]8;;http://localhost:3001/skills/project/7536\x1b\\git safety\x1b]8;;\x1b\\, "
-        "\x1b]8;;http://localhost:3001/preferences/project/pref-1\x1b\\brief answers\x1b]8;;\x1b\\"
+        "\x1b]8;;http://localhost:3001/rules/s1-7536\x1b\\git safety\x1b]8;;\x1b\\, "
+        "\x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\brief answers\x1b]8;;\x1b\\"
+    )
+    assert cs_cite.parse_text_citations(text) == [
+        "s1-7536",
+        "p1-pref",
+    ]
+
+
+def test_parse_text_citations_accepts_direct_dashboard_links() -> None:
+    text = (
+        "Done.\n\n"
+        "✨ claude-smart rules applied: "
+        "[git safety](http://localhost:3001/skills/project/7536), "
+        "[brief answers](http://localhost:3001/preferences/project/pref-1)"
     )
     assert cs_cite.parse_text_citations(text) == [
         "route:playbook:user_playbook:7536",
@@ -164,8 +176,8 @@ def test_citation_instruction_marker_only_drops_counterfactual_paragraph() -> No
 def test_citation_instruction_osc8_uses_terminal_hyperlink_examples() -> None:
     text = cs_cite.citation_instruction("marker-only", "osc8")
     assert "OSC 8 terminal" in text
-    assert "\x1b]8;;http://localhost:3001/skills/project/123\x1b\\" in text
-    assert "[git safety](http://localhost:3001/skills/project/123)" in text
+    assert "\x1b]8;;http://localhost:3001/rules/s1-123\x1b\\" in text
+    assert "[git safety](http://localhost:3001/rules/s1-123)" in text
 
 
 def test_citation_instruction_off_returns_empty_string() -> None:

@@ -40,10 +40,12 @@ def test_render_with_registry_ids_match_between_markdown_and_registry() -> None:
     assert by_id["s1-17"]["real_id"] == "17"
     assert by_id["p1-uuid"]["real_id"] == "uuid-profile-1"
     assert by_id["s1-17"]["dashboard_url"] == "http://localhost:3001/skills/project/17"
+    assert by_id["s1-17"]["rule_url"] == "http://localhost:3001/rules/s1-17"
     assert (
         by_id["p1-uuid"]["dashboard_url"]
         == "http://localhost:3001/preferences/project/uuid-profile-1"
     )
+    assert by_id["p1-uuid"]["rule_url"] == "http://localhost:3001/rules/p1-uuid"
 
 
 def test_render_with_registry_ranks_increase_in_order() -> None:
@@ -210,7 +212,7 @@ def test_render_inline_with_registry_can_inject_osc8_instruction(monkeypatch) ->
         profiles=[],
     )
     assert "OSC 8 terminal" in md
-    assert "\x1b]8;;http://localhost:3001/skills/project/123\x1b\\" in md
+    assert "\x1b]8;;http://localhost:3001/rules/s1-123\x1b\\" in md
     assert "✨ claude-smart rule applied: [verify process state]" not in md
 
 
@@ -237,16 +239,19 @@ def test_render_inline_with_registry_includes_dashboard_urls(monkeypatch) -> Non
         profiles=[{"content": "prefers concise answers", "profile_id": "pref/one"}],
     )
 
-    assert "open: http://127.0.0.1:3333/skills/shared/42" in md
-    assert "open: http://127.0.0.1:3333/skills/project/17" in md
-    assert "open: http://127.0.0.1:3333/preferences/project/pref%2Fone" in md
+    assert "open: http://127.0.0.1:3333/rules/s1-42" in md
+    assert "open: http://127.0.0.1:3333/rules/s2-17" in md
+    assert "open: http://127.0.0.1:3333/rules/p1-pref" in md
     by_id = {e["id"]: e for e in registry}
     assert by_id["s1-42"]["dashboard_url"] == "http://127.0.0.1:3333/skills/shared/42"
+    assert by_id["s1-42"]["rule_url"] == "http://127.0.0.1:3333/rules/s1-42"
     assert by_id["s2-17"]["dashboard_url"] == "http://127.0.0.1:3333/skills/project/17"
+    assert by_id["s2-17"]["rule_url"] == "http://127.0.0.1:3333/rules/s2-17"
     assert (
         by_id["p1-pref"]["dashboard_url"]
         == "http://127.0.0.1:3333/preferences/project/pref%2Fone"
     )
+    assert by_id["p1-pref"]["rule_url"] == "http://127.0.0.1:3333/rules/p1-pref"
 
 
 def test_render_inline_with_registry_off_omits_instruction(monkeypatch) -> None:

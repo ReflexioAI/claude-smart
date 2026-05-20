@@ -7,7 +7,7 @@ real id (``[cs:s1-1a2b]`` for the first skill whose
 second preference). The injected instruction asks the assistant to end
 impactful replies with a marker like::
 
-    ✨ claude-smart rule applied: [git safety](http://localhost:3001/skills/project/123)
+    ✨ claude-smart rule applied: [git safety](http://localhost:3001/rules/s1-123)
 
 The Stop hook later scans the assistant text for those markers and resolves
 the ids against a per-session registry persisted at
@@ -62,7 +62,8 @@ _OSC8_URL_RE = re.compile(
 _RAW_DASHBOARD_URL_RE = re.compile(
     r"(?P<url>(?:https?://[^\s),\x1b\\]+)?/"
     r"(?:skills/(?:project|shared)/[^\s),\x1b\\]+|"
-    r"preferences/(?:project/)?[^\s),\x1b\\]+))"
+    r"preferences/(?:project/)?[^\s),\x1b\\]+|"
+    r"rules/[^\s),\x1b\\]+))"
 )
 
 _INTRO_AUTO = (
@@ -114,11 +115,11 @@ _MARKDOWN_MARKER_PARAGRAPH = (
     "End the message with exactly one marker line using human-readable "
     "linked titles, not raw ids. Use this exact format for one item: "
     "`✨ claude-smart rule applied: "
-    "[verify process state](http://localhost:3001/skills/project/123)`. "
+    "[verify process state](http://localhost:3001/rules/s1-123)`. "
     "Use this exact format for multiple items: "
     "`✨ claude-smart rules applied: "
-    "[git safety](http://localhost:3001/skills/project/123), "
-    "[brief answer preference](http://localhost:3001/preferences/project/pref-456)`. "
+    "[git safety](http://localhost:3001/rules/s1-123), "
+    "[brief answer preference](http://localhost:3001/rules/p1-pref)`. "
     "Choose a short human title (2-6 words) from the cited item's content. "
     "Use the dashboard URL shown beside that item in the context; do not "
     "invent URLs. The marker line MUST be the very last line of your "
@@ -129,17 +130,17 @@ _MARKDOWN_MARKER_PARAGRAPH = (
 
 _OSC8_EXAMPLE_ONE = (
     "✨ claude-smart rule applied: "
-    "\x1b]8;;http://localhost:3001/skills/project/123\x1b\\"
+    "\x1b]8;;http://localhost:3001/rules/s1-123\x1b\\"
     "verify process state"
     "\x1b]8;;\x1b\\"
 )
 _OSC8_EXAMPLE_MULTI = (
     "✨ claude-smart rules applied: "
-    "\x1b]8;;http://localhost:3001/skills/project/123\x1b\\"
+    "\x1b]8;;http://localhost:3001/rules/s1-123\x1b\\"
     "git safety"
     "\x1b]8;;\x1b\\"
     ", "
-    "\x1b]8;;http://localhost:3001/preferences/project/pref-456\x1b\\"
+    "\x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\"
     "brief answer preference"
     "\x1b]8;;\x1b\\"
 )
@@ -153,7 +154,7 @@ _OSC8_MARKER_PARAGRAPH = (
     "short human title (2-6 words) from the cited item's content. Use the "
     "dashboard URL shown beside that item in the context; do not invent "
     "URLs. If your terminal cannot emit OSC 8, fall back to markdown links "
-    "like `[git safety](http://localhost:3001/skills/project/123)`. The "
+    "like `[git safety](http://localhost:3001/rules/s1-123)`. The "
     "marker line MUST be the very last line of your message. Do not include "
     "`[cs:…]` ids in the marker line. Never emit a standalone wrapper like "
     "`✨s1-ab12✨` or `✨abc123✨`; those are not claude-smart citations and "
@@ -273,7 +274,7 @@ def parse_text_citations(text: str) -> list[str]:
 
     and the newer human-readable dashboard-link marker::
 
-        ✨ claude-smart rule applied: [git safety](http://localhost:3001/skills/project/123)
+        ✨ claude-smart rule applied: [git safety](http://localhost:3001/rules/s1-123)
 
     Ordinary references to injected ``[cs:...]`` ids or dashboard URLs inside
     the answer do not count as citations; they must appear on a final marker
@@ -358,4 +359,7 @@ def dashboard_url_token(url: str) -> str:
         return f"route:profile:profile:{parts[1]}"
     if len(parts) == 3 and parts[0] == "preferences" and parts[1] == "project":
         return f"route:profile:profile:{parts[2]}"
+    if len(parts) == 2 and parts[0] == "rules":
+        clean = _CLEAN_ID_RE.match(parts[1])
+        return clean.group(1).lower() if clean else ""
     return ""

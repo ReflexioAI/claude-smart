@@ -223,13 +223,14 @@ def _append_playbook_bullet(
     item_id = cs_cite.rank_id("playbook", rank, real_id)
     title = _title_from_content(content)
     dashboard_url = _dashboard_url("playbook", real_id, source_kind)
+    rule_url = _rule_url(item_id)
     bullet = f"- [cs:{item_id}] {content}"
     if trigger:
         bullet += f" _(when: {trigger})_"
     if rationale:
         bullet += f" — *why:* {rationale}"
-    if dashboard_url:
-        bullet += f" _(open: {dashboard_url})_"
+    if rule_url:
+        bullet += f" _(open: {rule_url})_"
     lines.append(bullet)
     entries.append(
         {
@@ -240,6 +241,7 @@ def _append_playbook_bullet(
             "real_id": str(real_id) if real_id is not None else None,
             "source_kind": source_kind,
             "dashboard_url": dashboard_url,
+            "rule_url": rule_url,
         }
     )
     return rank
@@ -260,9 +262,10 @@ def _format_profiles(
         item_id = cs_cite.rank_id("profile", rank, real_id)
         title = _title_from_content(content)
         dashboard_url = _dashboard_url("profile", real_id)
+        rule_url = _rule_url(item_id)
         bullet = f"- [cs:{item_id}] {content}"
-        if dashboard_url:
-            bullet += f" _(open: {dashboard_url})_"
+        if rule_url:
+            bullet += f" _(open: {rule_url})_"
         lines.append(bullet)
         entries.append(
             {
@@ -272,6 +275,7 @@ def _format_profiles(
                 "content": content,
                 "real_id": str(real_id) if real_id is not None else None,
                 "dashboard_url": dashboard_url,
+                "rule_url": rule_url,
             }
         )
     return lines, entries
@@ -288,6 +292,14 @@ def _dashboard_url(kind: str, real_id: Any, source_kind: str | None = None) -> s
         skill_kind = "shared" if source_kind == "agent_playbook" else "project"
         return f"{base}/skills/{skill_kind}/{encoded_id}"
     return ""
+
+
+def _rule_url(item_id: str) -> str:
+    if not item_id:
+        return ""
+    encoded_id = quote(item_id, safe="")
+    base = os.environ.get(_DASHBOARD_URL_ENV, _DEFAULT_DASHBOARD_URL).rstrip("/")
+    return f"{base}/rules/{encoded_id}"
 
 
 def _title_from_content(content: str, limit: int = 80) -> str:

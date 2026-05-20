@@ -50,6 +50,19 @@ type RawRecord = {
   published_up_to?: number;
 };
 
+type RawInjectedEntry = CitedItem & {
+  dashboard_url?: string;
+  rule_url?: string;
+  ts?: number;
+};
+
+export interface RuleResolution {
+  id: string;
+  href: string;
+  title: string;
+  kind: CitedItem["kind"];
+}
+
 async function readJsonl(filePath: string): Promise<RawRecord[]> {
   const text = await fs.readFile(filePath, "utf-8");
   const out: RawRecord[] = [];
@@ -63,6 +76,94 @@ async function readJsonl(filePath: string): Promise<RawRecord[]> {
     }
   }
   return out;
+}
+
+async function readInjectedJsonl(filePath: string): Promise<RawInjectedEntry[]> {
+  const text = await fs.readFile(filePath, "utf-8");
+  const out: RawInjectedEntry[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const rec = JSON.parse(trimmed);
+      if (
+        rec &&
+        typeof rec === "object" &&
+        typeof rec.id === "string" &&
+        rec.id.length > 0
+      ) {
+        out.push(rec);
+      }
+    } catch {
+      // skip malformed line, matches state.py behaviour
+    }
+  }
+  return out;
+}
+
+function hrefForInjectedEntry(entry: RawInjectedEntry): string | null {
+  const realId = entry.real_id;
+  if (typeof realId === "string" && realId.length > 0) {
+    if (entry.kind === "profile") {
+      return `/preferences/project/${encodeURIComponent(realId)}`;
+    }
+    if (entry.kind === "playbook") {
+      const scope = entry.source_kind === "agent_playbook" ? "shared" : "project";
+      return `/skills/${scope}/${encodeURIComponent(realId)}`;
+    }
+  }
+  if (typeof entry.dashboard_url === "string" && entry.dashboard_url.length > 0) {
+    try {
+      const parsed = new URL(entry.dashboard_url);
+      return `${parsed.pathname}${parsed.search}`;
+    } catch {
+      if (entry.dashboard_url.startsWith("/")) return entry.dashboard_url;
+    }
+  }
+  return null;
+}
+
+export async function resolveRuleLink(
+  citationId: string,
+): Promise<RuleResolution | null> {
+  if (!/^[ps]\d+(?:-[A-Za-z0-9]{1,8})?$/.test(citationId)) return null;
+  const dir = stateDir();
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return null;
+  }
+  const files = (
+    await Promise.all(
+      entries
+        .filter((entry) => entry.endsWith(".injected.jsonl"))
+        .map(async (entry) => {
+          const fullPath = path.join(dir, entry);
+          const stat = await fs.stat(fullPath).catch(() => null);
+          return stat?.isFile() ? { fullPath, mtimeMs: stat.mtimeMs } : null;
+        }),
+    )
+  )
+    .filter((entry): entry is { fullPath: string; mtimeMs: number } => !!entry)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  for (const file of files) {
+    const records = await readInjectedJsonl(file.fullPath).catch(() => []);
+    for (let i = records.length - 1; i >= 0; i--) {
+      const entry = records[i];
+      if (entry.id !== citationId) continue;
+      const href = hrefForInjectedEntry(entry);
+      if (!href) return null;
+      return {
+        id: entry.id,
+        href,
+        title: entry.title || entry.id,
+        kind: entry.kind,
+      };
+    }
+  }
+  return null;
 }
 
 function foldTurns(records: RawRecord[]): {
