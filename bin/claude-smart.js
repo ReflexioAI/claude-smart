@@ -57,6 +57,12 @@ const CODEX_PLUGIN_CACHE_DIR = join(
   CODEX_MARKETPLACE_NAME,
   "claude-smart",
 );
+const LOCAL_DATA_NOTICE = [
+  "Local data was not deleted and remains on disk:",
+  "  ~/.claude-smart",
+  "  ~/.reflexio",
+  "To remove local claude-smart data later, run: rm -rf ~/.claude-smart ~/.reflexio",
+];
 const CODEX_REQUIRED_FILES = [
   ".agents/plugins/marketplace.json",
   "plugin/.codex-plugin/plugin.json",
@@ -1143,7 +1149,7 @@ async function runUninstall(args) {
     [
       "",
       "claude-smart uninstalled. Restart Claude Code to apply.",
-      "Local data in ~/.reflexio/ and ~/.claude-smart/ was left in place — remove manually if desired.",
+      ...LOCAL_DATA_NOTICE,
       "",
     ].join("\n"),
   );
@@ -1324,7 +1330,8 @@ async function runUninstallCodex() {
     [
       "",
       "claude-smart Codex plugin and marketplace state removed. Restart Codex to apply.",
-      "Codex's global hook feature flags and local data under ~/.reflexio/ and ~/.claude-smart/ were left in place.",
+      "Codex's global hook feature flags were left in place.",
+      ...LOCAL_DATA_NOTICE,
       "",
     ].join("\n"),
   );

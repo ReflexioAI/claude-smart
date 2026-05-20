@@ -621,7 +621,12 @@ def test_codex_uninstall_cleans_plugin_config_cache_and_marketplace(
     assert "plugin_hooks = true" in text
     assert '[plugins."browser@openai-bundled"]' in text
     assert "[marketplaces.openai-bundled]" in text
-    assert "plugin and marketplace state removed" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "plugin and marketplace state removed" in out
+    assert "Local data was not deleted" in out
+    assert "~/.claude-smart" in out
+    assert "~/.reflexio" in out
+    assert "rm -rf ~/.claude-smart ~/.reflexio" in out
 
 
 def test_set_codex_hook_states_replaces_only_claude_smart_hooks(tmp_path) -> None:

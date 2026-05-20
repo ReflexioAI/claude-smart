@@ -70,6 +70,13 @@ _BACKEND_SCRIPT = _SCRIPTS_DIR / "backend-service.sh"
 _DASHBOARD_SCRIPT = _SCRIPTS_DIR / "dashboard-service.sh"
 _REFLEXIO_DIR = Path.home() / ".reflexio"
 _STATE_DIR = Path.home() / ".claude-smart"
+_LOCAL_DATA_NOTICE = (
+    "Local data was not deleted and remains on disk:\n"
+    "  ~/.claude-smart\n"
+    "  ~/.reflexio\n"
+    "To remove local claude-smart data later, run: "
+    "rm -rf ~/.claude-smart ~/.reflexio\n"
+)
 _INSTALL_FAILURE_MARKER = _STATE_DIR / "install-failed"
 _DEFAULT_STORAGE_ROOT = _REFLEXIO_DIR / "data"
 _REFLEXIO_CONFIG_PATH = _REFLEXIO_DIR / "configs" / "config_self-host-org.json"
@@ -953,8 +960,7 @@ def cmd_uninstall(_args: argparse.Namespace) -> int:
 
     sys.stdout.write(
         "\nclaude-smart uninstalled. Restart Claude Code to apply.\n"
-        "Local data in ~/.reflexio/ and ~/.claude-smart/ was left in place — "
-        "remove manually if desired.\n"
+        f"{_LOCAL_DATA_NOTICE}"
     )
     return 0
 
@@ -991,8 +997,8 @@ def cmd_uninstall_codex(_args: argparse.Namespace) -> int:
         sys.stderr.write(f"warning: could not update {_CODEX_CONFIG_PATH}\n")
     sys.stdout.write(
         "claude-smart Codex plugin and marketplace state removed. Restart Codex to apply. "
-        "Codex's global hook feature flags and local data under ~/.reflexio "
-        "and ~/.claude-smart were left in place.\n"
+        "Codex's global hook feature flags were left in place.\n"
+        f"{_LOCAL_DATA_NOTICE}"
     )
     return 0
 
