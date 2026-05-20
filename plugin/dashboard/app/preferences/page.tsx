@@ -89,7 +89,7 @@ export default function PreferencesPage() {
             {filtered.map((p) => (
               <Link
                 key={p.profile_id}
-                href={`/preferences/${encodeURIComponent(p.profile_id)}`}
+                href={`/preferences/project/${encodeURIComponent(p.profile_id)}`}
                 className="group block rounded-xl border border-border bg-card p-4 hover:bg-accent/40 transition-colors"
               >
                 <header className="flex items-center justify-between gap-2 mb-2">

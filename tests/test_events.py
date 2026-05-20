@@ -1150,7 +1150,7 @@ def test_stop_records_human_dashboard_marker_as_cited_items(
                                 "[pathlib rule]"
                                 "(http://localhost:3001/skills/project/42), "
                                 "[anyio preference]"
-                                "(http://localhost:3001/preferences/uuid-anyio)"
+                                "(http://localhost:3001/preferences/project/uuid-anyio)"
                             ),
                         }
                     ]

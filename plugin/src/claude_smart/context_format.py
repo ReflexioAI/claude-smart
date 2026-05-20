@@ -283,7 +283,7 @@ def _dashboard_url(kind: str, real_id: Any, source_kind: str | None = None) -> s
     encoded_id = quote(str(real_id), safe="")
     base = os.environ.get(_DASHBOARD_URL_ENV, _DEFAULT_DASHBOARD_URL).rstrip("/")
     if kind == "profile":
-        return f"{base}/preferences/{encoded_id}"
+        return f"{base}/preferences/project/{encoded_id}"
     if kind == "playbook":
         skill_kind = "shared" if source_kind == "agent_playbook" else "project"
         return f"{base}/skills/{skill_kind}/{encoded_id}"

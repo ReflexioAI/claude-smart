@@ -61,7 +61,8 @@ _OSC8_URL_RE = re.compile(
 )
 _RAW_DASHBOARD_URL_RE = re.compile(
     r"(?P<url>(?:https?://[^\s),\x1b\\]+)?/"
-    r"(?:skills/(?:project|shared)/[^\s),\x1b\\]+|preferences/[^\s),\x1b\\]+))"
+    r"(?:skills/(?:project|shared)/[^\s),\x1b\\]+|"
+    r"preferences/(?:project/)?[^\s),\x1b\\]+))"
 )
 
 _INTRO_AUTO = (
@@ -117,7 +118,7 @@ _MARKDOWN_MARKER_PARAGRAPH = (
     "Use this exact format for multiple items: "
     "`✨ claude-smart rules applied: "
     "[git safety](http://localhost:3001/skills/project/123), "
-    "[brief answer preference](http://localhost:3001/preferences/pref-456)`. "
+    "[brief answer preference](http://localhost:3001/preferences/project/pref-456)`. "
     "Choose a short human title (2-6 words) from the cited item's content. "
     "Use the dashboard URL shown beside that item in the context; do not "
     "invent URLs. The marker line MUST be the very last line of your "
@@ -138,7 +139,7 @@ _OSC8_EXAMPLE_MULTI = (
     "git safety"
     "\x1b]8;;\x1b\\"
     ", "
-    "\x1b]8;;http://localhost:3001/preferences/pref-456\x1b\\"
+    "\x1b]8;;http://localhost:3001/preferences/project/pref-456\x1b\\"
     "brief answer preference"
     "\x1b]8;;\x1b\\"
 )
@@ -355,4 +356,6 @@ def dashboard_url_token(url: str) -> str:
         return f"route:playbook:{source_kind}:{parts[2]}"
     if len(parts) == 2 and parts[0] == "preferences":
         return f"route:profile:profile:{parts[1]}"
+    if len(parts) == 3 and parts[0] == "preferences" and parts[1] == "project":
+        return f"route:profile:profile:{parts[2]}"
     return ""

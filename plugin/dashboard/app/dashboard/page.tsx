@@ -255,14 +255,14 @@ export default function DashboardPage() {
           {topApplied && topApplied.length > 0 ? (
             <div className="rounded-xl border border-border divide-y divide-border bg-card">
               {topApplied.slice(0, 5).map((s) => {
-                // Preferences route directly to their detail page by profile_id.
+                // Preferences route directly to their scoped detail page by profile_id.
                 // Skills route to the /skills list (which already shows
                 // applied_count badges); a direct link would need
                 // source_kind to pick project vs shared, which the stats
                 // endpoint doesn't surface yet.
                 const href = s.title
                   ? s.kind === "profile"
-                    ? `/preferences/${s.real_id}`
+                    ? `/preferences/project/${encodeURIComponent(s.real_id)}`
                     : "/skills"
                   : null;
                 const rowBody = (

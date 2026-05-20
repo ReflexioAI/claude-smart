@@ -21,7 +21,8 @@ def test_parse_text_citations_accepts_human_dashboard_marker() -> None:
         "The real answer remains visible.\n\n"
         "✨ claude-smart rules applied: "
         "[git safety](http://localhost:3001/skills/project/7536), "
-        "[brief answer preference](http://localhost:3001/preferences/codex-pref-short-answer)"
+        "[brief answer preference]"
+        "(http://localhost:3001/preferences/project/codex-pref-short-answer)"
     )
     assert cs_cite.parse_text_citations(text) == [
         "route:playbook:user_playbook:7536",
@@ -52,7 +53,7 @@ def test_parse_text_citations_accepts_osc8_dashboard_links() -> None:
         "Done.\n\n"
         "✨ claude-smart rules applied: "
         "\x1b]8;;http://localhost:3001/skills/project/7536\x1b\\git safety\x1b]8;;\x1b\\, "
-        "\x1b]8;;http://localhost:3001/preferences/pref-1\x1b\\brief answers\x1b]8;;\x1b\\"
+        "\x1b]8;;http://localhost:3001/preferences/project/pref-1\x1b\\brief answers\x1b]8;;\x1b\\"
     )
     assert cs_cite.parse_text_citations(text) == [
         "route:playbook:user_playbook:7536",
@@ -63,6 +64,15 @@ def test_parse_text_citations_accepts_osc8_dashboard_links() -> None:
 def test_parse_text_citations_keeps_old_applied_marker_compatible() -> None:
     text = "Done.\n\n✨ Applied: [git safety](http://localhost:3001/skills/project/7536)"
     assert cs_cite.parse_text_citations(text) == ["route:playbook:user_playbook:7536"]
+
+
+def test_parse_text_citations_keeps_legacy_preference_route_compatible() -> None:
+    text = (
+        "Done.\n\n"
+        "✨ claude-smart rule applied: "
+        "[brief answers](http://localhost:3001/preferences/pref-1)"
+    )
+    assert cs_cite.parse_text_citations(text) == ["route:profile:profile:pref-1"]
 
 
 def test_parse_text_citations_ignores_plain_inline_tags() -> None:

@@ -42,7 +42,7 @@ def test_render_with_registry_ids_match_between_markdown_and_registry() -> None:
     assert by_id["s1-17"]["dashboard_url"] == "http://localhost:3001/skills/project/17"
     assert (
         by_id["p1-uuid"]["dashboard_url"]
-        == "http://localhost:3001/preferences/uuid-profile-1"
+        == "http://localhost:3001/preferences/project/uuid-profile-1"
     )
 
 
@@ -239,13 +239,13 @@ def test_render_inline_with_registry_includes_dashboard_urls(monkeypatch) -> Non
 
     assert "open: http://127.0.0.1:3333/skills/shared/42" in md
     assert "open: http://127.0.0.1:3333/skills/project/17" in md
-    assert "open: http://127.0.0.1:3333/preferences/pref%2Fone" in md
+    assert "open: http://127.0.0.1:3333/preferences/project/pref%2Fone" in md
     by_id = {e["id"]: e for e in registry}
     assert by_id["s1-42"]["dashboard_url"] == "http://127.0.0.1:3333/skills/shared/42"
     assert by_id["s2-17"]["dashboard_url"] == "http://127.0.0.1:3333/skills/project/17"
     assert (
         by_id["p1-pref"]["dashboard_url"]
-        == "http://127.0.0.1:3333/preferences/pref%2Fone"
+        == "http://127.0.0.1:3333/preferences/project/pref%2Fone"
     )
 
 

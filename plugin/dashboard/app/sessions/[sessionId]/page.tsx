@@ -241,7 +241,7 @@ function CitedItemsRow({ items }: { items: CitedItem[] }) {
               ? item.source_kind === "agent_playbook"
                 ? `/skills/shared/${encodeURIComponent(targetId)}`
                 : `/skills/project/${encodeURIComponent(targetId)}`
-              : `/preferences/${encodeURIComponent(targetId)}`;
+              : `/preferences/project/${encodeURIComponent(targetId)}`;
           return (
             <Link
               key={item.id}
