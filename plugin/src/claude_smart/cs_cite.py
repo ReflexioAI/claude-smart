@@ -7,7 +7,7 @@ real id (``[cs:s1-1a2b]`` for the first skill whose
 second preference). The injected instruction asks the assistant to end
 impactful replies with a marker like::
 
-    ✨ 1 claude-smart learning applied [cs:s1-1a2b]
+    ✨ claude-smart rule applied: [git safety](http://localhost:3001/skills/project/123)
 
 The Stop hook later scans the assistant text for those markers and resolves
 the ids against a per-session registry persisted at
@@ -40,16 +40,28 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 _FINGERPRINT_LEN = 4
 
-_ID_TOKEN = r"(?i:cs:)?(?i:[ps])\d+(?:-(?i:[a-z0-9]){1,4})?"
+_ID_TOKEN = r"(?i:cs:)?(?i:[ps])\d+(?:-(?i:[a-z0-9]){1,4})?"  # noqa: S105
 _ID_SEP = r"[,\s]+"
 _CLEAN_ID_RE = re.compile(r"^(?i:cs:)?((?i:[ps])\d+(?:-(?i:[a-z0-9]){1,4})?)$")
 _SPLIT_RE = re.compile(_ID_SEP)
 _TEXT_CITATION_LINE_RE = re.compile(
     r"(?im)^\s*✨\s+\d+\s+claude-smart learning(?:s)? applied\s+"
     r"\[cs:(?P<ids>[^\]]+)\]\s*$"
+)
+_APPLIED_LINK_LINE_RE = re.compile(
+    r"(?im)^\s*✨\s+(?:Applied|claude-smart rules? applied):\s+(?P<body>.+?)\s*$"
+)
+_MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\((?P<url>[^)]+)\)")
+_OSC8_URL_RE = re.compile(
+    r"\x1b\]8;[^\x07\x1b]*;(?P<url>[^\x07\x1b]+)(?:\x07|\x1b\\)"
+)
+_RAW_DASHBOARD_URL_RE = re.compile(
+    r"(?P<url>(?:https?://[^\s),\x1b\\]+)?/"
+    r"(?:skills/(?:project|shared)/[^\s),\x1b\\]+|preferences/[^\s),\x1b\\]+))"
 )
 
 _INTRO_AUTO = (
@@ -58,11 +70,12 @@ _INTRO_AUTO = (
     "only if — an injected `[cs:…]` item materially changed your reply "
     "(different wording, action, or conclusion than you would have produced "
     "without it), append a citation block at the very end of your message. "
-    "Do not call a shell command or any other tool for citations. "
-    "Ids come verbatim from the `[cs:…]` tags above — the leading letter "
-    "is exactly `s` (skill) or `p` (preference); no other letter is valid. "
-    "If an id you want to cite is not literally present in a `[cs:…]` tag "
-    "in your context, skip the citation entirely rather than guess."
+    "If multiple injected items materially shaped distinct parts of the "
+    "reply, cite each of them in the same marker line. Do not call a shell "
+    "command or any other tool for citations. Citation candidates are only "
+    "the injected `[cs:…]` bullets above. Use the dashboard URL shown beside "
+    "each cited bullet; if a bullet has no dashboard URL, skip that bullet "
+    "rather than inventing one."
 )
 
 _INTRO_MARKER_ONLY = (
@@ -71,18 +84,20 @@ _INTRO_MARKER_ONLY = (
     "only if — an injected `[cs:…]` item materially changed your reply "
     "(different wording, action, or conclusion than you would have produced "
     "without it), append the marker line below at the very end of your "
-    "message. Do not call a shell command or any other tool for citations. "
-    "Ids come verbatim from the `[cs:…]` tags above — the leading letter "
-    "is exactly `s` (skill) or `p` (preference); no other letter is valid. "
-    "If an id you want to cite is not literally present in a `[cs:…]` tag "
-    "in your context, skip the citation entirely rather than guess."
+    "message. If multiple injected items materially shaped distinct parts "
+    "of the reply, cite each of them in the same marker line. Do not call a "
+    "shell command or any other tool for citations. Citation candidates are "
+    "only the injected `[cs:…]` bullets above. Use the dashboard URL shown "
+    "beside each cited bullet; if a bullet has no dashboard URL, skip that "
+    "bullet rather than inventing one."
 )
 
 _COUNTERFACTUAL_PARAGRAPH = (
     "The citation block is up to two lines: an optional counterfactual line "
     "followed by the marker line. Check your own prior assistant messages in "
-    "this conversation — if you have NOT yet emitted a `✨ … claude-smart "
-    "learning(s) applied` line earlier in this session, include the "
+    "this conversation — if you have NOT yet emitted a `✨ claude-smart rule"
+    " applied:` marker "
+    "line earlier in this session, include the "
     "counterfactual line; otherwise skip it. The counterfactual is one short "
     "factual sentence contrasting your actual reply with the unlearned "
     "baseline. Refer to the skill by a short, human paraphrase (≤ 6 words) "
@@ -94,30 +109,68 @@ _COUNTERFACTUAL_PARAGRAPH = (
     "and ≤ 30 words."
 )
 
-_MARKER_PARAGRAPH = (
-    "End the message with exactly the marker line. Use this exact format "
-    "for one id: `✨ 1 claude-smart learning applied [cs:s1-ab12]`. Use "
-    "this exact format for multiple ids: "
-    "`✨ 2 claude-smart learnings applied [cs:s1-ab12,p2-cd34]`, where the "
-    "number is the count of ids in the brackets. The marker line MUST be "
-    "the very last line of your message and end with `]` — nothing after "
-    "it. Never emit a standalone wrapper like `✨s1-ab12✨` or "
-    "`✨abc123✨`; those are not claude-smart citations and cannot be "
-    "resolved."
+_MARKDOWN_MARKER_PARAGRAPH = (
+    "End the message with exactly one marker line using human-readable "
+    "linked titles, not raw ids. Use this exact format for one item: "
+    "`✨ claude-smart rule applied: "
+    "[verify process state](http://localhost:3001/skills/project/123)`. "
+    "Use this exact format for multiple items: "
+    "`✨ claude-smart rules applied: "
+    "[git safety](http://localhost:3001/skills/project/123), "
+    "[brief answer preference](http://localhost:3001/preferences/pref-456)`. "
+    "Choose a short human title (2-6 words) from the cited item's content. "
+    "Use the dashboard URL shown beside that item in the context; do not "
+    "invent URLs. The marker line MUST be the very last line of your "
+    "message. Do not include `[cs:…]` ids in the marker line. Never emit a "
+    "standalone wrapper like `✨s1-ab12✨` or `✨abc123✨`; those are not "
+    "claude-smart citations and cannot be resolved."
+)
+
+_OSC8_EXAMPLE_ONE = (
+    "✨ claude-smart rule applied: "
+    "\x1b]8;;http://localhost:3001/skills/project/123\x1b\\"
+    "verify process state"
+    "\x1b]8;;\x1b\\"
+)
+_OSC8_EXAMPLE_MULTI = (
+    "✨ claude-smart rules applied: "
+    "\x1b]8;;http://localhost:3001/skills/project/123\x1b\\"
+    "git safety"
+    "\x1b]8;;\x1b\\"
+    ", "
+    "\x1b]8;;http://localhost:3001/preferences/pref-456\x1b\\"
+    "brief answer preference"
+    "\x1b]8;;\x1b\\"
+)
+_OSC8_MARKER_PARAGRAPH = (
+    "End the message with exactly one marker line using human-readable "
+    "terminal hyperlinks, not raw ids or visible URLs. Use OSC 8 terminal "
+    "hyperlinks so only the title is visible and clickable: wrap each title "
+    "as `ESC ] 8 ; ; URL ESC \\ TITLE ESC ] 8 ; ; ESC \\`. Use this exact "
+    f"visual format for one item: `{_OSC8_EXAMPLE_ONE}`. Use this exact "
+    f"visual format for multiple items: `{_OSC8_EXAMPLE_MULTI}`. Choose a "
+    "short human title (2-6 words) from the cited item's content. Use the "
+    "dashboard URL shown beside that item in the context; do not invent "
+    "URLs. If your terminal cannot emit OSC 8, fall back to markdown links "
+    "like `[git safety](http://localhost:3001/skills/project/123)`. The "
+    "marker line MUST be the very last line of your message. Do not include "
+    "`[cs:…]` ids in the marker line. Never emit a standalone wrapper like "
+    "`✨s1-ab12✨` or `✨abc123✨`; those are not claude-smart citations and "
+    "cannot be resolved."
 )
 
 _DEFAULT_SKIP_PARAGRAPH = (
-    "Default is to skip the whole block. If an item is merely on-topic, "
-    "confirms what you already planned, or your reply would read the same "
-    "without it, do not cite — end the turn normally with your reply. When "
-    "unsure, skip. Do not add any other text, tool calls, or role markers "
-    "after the final marker line._"
+    "Cite only applied learnings. Skip the whole block when every injected "
+    "item is merely on-topic, confirms what you already planned, or your "
+    "reply would read the same without it. Do not add any other text, tool "
+    "calls, or role markers after the final marker line._"
 )
 
 CITATION_MODES = ("auto", "marker-only", "off")
+LINK_STYLES = ("markdown", "osc8")
 
 
-def citation_instruction(mode: str) -> str:
+def citation_instruction(mode: str, link_style: str = "markdown") -> str:
     """Return the citation prompt for ``mode``.
 
     Args:
@@ -126,17 +179,27 @@ def citation_instruction(mode: str) -> str:
             an empty string so no instruction is injected). Unknown values
             fall back to ``"auto"`` — env-var typos must not break
             injection.
+        link_style: ``"markdown"`` for ordinary markdown links, or ``"osc8"``
+            for terminal-native hyperlinks. Unknown values fall back to
+            ``"markdown"``.
 
     Returns:
         str: The instruction text, or ``""`` for ``"off"``.
     """
     if mode == "off":
         return ""
+    marker_paragraph = (
+        _OSC8_MARKER_PARAGRAPH if link_style == "osc8" else _MARKDOWN_MARKER_PARAGRAPH
+    )
     if mode == "marker-only":
-        return f"{_INTRO_MARKER_ONLY}\n\n{_MARKER_PARAGRAPH}\n\n{_DEFAULT_SKIP_PARAGRAPH}"
+        return (
+            f"{_INTRO_MARKER_ONLY}\n\n"
+            f"{marker_paragraph}\n\n"
+            f"{_DEFAULT_SKIP_PARAGRAPH}"
+        )
     return (
         f"{_INTRO_AUTO}\n\n{_COUNTERFACTUAL_PARAGRAPH}\n\n"
-        f"{_MARKER_PARAGRAPH}\n\n{_DEFAULT_SKIP_PARAGRAPH}"
+        f"{marker_paragraph}\n\n{_DEFAULT_SKIP_PARAGRAPH}"
     )
 
 
@@ -203,16 +266,34 @@ def rank_id(kind: str, rank: int, real_id: Any = None) -> str:
 def parse_text_citations(text: str) -> list[str]:
     """Extract Codex text-only citation ids from a final learning marker line.
 
-    The parser intentionally only accepts lines containing the visual
-    ``claude-smart learning(s) applied`` marker, so ordinary references to
-    injected ``[cs:...]`` ids inside an answer do not count as citations.
-    When multiple matching lines exist, the last one wins because the
+    Supports the legacy id marker::
+
+        ✨ 1 claude-smart learning applied [cs:s1-ab12]
+
+    and the newer human-readable dashboard-link marker::
+
+        ✨ claude-smart rule applied: [git safety](http://localhost:3001/skills/project/123)
+
+    Ordinary references to injected ``[cs:...]`` ids or dashboard URLs inside
+    the answer do not count as citations; they must appear on a final marker
+    line. When multiple matching lines exist, the last one wins because the
     instruction requires the citation marker to be final.
     """
-    matches = list(_TEXT_CITATION_LINE_RE.finditer(text or ""))
+    old_matches = [
+        (m.start(), "ids", m.group("ids"))
+        for m in _TEXT_CITATION_LINE_RE.finditer(text or "")
+    ]
+    new_matches = [
+        (m.start(), "links", m.group("body"))
+        for m in _APPLIED_LINK_LINE_RE.finditer(text or "")
+    ]
+    matches = old_matches + new_matches
     if not matches:
         return []
-    return _parse_id_tokens(matches[-1].group("ids"))
+    _, kind, value = max(matches, key=lambda item: item[0])
+    if kind == "ids":
+        return _parse_id_tokens(value)
+    return _parse_dashboard_link_tokens(value)
 
 
 def strip_marker_lines(text: str) -> str:
@@ -233,12 +314,45 @@ def strip_marker_lines(text: str) -> str:
     if not text:
         return text or ""
     cleaned = _TEXT_CITATION_LINE_RE.sub("", text)
+    cleaned = _APPLIED_LINK_LINE_RE.sub("", cleaned)
     return cleaned.rstrip("\n")
 
 
 def _parse_id_tokens(raw_ids: str) -> list[str]:
-    ids: list[str] = []
-    for tok in _SPLIT_RE.split(raw_ids.strip()):
-        if clean := _CLEAN_ID_RE.match(tok):
-            ids.append(clean.group(1).lower())
-    return ids
+    return [
+        clean.group(1).lower()
+        for tok in _SPLIT_RE.split(raw_ids.strip())
+        if (clean := _CLEAN_ID_RE.match(tok))
+    ]
+
+
+def _parse_dashboard_link_tokens(raw: str) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
+    matches = [
+        (m.start(), m.group("url"))
+        for regex in (_OSC8_URL_RE, _MARKDOWN_LINK_RE, _RAW_DASHBOARD_URL_RE)
+        for m in regex.finditer(raw)
+    ]
+    for _, url in sorted(matches, key=lambda item: item[0]):
+        if (token := dashboard_url_token(url)) and token not in seen:
+            seen.add(token)
+            tokens.append(token)
+    return tokens
+
+
+def dashboard_url_token(url: str) -> str:
+    """Return an internal resolver token for a dashboard detail URL.
+
+    The token is consumed by ``events.stop._resolve_cited_items``. It is not
+    shown to users.
+    """
+    parsed = urlparse(url)
+    path = parsed.path if parsed.scheme else url.split("?", 1)[0].split("#", 1)[0]
+    parts = [unquote(part) for part in path.strip("/").split("/") if part]
+    if len(parts) == 3 and parts[0] == "skills" and parts[1] in {"project", "shared"}:
+        source_kind = "user_playbook" if parts[1] == "project" else "agent_playbook"
+        return f"route:playbook:{source_kind}:{parts[2]}"
+    if len(parts) == 2 and parts[0] == "preferences":
+        return f"route:profile:profile:{parts[1]}"
+    return ""

@@ -290,7 +290,7 @@ def _resolve_cited_items(session_id: str, cited_ids: list[str]) -> list[dict[str
     for cid in cited_ids:
         if cid in seen:
             continue
-        entry = registry.get(cid)
+        entry = _registry_entry_for_citation(registry, cid)
         if not entry:
             continue
         seen.add(cid)
@@ -307,6 +307,27 @@ def _resolve_cited_items(session_id: str, cited_ids: list[str]) -> list[dict[str
             item["source_kind"] = source_kind
         resolved.append(item)
     return resolved
+
+
+def _registry_entry_for_citation(
+    registry: dict[str, dict[str, Any]], citation: str
+) -> dict[str, Any] | None:
+    """Resolve a legacy rank id or a dashboard-route citation token."""
+    if not citation.startswith("route:"):
+        return registry.get(citation)
+    try:
+        _, kind, source_kind, real_id = citation.split(":", 3)
+    except ValueError:
+        return None
+    for entry in registry.values():
+        if entry.get("kind") != kind:
+            continue
+        if str(entry.get("real_id") or "") != real_id:
+            continue
+        if kind == "playbook" and entry.get("source_kind") != source_kind:
+            continue
+        return entry
+    return None
 
 
 def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
@@ -344,9 +365,8 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
     prompt = payload.get("prompt") or (
         _scan_transcript_for_user_text(entries) if runtime.is_codex() else ""
     )
-    if runtime.is_codex():
-        if internal_call.is_codex_internal_prompt(prompt):
-            return None
+    if runtime.is_codex() and internal_call.is_codex_internal_prompt(prompt):
+        return None
 
     last_assistant_message = payload.get("last_assistant_message")
     assistant_text = (
@@ -362,7 +382,7 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
         and not prompt
         and not _has_unpublished_user_turn(session_id)
     ):
-        return
+        return None
     if os.environ.get("CLAUDE_SMART_CITATIONS", "auto") == "off":
         assistant_text = cs_cite.strip_marker_lines(assistant_text)
     text_cited_ids = cs_cite.parse_text_citations(assistant_text)

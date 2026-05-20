@@ -8,10 +8,8 @@ import sys
 from typing import Any
 
 import pytest
-
 from claude_smart import state
 from claude_smart.events import post_tool, session_start, stop, user_prompt
-
 
 # -----------------------------------------------------------------------------
 # post_tool
@@ -1110,6 +1108,78 @@ def test_stop_preserves_cited_item_source_kind(
     ]
 
 
+def test_stop_records_human_dashboard_marker_as_cited_items(
+    session_dir, tmp_path, monkeypatch
+) -> None:
+    """Human-readable marker links resolve back to injected registry entries."""
+    state.append_injected(
+        "s1",
+        [
+            {
+                "id": "s1-42",
+                "kind": "playbook",
+                "title": "use pathlib",
+                "content": "use pathlib",
+                "real_id": "42",
+                "source_kind": "user_playbook",
+                "ts": 0,
+            },
+            {
+                "id": "p1-uuid",
+                "kind": "profile",
+                "title": "prefers anyio",
+                "content": "prefers anyio",
+                "real_id": "uuid-anyio",
+                "ts": 0,
+            },
+        ],
+    )
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            {"type": "user", "message": {"content": "do the thing"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Done.\n\n"
+                                "✨ Applied: "
+                                "[pathlib rule]"
+                                "(http://localhost:3001/skills/project/42), "
+                                "[anyio preference]"
+                                "(http://localhost:3001/preferences/uuid-anyio)"
+                            ),
+                        }
+                    ]
+                },
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
+    )
+    stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
+    records = state.read_all("s1")
+    assert records[-1].get("cited_items") == [
+        {
+            "id": "s1-42",
+            "kind": "playbook",
+            "title": "use pathlib",
+            "real_id": "42",
+            "source_kind": "user_playbook",
+        },
+        {
+            "id": "p1-uuid",
+            "kind": "profile",
+            "title": "prefers anyio",
+            "real_id": "uuid-anyio",
+        },
+    ]
+
+
 def test_stop_omits_cited_items_when_no_citation_marker(
     session_dir, tmp_path, monkeypatch
 ) -> None:
@@ -1133,7 +1203,9 @@ def test_stop_omits_cited_items_when_no_citation_marker(
     assert "cited_items" not in records[-1]
 
 
-def test_stop_drops_unknown_text_citation_ids(session_dir, tmp_path, monkeypatch) -> None:
+def test_stop_drops_unknown_text_citation_ids(
+    session_dir, tmp_path, monkeypatch
+) -> None:
     """Ids not present in the session registry are silently dropped."""
     _prime_injected_registry("s1")
     transcript = _write_transcript(

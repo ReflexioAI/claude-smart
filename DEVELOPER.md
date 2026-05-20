@@ -30,7 +30,9 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | `REFLEXIO_EMBEDDING_SERVICE_URL` | `http://127.0.0.1:$EMBEDDING_PORT` | OpenAI-compatible embedding endpoint used by `local_service` and `internal_service`. |
 | `EMBEDDING_PORT` | `8072` | Local embedding daemon port. Shared by Claude Code and Codex on the same machine. |
 | `CLAUDE_SMART_ENABLE_OPTIMIZER` | enabled unless set to `0` | Hook-side env var that controls shared skill optimization and rollups during `SessionStart`. Set it in Claude Code settings, not `~/.reflexio/.env`. |
-| `CLAUDE_SMART_CITATIONS` | `auto` | Controls the `✨ N claude-smart learning(s) applied [cs:…]` marker and the preceding counterfactual line. `auto` (default) keeps current behavior — first citation per session includes a counterfactual, subsequent only the marker. `marker-only` suppresses the counterfactual line; the marker still appears. `off` skips injection of the citation instruction entirely and strips any stray marker line from the assistant text before publishing. Set in Claude Code settings (hook env), not `~/.reflexio/.env`. |
+| `CLAUDE_SMART_CITATIONS` | `auto` | Controls the final `✨ claude-smart rule applied` marker and the preceding counterfactual line. `auto` (default) keeps current behavior — first citation per session includes a counterfactual, subsequent turns only show the marker. `marker-only` suppresses the counterfactual line; the marker still appears. `off` skips injection of the citation instruction entirely and strips any stray marker line from the assistant text before publishing. Set in Claude Code settings (hook env), not `~/.reflexio/.env`. |
+| `CLAUDE_SMART_CITATION_LINK_STYLE` | `markdown` (`osc8` in Codex hooks) | Controls the visible links in the final `✨ claude-smart rule applied` marker. `markdown` asks the model to emit `[human title](dashboard URL)` links. `osc8` asks it to emit terminal-native OSC 8 hyperlinks so the human title can be clickable without showing the URL; unsupported terminals should fall back to markdown links. |
+| `CLAUDE_SMART_DASHBOARD_URL` | `http://localhost:3001` | Base URL used in injected citation targets and the final `✨ Applied` marker links. Override only if the local dashboard is exposed on another host or port. |
 | `CLAUDE_SMART_CLI_PATH` | `claude` on Claude Code; Codex compatibility wrapper or `codex` on Codex | Override the executable Reflexio calls for local generation. |
 | `CLAUDE_SMART_STATE_DIR` | `~/.claude-smart/sessions/` | Where the per-session JSONL buffer lives. |
 | `CLAUDE_SMART_NODE_LTS_MAJOR` | `22` | Major version used when the installer downloads private Node.js/npm into `~/.claude-smart/node/current`. |
@@ -292,25 +294,28 @@ git clone --recurse-submodules https://github.com/ReflexioAI/claude-smart.git
 cd claude-smart
 ```
 
-### Claude Code local install
+### Local install
 
-Use the one-shot setup when developing the Claude Code plugin, dashboard, or local `reflexio` submodule:
+Use the one-shot setup when developing the plugin, dashboard, or local `reflexio` submodule:
 
 ```bash
-bash scripts/setup-local-dev.sh
+bash scripts/setup-local-dev.sh                         # Claude Code local setup
+bash scripts/setup-local-dev.sh --host codex            # Codex local setup
+bash scripts/setup-local-dev.sh --host both             # Claude Code + Codex
 ```
 
-Idempotent. This single script handles everything — see its header comment for the full list, but in summary it:
+Idempotent. This single script handles the shared local-dev prep for every host — see its header comment for the full list, but in summary it:
 
 1. Initializes the `reflexio/` submodule.
 2. Uncomments `[tool.uv.sources]` in `plugin/pyproject.toml` (absolute path to the submodule) and hides the divergence with `git update-index --skip-worktree`.
 3. `uv sync` in `plugin/`.
 4. Appends `CLAUDE_SMART_USE_LOCAL_CLI=1` and `CLAUDE_SMART_USE_LOCAL_EMBEDDING=1` to `~/.reflexio/.env`.
-5. Prepares and registers the local marketplace (`local-marketplace/`, manifest name `reflexioai-local`) at user scope via `claude plugin marketplace add`.
-6. Writes `.claude/settings.local.json` → enable `claude-smart@reflexioai-local`, disable `claude-smart@reflexioai`.
-7. Force-sets `~/.reflexio/plugin-root` → `plugin/` so slash commands resolve to editable in-repo sources.
+5. For `--host claude-code` (the default), prepares and registers the local marketplace (`local-marketplace/`, manifest name `reflexioai-local`) at user scope via `claude plugin marketplace add`.
+6. For `--host claude-code`, writes `.claude/settings.local.json` → enable `claude-smart@reflexioai-local`, disable `claude-smart@reflexioai`.
+7. For `--host claude-code`, force-sets `~/.reflexio/plugin-root` → `plugin/` so slash commands resolve to editable in-repo sources.
+8. For `--host codex`, runs `node bin/claude-smart.js install --host codex` so the installed Codex hooks are patched through the JSON-safe `scripts/codex-hook.js` adapter.
 
-Then restart Claude Code. In the new session, `/plugin` should show `claude-smart@reflexioai-local` and should not also show the published `claude-smart@reflexioai`.
+Then restart the target host. In a new Claude Code session, `/plugin` should show `claude-smart@reflexioai-local` and should not also show the published `claude-smart@reflexioai`. In Codex, `/plugins` should show `claude-smart` installed from the **ReflexioAI** marketplace.
 
 Uninstalling the local Claude Code plugin is a marketplace/settings cleanup:
 
@@ -336,32 +341,37 @@ This leaves learned data under `~/.reflexio/` and `~/.claude-smart/` intact.
 
 ### Codex local install
 
-Codex local development creates a durable local marketplace wrapper at `~/.claude/plugins/marketplaces/reflexioai`. The wrapper copies this checkout's `plugin/` directory to `./plugins/claude-smart`, which keeps Codex's plugin folder name aligned with the manifest name while preserving the existing Claude Code layout:
+Codex local development creates a durable local marketplace wrapper at `~/.claude/plugins/marketplaces/reflexioai`. The one-shot setup runs the Node installer path so the copied plugin has Codex-safe hook commands:
+
+```bash
+bash scripts/setup-local-dev.sh --host codex
+```
+
+To exercise just the Python installer path directly, run:
 
 ```bash
 uv run --project plugin claude-smart install --host codex
 ```
 
-Then fully restart Codex so hooks reload. The command installs `claude-smart` into `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/`, enables `[plugins."claude-smart@reflexioai"]`, enables Codex's hook feature flags, and seeds the per-hook trust entries in `~/.codex/config.toml`; `/plugins` should show it as installed from the **ReflexioAI** marketplace. Running `codex features enable plugin_hooks` by itself is not enough because it does not install the plugin or trust the individual hook entries.
+Then fully restart Codex so hooks reload. The command installs `claude-smart` into `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/`, enables `[plugins."claude-smart@reflexioai"]`, enables Codex's hook feature flags, and seeds the per-hook trust entries in `~/.codex/config.toml`; `/plugins` should show it as installed from the **ReflexioAI** marketplace. Running `codex features enable plugin_hooks` by itself is not enough because it does not install the plugin or trust the individual hook entries. The Python installer is useful for installer development, but the Node installer is the supported local setup path for live Codex sessions because it patches hook commands through `codex-hook.js`.
 
 The packaged Node installer path (`node bin/claude-smart.js install --host codex`, or published `npx claude-smart install --host codex`) additionally bootstraps private Node/npm plus the uv-managed Python runtime, builds the dashboard, and patches Codex hooks to the Node wrapper. The Python `uv run` path is intentionally for local development from an already-prepared checkout.
 
 If you install or toggle `claude-smart` manually from `/plugins`, rerun `npx claude-smart install --host codex` (or the `uv run` equivalent) once afterward so the hook feature flags, plugin cache, and claude-smart hook trust state are re-prepared.
 
-For live hook iteration, point Codex at this checkout before the cache:
+For live hook iteration, rerun setup after plugin edits so the patched marketplace/cache copy is refreshed:
 
 ```bash
-mkdir -p ~/plugins
-ln -sfn "$PWD/plugin" ~/plugins/claude-smart
+bash scripts/setup-local-dev.sh --host codex
 ```
 
-This symlink is only for local plugin development; normal `npx claude-smart install --host codex` users should not create it. The Codex hook resolver checks `~/plugins/claude-smart` before the Codex cache, so Python, hook, and script edits in `$PWD/plugin` are picked up without reinstalling the marketplace. Without that dev symlink, rerun `uv run --project plugin claude-smart install --host codex` after plugin edits so the wrapper copy is refreshed.
+Avoid `~/plugins/claude-smart` for this plugin unless you also provide a patched hook manifest; Codex resolves that path before the cache, and the raw source `hooks/codex-hooks.json` uses Claude-style hook commands that can emit multiple JSON objects. The Node installer patches the copied hook manifest to call `scripts/codex-hook.js`, which normalizes hook stdout for Codex.
 
 Uninstall local Codex support with the CLI. This removes the Codex marketplace registration, installed plugin config, hook trust state, and Codex plugin cache while preserving learned data:
 
 ```bash
 uv run --project plugin claude-smart uninstall --host codex
-rm -f ~/plugins/claude-smart
+rm -f ~/plugins/claude-smart  # legacy local-dev symlink, if present
 ```
 
 If `/plugins` still shows a stale pre-rename install, remove the legacy Codex state too:

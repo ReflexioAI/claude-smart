@@ -16,6 +16,55 @@ def test_parse_text_citations_accepts_codex_learning_marker() -> None:
     assert cs_cite.parse_text_citations(text) == ["s2-cd34", "p1-ab12"]
 
 
+def test_parse_text_citations_accepts_human_dashboard_marker() -> None:
+    text = (
+        "The real answer remains visible.\n\n"
+        "✨ claude-smart rules applied: "
+        "[git safety](http://localhost:3001/skills/project/7536), "
+        "[brief answer preference](http://localhost:3001/preferences/codex-pref-short-answer)"
+    )
+    assert cs_cite.parse_text_citations(text) == [
+        "route:playbook:user_playbook:7536",
+        "route:profile:profile:codex-pref-short-answer",
+    ]
+
+
+def test_parse_text_citations_accepts_shared_skill_dashboard_marker() -> None:
+    text = (
+        "Done.\n\n"
+        "✨ claude-smart rule applied: "
+        "[shared rule](http://localhost:3001/skills/shared/42)"
+    )
+    assert cs_cite.parse_text_citations(text) == ["route:playbook:agent_playbook:42"]
+
+
+def test_parse_text_citations_accepts_raw_dashboard_urls() -> None:
+    text = (
+        "Done.\n\n"
+        "✨ claude-smart rule applied: "
+        "git safety http://localhost:3001/skills/project/7536"
+    )
+    assert cs_cite.parse_text_citations(text) == ["route:playbook:user_playbook:7536"]
+
+
+def test_parse_text_citations_accepts_osc8_dashboard_links() -> None:
+    text = (
+        "Done.\n\n"
+        "✨ claude-smart rules applied: "
+        "\x1b]8;;http://localhost:3001/skills/project/7536\x1b\\git safety\x1b]8;;\x1b\\, "
+        "\x1b]8;;http://localhost:3001/preferences/pref-1\x1b\\brief answers\x1b]8;;\x1b\\"
+    )
+    assert cs_cite.parse_text_citations(text) == [
+        "route:playbook:user_playbook:7536",
+        "route:profile:profile:pref-1",
+    ]
+
+
+def test_parse_text_citations_keeps_old_applied_marker_compatible() -> None:
+    text = "Done.\n\n✨ Applied: [git safety](http://localhost:3001/skills/project/7536)"
+    assert cs_cite.parse_text_citations(text) == ["route:playbook:user_playbook:7536"]
+
+
 def test_parse_text_citations_ignores_plain_inline_tags() -> None:
     text = "This mentions [cs:s2-cd34] but has no learning marker."
     assert cs_cite.parse_text_citations(text) == []
@@ -91,6 +140,7 @@ def test_citation_instruction_auto_returns_full_string() -> None:
     assert text == cs_cite.CITATION_INSTRUCTION
     assert "citation block is up to two lines" in text
     assert "marker line MUST be the very last line" in text
+    assert "✨ claude-smart rule applied:" in text
 
 
 def test_citation_instruction_marker_only_drops_counterfactual_paragraph() -> None:
@@ -98,6 +148,14 @@ def test_citation_instruction_marker_only_drops_counterfactual_paragraph() -> No
     assert "citation block is up to two lines" not in text
     assert "counterfactual" not in text.lower()
     assert "marker line MUST be the very last line" in text
+    assert "✨ claude-smart rule applied:" in text
+
+
+def test_citation_instruction_osc8_uses_terminal_hyperlink_examples() -> None:
+    text = cs_cite.citation_instruction("marker-only", "osc8")
+    assert "OSC 8 terminal" in text
+    assert "\x1b]8;;http://localhost:3001/skills/project/123\x1b\\" in text
+    assert "[git safety](http://localhost:3001/skills/project/123)" in text
 
 
 def test_citation_instruction_off_returns_empty_string() -> None:
@@ -115,7 +173,7 @@ def test_citation_instruction_auto_counterfactual_does_not_reference_rank_id() -
     text = cs_cite.citation_instruction("auto")
     # The marker paragraph starts here; rank-id examples are allowed in it
     # but must not appear in the preceding counterfactual paragraph.
-    marker_para_start = text.index("End the message with exactly the marker line")
+    marker_para_start = text.index("End the message with exactly one marker line")
     counterfactual_para_start = text.index("citation block is up to two lines")
     counterfactual_para = text[counterfactual_para_start:marker_para_start]
     assert not re.search(r"\b[sp]\d+-[a-z0-9]+\b", counterfactual_para)
@@ -125,6 +183,15 @@ def test_strip_marker_lines_removes_single_marker() -> None:
     text = (
         "Here's the answer.\n\n"
         "✨ 1 claude-smart learning applied [cs:s1-1a2b]"
+    )
+    assert cs_cite.strip_marker_lines(text) == "Here's the answer."
+
+
+def test_strip_marker_lines_removes_human_dashboard_marker() -> None:
+    text = (
+        "Here's the answer.\n\n"
+        "✨ claude-smart rule applied: "
+        "[git safety](http://localhost:3001/skills/project/7536)"
     )
     assert cs_cite.strip_marker_lines(text) == "Here's the answer."
 

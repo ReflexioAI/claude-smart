@@ -39,6 +39,11 @@ def test_render_with_registry_ids_match_between_markdown_and_registry() -> None:
     assert by_id["p1-uuid"]["kind"] == "profile"
     assert by_id["s1-17"]["real_id"] == "17"
     assert by_id["p1-uuid"]["real_id"] == "uuid-profile-1"
+    assert by_id["s1-17"]["dashboard_url"] == "http://localhost:3001/skills/project/17"
+    assert (
+        by_id["p1-uuid"]["dashboard_url"]
+        == "http://localhost:3001/preferences/uuid-profile-1"
+    )
 
 
 def test_render_with_registry_ranks_increase_in_order() -> None:
@@ -101,8 +106,8 @@ def test_render_with_registry_emits_citation_instruction() -> None:
     )
     assert cs_cite.CITATION_INSTRUCTION in md
     assert "Do not call a shell command" in md
-    assert "✨ 1 claude-smart learning applied [cs:s1-ab12]" in md
-    assert "✨ 2 claude-smart learnings applied [cs:s1-ab12,p2-cd34]" in md
+    assert "✨ claude-smart rule applied: [verify process state]" in md
+    assert "[brief answer preference]" in md
     assert "Never emit a standalone wrapper" in md
     assert "`✨ N claude-smart" not in md
 
@@ -186,6 +191,7 @@ def test_render_inline_with_registry_auto_mode_injects_full_instruction(
 def test_render_inline_with_registry_default_is_auto(monkeypatch) -> None:
     """No env var set → behave as ``auto`` so existing deployments don't change."""
     monkeypatch.delenv("CLAUDE_SMART_CITATIONS", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
     md, _ = context_format.render_inline_with_registry(
         project_id="demo",
         user_playbooks=[{"content": "x"}],
@@ -193,6 +199,19 @@ def test_render_inline_with_registry_default_is_auto(monkeypatch) -> None:
         profiles=[],
     )
     assert cs_cite.CITATION_INSTRUCTION in md
+
+
+def test_render_inline_with_registry_can_inject_osc8_instruction(monkeypatch) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", "osc8")
+    md, _ = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "x"}],
+        agent_playbooks=[],
+        profiles=[],
+    )
+    assert "OSC 8 terminal" in md
+    assert "\x1b]8;;http://localhost:3001/skills/project/123\x1b\\" in md
+    assert "✨ claude-smart rule applied: [verify process state]" not in md
 
 
 def test_render_inline_with_registry_marker_only_drops_counterfactual(
@@ -207,6 +226,27 @@ def test_render_inline_with_registry_marker_only_drops_counterfactual(
     )
     assert "marker line MUST be the very last line" in md
     assert "citation block is up to two lines" not in md
+
+
+def test_render_inline_with_registry_includes_dashboard_urls(monkeypatch) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_DASHBOARD_URL", "http://127.0.0.1:3333")
+    md, registry = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "use safe git flow", "user_playbook_id": 17}],
+        agent_playbooks=[{"content": "use shared flow", "agent_playbook_id": 42}],
+        profiles=[{"content": "prefers concise answers", "profile_id": "pref/one"}],
+    )
+
+    assert "open: http://127.0.0.1:3333/skills/shared/42" in md
+    assert "open: http://127.0.0.1:3333/skills/project/17" in md
+    assert "open: http://127.0.0.1:3333/preferences/pref%2Fone" in md
+    by_id = {e["id"]: e for e in registry}
+    assert by_id["s1-42"]["dashboard_url"] == "http://127.0.0.1:3333/skills/shared/42"
+    assert by_id["s2-17"]["dashboard_url"] == "http://127.0.0.1:3333/skills/project/17"
+    assert (
+        by_id["p1-pref"]["dashboard_url"]
+        == "http://127.0.0.1:3333/preferences/pref%2Fone"
+    )
 
 
 def test_render_inline_with_registry_off_omits_instruction(monkeypatch) -> None:

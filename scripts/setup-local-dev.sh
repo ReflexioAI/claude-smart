@@ -11,10 +11,13 @@
 #   4. `uv sync` from plugin/.
 #   5. Append CLAUDE_SMART_USE_LOCAL_CLI=1 / _USE_LOCAL_EMBEDDING=1 to
 #      ~/.reflexio/.env so reflexio runs without any external API key.
-#   6. Prepare and register the local marketplace with Claude Code (user scope) so
-#      `claude-smart@reflexioai-local` is available everywhere.
-#   7. Wire this repo's .claude/settings.local.json to enable the local
-#      plugin and shadow the remote one for this project.
+#   6. For Claude Code (default): prepare and register the local marketplace
+#      (user scope) so `claude-smart@reflexioai-local` is available everywhere.
+#   7. For Claude Code: wire this repo's .claude/settings.local.json to enable
+#      the local plugin and shadow the remote one for this project.
+#   8. For Codex (`--host codex` or `--host both`): run the maintained
+#      Node install wrapper so Codex hooks are patched through the JSON-safe
+#      codex-hook.js adapter.
 #
 # Idempotent: safe to re-run.
 
@@ -27,6 +30,69 @@ PYPROJECT="$PLUGIN_ROOT/pyproject.toml"
 LOCKFILE="$PLUGIN_ROOT/uv.lock"
 
 log() { printf '[setup-local-dev] %s\n' "$*" >&2; }
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: scripts/setup-local-dev.sh [--host claude-code|codex|both]
+
+Hosts:
+  claude-code  Prepare local Claude Code marketplace/settings (default)
+  codex        Install and trust the local plugin for Codex
+  both         Do both host setups
+EOF
+}
+
+HOST="claude-code"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --host)
+      if [ "$#" -lt 2 ]; then
+        log "ERROR: --host requires claude-code, codex, or both."
+        usage
+        exit 2
+      fi
+      HOST="$2"
+      shift 2
+      ;;
+    --host=*)
+      HOST="${1#--host=}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    claude-code|codex|both)
+      HOST="$1"
+      shift
+      ;;
+    *)
+      log "ERROR: unknown argument: $1"
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+case "$HOST" in
+  claude-code)
+    SETUP_CLAUDE_CODE=1
+    SETUP_CODEX=0
+    ;;
+  codex)
+    SETUP_CLAUDE_CODE=0
+    SETUP_CODEX=1
+    ;;
+  both)
+    SETUP_CLAUDE_CODE=1
+    SETUP_CODEX=1
+    ;;
+  *)
+    log "ERROR: unsupported host '$HOST'; expected claude-code, codex, or both."
+    usage
+    exit 2
+    ;;
+esac
 
 log "initializing reflexio submodule..."
 (cd "$REPO_ROOT" && git submodule update --init --recursive reflexio)
@@ -59,7 +125,7 @@ REFLEXIO_ENV="$HOME/.reflexio/.env"
 mkdir -p "$(dirname "$REFLEXIO_ENV")"
 touch "$REFLEXIO_ENV"
 if ! grep -q '^CLAUDE_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
-  printf '\n# Route reflexio generation through the local Claude Code CLI\nCLAUDE_SMART_USE_LOCAL_CLI=1\n' >> "$REFLEXIO_ENV"
+  printf '\n# Route reflexio generation through the local host CLI\nCLAUDE_SMART_USE_LOCAL_CLI=1\n' >> "$REFLEXIO_ENV"
   log "appended CLAUDE_SMART_USE_LOCAL_CLI=1 to $REFLEXIO_ENV"
 fi
 if ! grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
@@ -67,15 +133,16 @@ if ! grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
   log "appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 to $REFLEXIO_ENV"
 fi
 
-# Prepare and register the local marketplace with Claude Code (user-scope).
-# local-marketplace/ is gitignored because it contains a symlink to this
-# checkout's plugin/ directory. Its manifest declares name=reflexioai-local —
-# distinct from the remote `reflexioai`, so both can coexist in Claude Code's
-# marketplace list.
-LOCAL_MKT_DIR="$REPO_ROOT/local-marketplace"
-log "preparing local marketplace at $LOCAL_MKT_DIR..."
-mkdir -p "$LOCAL_MKT_DIR/.claude-plugin"
-python3 - "$REPO_ROOT/.claude-plugin/marketplace.json" "$LOCAL_MKT_DIR/.claude-plugin/marketplace.json" <<'PY'
+if [ "$SETUP_CLAUDE_CODE" = "1" ]; then
+  # Prepare and register the local marketplace with Claude Code (user-scope).
+  # local-marketplace/ is gitignored because it contains a symlink to this
+  # checkout's plugin/ directory. Its manifest declares name=reflexioai-local —
+  # distinct from the remote `reflexioai`, so both can coexist in Claude Code's
+  # marketplace list.
+  LOCAL_MKT_DIR="$REPO_ROOT/local-marketplace"
+  log "preparing local Claude Code marketplace at $LOCAL_MKT_DIR..."
+  mkdir -p "$LOCAL_MKT_DIR/.claude-plugin"
+  python3 - "$REPO_ROOT/.claude-plugin/marketplace.json" "$LOCAL_MKT_DIR/.claude-plugin/marketplace.json" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -87,30 +154,30 @@ data["name"] = "reflexioai-local"
 data["plugins"][0]["source"] = "./plugin"
 dst.write_text(json.dumps(data, indent=2) + "\n")
 PY
-rm -rf "$LOCAL_MKT_DIR/plugin"
-ln -sfn "$PLUGIN_ROOT" "$LOCAL_MKT_DIR/plugin"
+  rm -rf "$LOCAL_MKT_DIR/plugin"
+  ln -sfn "$PLUGIN_ROOT" "$LOCAL_MKT_DIR/plugin"
 
-if command -v claude >/dev/null 2>&1; then
-  log "registering local marketplace with Claude Code..."
-  # `claude plugin marketplace add` errors if already registered; treat
-  # that as a no-op. Output goes to stderr so we can keep logs clean.
-  if claude plugin marketplace add "$LOCAL_MKT_DIR" >/dev/null 2>&1; then
-    log "  added reflexioai-local → $LOCAL_MKT_DIR"
+  if command -v claude >/dev/null 2>&1; then
+    log "registering local marketplace with Claude Code..."
+    # `claude plugin marketplace add` errors if already registered; treat
+    # that as a no-op. Output goes to stderr so we can keep logs clean.
+    if claude plugin marketplace add "$LOCAL_MKT_DIR" >/dev/null 2>&1; then
+      log "  added reflexioai-local → $LOCAL_MKT_DIR"
+    else
+      log "  reflexioai-local already registered (or add failed — run manually to debug)"
+    fi
   else
-    log "  reflexioai-local already registered (or add failed — run manually to debug)"
+    log "WARNING: 'claude' CLI not on PATH — skipping marketplace registration."
+    log "  Run it later: claude plugin marketplace add $LOCAL_MKT_DIR"
   fi
-else
-  log "WARNING: 'claude' CLI not on PATH — skipping marketplace registration."
-  log "  Run it later: claude plugin marketplace add $LOCAL_MKT_DIR"
-fi
 
-# Project-scoped enable/disable: turn on the local plugin and shadow the
-# remote one for this repo so they don't stack. The marketplace itself is
-# already registered at user scope above.
-SETTINGS_DIR="$REPO_ROOT/.claude"
-SETTINGS_FILE="$SETTINGS_DIR/settings.local.json"
-mkdir -p "$SETTINGS_DIR"
-python3 - "$SETTINGS_FILE" <<'PY'
+  # Project-scoped enable/disable: turn on the local plugin and shadow the
+  # remote one for this repo so they don't stack. The marketplace itself is
+  # already registered at user scope above.
+  SETTINGS_DIR="$REPO_ROOT/.claude"
+  SETTINGS_FILE="$SETTINGS_DIR/settings.local.json"
+  mkdir -p "$SETTINGS_DIR"
+  python3 - "$SETTINGS_FILE" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -143,22 +210,50 @@ enabled["claude-smart@reflexioai"] = False
 
 settings_path.write_text(json.dumps(data, indent=2) + "\n")
 PY
-log "wrote $SETTINGS_FILE (claude-smart@reflexioai-local enabled, @reflexioai shadowed off)"
+  log "wrote $SETTINGS_FILE (claude-smart@reflexioai-local enabled, @reflexioai shadowed off)"
 
-# Force-point ~/.reflexio/plugin-root at this repo's plugin/ so slash
-# commands resolve to editable in-repo sources (not the marketplace
-# cache). SessionStart's non-force self-heal will respect this link.
-# Warn (don't abort) on failure — marketplace registration and settings
-# have already been committed by this point, so aborting would leave the
-# user in a half-configured state.
-if ! bash "$PLUGIN_ROOT/scripts/ensure-plugin-root.sh" "$PLUGIN_ROOT" --force; then
-  log "WARNING: ensure-plugin-root failed; rerun manually:"
-  log "  bash $PLUGIN_ROOT/scripts/ensure-plugin-root.sh $PLUGIN_ROOT --force"
+  # Force-point ~/.reflexio/plugin-root at this repo's plugin/ so slash
+  # commands resolve to editable in-repo sources (not the marketplace
+  # cache). SessionStart's non-force self-heal will respect this link.
+  # Warn (don't abort) on failure — marketplace registration and settings
+  # have already been committed by this point, so aborting would leave the
+  # user in a half-configured state.
+  if ! bash "$PLUGIN_ROOT/scripts/ensure-plugin-root.sh" "$PLUGIN_ROOT" --force; then
+    log "WARNING: ensure-plugin-root failed; rerun manually:"
+    log "  bash $PLUGIN_ROOT/scripts/ensure-plugin-root.sh $PLUGIN_ROOT --force"
+  fi
+fi
+
+if [ "$SETUP_CODEX" = "1" ]; then
+  if ! command -v codex >/dev/null 2>&1; then
+    log "ERROR: 'codex' CLI not on PATH — cannot install Codex plugin support."
+    exit 1
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    log "ERROR: 'node' not on PATH — Codex setup needs the Node installer to patch hook commands."
+    log "  Install Node.js 20.9+ or run the published npx installer."
+    exit 1
+  fi
+  log "installing local claude-smart plugin for Codex..."
+  rm -f "$HOME/plugins/claude-smart"
+  (cd "$REPO_ROOT" && node bin/claude-smart.js install --host codex)
 fi
 
 log ""
-log "done. Restart Claude Code to pick up the local plugin."
+if [ "$SETUP_CLAUDE_CODE" = "1" ] && [ "$SETUP_CODEX" = "1" ]; then
+  log "done. Restart Claude Code and fully restart Codex to pick up the local plugin."
+elif [ "$SETUP_CODEX" = "1" ]; then
+  log "done. Fully restart Codex to pick up the local plugin."
+else
+  log "done. Restart Claude Code to pick up the local plugin."
+fi
 log "  pyproject.toml → editable reflexio-ai from ../reflexio"
 log "  ~/.reflexio/.env → local-CLI + local-embedding providers"
-log "  user marketplaces → reflexioai-local ($LOCAL_MKT_DIR)"
-log "  .claude/settings.local.json → claude-smart@reflexioai-local"
+if [ "$SETUP_CLAUDE_CODE" = "1" ]; then
+  log "  Claude Code user marketplaces → reflexioai-local ($LOCAL_MKT_DIR)"
+  log "  .claude/settings.local.json → claude-smart@reflexioai-local"
+fi
+if [ "$SETUP_CODEX" = "1" ]; then
+  log "  Codex marketplace/cache/config → claude-smart@reflexioai"
+  log "  Codex hooks → patched through scripts/codex-hook.js"
+fi

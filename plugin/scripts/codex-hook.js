@@ -19,6 +19,43 @@ function emitOk() {
   process.stdout.write('{"continue":true,"suppressOutput":true}\n');
 }
 
+function emitNormalizedHookOutput(stdout) {
+  const lines = String(stdout || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) {
+    emitOk();
+    return;
+  }
+
+  const merged = {};
+  for (const line of lines) {
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      appendLog("backend.log", `[claude-smart] codex hook emitted non-JSON stdout: ${line.slice(0, 500)}`);
+      emitOk();
+      return;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      appendLog("backend.log", `[claude-smart] codex hook emitted non-object JSON stdout: ${line.slice(0, 500)}`);
+      emitOk();
+      return;
+    }
+    Object.assign(merged, parsed);
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(merged, "continue")) {
+    merged.continue = true;
+  }
+  if (!Object.prototype.hasOwnProperty.call(merged, "suppressOutput")) {
+    merged.suppressOutput = true;
+  }
+  process.stdout.write(`${JSON.stringify(merged)}\n`);
+}
+
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
@@ -434,12 +471,14 @@ function runHook(root, event) {
         REFLEXIO_URL: readBackendUrl(),
         CLAUDE_SMART_HOST: "codex",
         CLAUDE_SMART_CLI_PATH: process.env.CLAUDE_SMART_CLI_PATH || codexCompatPath(root),
+        CLAUDE_SMART_CITATION_LINK_STYLE: process.env.CLAUDE_SMART_CITATION_LINK_STYLE || "osc8",
       },
       input,
-      stdio: ["pipe", "inherit", "inherit"],
+      stdio: ["pipe", "pipe", "inherit"],
       windowsHide: true,
     },
   );
+  emitNormalizedHookOutput(result.stdout);
   return typeof result.status === "number" ? result.status : 1;
 }
 

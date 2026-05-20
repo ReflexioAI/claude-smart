@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
+from urllib.parse import quote
 
 from claude_smart import cs_cite
+
+_DASHBOARD_URL_ENV = "CLAUDE_SMART_DASHBOARD_URL"
+_CITATION_LINK_STYLE_ENV = "CLAUDE_SMART_CITATION_LINK_STYLE"
+_DEFAULT_DASHBOARD_URL = "http://localhost:3001"
 
 
 def _first_nonempty(*values: Any) -> str:
@@ -94,7 +100,12 @@ def render_with_registry(
     if profile_lines:
         sections.append("### Project preferences")
         sections.extend(profile_lines)
-    sections.append(cs_cite.CITATION_INSTRUCTION)
+    sections.append(
+        cs_cite.citation_instruction(
+            os.environ.get("CLAUDE_SMART_CITATIONS", "auto"),
+            os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
+        )
+    )
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
 
 
@@ -166,7 +177,8 @@ def render_inline_with_registry(
         sections.append("### Relevant project preferences")
         sections.extend(profile_lines)
     instruction = cs_cite.citation_instruction(
-        os.environ.get("CLAUDE_SMART_CITATIONS", "auto")
+        os.environ.get("CLAUDE_SMART_CITATIONS", "auto"),
+        os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
     )
     if instruction:
         sections.append(instruction)
@@ -178,7 +190,7 @@ def _format_combined_playbooks(
     agent_playbooks: Iterable[Any],
     user_playbooks: Iterable[Any],
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """Render agent playbooks first, then user playbooks, with one shared rank counter."""
+    """Render agent then user playbooks with one shared rank counter."""
     lines: list[str] = []
     entries: list[dict[str, Any]] = []
     rank = 0
@@ -210,11 +222,14 @@ def _append_playbook_bullet(
     real_id = _field(pb, id_field)
     item_id = cs_cite.rank_id("playbook", rank, real_id)
     title = _title_from_content(content)
+    dashboard_url = _dashboard_url("playbook", real_id, source_kind)
     bullet = f"- [cs:{item_id}] {content}"
     if trigger:
         bullet += f" _(when: {trigger})_"
     if rationale:
         bullet += f" — *why:* {rationale}"
+    if dashboard_url:
+        bullet += f" _(open: {dashboard_url})_"
     lines.append(bullet)
     entries.append(
         {
@@ -224,6 +239,7 @@ def _append_playbook_bullet(
             "content": content,
             "real_id": str(real_id) if real_id is not None else None,
             "source_kind": source_kind,
+            "dashboard_url": dashboard_url,
         }
     )
     return rank
@@ -243,7 +259,11 @@ def _format_profiles(
         real_id = _field(p, "profile_id")
         item_id = cs_cite.rank_id("profile", rank, real_id)
         title = _title_from_content(content)
-        lines.append(f"- [cs:{item_id}] {content}")
+        dashboard_url = _dashboard_url("profile", real_id)
+        bullet = f"- [cs:{item_id}] {content}"
+        if dashboard_url:
+            bullet += f" _(open: {dashboard_url})_"
+        lines.append(bullet)
         entries.append(
             {
                 "id": item_id,
@@ -251,9 +271,23 @@ def _format_profiles(
                 "title": title,
                 "content": content,
                 "real_id": str(real_id) if real_id is not None else None,
+                "dashboard_url": dashboard_url,
             }
         )
     return lines, entries
+
+
+def _dashboard_url(kind: str, real_id: Any, source_kind: str | None = None) -> str:
+    if real_id is None:
+        return ""
+    encoded_id = quote(str(real_id), safe="")
+    base = os.environ.get(_DASHBOARD_URL_ENV, _DEFAULT_DASHBOARD_URL).rstrip("/")
+    if kind == "profile":
+        return f"{base}/preferences/{encoded_id}"
+    if kind == "playbook":
+        skill_kind = "shared" if source_kind == "agent_playbook" else "project"
+        return f"{base}/skills/{skill_kind}/{encoded_id}"
+    return ""
 
 
 def _title_from_content(content: str, limit: int = 80) -> str:
