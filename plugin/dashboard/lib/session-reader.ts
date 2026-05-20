@@ -233,7 +233,7 @@ export async function listAppliedRules(
           item.real_id && item.real_id.length > 0 ? item.real_id : item.id;
         const key = statKeyForCitedItem(item);
         const prev = stats.get(key);
-        const href = ruleHrefForCitedItem(item) ?? canonicalHrefForCitedItem(item);
+        const href = canonicalHrefForCitedItem(item) ?? ruleHrefForCitedItem(item);
         if (prev) {
           prev.applied_count += 1;
           if ((ts ?? 0) >= (prev.last_applied_at ?? 0)) {
