@@ -17,6 +17,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
 SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
+SETUP_LOCAL_DEV = REPO_ROOT / "scripts" / "setup-local-dev.sh"
 HOOK_ENTRY = REPO_ROOT / "plugin" / "scripts" / "hook_entry.sh"
 CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
 CODEX_HOOK = REPO_ROOT / "plugin" / "scripts" / "codex-hook.js"
@@ -252,6 +253,14 @@ def test_service_start_scripts_guard_internal_invocations() -> None:
     assert "if claude_smart_is_internal_invocation_env; then" in hook_entry
     assert "if claude_smart_is_internal_invocation_env; then" in backend
     assert "if claude_smart_is_internal_invocation_env; then" in dashboard
+
+
+def test_setup_local_dev_refreshes_claude_code_local_plugin() -> None:
+    script = SETUP_LOCAL_DEV.read_text()
+
+    assert "claude plugin update -s user claude-smart@reflexioai-local" in script
+    assert "claude plugin install -s user claude-smart@reflexioai-local" in script
+    assert "installing/updating claude-smart@reflexioai-local" in script
 
 
 def test_backend_service_configures_shared_embedding_daemon() -> None:

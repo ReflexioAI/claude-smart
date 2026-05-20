@@ -171,9 +171,25 @@ PY
         exit 1
       fi
     fi
+
+    log "installing/updating claude-smart@reflexioai-local for Claude Code..."
+    if update_output="$(claude plugin update -s user claude-smart@reflexioai-local 2>&1)"; then
+      log "  updated claude-smart@reflexioai-local"
+    else
+      log "  update did not complete; trying first-time install"
+      if install_output="$(claude plugin install -s user claude-smart@reflexioai-local 2>&1)"; then
+        log "  installed claude-smart@reflexioai-local"
+      else
+        log "ERROR: failed to install/update claude-smart@reflexioai-local"
+        log "  update output: $update_output"
+        log "  install output: $install_output"
+        exit 1
+      fi
+    fi
   else
     log "WARNING: 'claude' CLI not on PATH — skipping marketplace registration."
     log "  Run it later: claude plugin marketplace add $LOCAL_MKT_DIR"
+    log "  Then install it: claude plugin install -s user claude-smart@reflexioai-local"
   fi
 
   # Project-scoped enable/disable: turn on the local plugin and shadow the
