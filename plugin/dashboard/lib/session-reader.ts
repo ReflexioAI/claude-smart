@@ -10,6 +10,7 @@ import path from "node:path";
 import os from "node:os";
 import type {
   CitedItem,
+  PlaybookApplicationStat,
   SessionDetail,
   SessionSummary,
   SessionTurn,
@@ -61,6 +62,11 @@ export interface RuleResolution {
   href: string;
   title: string;
   kind: CitedItem["kind"];
+}
+
+interface AppliedRulesOptions {
+  daysBack?: number;
+  limit?: number;
 }
 
 async function readJsonl(filePath: string): Promise<RawRecord[]> {
@@ -123,6 +129,30 @@ function hrefForInjectedEntry(entry: RawInjectedEntry): string | null {
   return null;
 }
 
+function canonicalHrefForCitedItem(item: CitedItem): string | null {
+  const realId = item.real_id;
+  if (typeof realId !== "string" || realId.length === 0) return null;
+  if (item.kind === "profile") {
+    return `/preferences/project/${encodeURIComponent(realId)}`;
+  }
+  const scope = item.source_kind === "agent_playbook" ? "shared" : "project";
+  return `/skills/${scope}/${encodeURIComponent(realId)}`;
+}
+
+function ruleHrefForCitedItem(item: CitedItem): string | null {
+  if (/^[ps]\d+(?:-[A-Za-z0-9]{1,8})?$/.test(item.id)) {
+    return `/rules/${encodeURIComponent(item.id)}`;
+  }
+  return canonicalHrefForCitedItem(item);
+}
+
+function statKeyForCitedItem(item: CitedItem): string {
+  const realId = item.real_id && item.real_id.length > 0 ? item.real_id : item.id;
+  const sourceKind =
+    item.kind === "profile" ? "profile" : item.source_kind ?? "user_playbook";
+  return `${item.kind}:${sourceKind}:${realId}`;
+}
+
 export async function resolveRuleLink(
   citationId: string,
 ): Promise<RuleResolution | null> {
@@ -164,6 +194,83 @@ export async function resolveRuleLink(
     }
   }
   return null;
+}
+
+export async function listAppliedRules(
+  opts: AppliedRulesOptions = {},
+): Promise<PlaybookApplicationStat[]> {
+  const daysBack = opts.daysBack ?? 30;
+  const limit = opts.limit ?? 20;
+  const cutoff =
+    daysBack > 0 ? Math.floor(Date.now() / 1000) - daysBack * 24 * 60 * 60 : null;
+  const dir = stateDir();
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return [];
+  }
+
+  const stats = new Map<string, PlaybookApplicationStat>();
+  for (const entry of entries) {
+    if (!entry.endsWith(".jsonl") || entry.endsWith(".injected.jsonl")) continue;
+    const fullPath = path.join(dir, entry);
+    const records = await readJsonl(fullPath).catch(() => []);
+    for (let idx = 0; idx < records.length; idx++) {
+      const rec = records[idx];
+      if (
+        rec.role !== "Assistant" ||
+        !rec.cited_items ||
+        rec.cited_items.length === 0
+      ) {
+        continue;
+      }
+      const ts = typeof rec.ts === "number" ? rec.ts : null;
+      if (cutoff !== null && ts !== null && ts < cutoff) continue;
+
+      for (const item of rec.cited_items) {
+        const realId =
+          item.real_id && item.real_id.length > 0 ? item.real_id : item.id;
+        const key = statKeyForCitedItem(item);
+        const prev = stats.get(key);
+        const href = ruleHrefForCitedItem(item) ?? canonicalHrefForCitedItem(item);
+        if (prev) {
+          prev.applied_count += 1;
+          if ((ts ?? 0) >= (prev.last_applied_at ?? 0)) {
+            prev.citation_id = item.id;
+            prev.title = item.title || prev.title;
+            prev.href = href ?? prev.href;
+            prev.last_applied_at = ts;
+            prev.last_interaction_id = idx;
+          }
+          continue;
+        }
+        stats.set(key, {
+          real_id: realId,
+          citation_id: item.id,
+          kind: item.kind,
+          source_kind:
+            item.kind === "profile"
+              ? "profile"
+              : item.source_kind ?? "user_playbook",
+          title: item.title || item.id,
+          href: href ?? undefined,
+          applied_count: 1,
+          last_applied_at: ts,
+          last_interaction_id: idx,
+        });
+      }
+    }
+  }
+
+  return Array.from(stats.values())
+    .sort((a, b) => {
+      if (b.applied_count !== a.applied_count) {
+        return b.applied_count - a.applied_count;
+      }
+      return (b.last_applied_at ?? 0) - (a.last_applied_at ?? 0);
+    })
+    .slice(0, limit);
 }
 
 function foldTurns(records: RawRecord[]): {

@@ -48,8 +48,10 @@ export default function DashboardPage() {
           reflexio
             .getAgentPlaybooks({ reflexioUrl })
             .catch(() => ({ agent_playbooks: [] as AgentPlaybook[] })),
-          reflexio
-            .getPlaybookApplicationStats({ reflexioUrl })
+          fetch("/api/rules/applied?daysBack=30&limit=5", {
+            cache: "no-store",
+          })
+            .then((r) => r.json())
             .catch(() => ({
               success: false,
               stats: [] as PlaybookApplicationStat[],
@@ -240,31 +242,27 @@ export default function DashboardPage() {
         <section>
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
-              <h2 className="text-sm font-semibold">Top applied rules</h2>
+              <h2 className="text-sm font-semibold">
+                Most used claude-smart learnings
+              </h2>
               <span className="text-[11px] text-muted-foreground">
                 last 30 days
               </span>
             </div>
             <Link
-              href="/skills"
+              href="/sessions"
               className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
             >
-              View all skills <ExternalLink className="h-3 w-3" />
+              Review sessions <ExternalLink className="h-3 w-3" />
             </Link>
           </div>
-          {topApplied && topApplied.length > 0 ? (
+          {topApplied === null ? (
+            <div className="text-sm text-muted-foreground">Loading...</div>
+          ) : topApplied.length > 0 ? (
             <div className="rounded-xl border border-border divide-y divide-border bg-card">
               {topApplied.slice(0, 5).map((s) => {
-                // Preferences route directly to their scoped detail page by profile_id.
-                // Skills route to the /skills list (which already shows
-                // applied_count badges); a direct link would need
-                // source_kind to pick project vs shared, which the stats
-                // endpoint doesn't surface yet.
-                const href = s.title
-                  ? s.kind === "profile"
-                    ? `/preferences/project/${encodeURIComponent(s.real_id)}`
-                    : "/skills"
-                  : null;
+                const href = s.href ?? null;
+                const label = appliedRuleLabel(s);
                 const rowBody = (
                   <>
                     <div className="min-w-0 flex items-center gap-3">
@@ -278,14 +276,13 @@ export default function DashboardPage() {
                           )}
                         </p>
                         <p className="text-[11px] text-muted-foreground">
-                          {s.kind === "playbook" ? "skill" : "preference"} ·{" "}
-                          {truncate(s.real_id, 12)}
+                          {label} · {truncate(s.real_id, 12)}
                         </p>
                       </div>
                     </div>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
                       <Badge variant="secondary" className="text-[10px]">
-                        Applied {s.applied_count}×
+                        Used {s.applied_count}×
                       </Badge>
                       <span>{formatRelative(s.last_applied_at)}</span>
                     </div>
@@ -293,7 +290,7 @@ export default function DashboardPage() {
                 );
                 return href ? (
                   <Link
-                    key={`${s.kind}:${s.real_id}`}
+                    key={`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`}
                     href={href}
                     className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-accent/40 transition-colors"
                   >
@@ -301,7 +298,7 @@ export default function DashboardPage() {
                   </Link>
                 ) : (
                   <div
-                    key={`${s.kind}:${s.real_id}`}
+                    key={`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`}
                     className="flex items-center justify-between gap-3 px-4 py-3"
                   >
                     {rowBody}
@@ -312,12 +309,17 @@ export default function DashboardPage() {
           ) : (
             <EmptyState
               icon={Sparkles}
-              title="No rules applied yet"
-              description="When a skill or preference shapes a response, it will show up here with its application count."
+              title="No applied learnings yet"
+              description="When a claude-smart learning is cited in a local assistant response, it will appear here with usage and recency."
             />
           )}
         </section>
       </div>
     </div>
   );
+}
+
+function appliedRuleLabel(stat: PlaybookApplicationStat): string {
+  if (stat.kind === "profile") return "preference";
+  return stat.source_kind === "agent_playbook" ? "shared skill" : "project skill";
 }

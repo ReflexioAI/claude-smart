@@ -110,8 +110,10 @@ export default function SkillsPage() {
         const [projectRes, sharedRes, statsRes] = await Promise.all([
           reflexio.getUserPlaybooks({ reflexioUrl, limit: 200 }),
           reflexio.getAgentPlaybooks({ reflexioUrl, limit: 200 }),
-          reflexio
-            .getPlaybookApplicationStats({ reflexioUrl })
+          fetch("/api/rules/applied?daysBack=30&limit=200", {
+            cache: "no-store",
+          })
+            .then((r) => r.json())
             .catch(() => ({
               success: false,
               stats: [] as PlaybookApplicationStat[],
@@ -135,7 +137,7 @@ export default function SkillsPage() {
   const statsByRule = useMemo(() => {
     const map = new Map<string, PlaybookApplicationStat>();
     for (const s of appStats ?? []) {
-      map.set(`${s.kind}:${s.real_id}`, s);
+      map.set(`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`, s);
     }
     return map;
   }, [appStats]);
@@ -311,10 +313,9 @@ export default function SkillsPage() {
         ) : (
           <div className="grid gap-3 lg:grid-cols-2">
             {filtered.map((p) => {
-              // Both project-specific and shared rules are cited as kind="playbook" —
-              // the dashboard distinguishes user vs agent via real_id, which the
-              // backend captures as a stringified user_playbook_id / agent_playbook_id.
-              const stat = statsByRule.get(`playbook:${p.id}`);
+              const sourceKind =
+                p.kind === "shared" ? "agent_playbook" : "user_playbook";
+              const stat = statsByRule.get(`playbook:${sourceKind}:${p.id}`);
               return (
               <Link
                 key={`${p.kind}:${p.id}`}
