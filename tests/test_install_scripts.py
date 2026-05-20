@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
 SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
@@ -427,6 +426,48 @@ def test_node_installer_platform_preflight_messages() -> None:
             check=True,
         )
         assert expected in result.stdout.strip()
+
+
+def test_node_installer_codex_marketplace_cache_uses_manifest_plugin_path(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for installer wrapper tests")
+
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        "const root = installer.copyCodexMarketplace();"
+        "const pluginRoot = installer.codexMarketplacePluginRoot(root);"
+        "const fs = require('fs');"
+        "const path = require('path');"
+        "const manifest = JSON.parse(fs.readFileSync(path.join(root, '.agents/plugins/marketplace.json'), 'utf8'));"
+        "console.log(JSON.stringify({"
+        "root,"
+        "path: manifest.plugins[0].source.path,"
+        "pluginRoot,"
+        "hasManifest: fs.existsSync(path.join(pluginRoot, '.codex-plugin/plugin.json')),"
+        "legacyPathExists: fs.existsSync(path.join(root, 'plugins/claude-smart'))"
+        "}));"
+    )
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["path"] == "./plugin"
+    assert payload["pluginRoot"] == str(
+        tmp_path / ".claude" / "plugins" / "marketplaces" / "reflexioai" / "plugin"
+    )
+    assert payload["hasManifest"] is True
+    assert payload["legacyPathExists"] is False
 
 
 def test_node_installer_does_not_treat_global_node_as_private_runtime(

@@ -48,7 +48,7 @@ const CODEX_MARKETPLACE_DIR = join(
   "marketplaces",
   CODEX_MARKETPLACE_NAME,
 );
-const CODEX_MARKETPLACE_PLUGIN_PATH = join("plugins", "claude-smart");
+const CODEX_MARKETPLACE_PLUGIN_PATH = "plugin";
 const CODEX_PLUGIN_CACHE_DIR = join(
   homedir(),
   ".codex",
@@ -799,6 +799,21 @@ function copyCodexMarketplace() {
   return CODEX_MARKETPLACE_DIR;
 }
 
+function codexMarketplacePluginRoot(marketplaceRoot) {
+  const manifestPath = join(marketplaceRoot, ".agents", "plugins", "marketplace.json");
+  const fallback = join(marketplaceRoot, CODEX_MARKETPLACE_PLUGIN_PATH);
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const entry = (manifest.plugins || []).find((plugin) => plugin.name === "claude-smart");
+    const rawPath = entry && entry.source && entry.source.path;
+    if (typeof rawPath !== "string" || !rawPath) return fallback;
+    const relPath = rawPath.replace(/^\.\//, "");
+    return join(marketplaceRoot, relPath);
+  } catch {
+    return fallback;
+  }
+}
+
 function removeTomlSections(path, { exact, prefixes = [] }) {
   if (!existsSync(path)) return true;
   const text = readFileSync(path, "utf8");
@@ -1262,7 +1277,7 @@ async function runInstallCodex() {
   let trustedHookCount = 0;
   let trustError = null;
   try {
-    cacheDir = installCodexPluginCache(join(marketplaceRoot, CODEX_MARKETPLACE_PLUGIN_PATH));
+    cacheDir = installCodexPluginCache(codexMarketplacePluginRoot(marketplaceRoot));
     process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
     await bootstrapPluginRuntime(cacheDir);
   } catch (err) {
@@ -1379,6 +1394,8 @@ if (require.main === module) {
 module.exports = {
   assertSupportedRuntimePlatform,
   bootstrapPluginRuntime,
+  codexMarketplacePluginRoot,
+  copyCodexMarketplace,
   ensurePrivateNode,
   ensureUv,
   patchCodexHooksForNode,
