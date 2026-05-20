@@ -18,8 +18,13 @@ case "$EVENT" in
     EVENT="${2:-}"
     ;;
 esac
+export CLAUDE_SMART_HOST="$HOST"
 if [ -z "$EVENT" ]; then
-  echo '{"continue":true,"suppressOutput":true}'
+  if [ "$HOST" = "codex" ]; then
+    echo '{"continue":true}'
+  else
+    echo '{"continue":true,"suppressOutput":true}'
+  fi
   exit 0
 fi
 
@@ -27,7 +32,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
 if claude_smart_is_internal_invocation_env; then
-  echo '{"continue":true,"suppressOutput":true}'
+  claude_smart_emit_continue
   exit 0
 fi
 # Pick up uv from the user's login-shell PATH (covers ~/.local/bin populated
@@ -70,7 +75,7 @@ print(json.dumps({
 }))
 PY
     else
-      echo '{"continue":true,"suppressOutput":true}'
+      claude_smart_emit_continue
     fi
     exit 0
   fi
@@ -82,7 +87,7 @@ if ! command -v uv >/dev/null 2>&1; then
   # the same installer detached so normal work is not blocked by first-run
   # dependency setup.
   if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" = "1" ]; then
-    echo '{"continue":true,"suppressOutput":true}'
+    claude_smart_emit_continue
     exit 0
   fi
   if [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
@@ -102,7 +107,7 @@ if ! command -v uv >/dev/null 2>&1; then
     fi
   fi
   if ! command -v uv >/dev/null 2>&1; then
-    echo '{"continue":true,"suppressOutput":true}'
+    claude_smart_emit_continue
     exit 0
   fi
 fi

@@ -16,7 +16,7 @@ const DASHBOARD_PORT = 3001;
 const LOG_MAX_BYTES = 10000000;
 
 function emitOk() {
-  process.stdout.write('{"continue":true,"suppressOutput":true}\n');
+  process.stdout.write('{"continue":true}\n');
 }
 
 function emitNormalizedHookOutput(stdout) {
@@ -50,9 +50,7 @@ function emitNormalizedHookOutput(stdout) {
   if (!Object.prototype.hasOwnProperty.call(merged, "continue")) {
     merged.continue = true;
   }
-  if (!Object.prototype.hasOwnProperty.call(merged, "suppressOutput")) {
-    merged.suppressOutput = true;
-  }
+  delete merged.suppressOutput;
   process.stdout.write(`${JSON.stringify(merged)}\n`);
 }
 

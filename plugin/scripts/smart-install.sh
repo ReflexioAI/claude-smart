@@ -47,7 +47,7 @@ acquire_install_lock() {
     exec 9>"$INSTALL_LOCK"
     if ! flock 9; then
       echo "[claude-smart] install lock failed; continuing without serialization" >&2
-      echo '{"continue":true,"suppressOutput":true}'
+      claude_smart_emit_continue
       exit 0
     fi
     return 0
@@ -91,7 +91,7 @@ write_failure() {
   } > "$FAILURE_MARKER"
   rm -f "$SUCCESS_MARKER"
   echo "[claude-smart] install failed: $reason" >&2
-  echo '{"continue":true,"suppressOutput":true}'
+  claude_smart_emit_continue
   exit 0
 }
 
@@ -360,7 +360,7 @@ fi
 preflight_supported_runtime_platform
 
 if install_complete; then
-  echo '{"continue":true,"suppressOutput":true}'
+  claude_smart_emit_continue
   exit 0
 fi
 
@@ -511,4 +511,4 @@ fi
 
 write_success_marker
 echo "[claude-smart] install complete. Backend and dashboard auto-start on session start." >&2
-echo '{"continue":true,"suppressOutput":true}'
+claude_smart_emit_continue

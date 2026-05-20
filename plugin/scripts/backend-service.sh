@@ -67,7 +67,7 @@ LOG_MAX_BYTES="$(claude_smart_log_max_bytes)"
 mkdir -p "$STATE_DIR"
 claude_smart_trim_log_file "$LOG_FILE" "$LOG_MAX_BYTES"
 
-emit_ok() { echo '{"continue":true,"suppressOutput":true}'; }
+emit_ok() { claude_smart_emit_continue; }
 
 emit_start_failure() {
   reason="$1"

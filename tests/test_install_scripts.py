@@ -744,7 +744,7 @@ def test_codex_hook_ensure_root_tracks_active_plugin_root(tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     assert (reflexio / "plugin-root").resolve() == cache_root
-    assert json.loads(result.stdout) == {"continue": True, "suppressOutput": True}
+    assert json.loads(result.stdout) == {"continue": True}
 
 
 def test_codex_hook_caps_backend_log_appends(tmp_path: Path) -> None:
@@ -769,7 +769,7 @@ def test_codex_hook_caps_backend_log_appends(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"continue": True, "suppressOutput": True}
+    assert json.loads(result.stdout) == {"continue": True}
     assert log.stat().st_size <= 10_000_000
 
 

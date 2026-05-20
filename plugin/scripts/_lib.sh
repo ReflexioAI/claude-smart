@@ -42,6 +42,14 @@ claude_smart_is_internal_invocation_env() {
   return 1
 }
 
+claude_smart_emit_continue() {
+  if [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ]; then
+    echo '{"continue":true}'
+  else
+    echo '{"continue":true,"suppressOutput":true}'
+  fi
+}
+
 claude_smart_dashboard_unavailable_marker() {
   printf '%s\n' "$HOME/.claude-smart/dashboard-unavailable"
 }

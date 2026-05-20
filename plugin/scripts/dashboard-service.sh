@@ -36,7 +36,7 @@ PID_FILE="$STATE_DIR/dashboard.pid"
 LOG_FILE="$STATE_DIR/dashboard.log"
 mkdir -p "$STATE_DIR"
 
-emit_ok() { echo '{"continue":true,"suppressOutput":true}'; }
+emit_ok() { claude_smart_emit_continue; }
 
 # Tree-kill the recorded process. Delegates to claude_smart_kill_tree
 # (POSIX: signal the process group; Windows: taskkill /T /F /PID).
