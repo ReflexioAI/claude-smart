@@ -73,7 +73,7 @@ export function DeleteLearningDangerZone({
           disabled={deleting || disabled}
         >
           <Trash2 className="h-3.5 w-3.5" />
-          Delete learning
+          Delete
         </Button>
       </section>
 
