@@ -1,21 +1,9 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Sans, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 import { Sidebar } from "@/components/layout/sidebar";
 import { TopBar } from "@/components/layout/top-bar";
 import { StallBanner } from "@/components/stall-banner";
-
-const plexSans = IBM_Plex_Sans({
-  variable: "--font-sans",
-  weight: ["400", "500", "600", "700"],
-  subsets: ["latin"],
-});
-
-const jetBrainsMono = JetBrains_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "Claude-Smart Dashboard",
@@ -30,7 +18,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${plexSans.variable} ${jetBrainsMono.variable} h-full`}
+      className="h-full"
       suppressHydrationWarning
     >
       <body
