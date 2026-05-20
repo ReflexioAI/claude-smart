@@ -58,10 +58,12 @@ const CODEX_PLUGIN_CACHE_DIR = join(
   "claude-smart",
 );
 const LOCAL_DATA_NOTICE = [
-  "Local data was not deleted and remains on disk:",
+  "Local data was kept so reinstalling claude-smart can reuse your learned rules, sessions, logs, and local Reflexio data.",
+  "Kept folders:",
   "  ~/.claude-smart",
   "  ~/.reflexio",
-  "To remove local claude-smart data later, run: rm -rf ~/.claude-smart ~/.reflexio",
+  "Delete them only if you want a full reset or need to remove local claude-smart data from this machine:",
+  "  rm -rf ~/.claude-smart ~/.reflexio",
 ];
 const CODEX_REQUIRED_FILES = [
   ".agents/plugins/marketplace.json",

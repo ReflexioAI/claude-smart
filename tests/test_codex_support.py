@@ -623,7 +623,9 @@ def test_codex_uninstall_cleans_plugin_config_cache_and_marketplace(
     assert "[marketplaces.openai-bundled]" in text
     out = capsys.readouterr().out
     assert "plugin and marketplace state removed" in out
-    assert "Local data was not deleted" in out
+    assert "Local data was kept" in out
+    assert "learned rules, sessions, logs, and local Reflexio data" in out
+    assert "Delete them only if you want a full reset" in out
     assert "~/.claude-smart" in out
     assert "~/.reflexio" in out
     assert "rm -rf ~/.claude-smart ~/.reflexio" in out
