@@ -177,8 +177,8 @@ export default function DashboardPage() {
           </div>
         )}
 
-        <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-        <section className="rounded-lg border border-border bg-card/86 p-4 shadow-sm">
+        <div className="grid min-w-0 gap-6 lg:grid-cols-2">
+        <section className="min-w-0 rounded-lg border border-border bg-card/86 p-4 shadow-sm">
           <div className="flex items-center justify-between mb-3">
             <div>
               <h2 className="text-sm font-semibold">Recent sessions</h2>
@@ -226,7 +226,7 @@ export default function DashboardPage() {
           )}
         </section>
 
-        <section className="rounded-lg border border-border bg-card/86 p-4 shadow-sm">
+        <section className="min-w-0 rounded-lg border border-border bg-card/86 p-4 shadow-sm">
           <div className="flex items-center justify-between mb-3">
             <div>
               <h2 className="text-sm font-semibold">Recent learnings</h2>
@@ -255,11 +255,11 @@ export default function DashboardPage() {
                 <Link
                   key={item.id}
                   href={item.href}
-                  className="flex items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-accent/45"
+                  className="flex min-w-0 items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-accent/45"
                 >
-                  <div className="min-w-0 flex items-center gap-3">
+                  <div className="min-w-0 flex flex-1 items-center gap-3">
                     {learningIcon(item.kind)}
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm truncate">{item.content}</p>
                       <div className="mt-1 flex items-center gap-2">
                         <Badge variant="outline" className="h-5 text-[10px]">
@@ -286,7 +286,7 @@ export default function DashboardPage() {
           )}
         </section>
 
-        <section>
+        <section className="min-w-0">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <h2 className="text-sm font-semibold">
@@ -312,9 +312,9 @@ export default function DashboardPage() {
                 const label = appliedRuleLabel(s);
                 const rowBody = (
                   <>
-                    <div className="min-w-0 flex items-center gap-3">
+                    <div className="min-w-0 flex flex-1 items-center gap-3">
                       <Sparkles className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <p className="text-sm truncate">
                           {s.title || (
                             <span className="text-muted-foreground italic">
@@ -339,14 +339,14 @@ export default function DashboardPage() {
                   <Link
                     key={`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`}
                     href={href}
-                    className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-accent/40 transition-colors"
+                    className="flex min-w-0 items-center justify-between gap-3 px-4 py-3 hover:bg-accent/40 transition-colors"
                   >
                     {rowBody}
                   </Link>
                 ) : (
                   <div
                     key={`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`}
-                    className="flex items-center justify-between gap-3 px-4 py-3"
+                    className="flex min-w-0 items-center justify-between gap-3 px-4 py-3"
                   >
                     {rowBody}
                   </div>
