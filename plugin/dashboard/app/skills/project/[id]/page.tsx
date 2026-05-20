@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
-  Trash2,
   Save,
   AlertTriangle,
   Pencil,
@@ -20,6 +19,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
+import { DeleteLearningDangerZone } from "@/components/common/delete-learning-danger-zone";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -132,12 +132,6 @@ export default function ProjectSkillDetailPage({
 
   const remove = async () => {
     if (!playbook) return;
-    if (
-      !confirm(
-        `Delete project-specific skill #${playbook.user_playbook_id}? This cannot be undone.`,
-      )
-    )
-      return;
     setDeleting(true);
     try {
       await reflexio.deleteUserPlaybook(playbook.user_playbook_id, reflexioUrl);
@@ -575,23 +569,16 @@ function DangerZone({
   disabled: boolean;
 }) {
   return (
-    <section className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 flex items-start justify-between gap-4">
-      <div className="min-w-0">
-        <h3 className="text-sm font-semibold text-destructive">Danger zone</h3>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Deleting removes this project-specific skill permanently. It will stop being
-          injected into future sessions.
-        </p>
-      </div>
-      <Button
-        variant="destructive"
-        size="sm"
-        onClick={onDelete}
-        disabled={deleting || disabled}
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-        {deleting ? "Deleting…" : "Delete"}
-      </Button>
-    </section>
+    <DeleteLearningDangerZone
+      learningName="this project-specific skill"
+      description="Delete this claude-smart skill permanently."
+      consequences={[
+        "This skill will stop being injected into future sessions for this project.",
+        "Historical session records may still show prior uses.",
+      ]}
+      onDelete={onDelete}
+      deleting={deleting}
+      disabled={disabled}
+    />
   );
 }
