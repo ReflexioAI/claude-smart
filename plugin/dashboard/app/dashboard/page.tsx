@@ -34,7 +34,6 @@ interface RecentLearning {
   kind: RecentLearningKind;
   href: string;
   content: string;
-  trigger?: string | null;
   createdAt: number;
 }
 
@@ -105,7 +104,6 @@ export default function DashboardPage() {
         kind: "project-skill" as const,
         href: `/skills/project/${p.user_playbook_id}`,
         content: p.content,
-        trigger: p.trigger,
         createdAt: p.created_at,
       })),
       ...approvedSharedSkills.map((p) => ({
@@ -113,7 +111,6 @@ export default function DashboardPage() {
         kind: "shared-skill" as const,
         href: `/skills/shared/${p.agent_playbook_id}`,
         content: p.content,
-        trigger: p.trigger,
         createdAt: p.created_at,
       })),
       ...currentPreferences.map((p) => ({
@@ -240,33 +237,30 @@ export default function DashboardPage() {
             </div>
           </div>
           {recentLearnings.length > 0 ? (
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="rounded-xl border border-border divide-y divide-border bg-card">
               {recentLearnings.map((item) => (
                 <Link
                   key={item.id}
                   href={item.href}
-                  className="block rounded-xl border border-border bg-card p-4 hover:bg-accent/40 transition-colors"
+                  className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-accent/40 transition-colors"
                 >
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="h-5 gap-1 text-[10px]">
-                        {learningIcon(item.kind)}
-                        {item.kind === "preference" ? "preference" : "skill"}
-                      </Badge>
-                      <Badge variant="secondary" className="text-[10px]">
-                        {learningScope(item.kind)}
-                      </Badge>
+                  <div className="min-w-0 flex items-center gap-3">
+                    {learningIcon(item.kind)}
+                    <div className="min-w-0">
+                      <p className="text-sm truncate">{item.content}</p>
+                      <div className="mt-1 flex items-center gap-2">
+                        <Badge variant="outline" className="h-5 text-[10px]">
+                          {learningKindLabel(item.kind)}
+                        </Badge>
+                        <span className="text-[11px] text-muted-foreground">
+                          {learningScope(item.kind)}
+                        </span>
+                      </div>
                     </div>
-                    <span className="text-[11px] text-muted-foreground">
-                      {formatRelative(item.createdAt)}
-                    </span>
                   </div>
-                  <p className="text-sm line-clamp-3">{item.content}</p>
-                  {item.trigger && (
-                    <p className="text-xs text-muted-foreground mt-2 line-clamp-1">
-                      <span className="font-medium">trigger:</span> {item.trigger}
-                    </p>
-                  )}
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
+                    <span>{formatRelative(item.createdAt)}</span>
+                  </div>
                 </Link>
               ))}
             </div>
@@ -371,5 +365,9 @@ function learningScope(kind: RecentLearningKind): string {
 
 function learningIcon(kind: RecentLearningKind) {
   const Icon = kind === "preference" ? Users : BookOpen;
-  return <Icon className="h-3 w-3" />;
+  return <Icon className="h-4 w-4 text-muted-foreground shrink-0" />;
+}
+
+function learningKindLabel(kind: RecentLearningKind): string {
+  return kind === "preference" ? "preference" : "skill";
 }
