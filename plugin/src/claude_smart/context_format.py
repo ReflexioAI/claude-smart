@@ -100,12 +100,12 @@ def render_with_registry(
     if profile_lines:
         sections.append("### Project preferences")
         sections.extend(profile_lines)
-    sections.append(
-        cs_cite.citation_instruction(
-            os.environ.get("CLAUDE_SMART_CITATIONS", "auto"),
-            os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
-        )
+    instruction = cs_cite.citation_instruction(
+        os.environ.get("CLAUDE_SMART_CITATIONS", "auto"),
+        os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
     )
+    if instruction:
+        sections.append(instruction)
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
 
 

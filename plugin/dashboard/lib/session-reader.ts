@@ -184,7 +184,7 @@ export async function resolveRuleLink(
       const entry = records[i];
       if (entry.id !== citationId) continue;
       const href = hrefForInjectedEntry(entry);
-      if (!href) return null;
+      if (!href) continue;
       return {
         id: entry.id,
         href,
@@ -408,15 +408,21 @@ export async function listSessions(): Promise<SessionSummary[]> {
 }
 
 export async function deleteSession(sessionId: string): Promise<boolean> {
-  const file = path.join(stateDir(), `${sessionId}.jsonl`);
-  const injectedFile = path.join(stateDir(), `${sessionId}.injected.jsonl`);
-  try {
-    await fs.unlink(file);
-    await fs.unlink(injectedFile).catch(() => undefined);
-    return true;
-  } catch {
-    return false;
+  const dir = stateDir();
+  const files = [
+    path.join(dir, `${sessionId}.jsonl`),
+    path.join(dir, `${sessionId}.injected.jsonl`),
+  ];
+  let removedAny = false;
+  for (const file of files) {
+    try {
+      await fs.unlink(file);
+      removedAny = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
   }
+  return removedAny;
 }
 
 export async function deleteAllSessions(): Promise<number> {

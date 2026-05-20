@@ -127,6 +127,19 @@ def test_render_with_registry_uses_same_citation_instruction_for_codex() -> None
     assert cs_cite.CITATION_INSTRUCTION in md
 
 
+def test_render_with_registry_off_omits_citation_instruction(monkeypatch) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_CITATIONS", "off")
+    md, _ = context_format.render_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "x"}],
+        agent_playbooks=[],
+        profiles=[],
+    )
+
+    assert "marker line MUST be the very last line" not in md
+    assert "claude-smart learning" not in md
+
+
 def test_render_with_registry_playbook_trigger_and_rationale_emitted() -> None:
     pbs = [
         {

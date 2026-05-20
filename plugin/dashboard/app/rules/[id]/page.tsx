@@ -14,7 +14,12 @@ export default async function RuleResolverPage({
   params: Promise<{ id: string }>;
 }) {
   const { id: rawId } = await params;
-  const id = decodeURIComponent(rawId);
+  let id: string;
+  try {
+    id = decodeURIComponent(rawId);
+  } catch {
+    id = rawId;
+  }
   const resolved = await resolveRuleLink(id);
   if (resolved) {
     redirect(resolved.href);

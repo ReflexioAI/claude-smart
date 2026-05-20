@@ -102,14 +102,14 @@ export default function DashboardPage() {
       ...currentProjectSkills.map((p) => ({
         id: `project:${p.user_playbook_id}`,
         kind: "project-skill" as const,
-        href: `/skills/project/${p.user_playbook_id}`,
+        href: `/skills/project/${encodeURIComponent(p.user_playbook_id)}`,
         content: p.content,
         createdAt: p.created_at,
       })),
       ...approvedSharedSkills.map((p) => ({
         id: `shared:${p.agent_playbook_id}`,
         kind: "shared-skill" as const,
-        href: `/skills/shared/${p.agent_playbook_id}`,
+        href: `/skills/shared/${encodeURIComponent(p.agent_playbook_id)}`,
         content: p.content,
         createdAt: p.created_at,
       })),

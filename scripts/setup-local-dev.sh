@@ -159,12 +159,17 @@ PY
 
   if command -v claude >/dev/null 2>&1; then
     log "registering local marketplace with Claude Code..."
-    # `claude plugin marketplace add` errors if already registered; treat
-    # that as a no-op. Output goes to stderr so we can keep logs clean.
-    if claude plugin marketplace add "$LOCAL_MKT_DIR" >/dev/null 2>&1; then
-      log "  added reflexioai-local → $LOCAL_MKT_DIR"
+    marketplace_list="$(claude plugin marketplace list 2>/dev/null || true)"
+    if printf '%s\n' "$marketplace_list" | grep -Fq "reflexioai-local" || printf '%s\n' "$marketplace_list" | grep -Fq "$LOCAL_MKT_DIR"; then
+      log "  reflexioai-local already registered"
     else
-      log "  reflexioai-local already registered (or add failed — run manually to debug)"
+      if add_output="$(claude plugin marketplace add "$LOCAL_MKT_DIR" 2>&1)"; then
+        log "  added reflexioai-local → $LOCAL_MKT_DIR"
+      else
+        log "ERROR: failed to register reflexioai-local marketplace"
+        log "  $add_output"
+        exit 1
+      fi
     fi
   else
     log "WARNING: 'claude' CLI not on PATH — skipping marketplace registration."
