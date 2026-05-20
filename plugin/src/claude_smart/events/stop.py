@@ -383,7 +383,7 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
         and not _has_unpublished_user_turn(session_id)
     ):
         return None
-    if os.environ.get("CLAUDE_SMART_CITATIONS", "auto") == "off":
+    if os.environ.get("CLAUDE_SMART_CITATIONS", "on") == "off":
         assistant_text = cs_cite.strip_marker_lines(assistant_text)
     text_cited_ids = cs_cite.parse_text_citations(assistant_text)
     cited_items = _resolve_cited_items(session_id, text_cited_ids)

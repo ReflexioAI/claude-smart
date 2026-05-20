@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 import pytest
 from claude_smart import cs_cite
 
@@ -157,48 +155,35 @@ def test_rank_id_rejects_unknown_kind() -> None:
         cs_cite.rank_id("other", 1)
 
 
-def test_citation_instruction_auto_returns_full_string() -> None:
-    text = cs_cite.citation_instruction("auto")
+def test_citation_instruction_on_returns_compact_string() -> None:
+    text = cs_cite.citation_instruction("on")
     assert text == cs_cite.CITATION_INSTRUCTION
-    assert "citation block is up to two lines" in text
-    assert "marker line MUST be the very last line" in text
-    assert "✨ claude-smart rule applied:" in text
-
-
-def test_citation_instruction_marker_only_drops_counterfactual_paragraph() -> None:
-    text = cs_cite.citation_instruction("marker-only")
+    assert "materially changes your answer" in text
     assert "citation block is up to two lines" not in text
     assert "counterfactual" not in text.lower()
-    assert "marker line MUST be the very last line" in text
     assert "✨ claude-smart rule applied:" in text
+
+
+def test_citation_instruction_legacy_modes_stay_enabled() -> None:
+    """Old configured values remain valid aliases for compact enabled mode."""
+    assert cs_cite.citation_instruction("auto") == cs_cite.CITATION_INSTRUCTION
+    assert cs_cite.citation_instruction("marker-only") == cs_cite.CITATION_INSTRUCTION
 
 
 def test_citation_instruction_osc8_uses_terminal_hyperlink_examples() -> None:
-    text = cs_cite.citation_instruction("marker-only", "osc8")
+    text = cs_cite.citation_instruction("on", "osc8")
     assert "OSC 8 terminal" in text
     assert "\x1b]8;;http://localhost:3001/rules/s1-123\x1b\\" in text
-    assert "[git safety](http://localhost:3001/rules/s1-123)" in text
+    assert "markdown links" in text
 
 
 def test_citation_instruction_off_returns_empty_string() -> None:
     assert cs_cite.citation_instruction("off") == ""
 
 
-def test_citation_instruction_unknown_falls_back_to_auto() -> None:
-    """Env-var typos must not break injection — unknown modes behave like ``auto``."""
-    assert cs_cite.citation_instruction("typo") == cs_cite.citation_instruction("auto")
-
-
-def test_citation_instruction_auto_counterfactual_does_not_reference_rank_id() -> None:
-    """Regression: the counterfactual example must not show a bare ``s\\d+-`` /
-    ``p\\d+-`` token, or the assistant copies the cryptic id pattern."""
-    text = cs_cite.citation_instruction("auto")
-    # The marker paragraph starts here; rank-id examples are allowed in it
-    # but must not appear in the preceding counterfactual paragraph.
-    marker_para_start = text.index("End the message with exactly one marker line")
-    counterfactual_para_start = text.index("citation block is up to two lines")
-    counterfactual_para = text[counterfactual_para_start:marker_para_start]
-    assert not re.search(r"\b[sp]\d+-[a-z0-9]+\b", counterfactual_para)
+def test_citation_instruction_unknown_stays_enabled() -> None:
+    """Env-var typos must not break injection — unknown modes stay enabled."""
+    assert cs_cite.citation_instruction("typo") == cs_cite.CITATION_INSTRUCTION
 
 
 def test_strip_marker_lines_removes_single_marker() -> None:

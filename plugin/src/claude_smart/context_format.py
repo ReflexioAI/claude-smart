@@ -101,7 +101,7 @@ def render_with_registry(
         sections.append("### Project preferences")
         sections.extend(profile_lines)
     instruction = cs_cite.citation_instruction(
-        os.environ.get("CLAUDE_SMART_CITATIONS", "auto"),
+        os.environ.get("CLAUDE_SMART_CITATIONS", "on"),
         os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
     )
     if instruction:
@@ -177,7 +177,7 @@ def render_inline_with_registry(
         sections.append("### Relevant project preferences")
         sections.extend(profile_lines)
     instruction = cs_cite.citation_instruction(
-        os.environ.get("CLAUDE_SMART_CITATIONS", "auto"),
+        os.environ.get("CLAUDE_SMART_CITATIONS", "on"),
         os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
     )
     if instruction:

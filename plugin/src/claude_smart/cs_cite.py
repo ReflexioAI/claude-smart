@@ -29,11 +29,10 @@ This module holds:
 - ``citation_instruction(mode)``: the trailer text appended to injected
   context so the assistant knows when and how to emit the citation marker.
   ``mode`` is read from the ``CLAUDE_SMART_CITATIONS`` env var by the
-  caller; valid values are ``"auto"`` (default — counterfactual + marker),
-  ``"marker-only"`` (suppress the counterfactual), and ``"off"`` (no
-  instruction injected, no marker emitted).
-- ``CITATION_INSTRUCTION``: the full ``"auto"`` instruction string, kept
-  as a module-level constant for backward-compatible imports.
+  caller; ``"off"`` disables the instruction, while all other values enable
+  the compact marker instruction for backward compatibility.
+- ``CITATION_INSTRUCTION``: the compact enabled instruction string, kept as
+  a module-level constant for backward-compatible imports.
 """
 
 from __future__ import annotations
@@ -66,66 +65,22 @@ _RAW_DASHBOARD_URL_RE = re.compile(
     r"rules/[^\s),\x1b\\]+))"
 )
 
-_INTRO_AUTO = (
-    "_First, fully answer the user — citation does not change what or how "
-    "you reply. Then, as a final step, consider whether to cite: if — and "
-    "only if — an injected `[cs:…]` item materially changed your reply "
-    "(different wording, action, or conclusion than you would have produced "
-    "without it), append a citation block at the very end of your message. "
-    "If multiple injected items materially shaped distinct parts of the "
-    "reply, cite each of them in the same marker line. Do not call a shell "
-    "command or any other tool for citations. Citation candidates are only "
-    "the injected `[cs:…]` bullets above. Use the dashboard URL shown beside "
-    "each cited bullet; if a bullet has no dashboard URL, skip that bullet "
-    "rather than inventing one."
-)
-
-_INTRO_MARKER_ONLY = (
-    "_First, fully answer the user — citation does not change what or how "
-    "you reply. Then, as a final step, consider whether to cite: if — and "
-    "only if — an injected `[cs:…]` item materially changed your reply "
-    "(different wording, action, or conclusion than you would have produced "
-    "without it), append the marker line below at the very end of your "
-    "message. If multiple injected items materially shaped distinct parts "
-    "of the reply, cite each of them in the same marker line. Do not call a "
-    "shell command or any other tool for citations. Citation candidates are "
-    "only the injected `[cs:…]` bullets above. Use the dashboard URL shown "
-    "beside each cited bullet; if a bullet has no dashboard URL, skip that "
-    "bullet rather than inventing one."
-)
-
-_COUNTERFACTUAL_PARAGRAPH = (
-    "The citation block is up to two lines: an optional counterfactual line "
-    "followed by the marker line. Check your own prior assistant messages in "
-    "this conversation — if you have NOT yet emitted a `✨ claude-smart rule"
-    " applied:` marker "
-    "line earlier in this session, include the "
-    "counterfactual line; otherwise skip it. The counterfactual is one short "
-    "factual sentence contrasting your actual reply with the unlearned "
-    "baseline. Refer to the skill by a short, human paraphrase (≤ 6 words) "
-    "of what it asks for — taken from the bullet's content — wrapped in "
-    "double quotes. Do not put the `[cs:…]` id in the counterfactual line; "
-    'the id appears only in the marker line below. Example: `↳ Without '
-    '"verify process state before suggesting kill" I would have told you '
-    "to kill 88040 as a runaway fork.` Keep it factual, not promotional, "
-    "and ≤ 30 words."
+_COMPACT_INTRO = (
+    "_If a listed `[cs:…]` item materially changes your answer, end with one "
+    "final marker line. Skip the marker when no listed item changed the "
+    "answer."
 )
 
 _MARKDOWN_MARKER_PARAGRAPH = (
-    "End the message with exactly one marker line using human-readable "
-    "linked titles, not raw ids. Use this exact format for one item: "
+    "Use human-readable linked titles, not raw ids. Format for one item: "
     "`✨ claude-smart rule applied: "
     "[verify process state](http://localhost:3001/rules/s1-123)`. "
-    "Use this exact format for multiple items: "
+    "For multiple items: "
     "`✨ claude-smart rules applied: "
     "[git safety](http://localhost:3001/rules/s1-123), "
     "[brief answer preference](http://localhost:3001/rules/p1-pref)`. "
-    "Choose a short human title (2-6 words) from the cited item's content. "
-    "Use the dashboard URL shown beside that item in the context; do not "
-    "invent URLs. The marker line MUST be the very last line of your "
-    "message. Do not include `[cs:…]` ids in the marker line. Never emit a "
-    "standalone wrapper like `✨s1-ab12✨` or `✨abc123✨`; those are not "
-    "claude-smart citations and cannot be resolved."
+    "Use the dashboard URL shown beside each cited item; do not invent URLs. "
+    "Do not include `[cs:…]` ids in the marker line._"
 )
 
 _OSC8_EXAMPLE_ONE = (
@@ -145,30 +100,15 @@ _OSC8_EXAMPLE_MULTI = (
     "\x1b]8;;\x1b\\"
 )
 _OSC8_MARKER_PARAGRAPH = (
-    "End the message with exactly one marker line using human-readable "
-    "terminal hyperlinks, not raw ids or visible URLs. Use OSC 8 terminal "
-    "hyperlinks so only the title is visible and clickable: wrap each title "
-    "as `ESC ] 8 ; ; URL ESC \\ TITLE ESC ] 8 ; ; ESC \\`. Use this exact "
-    f"visual format for one item: `{_OSC8_EXAMPLE_ONE}`. Use this exact "
-    f"visual format for multiple items: `{_OSC8_EXAMPLE_MULTI}`. Choose a "
-    "short human title (2-6 words) from the cited item's content. Use the "
-    "dashboard URL shown beside that item in the context; do not invent "
-    "URLs. If your terminal cannot emit OSC 8, fall back to markdown links "
-    "like `[git safety](http://localhost:3001/rules/s1-123)`. The "
-    "marker line MUST be the very last line of your message. Do not include "
-    "`[cs:…]` ids in the marker line. Never emit a standalone wrapper like "
-    "`✨s1-ab12✨` or `✨abc123✨`; those are not claude-smart citations and "
-    "cannot be resolved."
+    "Use human-readable OSC 8 terminal hyperlinks, not raw ids or visible "
+    "URLs. Format for one item: "
+    f"`{_OSC8_EXAMPLE_ONE}`. For multiple items: "
+    f"`{_OSC8_EXAMPLE_MULTI}`. Use the dashboard URL shown beside each cited "
+    "item; do not invent URLs. If OSC 8 is unavailable, use markdown links. "
+    "Do not include `[cs:…]` ids in the marker line._"
 )
 
-_DEFAULT_SKIP_PARAGRAPH = (
-    "Cite only applied learnings. Skip the whole block when every injected "
-    "item is merely on-topic, confirms what you already planned, or your "
-    "reply would read the same without it. Do not add any other text, tool "
-    "calls, or role markers after the final marker line._"
-)
-
-CITATION_MODES = ("auto", "marker-only", "off")
+CITATION_MODES = ("on", "auto", "marker-only", "off")
 LINK_STYLES = ("markdown", "osc8")
 
 
@@ -176,10 +116,10 @@ def citation_instruction(mode: str, link_style: str = "markdown") -> str:
     """Return the citation prompt for ``mode``.
 
     Args:
-        mode: One of ``"auto"`` (full instruction), ``"marker-only"``
-            (suppress the counterfactual paragraph), or ``"off"`` (return
-            an empty string so no instruction is injected). Unknown values
-            fall back to ``"auto"`` — env-var typos must not break
+        mode: ``"off"`` returns an empty string so no instruction is
+            injected. Any other value, including legacy ``"auto"`` and
+            ``"marker-only"``, returns the compact enabled instruction.
+            Unknown values stay enabled — env-var typos must not break
             injection.
         link_style: ``"markdown"`` for ordinary markdown links, or ``"osc8"``
             for terminal-native hyperlinks. Unknown values fall back to
@@ -193,19 +133,10 @@ def citation_instruction(mode: str, link_style: str = "markdown") -> str:
     marker_paragraph = (
         _OSC8_MARKER_PARAGRAPH if link_style == "osc8" else _MARKDOWN_MARKER_PARAGRAPH
     )
-    if mode == "marker-only":
-        return (
-            f"{_INTRO_MARKER_ONLY}\n\n"
-            f"{marker_paragraph}\n\n"
-            f"{_DEFAULT_SKIP_PARAGRAPH}"
-        )
-    return (
-        f"{_INTRO_AUTO}\n\n{_COUNTERFACTUAL_PARAGRAPH}\n\n"
-        f"{marker_paragraph}\n\n{_DEFAULT_SKIP_PARAGRAPH}"
-    )
+    return f"{_COMPACT_INTRO}\n\n{marker_paragraph}"
 
 
-CITATION_INSTRUCTION = citation_instruction("auto")
+CITATION_INSTRUCTION = citation_instruction("on")
 
 
 def _fingerprint(real_id: Any) -> str:

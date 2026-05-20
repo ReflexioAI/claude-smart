@@ -220,9 +220,9 @@ def test_codex_citation_instruction_uses_text_marker_not_tool_call() -> None:
 
     instruction = cs_cite.CITATION_INSTRUCTION
 
-    assert "Do not call a shell command" in instruction
+    assert "materially changes your answer" in instruction
     assert "✨ claude-smart rule applied:" in instruction
-    assert "claude-smart citations" in instruction
+    assert "tool call" not in instruction
 
 
 def test_codex_stop_prefers_last_assistant_message(session_dir, monkeypatch) -> None:

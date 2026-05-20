@@ -19,13 +19,17 @@ function emitOk() {
   process.stdout.write('{"continue":true}\n');
 }
 
+function emitHookOk() {
+  process.stdout.write('{"continue":true}\n');
+}
+
 function emitNormalizedHookOutput(stdout) {
   const lines = String(stdout || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
   if (lines.length === 0) {
-    emitOk();
+    emitHookOk();
     return;
   }
 
@@ -36,12 +40,12 @@ function emitNormalizedHookOutput(stdout) {
       parsed = JSON.parse(line);
     } catch {
       appendLog("backend.log", `[claude-smart] codex hook emitted non-JSON stdout: ${line.slice(0, 500)}`);
-      emitOk();
+      emitHookOk();
       return;
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       appendLog("backend.log", `[claude-smart] codex hook emitted non-object JSON stdout: ${line.slice(0, 500)}`);
-      emitOk();
+      emitHookOk();
       return;
     }
     Object.assign(merged, parsed);
@@ -454,7 +458,7 @@ function runHook(root, event) {
     }
     if (!uv) {
       appendLog("backend.log", "[claude-smart] hook: uv not on PATH after installer; skipping");
-      emitOk();
+      emitHookOk();
       return 0;
     }
   }
@@ -469,7 +473,7 @@ function runHook(root, event) {
         REFLEXIO_URL: readBackendUrl(),
         CLAUDE_SMART_HOST: "codex",
         CLAUDE_SMART_CLI_PATH: process.env.CLAUDE_SMART_CLI_PATH || codexCompatPath(root),
-        CLAUDE_SMART_CITATION_LINK_STYLE: process.env.CLAUDE_SMART_CITATION_LINK_STYLE || "osc8",
+        CLAUDE_SMART_CITATION_LINK_STYLE: process.env.CLAUDE_SMART_CITATION_LINK_STYLE || "markdown",
       },
       input,
       stdio: ["pipe", "pipe", "inherit"],

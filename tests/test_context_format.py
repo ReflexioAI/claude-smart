@@ -107,10 +107,11 @@ def test_render_with_registry_emits_citation_instruction() -> None:
         profiles=[],
     )
     assert cs_cite.CITATION_INSTRUCTION in md
-    assert "Do not call a shell command" in md
+    assert "materially changes your answer" in md
+    assert "Do not call a shell command" not in md
     assert "✨ claude-smart rule applied: [verify process state]" in md
     assert "[brief answer preference]" in md
-    assert "Never emit a standalone wrapper" in md
+    assert "Never emit a standalone wrapper" not in md
     assert "`✨ N claude-smart" not in md
 
 
@@ -190,7 +191,7 @@ def test_render_inline_with_registry_uses_inline_headers() -> None:
     assert len(registry) == 2
 
 
-def test_render_inline_with_registry_auto_mode_injects_full_instruction(
+def test_render_inline_with_registry_auto_mode_injects_compact_instruction(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("CLAUDE_SMART_CITATIONS", "auto")
@@ -201,10 +202,11 @@ def test_render_inline_with_registry_auto_mode_injects_full_instruction(
         profiles=[],
     )
     assert cs_cite.CITATION_INSTRUCTION in md
+    assert "citation block is up to two lines" not in md
 
 
-def test_render_inline_with_registry_default_is_auto(monkeypatch) -> None:
-    """No env var set → behave as ``auto`` so existing deployments don't change."""
+def test_render_inline_with_registry_default_is_on(monkeypatch) -> None:
+    """No env var set → compact citations are enabled."""
     monkeypatch.delenv("CLAUDE_SMART_CITATIONS", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
     md, _ = context_format.render_inline_with_registry(
@@ -229,7 +231,7 @@ def test_render_inline_with_registry_can_inject_osc8_instruction(monkeypatch) ->
     assert "✨ claude-smart rule applied: [verify process state]" not in md
 
 
-def test_render_inline_with_registry_marker_only_drops_counterfactual(
+def test_render_inline_with_registry_marker_only_is_enabled_alias(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("CLAUDE_SMART_CITATIONS", "marker-only")
@@ -239,7 +241,8 @@ def test_render_inline_with_registry_marker_only_drops_counterfactual(
         agent_playbooks=[],
         profiles=[],
     )
-    assert "marker line MUST be the very last line" in md
+    assert cs_cite.CITATION_INSTRUCTION in md
+    assert "materially changes your answer" in md
     assert "citation block is up to two lines" not in md
 
 

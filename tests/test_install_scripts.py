@@ -773,6 +773,59 @@ def test_codex_hook_caps_backend_log_appends(tmp_path: Path) -> None:
     assert log.stat().st_size <= 10_000_000
 
 
+def test_codex_hook_post_tool_fallback_omits_suppress_output(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for codex hook wrapper tests")
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = ""
+    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT / "plugin")
+    result = subprocess.run(
+        [node, str(CODEX_HOOK), "hook", "post-tool"],
+        env=env,
+        text=True,
+        input=json.dumps({"session_id": "s1", "tool_name": "Bash"}),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"continue": True}
+
+
+def test_codex_hook_normalizer_removes_suppress_output_for_hooks(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for codex hook wrapper tests")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uv = bin_dir / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' '{\"continue\":true,\"suppressOutput\":true}'\n"
+    )
+    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = str(bin_dir)
+    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT / "plugin")
+    result = subprocess.run(
+        [node, str(CODEX_HOOK), "hook", "post-tool"],
+        env=env,
+        text=True,
+        input=json.dumps({"session_id": "s1", "tool_name": "Bash"}),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"continue": True}
+
+
 def test_install_fingerprint_hash_tracks_lib_changes(tmp_path: Path) -> None:
     plugin_root = tmp_path / "plugin"
     scripts = plugin_root / "scripts"
