@@ -44,6 +44,7 @@ def test_cmd_learn_publishes_with_force_extraction(
             "session_id": "s1",
             "project_id": "test-project",
             "force_extraction": True,
+            "override_learning_stall": True,
             "skip_aggregation": False,
         }
     ]
@@ -119,6 +120,7 @@ def test_cmd_learn_with_note_appends_user_turn(
     assert records[-1]["user_id"] == "test-project"
     assert "[correction]" not in records[-1]["content"]
     assert calls and calls[0]["force_extraction"] is True
+    assert calls and calls[0]["override_learning_stall"] is True
     out = capsys.readouterr().out
     assert "Forced extraction on session `s1`" in out
     assert "including your note" in out

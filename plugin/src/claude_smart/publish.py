@@ -22,6 +22,7 @@ def publish_unpublished(
     project_id: str,
     force_extraction: bool,
     skip_aggregation: bool,
+    override_learning_stall: bool = False,
     adapter: Adapter | None = None,
 ) -> tuple[PublishStatus, int]:
     """Drain the session buffer to reflexio and stamp the high-water mark.
@@ -35,6 +36,9 @@ def publish_unpublished(
             globally per agent rather than per project.
         force_extraction (bool): Whether to ask reflexio to run extraction
             synchronously instead of queuing for the next sweep.
+        override_learning_stall (bool): Whether to bypass a recorded
+            provider auth/billing stall. Automatic hooks must leave this
+            False; explicit manual retries set it True.
         skip_aggregation (bool): When True, reflexio extracts preferences and
             raw project-specific skill entries but skips the rollup into
             shared skills. claude-smart passes False on every publish
@@ -63,6 +67,7 @@ def publish_unpublished(
         project_id=project_id,
         interactions=interactions,
         force_extraction=force_extraction,
+        override_learning_stall=override_learning_stall,
         skip_aggregation=skip_aggregation,
     )
     if ok:

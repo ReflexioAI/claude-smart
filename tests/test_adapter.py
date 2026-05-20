@@ -55,6 +55,7 @@ def test_publish_returns_true_on_success() -> None:
         project_id="p1",
         interactions=[{"role": "User", "content": "hi"}],
         force_extraction=True,
+        override_learning_stall=True,
     )
     assert ok is True
     # After the project-scoped preferences refactor (commit 88cb150), reflexio's
@@ -63,6 +64,7 @@ def test_publish_returns_true_on_success() -> None:
     assert client.published_kwargs["session_id"] == "s1"
     assert client.published_kwargs["agent_version"] == "claude-code"
     assert client.published_kwargs["force_extraction"] is True
+    assert client.published_kwargs["override_learning_stall"] is True
 
 
 def test_publish_returns_false_when_client_raises() -> None:

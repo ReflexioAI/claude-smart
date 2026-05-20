@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 from claude_smart import runtime
 
@@ -70,6 +71,7 @@ class Adapter:
         project_id: str,
         interactions: Sequence[dict[str, Any]],
         force_extraction: bool = False,
+        override_learning_stall: bool = False,
         skip_aggregation: bool = False,
     ) -> bool:
         """Publish buffered interactions to reflexio. Returns True on success."""
@@ -86,6 +88,7 @@ class Adapter:
                 session_id=session_id,
                 wait_for_response=False,
                 force_extraction=force_extraction,
+                override_learning_stall=override_learning_stall,
                 skip_aggregation=skip_aggregation,
             )
             return True

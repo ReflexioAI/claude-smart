@@ -1044,8 +1044,9 @@ def cmd_show(args: argparse.Namespace) -> int:
 def cmd_learn(args: argparse.Namespace) -> int:
     """Force reflexio extraction over the active session's interactions.
 
-    Publishes unpublished interactions with ``force_extraction=True`` so
-    extraction runs immediately rather than at the next batch interval.
+    Publishes unpublished interactions with ``force_extraction=True`` and
+    ``override_learning_stall=True`` so extraction runs immediately as an
+    explicit retry rather than at the next batch interval.
     When ``args.note`` is provided, the note is appended to the session
     buffer as a neutral User turn before publishing — letting the user
     capture an explicit insight, preference, or workflow note alongside
@@ -1083,6 +1084,7 @@ def cmd_learn(args: argparse.Namespace) -> int:
         session_id=session_id,
         project_id=project_id,
         force_extraction=True,
+        override_learning_stall=True,
         skip_aggregation=False,
     )
     if status == "ok":

@@ -1708,6 +1708,7 @@ def test_session_end_synthesises_anchor_when_buffer_ends_with_orphan_tools(
     # SessionEnd publishes synchronously so the snapshot read after the
     # hook returns sees any just-extracted rows.
     assert published_kwargs["force_extraction"] is True
+    assert published_kwargs.get("override_learning_stall") is None
 
 
 def test_session_end_uses_force_extraction_for_final_flush(
@@ -1727,6 +1728,7 @@ def test_session_end_uses_force_extraction_for_final_flush(
     )
     session_end.handle({"session_id": "s_force", "cwd": "/tmp/p"})
     assert published_kwargs["force_extraction"] is True
+    assert published_kwargs.get("override_learning_stall") is None
     # And skip_aggregation stays False — the rollup still happens.
     assert published_kwargs["skip_aggregation"] is False
 
