@@ -44,7 +44,10 @@ export function TopBar() {
           </div>
         </div>
         <div className="mx-2 h-8 w-px bg-border hidden md:block" />
-        <label className="hidden items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1 text-xs text-muted-foreground md:flex">
+        <label
+          htmlFor="reflexio-url"
+          className="hidden items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1 text-xs text-muted-foreground md:flex"
+        >
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_0_3px_oklch(0.72_0.14_148/0.16)]" />
           Reflexio
         </label>
@@ -54,10 +57,12 @@ export function TopBar() {
         >
           <Link2 className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
+            id="reflexio-url"
             value={reflexioUrl}
             onChange={(e) => setReflexioUrl(e.target.value)}
             placeholder="http://localhost:8071"
             className="h-9 pl-8 text-xs font-mono bg-background/80"
+            aria-label="Reflexio endpoint URL"
             autoComplete="off"
             data-1p-ignore
             data-form-type="other"
@@ -72,6 +77,7 @@ export function TopBar() {
         className="h-9 w-9"
         onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
         title="Toggle theme"
+        aria-label="Toggle theme"
       >
         <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
         <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
