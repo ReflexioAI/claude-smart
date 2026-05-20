@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   BookOpen,
@@ -8,6 +8,7 @@ import {
   Sparkles,
   Activity,
   ExternalLink,
+  Users,
 } from "lucide-react";
 import { LearningsBadge } from "@/components/common/learnings-badge";
 import { PageHeader } from "@/components/common/page-header";
@@ -23,13 +24,26 @@ import type {
   PlaybookApplicationStat,
   SessionSummary,
   UserPlaybook,
+  UserProfile,
 } from "@/lib/types";
+
+type RecentLearningKind = "project-skill" | "shared-skill" | "preference";
+
+interface RecentLearning {
+  id: string;
+  kind: RecentLearningKind;
+  href: string;
+  content: string;
+  trigger?: string | null;
+  createdAt: number;
+}
 
 export default function DashboardPage() {
   const { reflexioUrl } = useSettings();
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [projectSkills, setProjectSkills] = useState<UserPlaybook[] | null>(null);
   const [sharedSkills, setSharedSkills] = useState<AgentPlaybook[] | null>(null);
+  const [preferences, setPreferences] = useState<UserProfile[] | null>(null);
   const [topApplied, setTopApplied] = useState<PlaybookApplicationStat[] | null>(
     null,
   );
@@ -40,7 +54,7 @@ export default function DashboardPage() {
     async function load() {
       setError(null);
       try {
-        const [sRes, projectRes, sharedRes, statsRes] = await Promise.all([
+        const [sRes, projectRes, sharedRes, prefRes, statsRes] = await Promise.all([
           fetch("/api/sessions", { cache: "no-store" }).then((r) => r.json()),
           reflexio
             .getUserPlaybooks({ reflexioUrl })
@@ -48,6 +62,9 @@ export default function DashboardPage() {
           reflexio
             .getAgentPlaybooks({ reflexioUrl })
             .catch(() => ({ agent_playbooks: [] as AgentPlaybook[] })),
+          reflexio
+            .getAllProfiles({ reflexioUrl, limit: 100 })
+            .catch(() => ({ user_profiles: [] as UserProfile[] })),
           fetch("/api/rules/applied?daysBack=30&limit=5", {
             cache: "no-store",
           })
@@ -61,6 +78,7 @@ export default function DashboardPage() {
         setSessions(sRes.sessions ?? []);
         setProjectSkills(projectRes.user_playbooks ?? []);
         setSharedSkills(sharedRes.agent_playbooks ?? []);
+        setPreferences(prefRes.user_profiles ?? []);
         setTopApplied(statsRes.stats ?? []);
       } catch (e) {
         if (!cancelled)
@@ -79,6 +97,44 @@ export default function DashboardPage() {
   const approvedSharedSkills = (sharedSkills ?? []).filter(
     (p) => agentPlaybookStatusLabel(p) === "APPROVED",
   );
+  const currentPreferences = (preferences ?? []).filter((p) => p.status == null);
+  const recentLearnings = useMemo(() => {
+    const items: RecentLearning[] = [
+      ...currentProjectSkills.map((p) => ({
+        id: `project:${p.user_playbook_id}`,
+        kind: "project-skill" as const,
+        href: `/skills/project/${p.user_playbook_id}`,
+        content: p.content,
+        trigger: p.trigger,
+        createdAt: p.created_at,
+      })),
+      ...approvedSharedSkills.map((p) => ({
+        id: `shared:${p.agent_playbook_id}`,
+        kind: "shared-skill" as const,
+        href: `/skills/shared/${p.agent_playbook_id}`,
+        content: p.content,
+        trigger: p.trigger,
+        createdAt: p.created_at,
+      })),
+      ...currentPreferences.map((p) => ({
+        id: `preference:${p.profile_id}`,
+        kind: "preference" as const,
+        href: `/preferences/project/${encodeURIComponent(p.profile_id)}`,
+        content: p.content,
+        createdAt: p.last_modified_timestamp,
+      })),
+    ];
+    const seen = new Set<string>();
+    return items
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .filter((item) => {
+        const key = `${item.kind}:${item.content.trim().toLowerCase()}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 4);
+  }, [approvedSharedSkills, currentPreferences, currentProjectSkills]);
   const learningInteractionTotal = (sessions ?? []).reduce(
     (acc, s) => acc + s.learning_interaction_count,
     0,
@@ -167,64 +223,48 @@ export default function DashboardPage() {
 
         <section>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold">Recent skills</h2>
-            <Link
-              href="/skills"
-              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
-            >
-              View all <ExternalLink className="h-3 w-3" />
-            </Link>
+            <h2 className="text-sm font-semibold">Recent learnings</h2>
+            <div className="flex items-center gap-3">
+              <Link
+                href="/skills"
+                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+              >
+                Skills <ExternalLink className="h-3 w-3" />
+              </Link>
+              <Link
+                href="/preferences"
+                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+              >
+                Preferences <ExternalLink className="h-3 w-3" />
+              </Link>
+            </div>
           </div>
-          {currentProjectSkills.length > 0 || approvedSharedSkills.length > 0 ? (
+          {recentLearnings.length > 0 ? (
             <div className="grid gap-3 sm:grid-cols-2">
-              {currentProjectSkills.slice(0, 2).map((p) => (
+              {recentLearnings.map((item) => (
                 <Link
-                  key={`project:${p.user_playbook_id}`}
-                  href={`/skills/project/${p.user_playbook_id}`}
-                  className="block rounded-xl border border-border bg-card p-4 hover:bg-accent/40 transition-colors"
-                >
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <Badge variant="outline" className="font-mono text-[10px]">
-                      {p.agent_version || "default"}
-                    </Badge>
-                    <Badge variant="secondary" className="text-[10px]">
-                      project-specific
-                    </Badge>
-                    <span className="text-[11px] text-muted-foreground">
-                      {formatRelative(p.created_at)}
-                    </span>
-                  </div>
-                  <p className="text-sm line-clamp-3">{p.content}</p>
-                  {p.trigger && (
-                    <p className="text-xs text-muted-foreground mt-2 line-clamp-1">
-                      <span className="font-medium">trigger:</span> {p.trigger}
-                    </p>
-                  )}
-                </Link>
-              ))}
-              {approvedSharedSkills.slice(0, 2).map((p) => (
-                <Link
-                  key={`shared:${p.agent_playbook_id}`}
-                  href={`/skills/shared/${p.agent_playbook_id}`}
+                  key={item.id}
+                  href={item.href}
                   className="block rounded-xl border border-border bg-card p-4 hover:bg-accent/40 transition-colors"
                 >
                   <div className="flex items-center justify-between gap-2 mb-2">
                     <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="font-mono text-[10px]">
-                        {p.agent_version || "default"}
+                      <Badge variant="outline" className="h-5 gap-1 text-[10px]">
+                        {learningIcon(item.kind)}
+                        {item.kind === "preference" ? "preference" : "skill"}
                       </Badge>
                       <Badge variant="secondary" className="text-[10px]">
-                        shared
+                        {learningScope(item.kind)}
                       </Badge>
                     </div>
                     <span className="text-[11px] text-muted-foreground">
-                      {formatRelative(p.created_at)}
+                      {formatRelative(item.createdAt)}
                     </span>
                   </div>
-                  <p className="text-sm line-clamp-3">{p.content}</p>
-                  {p.trigger && (
+                  <p className="text-sm line-clamp-3">{item.content}</p>
+                  {item.trigger && (
                     <p className="text-xs text-muted-foreground mt-2 line-clamp-1">
-                      <span className="font-medium">trigger:</span> {p.trigger}
+                      <span className="font-medium">trigger:</span> {item.trigger}
                     </p>
                   )}
                 </Link>
@@ -233,8 +273,8 @@ export default function DashboardPage() {
           ) : (
             <EmptyState
               icon={BookOpen}
-              title="No skills yet"
-              description="Keep using Claude with claude-smart enabled. Skills are extracted automatically when patterns emerge."
+              title="No learnings yet"
+              description="Keep using Claude with claude-smart enabled. Skills and preferences are extracted automatically when patterns emerge."
             />
           )}
         </section>
@@ -322,4 +362,14 @@ export default function DashboardPage() {
 function appliedRuleLabel(stat: PlaybookApplicationStat): string {
   if (stat.kind === "profile") return "preference";
   return stat.source_kind === "agent_playbook" ? "shared skill" : "project skill";
+}
+
+function learningScope(kind: RecentLearningKind): string {
+  if (kind === "shared-skill") return "shared";
+  return "project";
+}
+
+function learningIcon(kind: RecentLearningKind) {
+  const Icon = kind === "preference" ? Users : BookOpen;
+  return <Icon className="h-3 w-3" />;
 }
