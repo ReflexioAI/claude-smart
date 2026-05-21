@@ -260,6 +260,10 @@ def test_dashboard_service_restarts_stale_claude_smart_dashboard() -> None:
     assert "dashboard_matches_current_root()" in dashboard
     assert "x-claude-smart-plugin-root" in dashboard
     assert "curl -sfI --connect-timeout 2 --max-time 5" in dashboard
+    assert "normalize_identity_path()" in dashboard
+    assert "cygpath -u" in dashboard
+    assert 'expected_root="$(normalize_identity_path ' in dashboard
+    assert "actual_root=\"$(normalize_identity_path \"$actual_root\")\"" in dashboard
     assert "[ \"$actual_root\" = \"$expected_root\" ]" in dashboard
     assert "stale claude-smart dashboard on port $PORT; restarting" in dashboard
     assert "stop_dashboard_listener" in dashboard

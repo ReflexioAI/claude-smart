@@ -81,15 +81,40 @@ canonical_dir() {
   (cd "$dir" 2>/dev/null && pwd -P) || printf '%s\n' "$dir"
 }
 
+normalize_identity_path() {
+  path="$1"
+  if claude_smart_is_windows; then
+    if command -v cygpath >/dev/null 2>&1; then
+      path="$(cygpath -u "$path" 2>/dev/null || printf '%s\n' "$path")"
+    else
+      path="$(
+        printf '%s\n' "$path" | awk '{
+          gsub(/\\/, "/")
+          if ($0 ~ /^[A-Za-z]:/) {
+            drive = tolower(substr($0, 1, 1))
+            sub(/^[A-Za-z]:/, "/" drive)
+          }
+          print
+        }'
+      )"
+    fi
+  fi
+  while [ "${path%/}" != "$path" ] && [ "$path" != "/" ]; do
+    path="${path%/}"
+  done
+  printf '%s\n' "$path"
+}
+
 # True only if *this plugin root's* dashboard is on the port. The generic
 # x-claude-smart-dashboard marker is intentionally not enough: after an
 # install/update, an older cache can keep serving port 3001 until restarted.
 dashboard_matches_current_root() {
-  expected_root="$(canonical_dir "$PLUGIN_ROOT")"
+  expected_root="$(normalize_identity_path "$(canonical_dir "$PLUGIN_ROOT")")"
   headers="$(dashboard_health_headers)" || return 1
   printf '%s\n' "$headers" | grep -qi '^x-claude-smart-dashboard:' || return 1
   actual_root="$(printf '%s\n' "$headers" | header_value_from "x-claude-smart-plugin-root")"
   [ -n "$actual_root" ] || return 1
+  actual_root="$(normalize_identity_path "$actual_root")"
   [ "$actual_root" = "$expected_root" ]
 }
 
