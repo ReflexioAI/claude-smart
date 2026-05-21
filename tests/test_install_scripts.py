@@ -309,6 +309,17 @@ def test_setup_local_dev_refreshes_claude_code_local_plugin() -> None:
     assert "installing/updating claude-smart@reflexioai-local" in script
 
 
+def test_setup_local_dev_prefers_workspace_reflexio_checkout() -> None:
+    script = SETUP_LOCAL_DEV.read_text()
+
+    assert "CLAUDE_SMART_LOCAL_REFLEXIO_PATH" in script
+    assert 'sibling_reflexio="$REPO_ROOT/../reflexio"' in script
+    assert 'bundled_reflexio="$REPO_ROOT/reflexio"' in script
+    assert "using Reflexio source at $REFLEXIO_ABS" in script
+    assert "override_learning_stall" in script
+    assert "selected Reflexio client does not support" in script
+
+
 def test_backend_service_configures_shared_embedding_daemon() -> None:
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 

@@ -3,9 +3,9 @@
 #
 # Does what the published install wrapper does for end users, plus the
 # extra steps that only make sense when you're iterating on this repo:
-#   1. Initialize the reflexio submodule.
+#   1. Initialize the reflexio submodule fallback.
 #   2. Uncomment the `[tool.uv.sources]` block in plugin/pyproject.toml so
-#      uv resolves reflexio-ai from the vendored submodule (editable).
+#      uv resolves reflexio-ai from a local Reflexio checkout (editable).
 #   3. `git update-index --skip-worktree` plugin/pyproject.toml + uv.lock
 #      so the local divergence is invisible to `git status`.
 #   4. `uv sync` from plugin/.
@@ -30,6 +30,62 @@ PYPROJECT="$PLUGIN_ROOT/pyproject.toml"
 LOCKFILE="$PLUGIN_ROOT/uv.lock"
 
 log() { printf '[setup-local-dev] %s\n' "$*" >&2; }
+
+is_reflexio_checkout() {
+  [ -f "$1/pyproject.toml" ] && [ -d "$1/reflexio" ]
+}
+
+resolve_reflexio_source() {
+  if [ -n "${CLAUDE_SMART_LOCAL_REFLEXIO_PATH:-}" ]; then
+    if is_reflexio_checkout "$CLAUDE_SMART_LOCAL_REFLEXIO_PATH"; then
+      (cd "$CLAUDE_SMART_LOCAL_REFLEXIO_PATH" && pwd)
+      return 0
+    fi
+    log "ERROR: CLAUDE_SMART_LOCAL_REFLEXIO_PATH is not a Reflexio checkout: $CLAUDE_SMART_LOCAL_REFLEXIO_PATH"
+    exit 1
+  fi
+
+  # In reflexio-enterprise worktrees, claude-smart and reflexio are sibling
+  # submodules under open_source/. Prefer that current workspace checkout over
+  # claude-smart's nested fallback so local-dev installs do not pin an older
+  # Reflexio client into ~/.reflexio/plugin-root.
+  sibling_reflexio="$REPO_ROOT/../reflexio"
+  if is_reflexio_checkout "$sibling_reflexio"; then
+    (cd "$sibling_reflexio" && pwd)
+    return 0
+  fi
+
+  bundled_reflexio="$REPO_ROOT/reflexio"
+  if is_reflexio_checkout "$bundled_reflexio"; then
+    (cd "$bundled_reflexio" && pwd)
+    return 0
+  fi
+
+  log "ERROR: could not find a Reflexio checkout at $sibling_reflexio or $bundled_reflexio"
+  exit 1
+}
+
+verify_reflexio_client() {
+  (cd "$PLUGIN_ROOT" && REFLEXIO_SOURCE_PATH="$REFLEXIO_ABS" uv run --quiet python - <<'PY'
+import inspect
+import os
+import sys
+
+from reflexio import ReflexioClient
+
+signature = inspect.signature(ReflexioClient.publish_interaction)
+if "override_learning_stall" not in signature.parameters:
+    print(
+        "[setup-local-dev] ERROR: selected Reflexio client does not support "
+        "override_learning_stall: "
+        f"{os.environ.get('REFLEXIO_SOURCE_PATH')}",
+        file=sys.stderr,
+    )
+    print(f"[setup-local-dev] signature: {signature}", file=sys.stderr)
+    sys.exit(1)
+PY
+  )
+}
 
 refresh_local_dashboard() {
   if [ ! -x "$PLUGIN_ROOT/scripts/dashboard-service.sh" ]; then
@@ -105,16 +161,17 @@ case "$HOST" in
     ;;
 esac
 
-log "initializing reflexio submodule..."
+log "initializing reflexio submodule fallback..."
 (cd "$REPO_ROOT" && git submodule update --init --recursive reflexio)
 
 log "enabling [tool.uv.sources] override in plugin/pyproject.toml..."
-# Use an absolute path for the reflexio submodule. Relative paths like
+# Use an absolute path for the Reflexio checkout. Relative paths like
 # "../reflexio" get resolved by uv against the literal --project path,
 # which breaks when slash commands pass the ~/.reflexio/plugin-root
 # symlink (uv does not canonicalize) — it would resolve to
 # $HOME/.reflexio/reflexio, which does not exist.
-REFLEXIO_ABS="$REPO_ROOT/reflexio"
+REFLEXIO_ABS="$(resolve_reflexio_source)"
+log "using Reflexio source at $REFLEXIO_ABS"
 sed -i.bak -E \
   -e 's|^# \[tool\.uv\.sources\]$|[tool.uv.sources]|' \
   -e "s|^(# )?reflexio-ai = \\{ path = \"[^\"]*\", editable = true \\}\$|reflexio-ai = { path = \"$REFLEXIO_ABS\", editable = true }|" \
@@ -131,6 +188,7 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 log "running uv sync in plugin/ ..."
 (cd "$PLUGIN_ROOT" && uv sync --quiet)
+verify_reflexio_client
 
 REFLEXIO_ENV="$HOME/.reflexio/.env"
 mkdir -p "$(dirname "$REFLEXIO_ENV")"
@@ -281,7 +339,7 @@ elif [ "$SETUP_CODEX" = "1" ]; then
 else
   log "done. Restart Claude Code to pick up the local plugin."
 fi
-log "  pyproject.toml → editable reflexio-ai from ../reflexio"
+log "  pyproject.toml → editable reflexio-ai from $REFLEXIO_ABS"
 log "  ~/.reflexio/.env → local-CLI + local-embedding providers"
 if [ "$SETUP_CLAUDE_CODE" = "1" ]; then
   log "  Claude Code user marketplaces → reflexioai-local ($LOCAL_MKT_DIR)"
