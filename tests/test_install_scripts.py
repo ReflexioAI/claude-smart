@@ -259,6 +259,7 @@ def test_dashboard_service_restarts_stale_claude_smart_dashboard() -> None:
 
     assert "dashboard_matches_current_root()" in dashboard
     assert "x-claude-smart-plugin-root" in dashboard
+    assert "curl -sfI --connect-timeout 2 --max-time 5" in dashboard
     assert "[ \"$actual_root\" = \"$expected_root\" ]" in dashboard
     assert "stale claude-smart dashboard on port $PORT; restarting" in dashboard
     assert "stop_dashboard_listener" in dashboard
@@ -273,6 +274,10 @@ def test_installers_refresh_or_stop_dashboard_services() -> None:
     assert 'bash "$PLUGIN_ROOT/scripts/dashboard-service.sh" stop' in setup
     assert 'bash "$PLUGIN_ROOT/scripts/dashboard-service.sh" start' in setup
     assert "function refreshDashboardService(pluginRoot)" in node_installer
+    assert "const PLUGIN_SERVICE_TIMEOUT_MS = 15_000" in node_installer
+    assert "timeout: PLUGIN_SERVICE_TIMEOUT_MS" in node_installer
+    assert 'killSignal: "SIGTERM"' in node_installer
+    assert 'result.error && result.error.code === "ETIMEDOUT"' in node_installer
     assert 'runPluginService(pluginRoot, "dashboard-service.sh", "stop")' in node_installer
     assert 'runPluginService(pluginRoot, "dashboard-service.sh", "start")' in node_installer
     assert "function stopClaudeSmartServices(pluginRoot)" in node_installer

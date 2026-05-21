@@ -76,6 +76,7 @@ const CODEX_REQUIRED_FILES = [
   "plugin/scripts/_codex_env.sh",
 ];
 const CODEX_CLI_TIMEOUT_MS = 30_000;
+const PLUGIN_SERVICE_TIMEOUT_MS = 15_000;
 const COPYTREE_IGNORE_NAMES = new Set([
   "__pycache__",
   ".venv",
@@ -360,7 +361,20 @@ function runPluginService(pluginRoot, scriptName, subcommand) {
     env: runtimeEnv(),
     stdio: "ignore",
     windowsHide: true,
+    timeout: PLUGIN_SERVICE_TIMEOUT_MS,
+    killSignal: "SIGTERM",
   });
+  if (result.error || result.signal) {
+    const reason = result.error && result.error.code === "ETIMEDOUT"
+      ? `timed out after ${PLUGIN_SERVICE_TIMEOUT_MS / 1000}s`
+      : result.error
+        ? result.error.message
+        : `terminated by ${result.signal}`;
+    process.stderr.write(
+      `warning: ${scriptName} ${subcommand} ${reason}; continuing.\n`,
+    );
+    return false;
+  }
   return result.status === 0;
 }
 

@@ -56,7 +56,7 @@ marker_responds() {
 
 dashboard_health_headers() {
   command -v curl >/dev/null 2>&1 || return 1
-  curl -sfI "http://127.0.0.1:$PORT/api/health" 2>/dev/null
+  curl -sfI --connect-timeout 2 --max-time 5 "http://127.0.0.1:$PORT/api/health" 2>/dev/null
 }
 
 header_value_from() {
