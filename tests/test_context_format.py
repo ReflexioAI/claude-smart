@@ -268,11 +268,12 @@ def test_render_inline_compact_with_registry_is_one_logical_line(
         "✨ claude-smart rule applied: "
         "\x1b]8;;http://localhost:3001/rules/s1-17\x1b\\"
         "Run uv sync after pyproject edits"
-        "\x1b]8;;\x1b\\; "
+        "\x1b]8;;\x1b\\ | "
         "\x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\"
         "prefers concise answers"
         "\x1b]8;;\x1b\\"
     ) in md
+    assert "visible ` | ` separator" in md
     assert "open: http://localhost:3001/rules/s1-17" not in md
     assert {entry["id"] for entry in registry} == {"s1-17", "p1-pref"}
 

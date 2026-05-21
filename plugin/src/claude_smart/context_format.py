@@ -240,10 +240,16 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
         return ""
     link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
     if link_style == "osc8" and marker_parts:
-        marker = f"✨ claude-smart rule applied: {'; '.join(marker_parts)}"
+        marker = f"✨ claude-smart rule applied: {' | '.join(marker_parts)}"
+        separator_instruction = (
+            " Separate multiple linked memories with the visible ` | ` separator."
+            if len(marker_parts) > 1
+            else ""
+        )
         return (
             f"If used, copy this final marker exactly, preserving its hidden "
-            f"OSC 8 terminal link: `{marker}`. Skip when unrelated."
+            f"OSC 8 terminal link: `{marker}`.{separator_instruction} "
+            f"Skip when unrelated."
         )
     if link_style == "osc8":
         return (
