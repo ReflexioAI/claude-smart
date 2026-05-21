@@ -80,7 +80,8 @@ _MARKDOWN_MARKER_PARAGRAPH = (
     "[git safety](http://localhost:3001/rules/s1-123), "
     "[brief answer preference](http://localhost:3001/rules/p1-pref)`. "
     "Use the dashboard URL shown beside each cited item; do not invent URLs. "
-    "Do not include `[cs:…]` ids in the marker line._"
+    "Do not include `[cs:…]` ids in the marker line. Never use the old "
+    "`✨ 1 claude-smart learning applied [cs:...]` marker format._"
 )
 
 _OSC8_EXAMPLE_ONE = (

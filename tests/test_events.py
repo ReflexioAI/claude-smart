@@ -935,6 +935,48 @@ def test_user_prompt_injects_context_when_hits_present(
         assert entry["title"]
 
 
+def test_user_prompt_injects_compact_context_for_codex(
+    session_dir, monkeypatch
+) -> None:
+    """Codex receives a one-line context because the TUI displays it."""
+    monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+    monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", "osc8")
+    _stub_user_prompt_adapter(
+        monkeypatch,
+        playbooks=[
+            {
+                "content": (
+                    "Run uv sync after pyproject edits. "
+                    "Then run an import smoke test before committing."
+                ),
+                "trigger": "pyproject.toml",
+            }
+        ],
+        profiles=[{"content": "prefers anyio over asyncio"}],
+    )
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+    user_prompt.handle(
+        {"session_id": "s1", "prompt": "edit pyproject.toml", "cwd": "/r"}
+    )
+
+    payload = json.loads(buf.getvalue().strip())
+    markdown = payload["hookSpecificOutput"]["additionalContext"]
+    assert payload["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert markdown.endswith("\n")
+    assert "\n" not in markdown.rstrip("\n")
+    assert "claude-smart: using relevant memory:" in markdown
+    assert "### Relevant project preferences" not in markdown
+    assert "[cs:" not in markdown
+    assert "Run uv sync after pyproject edits" in markdown
+    assert "Then run an import smoke test before committing." in markdown
+    assert "prefers anyio over asyncio" in markdown
+    assert "\x1b]8;;http://localhost:3001/rules/s1\x1b\\" in markdown
+    assert "✨ claude-smart rule applied:" in markdown
+    assert "preserving its hidden OSC 8 terminal link" in markdown
+    assert "open: http://localhost:3001/rules/s1" not in markdown
+
+
 def test_user_prompt_writes_nothing_when_search_empty(session_dir, monkeypatch) -> None:
     """No hits → no stdout output, but the prompt is still buffered."""
     _stub_user_prompt_adapter(monkeypatch, playbooks=[], profiles=[])

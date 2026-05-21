@@ -162,6 +162,8 @@ def test_citation_instruction_on_returns_compact_string() -> None:
     assert "citation block is up to two lines" not in text
     assert "counterfactual" not in text.lower()
     assert "✨ claude-smart rule applied:" in text
+    assert "Never use the old" in text
+    assert "✨ 1 claude-smart learning applied [cs:...]" in text
 
 
 def test_citation_instruction_legacy_modes_stay_enabled() -> None:

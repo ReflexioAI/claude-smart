@@ -473,7 +473,7 @@ function runHook(root, event) {
         REFLEXIO_URL: readBackendUrl(),
         CLAUDE_SMART_HOST: "codex",
         CLAUDE_SMART_CLI_PATH: process.env.CLAUDE_SMART_CLI_PATH || codexCompatPath(root),
-        CLAUDE_SMART_CITATION_LINK_STYLE: process.env.CLAUDE_SMART_CITATION_LINK_STYLE || "markdown",
+        CLAUDE_SMART_CITATION_LINK_STYLE: process.env.CLAUDE_SMART_CITATION_LINK_STYLE || "osc8",
       },
       input,
       stdio: ["pipe", "pipe", "inherit"],

@@ -17,6 +17,7 @@ turn) — see the two call sites for the small policy differences.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 
@@ -59,7 +60,13 @@ def emit_context(
         query=query,
         top_k=top_k,
     )
-    markdown, registry = context_format.render_inline_with_registry(
+    renderer = (
+        context_format.render_inline_compact_with_registry
+        if hook_event_name == "UserPromptSubmit"
+        and os.environ.get("CLAUDE_SMART_HOST") == "codex"
+        else context_format.render_inline_with_registry
+    )
+    markdown, registry = renderer(
         project_id=project_id,
         user_playbooks=user_playbooks,
         agent_playbooks=agent_playbooks,

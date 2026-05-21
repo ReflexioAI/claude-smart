@@ -185,6 +185,80 @@ def render_inline_with_registry(
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
 
 
+def render_inline_compact_with_registry(
+    *,
+    project_id: str,
+    user_playbooks: Iterable[Any],
+    agent_playbooks: Iterable[Any],
+    profiles: Iterable[Any],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Render mid-session context as one compact logical line.
+
+    Codex currently displays ``UserPromptSubmit.additionalContext`` in the TUI.
+    This renderer preserves the model-visible ids and rule URLs needed for
+    citation tracking while avoiding the multi-line markdown block used by
+    hosts that can hide hook context.
+    """
+    del project_id  # kept for symmetry with ``render_inline_with_registry``.
+    _, playbook_entries = _format_combined_playbooks(
+        agent_playbooks=agent_playbooks, user_playbooks=user_playbooks
+    )
+    _, profile_entries = _format_profiles(profiles)
+    entries = playbook_entries + profile_entries
+    if not entries:
+        return "", []
+
+    item_parts = []
+    marker_parts = []
+    link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
+    for entry in entries:
+        title = _one_line(str(entry.get("title") or entry["content"]))
+        content = _one_line(str(entry["content"]))
+        rule_url = str(entry.get("rule_url") or "")
+        if link_style == "osc8" and rule_url:
+            linked_title = _osc8_link(rule_url, _strip_trailing_sentence_punctuation(title))
+            item = linked_title
+            if content != title:
+                item += f": {content}"
+            marker_parts.append(f"✨ claude-smart rule applied: {linked_title}")
+        else:
+            item = f"{content} (title: {title}"
+            if rule_url:
+                item += f"; open: {rule_url}"
+            item += ")"
+        item_parts.append(item)
+
+    sections = [f"claude-smart: using relevant memory: {'; '.join(item_parts)}."]
+    instruction = _compact_citation_instruction(marker_parts)
+    if instruction:
+        sections.append(instruction)
+    return " ".join(sections) + "\n", entries
+
+
+def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
+    if os.environ.get("CLAUDE_SMART_CITATIONS", "on") == "off":
+        return ""
+    link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
+    if link_style == "osc8" and marker_parts:
+        marker = marker_parts[0] if len(marker_parts) == 1 else "; ".join(marker_parts)
+        return (
+            f"If used, copy this final marker exactly, preserving its hidden "
+            f"OSC 8 terminal link: `{marker}`. Skip when unrelated."
+        )
+    if link_style == "osc8":
+        return (
+            "If used, end with `✨ claude-smart rule applied:` followed by "
+            "the same linked memory text; keep the link, but do not show the "
+            "URL. Skip when unrelated."
+        )
+    return (
+        "Only if a listed [cs:...] item materially changes your answer, end "
+        "with one final marker like `✨ claude-smart rule applied: "
+        "[verify process state](http://localhost:3001/rules/s1-123)` using "
+        "the shown rule URL; skip the marker when unrelated."
+    )
+
+
 def _format_combined_playbooks(
     *,
     agent_playbooks: Iterable[Any],
@@ -319,6 +393,18 @@ def _title_from_content(content: str, limit: int = 80) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+def _one_line(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _osc8_link(url: str, label: str) -> str:
+    return f"\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\"
+
+
+def _strip_trailing_sentence_punctuation(text: str) -> str:
+    return text.rstrip().rstrip(".!?")
 
 
 def _field(obj: Any, name: str) -> Any:
