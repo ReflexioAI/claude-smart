@@ -268,10 +268,13 @@ def test_render_inline_compact_with_registry_is_one_logical_line(
     assert "###" not in md
     assert "- [cs:" not in md
     assert "[cs:" not in md
-    assert "claude-smart: using relevant memory:" in md
+    assert "claude-smart: using relevant memory. Skill:" in md
+    assert "Preference:" in md
     assert "\x1b]8;;http://localhost:3001/rules/s1-17\x1b\\" in md
     assert "Run uv sync after pyproject edits" in md
-    assert "Then run an import smoke test before committing." in md
+    assert "Then run an import smoke test before committing" in md
+    assert "Run uv sync after pyproject edits: Run uv sync" not in md
+    assert "title:" not in md
     assert "\x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\" in md
     assert "prefers concise answers" in md
     assert "✨ claude-smart rule applied:" in md

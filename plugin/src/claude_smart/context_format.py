@@ -214,7 +214,8 @@ def render_inline_compact_with_registry(
     if not entries:
         return "", []
 
-    item_parts = []
+    skill_parts = []
+    preference_parts = []
     marker_parts = []
     link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
     for entry in entries:
@@ -223,18 +224,26 @@ def render_inline_compact_with_registry(
         rule_url = str(entry.get("rule_url") or "")
         if link_style == "osc8" and rule_url:
             linked_title = _osc8_link(rule_url, _strip_trailing_sentence_punctuation(title))
-            item = linked_title
-            if content != title:
-                item += f": {content}"
+            item = _osc8_link(rule_url, _strip_trailing_sentence_punctuation(content))
             marker_parts.append(linked_title)
         else:
             item = f"{content} (title: {title}"
             if rule_url:
                 item += f"; open: {rule_url}"
             item += ")"
-        item_parts.append(item)
+        if entry.get("kind") == "profile":
+            preference_parts.append(item)
+        else:
+            skill_parts.append(item)
 
-    sections = [f"claude-smart: using relevant memory: {'; '.join(item_parts)}."]
+    memory_sections = []
+    if skill_parts:
+        label = "Skill" if len(skill_parts) == 1 else "Skills"
+        memory_sections.append(f"{label}: {'; '.join(skill_parts)}")
+    if preference_parts:
+        label = "Preference" if len(preference_parts) == 1 else "Preferences"
+        memory_sections.append(f"{label}: {'; '.join(preference_parts)}")
+    sections = [f"claude-smart: using relevant memory. {'. '.join(memory_sections)}."]
     instruction = _compact_citation_instruction(marker_parts)
     if instruction:
         sections.append(instruction)

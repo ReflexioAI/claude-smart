@@ -965,11 +965,13 @@ def test_user_prompt_injects_compact_context_for_codex(
     assert payload["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
     assert markdown.endswith("\n")
     assert "\n" not in markdown.rstrip("\n")
-    assert "claude-smart: using relevant memory:" in markdown
+    assert "claude-smart: using relevant memory. Skill:" in markdown
+    assert "Preference:" in markdown
     assert "### Relevant project preferences" not in markdown
     assert "[cs:" not in markdown
     assert "Run uv sync after pyproject edits" in markdown
-    assert "Then run an import smoke test before committing." in markdown
+    assert "Then run an import smoke test before committing" in markdown
+    assert "Run uv sync after pyproject edits: Run uv sync" not in markdown
     assert "prefers anyio over asyncio" in markdown
     assert "\x1b]8;;http://localhost:3001/rules/s1\x1b\\" in markdown
     assert "✨ claude-smart rule applied:" in markdown
