@@ -23,6 +23,7 @@ CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
 CODEX_HOOK = REPO_ROOT / "plugin" / "scripts" / "codex-hook.js"
 BACKEND_LOG_RUNNER = REPO_ROOT / "plugin" / "scripts" / "backend-log-runner.sh"
 NODE_INSTALLER = REPO_ROOT / "bin" / "claude-smart.js"
+HEALTH_ROUTE = REPO_ROOT / "plugin" / "dashboard" / "app" / "api" / "health" / "route.ts"
 
 
 def _minimal_path(tmp_path: Path, *names: str) -> str:
@@ -240,6 +241,42 @@ def test_service_start_scripts_recover_missing_dependencies_without_cli_command(
     assert "[claude-smart] dashboard: npm is not on PATH; running installer" in dashboard
     assert "CLAUDE_SMART_BOOTSTRAPPING=1 bash \"$PLUGIN_ROOT/scripts/smart-install.sh\"" in dashboard
     assert "npm is not on PATH after installer; dashboard cannot start" in dashboard
+
+
+def test_dashboard_health_exposes_plugin_identity_for_stale_process_detection() -> None:
+    route = HEALTH_ROUTE.read_text()
+
+    assert 'export const dynamic = "force-dynamic"' in route
+    assert "realpathSync" in route
+    assert "x-claude-smart-dashboard" in route
+    assert "x-claude-smart-plugin-root" in route
+    assert "x-claude-smart-dashboard-dir" in route
+    assert "x-claude-smart-version" in route
+
+
+def test_dashboard_service_restarts_stale_claude_smart_dashboard() -> None:
+    dashboard = (REPO_ROOT / "plugin" / "scripts" / "dashboard-service.sh").read_text()
+
+    assert "dashboard_matches_current_root()" in dashboard
+    assert "x-claude-smart-plugin-root" in dashboard
+    assert "[ \"$actual_root\" = \"$expected_root\" ]" in dashboard
+    assert "stale claude-smart dashboard on port $PORT; restarting" in dashboard
+    assert "stop_dashboard_listener" in dashboard
+    assert "foreign app on 3001 is never killed" in dashboard
+
+
+def test_installers_refresh_or_stop_dashboard_services() -> None:
+    setup = SETUP_LOCAL_DEV.read_text()
+    node_installer = NODE_INSTALLER.read_text()
+
+    assert "refresh_local_dashboard()" in setup
+    assert 'bash "$PLUGIN_ROOT/scripts/dashboard-service.sh" stop' in setup
+    assert 'bash "$PLUGIN_ROOT/scripts/dashboard-service.sh" start' in setup
+    assert "function refreshDashboardService(pluginRoot)" in node_installer
+    assert 'runPluginService(pluginRoot, "dashboard-service.sh", "stop")' in node_installer
+    assert 'runPluginService(pluginRoot, "dashboard-service.sh", "start")' in node_installer
+    assert "function stopClaudeSmartServices(pluginRoot)" in node_installer
+    assert "Refreshed claude-smart dashboard service." in node_installer
 
 
 def test_service_start_scripts_guard_internal_invocations() -> None:

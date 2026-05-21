@@ -45,15 +45,71 @@ kill_group() {
 }
 
 # True if the marker header served by app/api/health is present on the
-# port. Requires curl — absence is reported as false.
+# port. Requires curl — absence is reported as false. This deliberately
+# accepts any claude-smart dashboard, including stale cache versions, so
+# stop/uninstall can safely reap them without touching foreign listeners.
 marker_responds() {
   command -v curl >/dev/null 2>&1 || return 1
   curl -sfI "http://127.0.0.1:$PORT/api/health" 2>/dev/null \
     | grep -qi '^x-claude-smart-dashboard:'
 }
 
-# True only if *our* dashboard is on the port. Uses the marker header so a
-# foreign listener on 3001 doesn't cause us to silently skip starting.
+dashboard_health_headers() {
+  command -v curl >/dev/null 2>&1 || return 1
+  curl -sfI "http://127.0.0.1:$PORT/api/health" 2>/dev/null
+}
+
+header_value_from() {
+  header_name="$1"
+  awk -v wanted="$header_name" '
+    BEGIN { wanted = tolower(wanted) ":" }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      lower = tolower(line)
+      if (index(lower, wanted) == 1) {
+        sub(/^[^:]*:[[:space:]]*/, "", line)
+        print line
+        exit
+      }
+    }
+  '
+}
+
+canonical_dir() {
+  dir="$1"
+  (cd "$dir" 2>/dev/null && pwd -P) || printf '%s\n' "$dir"
+}
+
+# True only if *this plugin root's* dashboard is on the port. The generic
+# x-claude-smart-dashboard marker is intentionally not enough: after an
+# install/update, an older cache can keep serving port 3001 until restarted.
+dashboard_matches_current_root() {
+  expected_root="$(canonical_dir "$PLUGIN_ROOT")"
+  headers="$(dashboard_health_headers)" || return 1
+  printf '%s\n' "$headers" | grep -qi '^x-claude-smart-dashboard:' || return 1
+  actual_root="$(printf '%s\n' "$headers" | header_value_from "x-claude-smart-plugin-root")"
+  [ -n "$actual_root" ] || return 1
+  [ "$actual_root" = "$expected_root" ]
+}
+
+# Kill a claude-smart dashboard listener currently holding the port. Gated by
+# marker_responds so a foreign app on 3001 is never killed.
+stop_dashboard_listener() {
+  marker_responds || return 0
+  command -v lsof >/dev/null 2>&1 || return 0
+  port_pid=$(lsof -t -i ":$PORT" -sTCP:LISTEN 2>/dev/null | head -n1)
+  [ -n "$port_pid" ] || return 0
+  kill -TERM "$port_pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    kill -0 "$port_pid" 2>/dev/null || return 0
+    sleep 0.2
+  done
+  kill -KILL "$port_pid" 2>/dev/null || true
+}
+
+# True only if *our* dashboard is on the port. Uses plugin-root identity so a
+# stale claude-smart listener doesn't cause us to silently skip starting.
 is_our_dashboard_running() {
   if [ -f "$PID_FILE" ]; then
     pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
@@ -62,7 +118,7 @@ is_our_dashboard_running() {
       # don't claim "running" when the server crashed but the group leader
       # lingered.
       if command -v curl >/dev/null 2>&1; then
-        marker_responds && return 0
+        dashboard_matches_current_root && return 0
       else
         # No curl — fall back to PID liveness alone.
         return 0
@@ -71,7 +127,7 @@ is_our_dashboard_running() {
   fi
   # No PID or dead PID — probe the port for our marker (recovers after a
   # stale PID file from a crash).
-  marker_responds && return 0
+  dashboard_matches_current_root && return 0
   return 1
 }
 
@@ -97,6 +153,10 @@ case "$CMD" in
     fi
     if [ ! -d "$DASHBOARD_DIR" ]; then emit_ok; exit 0; fi
     if is_our_dashboard_running; then claude_smart_clear_dashboard_unavailable; emit_ok; exit 0; fi
+    if marker_responds; then
+      echo "[claude-smart] dashboard: stale claude-smart dashboard on port $PORT; restarting from $PLUGIN_ROOT" >>"$LOG_FILE"
+      stop_dashboard_listener
+    fi
     if port_occupied; then
       echo "[claude-smart] dashboard: port $PORT held by another process; skipping" >>"$LOG_FILE"
       emit_ok; exit 0
@@ -152,7 +212,7 @@ case "$CMD" in
     echo "$dash_pid" > "$PID_FILE"
     dashboard_ready=0
     for _ in 1 2 3 4 5; do
-      if marker_responds; then
+      if dashboard_matches_current_root; then
         dashboard_ready=1
         claude_smart_clear_dashboard_unavailable
         break
@@ -169,21 +229,11 @@ case "$CMD" in
       kill_group "$(cat "$PID_FILE" 2>/dev/null)"
       rm -f "$PID_FILE"
     fi
-    # Fallback: if our dashboard is still responding on the port (e.g.,
+    # Fallback: if a claude-smart dashboard is still responding on the port (e.g.,
     # was started outside this script, or the PGID kill missed because
     # the process wasn't the group leader) kill whoever owns the port.
     # Gated on the marker header so we never touch a foreign listener.
-    if marker_responds && command -v lsof >/dev/null 2>&1; then
-      port_pid=$(lsof -t -i ":$PORT" -sTCP:LISTEN 2>/dev/null | head -n1)
-      if [ -n "$port_pid" ]; then
-        kill -TERM "$port_pid" 2>/dev/null || true
-        for _ in 1 2 3 4 5; do
-          kill -0 "$port_pid" 2>/dev/null || break
-          sleep 0.2
-        done
-        kill -KILL "$port_pid" 2>/dev/null || true
-      fi
-    fi
+    stop_dashboard_listener
     emit_ok
     ;;
   session-end)

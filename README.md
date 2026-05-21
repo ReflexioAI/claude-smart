@@ -120,7 +120,7 @@ To uninstall:
 npx claude-smart uninstall --host codex
 ```
 
-Restart Codex after uninstalling. Learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved and shared with Claude Code, so you can switch between hosts without losing skills or preferences.
+Restart Codex after uninstalling. The uninstaller stops local claude-smart services and removes plugin/cache/config state; learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved and shared with Claude Code, so you can switch between hosts without losing skills or preferences.
 
 Developing the plugin itself? See [DEVELOPER.md](./DEVELOPER.md#developing-locally) for what the installer does, manual toggles via `/plugins`, and clone-based development.
 

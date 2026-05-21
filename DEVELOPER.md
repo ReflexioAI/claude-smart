@@ -314,6 +314,7 @@ Idempotent. This single script handles the shared local-dev prep for every host 
 6. For `--host claude-code`, writes `.claude/settings.local.json` → enable `claude-smart@reflexioai-local`, disable `claude-smart@reflexioai`.
 7. For `--host claude-code`, force-sets `~/.reflexio/plugin-root` → `plugin/` so slash commands resolve to editable in-repo sources.
 8. For `--host codex`, runs `node bin/claude-smart.js install --host codex` so the installed Codex hooks are patched through the JSON-safe `scripts/codex-hook.js` adapter.
+9. Refreshes the local dashboard process. The dashboard health endpoint exposes the serving plugin root, so setup can stop a stale claude-smart dashboard from an older cache while leaving a foreign app on port `3001` alone.
 
 Then restart the target host. In a new Claude Code session, `/plugin` should show `claude-smart@reflexioai-local` and should not also show the published `claude-smart@reflexioai`. In Codex, `/plugins` should show `claude-smart` installed from the **ReflexioAI** marketplace.
 
@@ -353,7 +354,7 @@ To exercise just the Python installer path directly, run:
 uv run --project plugin claude-smart install --host codex
 ```
 
-Then fully restart Codex so hooks reload. The command installs `claude-smart` into `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/`, enables `[plugins."claude-smart@reflexioai"]`, enables Codex's hook feature flags, and seeds the per-hook trust entries in `~/.codex/config.toml`; `/plugins` should show it as installed from the **ReflexioAI** marketplace. Running `codex features enable plugin_hooks` by itself is not enough because it does not install the plugin or trust the individual hook entries. The Python installer is useful for installer development, but the Node installer is the supported local setup path for live Codex sessions because it patches hook commands through `codex-hook.js`.
+Then fully restart Codex so hooks reload. The command installs `claude-smart` into `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/`, enables `[plugins."claude-smart@reflexioai"]`, enables Codex's hook feature flags, seeds the per-hook trust entries in `~/.codex/config.toml`, and refreshes any currently running claude-smart dashboard so port `3001` does not keep serving an older cache; `/plugins` should show it as installed from the **ReflexioAI** marketplace. Running `codex features enable plugin_hooks` by itself is not enough because it does not install the plugin or trust the individual hook entries. The Python installer is useful for installer development, but the Node installer is the supported local setup path for live Codex sessions because it patches hook commands through `codex-hook.js`.
 
 The packaged Node installer path (`node bin/claude-smart.js install --host codex`, or published `npx claude-smart install --host codex`) additionally bootstraps private Node/npm plus the uv-managed Python runtime, builds the dashboard, and patches Codex hooks to the Node wrapper. The Python `uv run` path is intentionally for local development from an already-prepared checkout.
 
@@ -367,7 +368,7 @@ bash scripts/setup-local-dev.sh --host codex
 
 Avoid `~/plugins/claude-smart` for this plugin unless you also provide a patched hook manifest; Codex resolves that path before the cache, and the raw source `hooks/codex-hooks.json` uses Claude-style hook commands that can emit multiple JSON objects. The Node installer patches the copied hook manifest to call `scripts/codex-hook.js`, which normalizes hook stdout for Codex.
 
-Uninstall local Codex support with the CLI. This removes the Codex marketplace registration, installed plugin config, hook trust state, and Codex plugin cache while preserving learned data:
+Uninstall local Codex support with the CLI. This stops local claude-smart services, removes the Codex marketplace registration, installed plugin config, hook trust state, and Codex plugin cache while preserving learned data:
 
 ```bash
 uv run --project plugin claude-smart uninstall --host codex

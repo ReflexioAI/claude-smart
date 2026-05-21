@@ -11,7 +11,7 @@
  */
 "use strict";
 
-const { execSync, spawn } = require("child_process");
+const { execSync, spawn, spawnSync } = require("child_process");
 const crypto = require("crypto");
 const {
   appendFileSync,
@@ -348,6 +348,32 @@ function runChecked(command, args, options = {}) {
     child.on("exit", (code) => resolve(typeof code === "number" ? code : 1));
     child.on("error", () => resolve(1));
   });
+}
+
+function runPluginService(pluginRoot, scriptName, subcommand) {
+  const script = join(pluginRoot, "scripts", scriptName);
+  if (!existsSync(script)) return false;
+  const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
+  if (!bash) return false;
+  const result = spawnSync(bash, [script, subcommand], {
+    cwd: pluginRoot,
+    env: runtimeEnv(),
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  return result.status === 0;
+}
+
+function refreshDashboardService(pluginRoot) {
+  // dashboard-service.sh is marker-gated: stop only reaps a listener that
+  // identifies as claude-smart, so foreign apps on 3001 are left alone.
+  runPluginService(pluginRoot, "dashboard-service.sh", "stop");
+  return runPluginService(pluginRoot, "dashboard-service.sh", "start");
+}
+
+function stopClaudeSmartServices(pluginRoot) {
+  runPluginService(pluginRoot, "dashboard-service.sh", "stop");
+  runPluginService(pluginRoot, "backend-service.sh", "stop");
 }
 
 function downloadFile(url, dest) {
@@ -1161,6 +1187,7 @@ async function runUninstall(args) {
     );
     process.exit(code);
   }
+  stopClaudeSmartServices(join(PACKAGE_ROOT, "plugin"));
 
   process.stdout.write(
     [
@@ -1211,6 +1238,9 @@ async function runInstall(args) {
   try {
     const pluginRoot = await bootstrapClaudeCodeInstall();
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
+    if (refreshDashboardService(pluginRoot)) {
+      process.stdout.write("Refreshed claude-smart dashboard service.\n");
+    }
   } catch (err) {
     process.stderr.write(
       `error: claude-smart installed, but dependency bootstrap failed: ${err && err.message ? err.message : err}\n`,
@@ -1280,6 +1310,9 @@ async function runInstallCodex() {
     cacheDir = installCodexPluginCache(codexMarketplacePluginRoot(marketplaceRoot));
     process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
     await bootstrapPluginRuntime(cacheDir);
+    if (refreshDashboardService(cacheDir)) {
+      process.stdout.write("Refreshed claude-smart dashboard service.\n");
+    }
   } catch (err) {
     process.stderr.write(
       `error: automatic Codex plugin install failed: ${err && err.message ? err.message : err}\n`,
@@ -1329,6 +1362,7 @@ async function runInstallCodex() {
 }
 
 async function runUninstallCodex() {
+  stopClaudeSmartServices(join(PACKAGE_ROOT, "plugin"));
   if (!hasCli("codex")) {
     process.stdout.write("Codex CLI not found; skipping marketplace removal.\n");
     cleanupCodexInstallState();

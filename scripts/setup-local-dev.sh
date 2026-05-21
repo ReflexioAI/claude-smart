@@ -31,6 +31,17 @@ LOCKFILE="$PLUGIN_ROOT/uv.lock"
 
 log() { printf '[setup-local-dev] %s\n' "$*" >&2; }
 
+refresh_local_dashboard() {
+  if [ ! -x "$PLUGIN_ROOT/scripts/dashboard-service.sh" ]; then
+    return 0
+  fi
+  log "refreshing local dashboard process..."
+  # The service script is marker-gated: it only kills a listener that answers
+  # as claude-smart, so a foreign app on 3001 is left alone.
+  bash "$PLUGIN_ROOT/scripts/dashboard-service.sh" stop >/dev/null 2>&1 || true
+  bash "$PLUGIN_ROOT/scripts/dashboard-service.sh" start >/dev/null 2>&1 || true
+}
+
 usage() {
   cat >&2 <<'EOF'
 Usage: scripts/setup-local-dev.sh [--host claude-code|codex|both]
@@ -260,11 +271,13 @@ if [ "$SETUP_CODEX" = "1" ]; then
   (cd "$REPO_ROOT" && node bin/claude-smart.js install --host codex)
 fi
 
+refresh_local_dashboard
+
 log ""
 if [ "$SETUP_CLAUDE_CODE" = "1" ] && [ "$SETUP_CODEX" = "1" ]; then
-  log "done. Restart Claude Code and fully restart Codex to pick up the local plugin."
+  log "done. Restart Claude Code and fully restart Codex to pick up the local plugin/hooks."
 elif [ "$SETUP_CODEX" = "1" ]; then
-  log "done. Fully restart Codex to pick up the local plugin."
+  log "done. Fully restart Codex to pick up the local plugin/hooks."
 else
   log "done. Restart Claude Code to pick up the local plugin."
 fi
