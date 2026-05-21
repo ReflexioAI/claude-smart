@@ -220,7 +220,7 @@ def render_inline_compact_with_registry(
             item = linked_title
             if content != title:
                 item += f": {content}"
-            marker_parts.append(f"✨ claude-smart rule applied: {linked_title}")
+            marker_parts.append(linked_title)
         else:
             item = f"{content} (title: {title}"
             if rule_url:
@@ -240,7 +240,7 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
         return ""
     link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
     if link_style == "osc8" and marker_parts:
-        marker = marker_parts[0] if len(marker_parts) == 1 else "; ".join(marker_parts)
+        marker = f"✨ claude-smart rule applied: {'; '.join(marker_parts)}"
         return (
             f"If used, copy this final marker exactly, preserving its hidden "
             f"OSC 8 terminal link: `{marker}`. Skip when unrelated."
