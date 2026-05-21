@@ -107,7 +107,7 @@ def test_render_with_registry_emits_citation_instruction() -> None:
         profiles=[],
     )
     assert cs_cite.CITATION_INSTRUCTION in md
-    assert "materially changes your answer" in md
+    assert "If you use any listed" in md
     assert "Do not call a shell command" not in md
     assert "✨ claude-smart rule applied: [verify process state]" in md
     assert "[brief answer preference]" in md
@@ -222,13 +222,26 @@ def test_render_inline_with_registry_can_inject_osc8_instruction(monkeypatch) ->
     monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", "osc8")
     md, _ = context_format.render_inline_with_registry(
         project_id="demo",
-        user_playbooks=[{"content": "x"}],
+        user_playbooks=[
+            {"content": "Use uv sync after pyproject edits.", "user_playbook_id": 17}
+        ],
         agent_playbooks=[],
-        profiles=[],
+        profiles=[{"content": "prefers concise answers", "profile_id": "pref"}],
     )
     assert "OSC 8 terminal" in md
     assert "\x1b]8;;http://localhost:3001/rules/s1-123\x1b\\" in md
     assert "✨ claude-smart rule applied: [verify process state]" not in md
+    assert "copy this exact final marker" in md
+    assert "Do not rename, summarize, or regroup the linked titles." in md
+    assert (
+        "✨ claude-smart rule applied: "
+        "\x1b]8;;http://localhost:3001/rules/s1-17\x1b\\"
+        "Use uv sync after pyproject edits"
+        "\x1b]8;;\x1b\\ | "
+        "\x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\"
+        "prefers concise answers"
+        "\x1b]8;;\x1b\\"
+    ) in md
 
 
 def test_render_inline_compact_with_registry_is_one_logical_line(

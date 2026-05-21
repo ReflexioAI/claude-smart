@@ -158,7 +158,8 @@ def test_rank_id_rejects_unknown_kind() -> None:
 def test_citation_instruction_on_returns_compact_string() -> None:
     text = cs_cite.citation_instruction("on")
     assert text == cs_cite.CITATION_INSTRUCTION
-    assert "materially changes your answer" in text
+    assert "If you use any listed" in text
+    assert "Skip the marker only when no listed item affected" in text
     assert "citation block is up to two lines" not in text
     assert "counterfactual" not in text.lower()
     assert "✨ claude-smart rule applied:" in text
@@ -176,6 +177,11 @@ def test_citation_instruction_osc8_uses_terminal_hyperlink_examples() -> None:
     text = cs_cite.citation_instruction("on", "osc8")
     assert "OSC 8 terminal" in text
     assert "\x1b]8;;http://localhost:3001/rules/s1-123\x1b\\" in text
+    assert "✨ claude-smart rule applied:" in text
+    assert "✨ claude-smart rules applied:" not in text
+    assert " | \x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\" in text
+    assert "visible ` | ` separator" in text
+    assert "Do not omit the marker after using listed memory" in text
     assert "markdown links" in text
 
 

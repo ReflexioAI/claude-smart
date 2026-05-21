@@ -106,6 +106,9 @@ def render_with_registry(
     )
     if instruction:
         sections.append(instruction)
+    exact_osc8_marker = _exact_osc8_marker_instruction(playbook_entries + profile_entries)
+    if exact_osc8_marker:
+        sections.append(exact_osc8_marker)
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
 
 
@@ -182,6 +185,9 @@ def render_inline_with_registry(
     )
     if instruction:
         sections.append(instruction)
+    exact_osc8_marker = _exact_osc8_marker_instruction(playbook_entries + profile_entries)
+    if exact_osc8_marker:
+        sections.append(exact_osc8_marker)
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
 
 
@@ -262,6 +268,32 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
         "with one final marker like `✨ claude-smart rule applied: "
         "[verify process state](http://localhost:3001/rules/s1-123)` using "
         "the shown rule URL; skip the marker when unrelated."
+    )
+
+
+def _exact_osc8_marker_instruction(entries: list[dict[str, Any]]) -> str:
+    if os.environ.get("CLAUDE_SMART_CITATIONS", "on") == "off":
+        return ""
+    if os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown") != "osc8":
+        return ""
+
+    marker_parts = []
+    for entry in entries:
+        rule_url = str(entry.get("rule_url") or "")
+        if not rule_url:
+            continue
+        title = _one_line(str(entry.get("title") or entry["content"]))
+        marker_parts.append(
+            _osc8_link(rule_url, _strip_trailing_sentence_punctuation(title))
+        )
+    if not marker_parts:
+        return ""
+
+    marker = f"✨ claude-smart rule applied: {' | '.join(marker_parts)}"
+    return (
+        "If any listed memory above was used, copy this exact final marker, "
+        f"preserving its hidden OSC 8 terminal links: `{marker}`. "
+        "Do not rename, summarize, or regroup the linked titles."
     )
 
 

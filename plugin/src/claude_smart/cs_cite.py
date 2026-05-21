@@ -66,8 +66,8 @@ _RAW_DASHBOARD_URL_RE = re.compile(
 )
 
 _COMPACT_INTRO = (
-    "_If a listed `[cs:…]` item materially changes your answer, end with one "
-    "final marker line. Skip the marker when no listed item changed the "
+    "_If you use any listed `[cs:…]` item to answer, you must end with one "
+    "final marker line. Skip the marker only when no listed item affected the "
     "answer."
 )
 
@@ -76,9 +76,10 @@ _MARKDOWN_MARKER_PARAGRAPH = (
     "`✨ claude-smart rule applied: "
     "[verify process state](http://localhost:3001/rules/s1-123)`. "
     "For multiple items: "
-    "`✨ claude-smart rules applied: "
-    "[git safety](http://localhost:3001/rules/s1-123), "
+    "`✨ claude-smart rule applied: "
+    "[git safety](http://localhost:3001/rules/s1-123) | "
     "[brief answer preference](http://localhost:3001/rules/p1-pref)`. "
+    "Separate multiple linked memories with the visible ` | ` separator. "
     "Use the dashboard URL shown beside each cited item; do not invent URLs. "
     "Do not include `[cs:…]` ids in the marker line. Never use the old "
     "`✨ 1 claude-smart learning applied [cs:...]` marker format._"
@@ -91,11 +92,11 @@ _OSC8_EXAMPLE_ONE = (
     "\x1b]8;;\x1b\\"
 )
 _OSC8_EXAMPLE_MULTI = (
-    "✨ claude-smart rules applied: "
+    "✨ claude-smart rule applied: "
     "\x1b]8;;http://localhost:3001/rules/s1-123\x1b\\"
     "git safety"
     "\x1b]8;;\x1b\\"
-    ", "
+    " | "
     "\x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\"
     "brief answer preference"
     "\x1b]8;;\x1b\\"
@@ -105,8 +106,10 @@ _OSC8_MARKER_PARAGRAPH = (
     "URLs. Format for one item: "
     f"`{_OSC8_EXAMPLE_ONE}`. For multiple items: "
     f"`{_OSC8_EXAMPLE_MULTI}`. Use the dashboard URL shown beside each cited "
-    "item; do not invent URLs. If OSC 8 is unavailable, use markdown links. "
-    "Do not include `[cs:…]` ids in the marker line._"
+    "item; do not invent URLs. Separate multiple linked memories with the "
+    "visible ` | ` separator. If OSC 8 is unavailable, use markdown links. "
+    "Do not include `[cs:…]` ids in the marker line. Do not omit the marker "
+    "after using listed memory._"
 )
 
 CITATION_MODES = ("on", "auto", "marker-only", "off")
