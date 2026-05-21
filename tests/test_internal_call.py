@@ -139,6 +139,38 @@ def test_rejects_non_title_responses(content: object) -> None:
     assert internal_call.is_codex_title_response(content) is False
 
 
+def test_detects_codex_suggestions_response() -> None:
+    content = (
+        '{"suggestions":[{"title":"Prepare patch","description":"Fix the issue.",'
+        '"prompt":"Make the change.","appId":""}]}'
+    )
+
+    assert internal_call.is_codex_suggestions_response(content) is True
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",
+        "not json",
+        '{"suggestions": "nope"}',
+        '{"suggestions": [{"title": "x"}]}',
+        (
+            '{"suggestions": [{"title": "x", "description": "d", '
+            '"prompt": "p", "appId": "", "extra": "e"}]}'
+        ),
+        (
+            '{"suggestions": [{"title": "x", "description": "d", '
+            '"prompt": "p", "appId": 1}]}'
+        ),
+        '{"suggestions": [], "body": "extra"}',
+        {"suggestions": []},
+    ],
+)
+def test_rejects_non_suggestions_responses(content: object) -> None:
+    assert internal_call.is_codex_suggestions_response(content) is False
+
+
 def test_returns_true_for_codex_suggestions_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

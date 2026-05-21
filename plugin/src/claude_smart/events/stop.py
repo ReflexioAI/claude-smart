@@ -378,7 +378,10 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
     )
     if (
         runtime.is_codex()
-        and internal_call.is_codex_title_response(assistant_text)
+        and (
+            internal_call.is_codex_title_response(assistant_text)
+            or internal_call.is_codex_suggestions_response(assistant_text)
+        )
         and not prompt
         and not _has_unpublished_user_turn(session_id)
     ):

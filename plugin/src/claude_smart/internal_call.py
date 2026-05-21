@@ -32,6 +32,8 @@ Detection signals, OR'd:
   - Known Codex-internal prompt templates (title generation and home-screen
     suggestions). These are model calls made by Codex itself, not user
     coding turns, and must never be reflected into claude-smart memory.
+  - Known orphan Codex-internal response bodies, for cases where the Stop
+    payload contains only the generated metadata and not the internal prompt.
 """
 
 from __future__ import annotations
@@ -140,3 +142,31 @@ def is_codex_title_response(content: Any) -> bool:
         and isinstance(parsed.get("title"), str)
         and bool(parsed["title"].strip())
     )
+
+
+def is_codex_suggestions_response(content: Any) -> bool:
+    """True for Codex's home-screen suggestion-generator response body.
+
+    Codex can run a separate suggestion task whose Stop payload contains
+    generated JSON like ``{"suggestions": [...]}`` with no corresponding user
+    turn. Those suggestions are UI metadata, not a user interaction.
+    """
+    if not isinstance(content, str):
+        return False
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(parsed, dict) or set(parsed) != {"suggestions"}:
+        return False
+    suggestions = parsed.get("suggestions")
+    if not isinstance(suggestions, list):
+        return False
+    for item in suggestions:
+        if not isinstance(item, dict):
+            return False
+        if set(item) != {"title", "description", "prompt", "appId"}:
+            return False
+        if not all(isinstance(item.get(key), str) for key in item):
+            return False
+    return True

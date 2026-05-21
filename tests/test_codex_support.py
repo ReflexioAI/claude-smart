@@ -310,6 +310,32 @@ def test_codex_stop_skips_orphan_title_response(session_dir, monkeypatch) -> Non
     assert calls == []
 
 
+def test_codex_stop_skips_orphan_suggestions_response(
+    session_dir, monkeypatch
+) -> None:
+    runtime.set_host(runtime.HOST_CODEX)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        stop.publish, "publish_unpublished", lambda **kw: calls.append(kw)
+    )
+
+    stop.handle(
+        {
+            "session_id": "s1",
+            "cwd": str(REPO_ROOT),
+            "last_assistant_message": (
+                '{"suggestions":[{"title":"Prepare patch",'
+                '"description":"Fix the issue.","prompt":"Make the change.",'
+                '"appId":""}]}'
+            ),
+            "transcript_path": "/does/not/exist.jsonl",
+        }
+    )
+
+    assert state.read_all("s1") == []
+    assert calls == []
+
+
 def test_codex_stop_keeps_user_requested_title_json(session_dir, monkeypatch) -> None:
     runtime.set_host(runtime.HOST_CODEX)
     calls: list[dict[str, Any]] = []
@@ -337,6 +363,43 @@ def test_codex_stop_keeps_user_requested_title_json(session_dir, monkeypatch) ->
     records = state.read_all("s1")
     assert records[-1]["role"] == "Assistant"
     assert records[-1]["content"] == '{"title":"Fix docs"}'
+    assert calls
+
+
+def test_codex_stop_keeps_user_requested_suggestions_json(
+    session_dir, monkeypatch
+) -> None:
+    runtime.set_host(runtime.HOST_CODEX)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        stop.publish, "publish_unpublished", lambda **kw: calls.append(kw)
+    )
+    state.append(
+        "s1",
+        {
+            "role": "User",
+            "content": "Return only a JSON suggestions object.",
+            "user_id": "demo",
+        },
+    )
+
+    assistant_json = (
+        '{"suggestions":[{"title":"Prepare patch",'
+        '"description":"Fix the issue.","prompt":"Make the change.",'
+        '"appId":""}]}'
+    )
+    stop.handle(
+        {
+            "session_id": "s1",
+            "cwd": str(REPO_ROOT),
+            "last_assistant_message": assistant_json,
+            "transcript_path": "/does/not/exist.jsonl",
+        }
+    )
+
+    records = state.read_all("s1")
+    assert records[-1]["role"] == "Assistant"
+    assert records[-1]["content"] == assistant_json
     assert calls
 
 
