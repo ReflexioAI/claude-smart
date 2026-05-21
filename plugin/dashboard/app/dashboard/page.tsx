@@ -35,6 +35,7 @@ interface RecentLearning {
   href: string;
   content: string;
   createdAt: number;
+  statKey: string;
 }
 
 export default function DashboardPage() {
@@ -64,7 +65,7 @@ export default function DashboardPage() {
           reflexio
             .getAllProfiles({ reflexioUrl, limit: 100 })
             .catch(() => ({ user_profiles: [] as UserProfile[] })),
-          fetch("/api/rules/applied?daysBack=30&limit=5", {
+          fetch("/api/rules/applied?daysBack=30&limit=200", {
             cache: "no-store",
           })
             .then((r) => r.json())
@@ -96,7 +97,14 @@ export default function DashboardPage() {
   const approvedSharedSkills = (sharedSkills ?? []).filter(
     (p) => agentPlaybookStatusLabel(p) === "APPROVED",
   );
-  const currentPreferences = (preferences ?? []).filter((p) => p.status == null);
+ const currentPreferences = (preferences ?? []).filter((p) => p.status == null);
+  const statsByRule = useMemo(() => {
+    const map = new Map<string, PlaybookApplicationStat>();
+    for (const s of topApplied ?? []) {
+      map.set(`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`, s);
+    }
+    return map;
+  }, [topApplied]);
   const recentLearnings = useMemo(() => {
     const items: RecentLearning[] = [
       ...currentProjectSkills.map((p) => ({
@@ -105,6 +113,7 @@ export default function DashboardPage() {
         href: `/skills/project/${encodeURIComponent(p.user_playbook_id)}`,
         content: p.content,
         createdAt: p.created_at,
+        statKey: `playbook:user_playbook:${p.user_playbook_id}`,
       })),
       ...approvedSharedSkills.map((p) => ({
         id: `shared:${p.agent_playbook_id}`,
@@ -112,6 +121,7 @@ export default function DashboardPage() {
         href: `/skills/shared/${encodeURIComponent(p.agent_playbook_id)}`,
         content: p.content,
         createdAt: p.created_at,
+        statKey: `playbook:agent_playbook:${p.agent_playbook_id}`,
       })),
       ...currentPreferences.map((p) => ({
         id: `preference:${p.profile_id}`,
@@ -119,6 +129,7 @@ export default function DashboardPage() {
         href: `/preferences/project/${encodeURIComponent(p.profile_id)}`,
         content: p.content,
         createdAt: p.last_modified_timestamp,
+        statKey: `profile:profile:${p.profile_id}`,
       })),
     ];
     const seen = new Set<string>();
@@ -178,189 +189,193 @@ export default function DashboardPage() {
         )}
 
         <div className="grid min-w-0 gap-6 lg:grid-cols-2">
-        <section className="min-w-0 rounded-lg border border-border bg-card/86 p-4 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <h2 className="text-sm font-semibold">Recent sessions</h2>
-              <p className="text-xs text-muted-foreground">
-                Latest local buffers and cited learnings.
-              </p>
-            </div>
-            <Link
-              href="/sessions"
-              className="text-xs text-primary hover:text-foreground inline-flex items-center gap-1"
-            >
-              View all <ExternalLink className="h-3 w-3" />
-            </Link>
-          </div>
-          {sessions && sessions.length > 0 ? (
-            <div className="rounded-lg border border-border divide-y divide-border bg-background/70 overflow-hidden">
-              {sessions.slice(0, 5).map((s) => (
-                <Link
-                  key={s.session_id}
-                  href={`/sessions/${s.session_id}`}
-                  className="flex flex-col gap-2 px-4 py-3 transition-colors hover:bg-accent/45 sm:flex-row sm:items-center sm:justify-between"
-                >
-                  <div className="min-w-0 flex w-full items-center gap-3">
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                      <MessageSquare className="h-4 w-4" />
-                    </span>
-                    <code className="font-mono text-xs truncate">
-                      {truncateId(s.session_id, 10, 6)}
-                    </code>
-                    <LearningsBadge count={s.learning_interaction_count} />
-                  </div>
-                  <div className="flex w-full items-center justify-end gap-4 text-xs text-muted-foreground sm:w-auto sm:shrink-0">
-                    <span>{s.turn_count} turns</span>
-                    <span>{formatRelative(s.last_activity)}</span>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          ) : (
-            <EmptyState
-              icon={MessageSquare}
-              title="No sessions yet"
-              description="Run Claude Code with claude-smart enabled — sessions will appear here."
-            />
-          )}
-        </section>
-
-        <section className="min-w-0 rounded-lg border border-border bg-card/86 p-4 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <h2 className="text-sm font-semibold">Recent learnings</h2>
-              <p className="text-xs text-muted-foreground">
-                New skills and preferences extracted from recent patterns.
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
+          <section className="min-w-0">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h2 className="text-sm font-semibold">Recent sessions</h2>
+                <p className="text-xs text-muted-foreground">
+                  Latest local buffers and cited learnings.
+                </p>
+              </div>
               <Link
-                href="/skills"
+                href="/sessions"
                 className="text-xs text-primary hover:text-foreground inline-flex items-center gap-1"
               >
-                Skills <ExternalLink className="h-3 w-3" />
-              </Link>
-              <Link
-                href="/preferences"
-                className="text-xs text-primary hover:text-foreground inline-flex items-center gap-1"
-              >
-                Preferences <ExternalLink className="h-3 w-3" />
+                View all <ExternalLink className="h-3 w-3" />
               </Link>
             </div>
-          </div>
-          {recentLearnings.length > 0 ? (
-            <div className="rounded-lg border border-border divide-y divide-border bg-background/70 overflow-hidden">
-              {recentLearnings.map((item) => (
-                <Link
-                  key={item.id}
-                  href={item.href}
-                  className="flex min-w-0 items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-accent/45"
-                >
-                  <div className="min-w-0 flex flex-1 items-center gap-3">
-                    {learningIcon(item.kind)}
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm truncate">{item.content}</p>
-                      <div className="mt-1 flex items-center gap-2">
-                        <Badge variant="outline" className="h-5 text-[10px]">
-                          {learningKindLabel(item.kind)}
-                        </Badge>
-                        <span className="text-[11px] text-muted-foreground">
-                          {learningScope(item.kind)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
-                    <span>{formatRelative(item.createdAt)}</span>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          ) : (
-            <EmptyState
-              icon={BookOpen}
-              title="No learnings yet"
-              description="Keep using Claude with claude-smart enabled. Skills and preferences are extracted automatically when patterns emerge."
-            />
-          )}
-        </section>
-
-        <section className="min-w-0 lg:col-span-2">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <h2 className="text-sm font-semibold">
-                Most used claude-smart learnings
-              </h2>
-              <span className="text-[11px] text-muted-foreground">
-                last 30 days
-              </span>
-            </div>
-            <Link
-              href="/sessions"
-              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
-            >
-              Review sessions <ExternalLink className="h-3 w-3" />
-            </Link>
-          </div>
-          {topApplied === null ? (
-            <div className="text-sm text-muted-foreground">Loading...</div>
-          ) : topApplied.length > 0 ? (
-            <div className="rounded-xl border border-border divide-y divide-border bg-card">
-              {topApplied.slice(0, 5).map((s) => {
-                const href = s.href ?? null;
-                const label = appliedRuleLabel(s);
-                const rowBody = (
-                  <>
-                    <div className="min-w-0 flex flex-1 items-center gap-3">
-                      <Sparkles className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm truncate">
-                          {s.title || (
-                            <span className="text-muted-foreground italic">
-                              (rule removed)
-                            </span>
-                          )}
-                        </p>
-                        <p className="text-[11px] text-muted-foreground">
-                          {label} · {truncate(s.real_id, 12)}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
-                      <Badge variant="secondary" className="text-[10px]">
-                        Used {s.applied_count}×
-                      </Badge>
-                      <span>{formatRelative(s.last_applied_at)}</span>
-                    </div>
-                  </>
-                );
-                return href ? (
+            {sessions && sessions.length > 0 ? (
+              <div className="rounded-lg border border-border divide-y divide-border bg-card/92 shadow-sm overflow-hidden">
+                {sessions.slice(0, 5).map((s) => (
                   <Link
-                    key={`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`}
-                    href={href}
-                    className="flex min-w-0 items-center justify-between gap-3 px-4 py-3 hover:bg-accent/40 transition-colors"
+                    key={s.session_id}
+                    href={`/sessions/${s.session_id}`}
+                    className="flex flex-col gap-2 px-4 py-3 transition-colors hover:bg-accent/45 sm:flex-row sm:items-center sm:justify-between"
                   >
-                    {rowBody}
+                    <div className="min-w-0 flex w-full items-center gap-3">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                        <MessageSquare className="h-4 w-4" />
+                      </span>
+                      <code className="font-mono text-xs truncate">
+                        {truncateId(s.session_id, 10, 6)}
+                      </code>
+                      <LearningsBadge count={s.learning_interaction_count} />
+                    </div>
+                    <div className="flex w-full items-center justify-end gap-4 text-xs text-muted-foreground sm:w-auto sm:shrink-0">
+                      <span>{s.turn_count} turns</span>
+                      <span>{formatRelative(s.last_activity)}</span>
+                    </div>
                   </Link>
-                ) : (
-                  <div
-                    key={`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`}
-                    className="flex min-w-0 items-center justify-between gap-3 px-4 py-3"
-                  >
-                    {rowBody}
-                  </div>
-                );
-              })}
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                icon={MessageSquare}
+                title="No sessions yet"
+                description="Run Claude Code with claude-smart enabled — sessions will appear here."
+              />
+            )}
+          </section>
+
+          <section className="min-w-0">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h2 className="text-sm font-semibold">Recent learnings</h2>
+                <p className="text-xs text-muted-foreground">
+                  New skills and preferences extracted from recent patterns.
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <Link
+                  href="/skills"
+                  className="text-xs text-primary hover:text-foreground inline-flex items-center gap-1"
+                >
+                  Skills <ExternalLink className="h-3 w-3" />
+                </Link>
+                <Link
+                  href="/preferences"
+                  className="text-xs text-primary hover:text-foreground inline-flex items-center gap-1"
+                >
+                  Preferences <ExternalLink className="h-3 w-3" />
+                </Link>
+              </div>
             </div>
-          ) : (
-            <EmptyState
-              icon={Sparkles}
-              title="No applied learnings yet"
-              description="When a claude-smart learning is cited in a local assistant response, it will appear here with usage and recency."
-            />
-          )}
-        </section>
+            {recentLearnings.length > 0 ? (
+              <div className="rounded-lg border border-border divide-y divide-border bg-card/92 shadow-sm overflow-hidden">
+                {recentLearnings.map((item) => {
+                  const stat = statsByRule.get(item.statKey);
+                  return (
+                    <Link
+                      key={item.id}
+                      href={item.href}
+                      className="flex min-w-0 items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-accent/45"
+                    >
+                      <div className="min-w-0 flex flex-1 items-center gap-3">
+                        {learningIcon(item.kind)}
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm truncate">{item.content}</p>
+                          <div className="mt-1 flex flex-wrap items-center gap-2">
+                            <Badge variant="outline" className="h-5 text-[10px]">
+                              {learningKindLabel(item.kind)}
+                            </Badge>
+                            <span className="text-[11px] text-muted-foreground">
+                              {learningScope(item.kind)}
+                            </span>
+                            <LearningApplicationStatBadge stat={stat} />
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
+                        <span>{formatRelative(item.createdAt)}</span>
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
+            ) : (
+              <EmptyState
+                icon={BookOpen}
+                title="No learnings yet"
+                description="Keep using Claude with claude-smart enabled. Skills and preferences are extracted automatically when patterns emerge."
+              />
+            )}
+          </section>
+
+          <section className="min-w-0 lg:col-span-2">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-semibold">
+                  Most used claude-smart learnings
+                </h2>
+                <span className="text-[11px] text-muted-foreground">
+                  last 30 days
+                </span>
+              </div>
+              <Link
+                href="/sessions"
+                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+              >
+                Review sessions <ExternalLink className="h-3 w-3" />
+              </Link>
+            </div>
+            {topApplied === null ? (
+              <div className="text-sm text-muted-foreground">Loading...</div>
+            ) : topApplied.length > 0 ? (
+              <div className="rounded-lg border border-border divide-y divide-border bg-card/92 shadow-sm">
+                {topApplied.slice(0, 5).map((s) => {
+                  const href = s.href ?? null;
+                  const label = appliedRuleLabel(s);
+                  const rowBody = (
+                    <>
+                      <div className="min-w-0 flex flex-1 items-center gap-3">
+                        <Sparkles className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm truncate">
+                            {s.title || (
+                              <span className="text-muted-foreground italic">
+                                (rule removed)
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground">
+                            {label} · {truncate(s.real_id, 12)}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
+                        <Badge variant="secondary" className="text-[10px]">
+                          Used {s.applied_count}×
+                        </Badge>
+                        <span>{formatRelative(s.last_applied_at)}</span>
+                      </div>
+                    </>
+                  );
+                  return href ? (
+                    <Link
+                      key={`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`}
+                      href={href}
+                      className="flex min-w-0 items-center justify-between gap-3 px-4 py-3 hover:bg-accent/40 transition-colors"
+                    >
+                      {rowBody}
+                    </Link>
+                  ) : (
+                    <div
+                      key={`${s.kind}:${s.source_kind ?? "unknown"}:${s.real_id}`}
+                      className="flex min-w-0 items-center justify-between gap-3 px-4 py-3"
+                    >
+                      {rowBody}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <EmptyState
+                icon={Sparkles}
+                title="No applied learnings yet"
+                description="When a claude-smart learning is cited in a local assistant response, it will appear here with usage and recency."
+              />
+            )}
+          </section>
         </div>
       </div>
     </div>
@@ -384,4 +399,27 @@ function learningIcon(kind: RecentLearningKind) {
 
 function learningKindLabel(kind: RecentLearningKind): string {
   return kind === "preference" ? "preference" : "skill";
+}
+
+function LearningApplicationStatBadge({
+  stat,
+}: {
+  stat: PlaybookApplicationStat | undefined;
+}) {
+  if (!stat || stat.applied_count === 0) {
+    return (
+      <Badge
+        variant="outline"
+        className="h-5 text-[10px] text-muted-foreground"
+      >
+        Never applied
+      </Badge>
+    );
+  }
+  const last = formatRelative(stat.last_applied_at);
+  return (
+    <Badge variant="secondary" className="h-5 text-[10px]">
+      Applied {stat.applied_count}×{stat.last_applied_at ? ` · ${last}` : ""}
+    </Badge>
+  );
 }
