@@ -102,6 +102,16 @@ refresh_local_dashboard() {
   bash "$PLUGIN_ROOT/scripts/dashboard-service.sh" start >/dev/null 2>&1 || true
 }
 
+force_plugin_root_to_checkout() {
+  # Force-point ~/.reflexio/plugin-root at this repo's plugin/ so slash
+  # commands resolve to editable in-repo sources (not a marketplace cache).
+  # SessionStart's non-force self-heal will respect this link.
+  if ! bash "$PLUGIN_ROOT/scripts/ensure-plugin-root.sh" "$PLUGIN_ROOT" --force; then
+    log "WARNING: ensure-plugin-root failed; rerun manually:"
+    log "  bash $PLUGIN_ROOT/scripts/ensure-plugin-root.sh $PLUGIN_ROOT --force"
+  fi
+}
+
 usage() {
   cat >&2 <<'EOF'
 Usage: scripts/setup-local-dev.sh [--host claude-code|codex|both] [--read-only]
@@ -266,18 +276,22 @@ PY
   ln -sfn "$PLUGIN_ROOT" "$LOCAL_MKT_DIR/plugin"
 
   if command -v claude >/dev/null 2>&1; then
-    log "registering local marketplace with Claude Code..."
-    marketplace_list="$(claude plugin marketplace list 2>/dev/null || true)"
-    if printf '%s\n' "$marketplace_list" | grep -Fq "reflexioai-local" || printf '%s\n' "$marketplace_list" | grep -Fq "$LOCAL_MKT_DIR"; then
-      log "  reflexioai-local already registered"
+    log "refreshing local marketplace registration with Claude Code..."
+    # Local-dev marketplaces are worktree-sensitive. Always replace the
+    # registration so rerunning setup from one worktree cannot keep a stale
+    # reflexioai-local source from another worktree.
+    if remove_output="$(claude plugin marketplace remove reflexioai-local 2>&1)"; then
+      log "  removed existing reflexioai-local marketplace"
     else
-      if add_output="$(claude plugin marketplace add "$LOCAL_MKT_DIR" 2>&1)"; then
-        log "  added reflexioai-local → $LOCAL_MKT_DIR"
-      else
-        log "ERROR: failed to register reflexioai-local marketplace"
-        log "  $add_output"
-        exit 1
-      fi
+      log "  no existing reflexioai-local marketplace to replace"
+      log "  remove output: $remove_output"
+    fi
+    if add_output="$(claude plugin marketplace add "$LOCAL_MKT_DIR" 2>&1)"; then
+      log "  added reflexioai-local → $LOCAL_MKT_DIR"
+    else
+      log "ERROR: failed to register reflexioai-local marketplace"
+      log "  $add_output"
+      exit 1
     fi
 
     log "installing/updating claude-smart@reflexioai-local for Claude Code..."
@@ -387,16 +401,10 @@ settings_path.write_text(json.dumps(data, indent=2) + "\n")
 PY
   log "wrote $SETTINGS_FILE (claude-smart@reflexioai-local enabled, @reflexioai shadowed off)"
 
-  # Force-point ~/.reflexio/plugin-root at this repo's plugin/ so slash
-  # commands resolve to editable in-repo sources (not the marketplace
-  # cache). SessionStart's non-force self-heal will respect this link.
   # Warn (don't abort) on failure — marketplace registration and settings
   # have already been committed by this point, so aborting would leave the
   # user in a half-configured state.
-  if ! bash "$PLUGIN_ROOT/scripts/ensure-plugin-root.sh" "$PLUGIN_ROOT" --force; then
-    log "WARNING: ensure-plugin-root failed; rerun manually:"
-    log "  bash $PLUGIN_ROOT/scripts/ensure-plugin-root.sh $PLUGIN_ROOT --force"
-  fi
+  force_plugin_root_to_checkout
 fi
 
 if [ "$SETUP_CODEX" = "1" ]; then
@@ -416,6 +424,11 @@ if [ "$SETUP_CODEX" = "1" ]; then
   else
     (cd "$REPO_ROOT" && node bin/claude-smart.js install --host codex)
   fi
+fi
+
+if [ "$SETUP_CLAUDE_CODE" = "1" ] && [ "$SETUP_CODEX" = "1" ]; then
+  log "restoring plugin-root to editable checkout after Codex install..."
+  force_plugin_root_to_checkout
 fi
 
 refresh_local_dashboard

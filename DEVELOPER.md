@@ -311,11 +311,12 @@ Idempotent. This single script handles the shared local-dev prep for every host 
 2. Uncomments `[tool.uv.sources]` in `plugin/pyproject.toml` (absolute path to the submodule) and hides the divergence with `git update-index --skip-worktree`.
 3. `uv sync` in `plugin/`.
 4. Appends `CLAUDE_SMART_USE_LOCAL_CLI=1` and `CLAUDE_SMART_USE_LOCAL_EMBEDDING=1` to `~/.reflexio/.env`.
-5. For `--host claude-code` (the default), prepares and registers the local marketplace (`local-marketplace/`, manifest name `reflexioai-local`) at user scope via `claude plugin marketplace add`.
+5. For `--host claude-code` (the default), prepares and refreshes the local marketplace (`local-marketplace/`, manifest name `reflexioai-local`) at user scope by replacing any stale `reflexioai-local` registration before running `claude plugin marketplace add`.
 6. For `--host claude-code`, writes `.claude/settings.local.json` → enable `claude-smart@reflexioai-local`, disable `claude-smart@reflexioai`.
 7. For `--host claude-code`, force-sets `~/.reflexio/plugin-root` → `plugin/` so slash commands resolve to editable in-repo sources.
 8. For `--host codex`, runs `node bin/claude-smart.js install --host codex` so the installed Codex hooks are patched through the JSON-safe `scripts/codex-hook.js` adapter.
-9. Refreshes the local dashboard process. The dashboard health endpoint exposes the serving plugin root, so setup can stop a stale claude-smart dashboard from an older cache while leaving a foreign app on port `3001` alone.
+9. For `--host both`, force-sets `~/.reflexio/plugin-root` back to editable `plugin/` after the Codex install step, since the Codex installer may point it at the copied cache.
+10. Refreshes the local dashboard process. The dashboard health endpoint exposes the serving plugin root, so setup can stop a stale claude-smart dashboard from an older cache while leaving a foreign app on port `3001` alone.
 
 Then restart the target host. In a new Claude Code session, `/plugin` should show `claude-smart@reflexioai-local` and should not also show the published `claude-smart@reflexioai`. In Codex, `/plugins` should show `claude-smart` installed from the **ReflexioAI** marketplace.
 
