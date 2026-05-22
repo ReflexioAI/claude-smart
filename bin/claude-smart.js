@@ -15,6 +15,7 @@ const { execSync, spawn, spawnSync } = require("child_process");
 const crypto = require("crypto");
 const {
   appendFileSync,
+  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -37,6 +38,7 @@ const CODEX_MARKETPLACE_NAME = "reflexioai";
 const CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI";
 const CODEX_PLUGIN_ID = `claude-smart@${CODEX_MARKETPLACE_NAME}`;
 const REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
+const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const CODEX_CONFIG_PATH = join(homedir(), ".codex", "config.toml");
@@ -206,7 +208,80 @@ function seedReflexioEnv() {
   const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
   const body = missing.map((f) => `${f}=1`).join("\n") + "\n";
   appendFileSync(REFLEXIO_ENV_PATH, prefix + body);
+  chmodSync(REFLEXIO_ENV_PATH, 0o600);
   return missing;
+}
+
+function escapeEnvValue(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function parseEnvLine(line) {
+  let trimmed = String(line || "").trim();
+  if (!trimmed || trimmed.startsWith("#")) return null;
+  if (trimmed.startsWith("export ")) trimmed = trimmed.slice("export ".length).trimStart();
+  const eq = trimmed.indexOf("=");
+  if (eq < 0) return null;
+  const key = trimmed.slice(0, eq).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null;
+  return { key };
+}
+
+function setReflexioEnvVars(values) {
+  mkdirSync(dirname(REFLEXIO_ENV_PATH), { recursive: true });
+  const existing = existsSync(REFLEXIO_ENV_PATH)
+    ? readFileSync(REFLEXIO_ENV_PATH, "utf8")
+    : "";
+  const lines = existing ? existing.split(/\r?\n/) : [];
+  const seen = new Set();
+  const out = [];
+  for (const line of lines) {
+    const parsed = parseEnvLine(line);
+    if (parsed && Object.prototype.hasOwnProperty.call(values, parsed.key)) {
+      out.push(`${parsed.key}="${escapeEnvValue(values[parsed.key])}"`);
+      seen.add(parsed.key);
+    } else {
+      out.push(line);
+    }
+  }
+  const added = [];
+  for (const [key, value] of Object.entries(values)) {
+    if (seen.has(key)) continue;
+    out.push(`${key}="${escapeEnvValue(value)}"`);
+    added.push(key);
+  }
+  const content = out.join("\n").replace(/\n*$/, "\n");
+  writeFileSync(REFLEXIO_ENV_PATH, content);
+  chmodSync(REFLEXIO_ENV_PATH, 0o600);
+  return added;
+}
+
+function maskSecret(value) {
+  if (!value) return "";
+  if (value.length <= 8) return "*".repeat(value.length);
+  const prefix = value.slice(0, 8).includes("-") ? value.slice(0, 5) : value.slice(0, 4);
+  return `${prefix}****${value.slice(-4)}`;
+}
+
+function configureReflexioSetup(args) {
+  const apiKey = parseOptionalArg(args, "--api-key").trim();
+  if (apiKey) {
+    const reflexioUrl = parseOptionalArg(args, "--reflexio-url") || MANAGED_REFLEXIO_URL;
+    const added = setReflexioEnvVars({
+      REFLEXIO_URL: reflexioUrl,
+      REFLEXIO_API_KEY: apiKey,
+    });
+    const changed = added.length > 0 ? added.join(", ") : "managed Reflexio settings";
+    process.stdout.write(
+      `Configured ${REFLEXIO_ENV_PATH} for managed Reflexio (${changed}; API key ${maskSecret(apiKey)}).\n`,
+    );
+    return;
+  }
+
+  const added = seedReflexioEnv();
+  if (added.length > 0) {
+    process.stdout.write(`Seeded ${REFLEXIO_ENV_PATH} with ${added.join(", ")}.\n`);
+  }
 }
 
 function findClaudeCodePluginRoot() {
@@ -724,6 +799,7 @@ function printHelp() {
       "  npx claude-smart install                       Install the plugin into Claude Code",
       "  npx claude-smart install --host codex          Register the plugin marketplace for Codex",
       "  npx claude-smart install --source <owner/repo> Override the marketplace source",
+      "  npx claude-smart install --api-key <key>        Use managed Reflexio service",
       "  npx claude-smart uninstall --host codex        Remove the Codex marketplace registration",
       "  npx claude-smart --help                        Show this help",
       "",
@@ -732,6 +808,7 @@ function printHelp() {
       `  2. claude plugin install ${PLUGIN_SPEC}`,
       "  3. Appends CLAUDE_SMART_USE_LOCAL_CLI=1 and CLAUDE_SMART_USE_LOCAL_EMBEDDING=1",
       "     to ~/.reflexio/.env (idempotent).",
+      "     Passing --api-key writes REFLEXIO_URL and REFLEXIO_API_KEY instead.",
       "",
       "Codex install:",
       `  1. Copies the bundled marketplace to ${CODEX_MARKETPLACE_DIR}`,
@@ -758,6 +835,17 @@ function parseSource(args) {
   const value = args[idx + 1];
   if (!value) {
     process.stderr.write("error: --source requires a value (e.g. owner/repo)\n");
+    process.exit(1);
+  }
+  return value;
+}
+
+function parseOptionalArg(args, flag) {
+  const idx = args.indexOf(flag);
+  if (idx === -1) return "";
+  const value = args[idx + 1];
+  if (!value) {
+    process.stderr.write(`error: ${flag} requires a value\n`);
     process.exit(1);
   }
   return value;
@@ -1215,7 +1303,7 @@ async function runUninstall(args) {
 
 async function runInstall(args) {
   if (parseHost(args) === "codex") {
-    await runInstallCodex();
+    await runInstallCodex(args);
     return;
   }
 
@@ -1243,12 +1331,7 @@ async function runInstall(args) {
     }
   }
 
-  const added = seedReflexioEnv();
-  if (added.length > 0) {
-    process.stdout.write(
-      `Seeded ${REFLEXIO_ENV_PATH} with ${added.join(", ")}.\n`,
-    );
-  }
+  configureReflexioSetup(args);
   try {
     const pluginRoot = await bootstrapClaudeCodeInstall();
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
@@ -1276,7 +1359,7 @@ async function runInstall(args) {
   );
 }
 
-async function runInstallCodex() {
+async function runInstallCodex(args) {
   if (!hasCli("codex")) {
     process.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n");
     process.exit(1);
@@ -1323,6 +1406,7 @@ async function runInstallCodex() {
   try {
     cacheDir = installCodexPluginCache(codexMarketplacePluginRoot(marketplaceRoot));
     process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
+    configureReflexioSetup(args);
     await bootstrapPluginRuntime(cacheDir);
     if (refreshDashboardService(cacheDir)) {
       process.stdout.write("Refreshed claude-smart dashboard service.\n");
@@ -1357,11 +1441,6 @@ async function runInstallCodex() {
     process.exit(1);
   } else {
     process.stdout.write(`Trusted and enabled ${trustedHookCount} claude-smart Codex hooks.\n`);
-  }
-
-  const added = seedReflexioEnv();
-  if (added.length > 0) {
-    process.stdout.write(`Seeded ${REFLEXIO_ENV_PATH} with ${added.join(", ")}.\n`);
   }
 
   process.stdout.write(
@@ -1446,6 +1525,7 @@ module.exports = {
   copyCodexMarketplace,
   ensurePrivateNode,
   ensureUv,
+  configureReflexioSetup,
   patchCodexHooksForNode,
   platformSupportError,
 };

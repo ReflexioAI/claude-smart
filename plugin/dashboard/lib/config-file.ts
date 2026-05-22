@@ -10,6 +10,7 @@ import type { ClaudeSmartConfig } from "./types";
 
 const KNOWN_KEYS = [
   "REFLEXIO_URL",
+  "REFLEXIO_API_KEY",
   "CLAUDE_SMART_USE_LOCAL_CLI",
   "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
   "CLAUDE_SMART_CLI_PATH",
@@ -47,6 +48,7 @@ function parseLine(line: string): { key: string; value: string } | null {
 export async function readConfig(): Promise<ClaudeSmartConfig> {
   const defaults: ClaudeSmartConfig = {
     REFLEXIO_URL: "http://localhost:8071/",
+    REFLEXIO_API_KEY: "",
     CLAUDE_SMART_USE_LOCAL_CLI: false,
     CLAUDE_SMART_USE_LOCAL_EMBEDDING: false,
     CLAUDE_SMART_CLI_PATH: "",

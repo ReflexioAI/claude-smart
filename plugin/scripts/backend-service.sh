@@ -22,6 +22,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_lib.sh"
 claude_smart_source_login_path
 claude_smart_prepend_astral_bins
+claude_smart_source_reflexio_env
 
 CMD="${1:-start}"
 PORT=8071
@@ -182,6 +183,10 @@ case "$CMD" in
     if claude_smart_is_internal_invocation_env; then
       emit_ok; exit 0
     fi
+    if claude_smart_reflexio_url_is_remote; then
+      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: remote REFLEXIO_URL configured; skipping local backend start"
+      emit_ok; exit 0
+    fi
     # Opt-out: users who don't want the backend managed by the hook can
     # set CLAUDE_SMART_BACKEND_AUTOSTART=0.
     if [ "${CLAUDE_SMART_BACKEND_AUTOSTART:-1}" = "0" ]; then
@@ -269,7 +274,13 @@ case "$CMD" in
     emit_ok
     ;;
   status)
-    if is_our_backend_running; then echo "running on http://localhost:$PORT"; else echo "not running"; fi
+    if claude_smart_reflexio_url_is_remote; then
+      echo "remote configured at $REFLEXIO_URL"
+    elif is_our_backend_running; then
+      echo "running on http://localhost:$PORT"
+    else
+      echo "not running"
+    fi
     ;;
   *)
     emit_ok

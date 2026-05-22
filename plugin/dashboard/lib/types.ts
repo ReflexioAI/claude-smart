@@ -113,12 +113,14 @@ export interface SessionDetail {
 
 export interface ClaudeSmartConfig {
   REFLEXIO_URL: string;
+  REFLEXIO_API_KEY: string;
+  REFLEXIO_API_KEY_SET?: boolean;
   CLAUDE_SMART_USE_LOCAL_CLI: boolean;
   CLAUDE_SMART_USE_LOCAL_EMBEDDING: boolean;
   CLAUDE_SMART_CLI_PATH: string;
   CLAUDE_SMART_CLI_TIMEOUT: string;
   CLAUDE_SMART_STATE_DIR: string;
-  [extra: string]: string | boolean;
+  [extra: string]: string | boolean | undefined;
 }
 
 export interface ClaudeCodeHookConfig {

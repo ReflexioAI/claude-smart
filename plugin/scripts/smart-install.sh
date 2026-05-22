@@ -14,6 +14,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 claude_smart_source_login_path
 claude_smart_prepend_astral_bins
 claude_smart_prepend_node_bins
+claude_smart_source_reflexio_env
 
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
@@ -105,8 +106,10 @@ install_complete() {
   command -v uv >/dev/null 2>&1 || return 1
   [ -d "$PLUGIN_ROOT/.venv" ] || return 1
   [ -f "$HOME/.reflexio/.env" ] || return 1
-  grep -q '^CLAUDE_SMART_USE_LOCAL_CLI=' "$HOME/.reflexio/.env" || return 1
-  grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$HOME/.reflexio/.env" || return 1
+  if [ -z "${REFLEXIO_API_KEY:-}" ]; then
+    grep -q '^CLAUDE_SMART_USE_LOCAL_CLI=' "$HOME/.reflexio/.env" || return 1
+    grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$HOME/.reflexio/.env" || return 1
+  fi
   if [ -d "$PLUGIN_ROOT/dashboard" ]; then
     [ -d "$PLUGIN_ROOT/dashboard/.next" ] || [ -f "$MARKER_DIR/dashboard-build.pid" ] || [ -f "$(claude_smart_dashboard_unavailable_marker)" ] || return 1
   fi
@@ -431,13 +434,15 @@ fi
 REFLEXIO_ENV="$HOME/.reflexio/.env"
 mkdir -p "$(dirname "$REFLEXIO_ENV")"
 touch "$REFLEXIO_ENV"
-if ! grep -q '^CLAUDE_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
-  printf '\n# Route reflexio generation through the local Claude Code CLI\nCLAUDE_SMART_USE_LOCAL_CLI=1\n' >> "$REFLEXIO_ENV"
-  echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_CLI=1 to $REFLEXIO_ENV" >&2
-fi
-if ! grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
-  printf '# Use the in-process ONNX embedder (chromadb) — no API key for semantic search\nCLAUDE_SMART_USE_LOCAL_EMBEDDING=1\n' >> "$REFLEXIO_ENV"
-  echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 to $REFLEXIO_ENV" >&2
+if [ -z "${REFLEXIO_API_KEY:-}" ]; then
+  if ! grep -q '^CLAUDE_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
+    printf '\n# Route reflexio generation through the local Claude Code CLI\nCLAUDE_SMART_USE_LOCAL_CLI=1\n' >> "$REFLEXIO_ENV"
+    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_CLI=1 to $REFLEXIO_ENV" >&2
+  fi
+  if ! grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
+    printf '# Use the in-process ONNX embedder (chromadb) — no API key for semantic search\nCLAUDE_SMART_USE_LOCAL_EMBEDDING=1\n' >> "$REFLEXIO_ENV"
+    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 to $REFLEXIO_ENV" >&2
+  fi
 fi
 # Migrate stale REFLEXIO_URL from reflexio's library default (8081) to the
 # plugin backend port (8071). Matches the quoted and unquoted forms but

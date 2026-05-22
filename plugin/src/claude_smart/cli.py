@@ -33,10 +33,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from claude_smart import context_format, ids, publish, state
+from claude_smart import context_format, env_config, ids, publish, state
 from claude_smart.reflexio_adapter import Adapter
 
-_REFLEXIO_ENV_PATH = Path.home() / ".reflexio" / ".env"
+_REFLEXIO_ENV_PATH = env_config.REFLEXIO_ENV_PATH
+_MANAGED_REFLEXIO_URL = env_config.MANAGED_REFLEXIO_URL
 _DEFAULT_MARKETPLACE_SOURCE = "ReflexioAI/claude-smart"
 _PLUGIN_SPEC = "claude-smart@reflexioai"
 _CODEX_MARKETPLACE_NAME = "reflexioai"
@@ -137,7 +138,19 @@ def _seed_reflexio_env() -> list[str]:
     prefix = "" if not existing or existing.endswith("\n") else "\n"
     with _REFLEXIO_ENV_PATH.open("a") as fh:
         fh.write(prefix + "\n".join(f"{f}=1" for f in missing) + "\n")
+    _REFLEXIO_ENV_PATH.chmod(0o600)
     return missing
+
+
+def _seed_managed_reflexio_env(*, api_key: str, reflexio_url: str) -> list[str]:
+    """Write managed Reflexio connection settings to ``~/.reflexio/.env``."""
+    return env_config.set_env_vars(
+        _REFLEXIO_ENV_PATH,
+        {
+            env_config.REFLEXIO_URL_ENV: reflexio_url,
+            env_config.REFLEXIO_API_KEY_ENV: api_key,
+        },
+    )
 
 
 def _find_claude_code_plugin_root() -> Path | None:
@@ -172,10 +185,9 @@ def _find_claude_code_plugin_root() -> Path | None:
         ]
     )
     for candidate in candidates:
-        if (
-            (candidate / "pyproject.toml").is_file()
-            and (candidate / "scripts" / "smart-install.sh").is_file()
-        ):
+        if (candidate / "pyproject.toml").is_file() and (
+            candidate / "scripts" / "smart-install.sh"
+        ).is_file():
             return candidate
     return None
 
@@ -745,7 +757,26 @@ def _register_codex_marketplace(root: Path) -> tuple[bool, str]:
     return False, output or "Codex CLI does not expose plugin marketplace commands"
 
 
-def cmd_install_codex(_args: argparse.Namespace) -> int:
+def _configure_reflexio_setup(args: argparse.Namespace) -> None:
+    api_key = (getattr(args, "api_key", "") or "").strip()
+    if api_key:
+        reflexio_url = (
+            getattr(args, "reflexio_url", "") or _MANAGED_REFLEXIO_URL
+        ).strip()
+        added = _seed_managed_reflexio_env(api_key=api_key, reflexio_url=reflexio_url)
+        changed = ", ".join(added) if added else "managed Reflexio settings"
+        sys.stdout.write(
+            f"Configured {_REFLEXIO_ENV_PATH} for managed Reflexio "
+            f"({changed}; API key {env_config.mask_secret(api_key)}).\n"
+        )
+        return
+
+    added = _seed_reflexio_env()
+    if added:
+        sys.stdout.write(f"Seeded {_REFLEXIO_ENV_PATH} with {', '.join(added)}.\n")
+
+
+def cmd_install_codex(args: argparse.Namespace) -> int:
     """Install the claude-smart plugin marketplace for Codex.
 
     Only supported from a source checkout — the wheel ships the Python
@@ -777,9 +808,7 @@ def cmd_install_codex(_args: argparse.Namespace) -> int:
         return 1
     marketplace_root = _prepare_codex_local_marketplace()
 
-    added = _seed_reflexio_env()
-    if added:
-        sys.stdout.write(f"Seeded {_REFLEXIO_ENV_PATH} with {', '.join(added)}.\n")
+    _configure_reflexio_setup(args)
 
     hooks_ok, hooks_msg = _enable_codex_plugin_hooks()
     if hooks_ok:
@@ -881,9 +910,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             sys.stderr.write(f"error: {' '.join(cmd)} failed (exit {exc.returncode})\n")
             return exc.returncode or 1
 
-    added = _seed_reflexio_env()
-    if added:
-        sys.stdout.write(f"Seeded {_REFLEXIO_ENV_PATH} with {', '.join(added)}.\n")
+    _configure_reflexio_setup(args)
 
     bootstrapped, message = _bootstrap_claude_code_install()
     if not bootstrapped:
@@ -1035,6 +1062,13 @@ def cmd_show(args: argparse.Namespace) -> int:
         agent_playbooks=agent_playbooks,
         profiles=profiles,
     )
+    if not md and adapter.read_errors:
+        sys.stdout.write(
+            "Could not read skills or preferences from Reflexio for "
+            f"project `{project_id}` at `{adapter.url}`.\n"
+            f"First error: {adapter.read_errors[0]}\n"
+        )
+        return 1
     sys.stdout.write(
         md or f"_No skills or preferences yet for project `{project_id}`._\n"
     )
@@ -1045,8 +1079,9 @@ def cmd_learn(args: argparse.Namespace) -> int:
     """Force reflexio extraction over the active session's interactions.
 
     Publishes unpublished interactions with ``force_extraction=True`` and
-    ``override_learning_stall=True`` so extraction runs immediately as an
-    explicit retry rather than at the next batch interval.
+    ``override_learning_stall=True`` as an explicit retry request rather than
+    waiting for the next batch interval. The publish call itself remains
+    non-blocking: ``Adapter.publish`` sends ``wait_for_response=False``.
     When ``args.note`` is provided, the note is appended to the session
     buffer as a neutral User turn before publishing — letting the user
     capture an explicit insight, preference, or workflow note alongside
@@ -1584,7 +1619,13 @@ def _resolve_reflexio_url() -> str:
         str: The ``REFLEXIO_URL`` env var if set, otherwise the default
             local backend endpoint.
     """
+    env_config.load_reflexio_env()
     return os.environ.get("REFLEXIO_URL", "http://localhost:8071/")
+
+
+def _resolve_reflexio_api_key() -> str:
+    env_config.load_reflexio_env()
+    return os.environ.get("REFLEXIO_API_KEY", "")
 
 
 def _format_deleted_counts(deleted_counts: object) -> str:
@@ -1655,7 +1696,10 @@ def cmd_clear_user(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        client = ReflexioClient(url_endpoint=_resolve_reflexio_url())
+        client = ReflexioClient(
+            url_endpoint=_resolve_reflexio_url(),
+            api_key=_resolve_reflexio_api_key(),
+        )
         # The companion reflexio PR adds ``clear_user_data``; keep the
         # CLI buildable until both sides ship together.
         response = client.clear_user_data(user_id)  # pyright: ignore[reportAttributeAccessIssue]
@@ -1686,6 +1730,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--source",
         default=_DEFAULT_MARKETPLACE_SOURCE,
         help="Marketplace ref — GitHub owner/repo, or a local directory path",
+    )
+    inst.add_argument(
+        "--api-key",
+        default="",
+        help="Configure managed Reflexio with this API key instead of local mode",
+    )
+    inst.add_argument(
+        "--reflexio-url",
+        default=_MANAGED_REFLEXIO_URL,
+        help="Managed Reflexio URL used only when --api-key is provided",
     )
     inst.set_defaults(func=cmd_install)
 
@@ -1778,6 +1832,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    env_config.load_reflexio_env()
     parser = _build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

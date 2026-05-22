@@ -4,6 +4,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useSyncExternalStore,
   ReactNode,
@@ -66,9 +67,44 @@ function parse(json: string): Settings {
   }
 }
 
+function isLocalUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    return ["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const raw = useSyncExternalStore(subscribe, readStorage, () => DEFAULT_JSON);
   const settings = useMemo(() => parse(raw), [raw]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function syncManagedUrl() {
+      try {
+        const res = await fetch("/api/config", { cache: "no-store" });
+        if (!res.ok) return;
+        const config = (await res.json()) as { REFLEXIO_URL?: string };
+        const configuredUrl = config.REFLEXIO_URL;
+        if (
+          !cancelled &&
+          configuredUrl &&
+          !isLocalUrl(configuredUrl) &&
+          isLocalUrl(settings.reflexioUrl)
+        ) {
+          writeStorage({ reflexioUrl: configuredUrl });
+        }
+      } catch {
+        // Keep the dashboard on its local default when config cannot be read.
+      }
+    }
+    void syncManagedUrl();
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.reflexioUrl]);
 
   const setReflexioUrl = useCallback((url: string) => {
     writeStorage({ reflexioUrl: url });

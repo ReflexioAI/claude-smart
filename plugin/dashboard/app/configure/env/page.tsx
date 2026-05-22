@@ -16,6 +16,7 @@ export default function ConfigureEnvPage() {
   const [config, setConfig] = useState<ClaudeSmartConfig | null>(null);
   const [hookConfig, setHookConfig] = useState<ClaudeCodeHookConfig | null>(null);
   const [hookDirty, setHookDirty] = useState(false);
+  const [apiKeyDirty, setApiKeyDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -31,6 +32,7 @@ export default function ConfigureEnvPage() {
         setConfig(envConfig);
         setHookConfig(claudeConfig);
         setHookDirty(false);
+        setApiKeyDirty(false);
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
@@ -63,11 +65,14 @@ export default function ConfigureEnvPage() {
     setSaving(true);
     setError(null);
     try {
+      const envUpdate: Partial<ClaudeSmartConfig> = { ...config };
+      if (!apiKeyDirty) delete envUpdate.REFLEXIO_API_KEY;
+      delete envUpdate.REFLEXIO_API_KEY_SET;
       const [envRes, hookRes] = await Promise.all([
         fetch("/api/config", {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(config),
+          body: JSON.stringify(envUpdate),
         }),
         fetch("/api/claude-settings", {
           method: "PUT",
@@ -90,6 +95,7 @@ export default function ConfigureEnvPage() {
       setConfig(updated);
       setHookConfig(updatedHook);
       setHookDirty(false);
+      setApiKeyDirty(false);
       setSaved(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -164,6 +170,25 @@ export default function ConfigureEnvPage() {
                   onChange={(e) => update("REFLEXIO_URL", e.target.value)}
                   className="font-mono text-xs bg-background/80"
                   placeholder="http://localhost:8071/"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>REFLEXIO_API_KEY</Label>
+                <Input
+                  type="password"
+                  value={String(config.REFLEXIO_API_KEY ?? "")}
+                  onChange={(e) => {
+                    setApiKeyDirty(true);
+                    update("REFLEXIO_API_KEY", e.target.value);
+                  }}
+                  className="font-mono text-xs bg-background/80"
+                  placeholder={
+                    config.REFLEXIO_API_KEY_SET
+                      ? "(configured - leave blank to keep existing key)"
+                      : "(empty - local mode)"
+                  }
+                  autoComplete="off"
                 />
               </div>
 

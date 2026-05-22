@@ -68,7 +68,10 @@ def test_clear_user_invokes_client_method_with_user_id(
     rc = cli.cmd_clear_user(_args(user_id="bob", yes=True))
 
     assert rc == 0
-    factory.assert_called_once_with(url_endpoint="http://localhost:8071/")
+    factory.assert_called_once_with(
+        url_endpoint="http://localhost:8071/",
+        api_key="",
+    )
     fake_client.clear_user_data.assert_called_once_with("bob")
     assert "Cleared user 'bob'" in capsys.readouterr().out
 

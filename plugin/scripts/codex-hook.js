@@ -160,6 +160,56 @@ function writeBackendUrl(port) {
   fs.writeFileSync(backendUrlFile(), `http://localhost:${port}/\n`);
 }
 
+function unquoteEnvValue(value) {
+  const trimmed = String(value || "").trim();
+  if (trimmed.length >= 2) {
+    const first = trimmed[0];
+    const last = trimmed[trimmed.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return trimmed.slice(1, -1);
+    }
+  }
+  return trimmed;
+}
+
+function loadReflexioEnv() {
+  const file = path.join(REFLEXIO_DIR, ".env");
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return;
+  }
+  const allowed = new Set([
+    "REFLEXIO_URL",
+    "REFLEXIO_API_KEY",
+    "CLAUDE_SMART_USE_LOCAL_CLI",
+    "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
+    "CLAUDE_SMART_BACKEND_AUTOSTART",
+    "CLAUDE_SMART_DASHBOARD_AUTOSTART",
+    "CLAUDE_SMART_CLI_PATH",
+    "CLAUDE_SMART_CLI_TIMEOUT",
+    "CLAUDE_SMART_STATE_DIR",
+    "CLAUDE_SMART_ENABLE_OPTIMIZER",
+  ]);
+  for (const rawLine of text.split(/\r?\n/)) {
+    let line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("export ")) line = line.slice("export ".length).trimStart();
+    const eq = line.indexOf("=");
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim();
+    if (!allowed.has(key) || process.env[key]) continue;
+    process.env[key] = unquoteEnvValue(line.slice(eq + 1));
+  }
+}
+
+function reflexioUrlIsRemote() {
+  const url = process.env.REFLEXIO_URL || "";
+  if (!url) return false;
+  return !/^http:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i.test(url);
+}
+
 function codexCompatPath(root) {
   const filename = process.platform === "win32"
     ? "codex-claude-compat.cmd"
@@ -333,6 +383,11 @@ async function startBackend(root) {
     emitOk();
     return;
   }
+  if (reflexioUrlIsRemote()) {
+    appendLog("backend.log", "[claude-smart] backend: remote REFLEXIO_URL configured; skipping local backend start");
+    emitOk();
+    return;
+  }
   const pidFile = path.join(STATE_DIR, "backend.pid");
   for (const port of [DEFAULT_BACKEND_PORT, FALLBACK_BACKEND_PORT]) {
     if (pidAlive(readPid(pidFile)) && await healthOk(port, "/health")) {
@@ -486,6 +541,7 @@ function runHook(root, event) {
 
 async function main() {
   prependRuntimePath();
+  loadReflexioEnv();
   const root = pluginRoot();
   process.env.PLUGIN_ROOT = root;
   process.env.CLAUDE_PLUGIN_ROOT = root;

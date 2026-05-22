@@ -19,6 +19,18 @@ def clear_optimizer_opt_in(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def clear_reflexio_connection_env(monkeypatch, tmp_path):
+    """Keep managed-service connection settings from leaking between tests."""
+    from claude_smart import env_config
+
+    monkeypatch.setattr(
+        env_config, "REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env"
+    )
+    monkeypatch.delenv("REFLEXIO_URL", raising=False)
+    monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def reset_runtime_host(monkeypatch):
     """Keep host-specific tests from leaking runtime state."""
     from claude_smart import runtime

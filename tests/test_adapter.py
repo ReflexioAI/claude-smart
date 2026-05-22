@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -47,6 +48,120 @@ def _adapter_with(client) -> reflexio_adapter.Adapter:
     return a
 
 
+def test_adapter_constructs_client_with_env_url_and_api_key(
+    monkeypatch, tmp_path
+) -> None:
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text(
+        'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-test-key"\n'
+    )
+    monkeypatch.setattr(reflexio_adapter.env_config, "REFLEXIO_ENV_PATH", env_path)
+    monkeypatch.delenv("REFLEXIO_URL", raising=False)
+    monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
+    seen: dict[str, str] = {}
+
+    class FakeReflexioClient:
+        def __init__(self, *, url_endpoint: str, api_key: str):
+            seen["url_endpoint"] = url_endpoint
+            seen["api_key"] = api_key
+
+    monkeypatch.setitem(
+        sys.modules,
+        "reflexio",
+        SimpleNamespace(ReflexioClient=FakeReflexioClient),
+    )
+
+    adapter = reflexio_adapter.Adapter()
+
+    assert adapter._get_client() is not None
+    assert seen == {
+        "url_endpoint": "https://www.reflexio.ai/",
+        "api_key": "rflx-test-key",
+    }
+
+
+def test_adapter_passes_short_http_timeout_to_client(monkeypatch, tmp_path) -> None:
+    """Hooks must cap reflexio HTTP calls so an unhealthy backend can't stall a session."""
+    monkeypatch.setattr(
+        reflexio_adapter.env_config, "REFLEXIO_ENV_PATH", tmp_path / "missing.env"
+    )
+    monkeypatch.setenv("REFLEXIO_URL", "https://x.example/")
+    monkeypatch.setenv("REFLEXIO_API_KEY", "k")
+    seen: dict[str, Any] = {}
+
+    class FakeReflexioClient:
+        def __init__(self, *, url_endpoint: str, api_key: str, timeout: int):
+            seen["timeout"] = timeout
+
+    monkeypatch.setitem(
+        sys.modules,
+        "reflexio",
+        SimpleNamespace(ReflexioClient=FakeReflexioClient),
+    )
+
+    reflexio_adapter.Adapter()._get_client()
+
+    assert seen["timeout"] == reflexio_adapter._HTTP_TIMEOUT_SECONDS
+    assert 0 < reflexio_adapter._HTTP_TIMEOUT_SECONDS <= 30
+
+
+def test_adapter_falls_back_when_client_rejects_timeout_kwarg(
+    monkeypatch, tmp_path
+) -> None:
+    """Older reflexio releases lack ``timeout``; constructor must still succeed."""
+    monkeypatch.setattr(
+        reflexio_adapter.env_config, "REFLEXIO_ENV_PATH", tmp_path / "missing.env"
+    )
+    monkeypatch.setenv("REFLEXIO_URL", "https://x.example/")
+    monkeypatch.setenv("REFLEXIO_API_KEY", "k")
+    call_count = {"n": 0}
+
+    class FakeReflexioClient:
+        def __init__(self, *, url_endpoint: str, api_key: str):
+            call_count["n"] += 1
+
+    monkeypatch.setitem(
+        sys.modules,
+        "reflexio",
+        SimpleNamespace(ReflexioClient=FakeReflexioClient),
+    )
+
+    assert reflexio_adapter.Adapter()._get_client() is not None
+    assert call_count["n"] == 1
+
+
+def test_adapter_process_env_overrides_reflexio_env(monkeypatch, tmp_path) -> None:
+    env_path = tmp_path / ".reflexio" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text(
+        'REFLEXIO_URL="https://from-file.example/"\nREFLEXIO_API_KEY="file-key"\n'
+    )
+    monkeypatch.setattr(reflexio_adapter.env_config, "REFLEXIO_ENV_PATH", env_path)
+    monkeypatch.setenv("REFLEXIO_URL", "https://from-env.example/")
+    monkeypatch.setenv("REFLEXIO_API_KEY", "env-key")
+    seen: dict[str, str] = {}
+
+    class FakeReflexioClient:
+        def __init__(self, *, url_endpoint: str, api_key: str):
+            seen["url_endpoint"] = url_endpoint
+            seen["api_key"] = api_key
+
+    monkeypatch.setitem(
+        sys.modules,
+        "reflexio",
+        SimpleNamespace(ReflexioClient=FakeReflexioClient),
+    )
+
+    adapter = reflexio_adapter.Adapter()
+
+    assert adapter._get_client() is not None
+    assert seen == {
+        "url_endpoint": "https://from-env.example/",
+        "api_key": "env-key",
+    }
+
+
 def test_publish_returns_true_on_success() -> None:
     client = _FakeClient()
     a = _adapter_with(client)
@@ -63,8 +178,52 @@ def test_publish_returns_true_on_success() -> None:
     assert client.published_kwargs["user_id"] == "p1"
     assert client.published_kwargs["session_id"] == "s1"
     assert client.published_kwargs["agent_version"] == "claude-code"
+    assert client.published_kwargs["wait_for_response"] is False
     assert client.published_kwargs["force_extraction"] is True
     assert client.published_kwargs["override_learning_stall"] is True
+
+
+def test_publish_omits_override_learning_stall_when_client_lacks_keyword() -> None:
+    class OldPublishClient:
+        def __init__(self) -> None:
+            self.published_kwargs: dict[str, Any] = {}
+
+        def publish_interaction(
+            self,
+            *,
+            user_id,
+            interactions,
+            agent_version,
+            session_id,
+            wait_for_response,
+            force_extraction,
+            skip_aggregation,
+        ):
+            self.published_kwargs = {
+                "user_id": user_id,
+                "interactions": interactions,
+                "agent_version": agent_version,
+                "session_id": session_id,
+                "wait_for_response": wait_for_response,
+                "force_extraction": force_extraction,
+                "skip_aggregation": skip_aggregation,
+            }
+
+    client = OldPublishClient()
+    a = _adapter_with(client)
+
+    ok = a.publish(
+        session_id="s1",
+        project_id="p1",
+        interactions=[{"role": "User", "content": "hi"}],
+        force_extraction=True,
+        override_learning_stall=True,
+    )
+
+    assert ok is True
+    assert client.published_kwargs["user_id"] == "p1"
+    assert client.published_kwargs["force_extraction"] is True
+    assert "override_learning_stall" not in client.published_kwargs
 
 
 def test_publish_returns_false_when_client_raises() -> None:
@@ -319,6 +478,53 @@ def test_fetch_all_absorbs_per_leg_failure() -> None:
     assert profiles == [{"content": "p"}]
 
 
+def test_fetch_all_prefers_no_query_list_endpoints_for_show() -> None:
+    class ListClient:
+        def __init__(self):
+            self.user_kwargs: dict[str, Any] = {}
+            self.agent_kwargs: dict[str, Any] = {}
+            self.profile_kwargs: dict[str, Any] = {}
+
+        def get_user_playbooks(self, **kwargs):
+            self.user_kwargs = kwargs
+            return SimpleNamespace(user_playbooks=[{"content": "u"}])
+
+        def get_agent_playbooks(self, **kwargs):
+            self.agent_kwargs = kwargs
+            return SimpleNamespace(
+                agent_playbooks=[{"content": "a", "playbook_status": "approved"}]
+            )
+
+        def get_all_profiles(self, **kwargs):
+            self.profile_kwargs = kwargs
+            return SimpleNamespace(
+                user_profiles=[
+                    {"user_id": "other", "content": "hidden"},
+                    {"user_id": "proj", "content": "p"},
+                ]
+            )
+
+    client = ListClient()
+    a = _adapter_with(client)
+
+    user_pb, agent_pb, profiles = a.fetch_all(project_id="proj")
+
+    assert user_pb == [{"content": "u"}]
+    assert agent_pb == [{"content": "a", "playbook_status": "approved"}]
+    assert profiles == [{"user_id": "proj", "content": "p"}]
+    assert client.user_kwargs == {
+        "user_id": "proj",
+        "status_filter": [None],
+        "limit": 10,
+    }
+    assert client.agent_kwargs == {
+        "agent_version": "claude-code",
+        "status_filter": [None],
+        "limit": 10,
+    }
+    assert client.profile_kwargs["limit"] >= 100
+
+
 def test_fetch_user_playbooks_passes_project_id_and_default_top_k() -> None:
     """/show uses a narrow broad-fetch default; prompt-time search carries specificity."""
     client = _RecordingClient(user_playbook_resp=SimpleNamespace(user_playbooks=[]))
@@ -557,10 +763,16 @@ def test_fetch_stall_state_returns_none_when_client_unavailable():
 
 
 def test_fetch_stall_state_passes_through_when_clean(monkeypatch):
-    stub = _StubClientWithStallState(SimpleNamespace(
-        stalled=False, reason=None, stalled_at=None,
-        reset_estimate=None, notified_in_cc=False, error_message=None,
-    ))
+    stub = _StubClientWithStallState(
+        SimpleNamespace(
+            stalled=False,
+            reason=None,
+            stalled_at=None,
+            reset_estimate=None,
+            notified_in_cc=False,
+            error_message=None,
+        )
+    )
     adapter = reflexio_adapter.Adapter(url="http://x/")
     monkeypatch.setattr(adapter, "_get_client", lambda: stub)
     state = adapter.fetch_stall_state()

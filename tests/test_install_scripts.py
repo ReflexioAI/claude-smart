@@ -23,7 +23,9 @@ CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
 CODEX_HOOK = REPO_ROOT / "plugin" / "scripts" / "codex-hook.js"
 BACKEND_LOG_RUNNER = REPO_ROOT / "plugin" / "scripts" / "backend-log-runner.sh"
 NODE_INSTALLER = REPO_ROOT / "bin" / "claude-smart.js"
-HEALTH_ROUTE = REPO_ROOT / "plugin" / "dashboard" / "app" / "api" / "health" / "route.ts"
+HEALTH_ROUTE = (
+    REPO_ROOT / "plugin" / "dashboard" / "app" / "api" / "health" / "route.ts"
+)
 
 
 def _minimal_path(tmp_path: Path, *names: str) -> str:
@@ -87,7 +89,9 @@ def _fake_node_dist(tmp_path: Path, *, bad_checksum: bool = False) -> Path:
     return dist
 
 
-def _run_private_node_install(tmp_path: Path, base_url: str) -> subprocess.CompletedProcess[str]:
+def _run_private_node_install(
+    tmp_path: Path, base_url: str
+) -> subprocess.CompletedProcess[str]:
     env = _isolated_env(tmp_path)
     env["CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY"] = "1"
     env["CLAUDE_SMART_NODE_BASE_URL"] = base_url
@@ -231,16 +235,62 @@ def test_backend_service_uses_capped_logging() -> None:
     assert '>>"$LOG_FILE"' not in service
 
 
-def test_service_start_scripts_recover_missing_dependencies_without_cli_command() -> None:
+def test_service_start_scripts_recover_missing_dependencies_without_cli_command() -> (
+    None
+):
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
     dashboard = (REPO_ROOT / "plugin" / "scripts" / "dashboard-service.sh").read_text()
 
     assert "[claude-smart] backend: uv not on PATH; running installer" in backend
-    assert "CLAUDE_SMART_BOOTSTRAPPING=1 bash \"$PLUGIN_ROOT/scripts/smart-install.sh\"" in backend
+    assert (
+        'CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh"'
+        in backend
+    )
     assert "[claude-smart] backend: uv not on PATH after installer; skipping" in backend
-    assert "[claude-smart] dashboard: npm is not on PATH; running installer" in dashboard
-    assert "CLAUDE_SMART_BOOTSTRAPPING=1 bash \"$PLUGIN_ROOT/scripts/smart-install.sh\"" in dashboard
+    assert (
+        "[claude-smart] dashboard: npm is not on PATH; running installer" in dashboard
+    )
+    assert (
+        'CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh"'
+        in dashboard
+    )
     assert "npm is not on PATH after installer; dashboard cannot start" in dashboard
+
+
+def test_backend_service_skips_local_start_for_remote_reflexio_url() -> None:
+    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+    lib = (REPO_ROOT / "plugin" / "scripts" / "_lib.sh").read_text()
+
+    assert "claude_smart_source_reflexio_env" in backend
+    assert "claude_smart_reflexio_url_is_remote()" in lib
+    assert "remote REFLEXIO_URL configured; skipping local backend start" in backend
+    assert "remote configured at $REFLEXIO_URL" in backend
+
+
+def test_smart_install_keeps_local_flags_local_mode_only() -> None:
+    script = (REPO_ROOT / "plugin" / "scripts" / "smart-install.sh").read_text()
+
+    assert 'if [ -z "${REFLEXIO_API_KEY:-}" ]; then' in script
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in script
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in script
+    assert "claude_smart_source_reflexio_env" in script
+
+
+def test_node_installer_supports_managed_reflexio_setup() -> None:
+    installer = NODE_INSTALLER.read_text()
+
+    assert 'const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";' in installer
+    assert 'parseOptionalArg(args, "--api-key")' in installer
+    assert 'parseOptionalArg(args, "--reflexio-url")' in installer
+    assert "REFLEXIO_API_KEY" in installer
+    assert "configureReflexioSetup(args)" in installer
+    assert "maskSecret(apiKey)" in installer
+
+
+def test_dashboard_service_loads_reflexio_env_for_managed_proxy() -> None:
+    dashboard = (REPO_ROOT / "plugin" / "scripts" / "dashboard-service.sh").read_text()
+
+    assert "claude_smart_source_reflexio_env" in dashboard
 
 
 def test_dashboard_health_exposes_plugin_identity_for_stale_process_detection() -> None:
@@ -263,8 +313,8 @@ def test_dashboard_service_restarts_stale_claude_smart_dashboard() -> None:
     assert "normalize_identity_path()" in dashboard
     assert "cygpath -u" in dashboard
     assert 'expected_root="$(normalize_identity_path ' in dashboard
-    assert "actual_root=\"$(normalize_identity_path \"$actual_root\")\"" in dashboard
-    assert "[ \"$actual_root\" = \"$expected_root\" ]" in dashboard
+    assert 'actual_root="$(normalize_identity_path "$actual_root")"' in dashboard
+    assert '[ "$actual_root" = "$expected_root" ]' in dashboard
     assert "stale claude-smart dashboard on port $PORT; restarting" in dashboard
     assert "stop_dashboard_listener" in dashboard
     assert "foreign app on 3001 is never killed" in dashboard
@@ -282,8 +332,13 @@ def test_installers_refresh_or_stop_dashboard_services() -> None:
     assert "timeout: PLUGIN_SERVICE_TIMEOUT_MS" in node_installer
     assert 'killSignal: "SIGTERM"' in node_installer
     assert 'result.error && result.error.code === "ETIMEDOUT"' in node_installer
-    assert 'runPluginService(pluginRoot, "dashboard-service.sh", "stop")' in node_installer
-    assert 'runPluginService(pluginRoot, "dashboard-service.sh", "start")' in node_installer
+    assert (
+        'runPluginService(pluginRoot, "dashboard-service.sh", "stop")' in node_installer
+    )
+    assert (
+        'runPluginService(pluginRoot, "dashboard-service.sh", "start")'
+        in node_installer
+    )
     assert "function stopClaudeSmartServices(pluginRoot)" in node_installer
     assert "Refreshed claude-smart dashboard service." in node_installer
 
@@ -324,7 +379,7 @@ def test_backend_service_configures_shared_embedding_daemon() -> None:
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
     assert 'EMBEDDING_PORT="${EMBEDDING_PORT:-8072}"' in backend
-    assert 'REFLEXIO_EMBEDDING_PROVIDER:-local_service' in backend
+    assert "REFLEXIO_EMBEDDING_PROVIDER:-local_service" in backend
     assert "REFLEXIO_EMBEDDING_SERVICE_URL" in backend
 
 
@@ -348,11 +403,13 @@ def test_smart_install_waits_on_existing_lock() -> None:
     assert "set -C" in script
     assert 'remove_stale_install_lock "$lock_pid"' in script
     assert '[ "$(cat "$INSTALL_LOCK" 2>/dev/null || true)" = "$$" ]' in script
-    assert "kill -0 \"$lock_pid\"" in script
+    assert 'kill -0 "$lock_pid"' in script
 
 
 def test_smart_install_waits_on_portable_lock_without_flock(tmp_path: Path) -> None:
-    bin_dir = Path(_minimal_path(tmp_path, "dirname", "mkdir", "rm", "cat", "sleep", "sed", "awk"))
+    bin_dir = Path(
+        _minimal_path(tmp_path, "dirname", "mkdir", "rm", "cat", "sleep", "sed", "awk")
+    )
     for name, output in {"node": "v22.99.0", "npm": "10.9.0"}.items():
         executable = bin_dir / name
         executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n")
@@ -395,7 +452,11 @@ def test_smart_install_waits_on_portable_lock_without_flock(tmp_path: Path) -> N
 
 
 def test_smart_install_reaps_stale_portable_lock_without_flock(tmp_path: Path) -> None:
-    bin_dir = Path(_minimal_path(tmp_path, "dirname", "mkdir", "rm", "rmdir", "cat", "sleep", "sed", "awk"))
+    bin_dir = Path(
+        _minimal_path(
+            tmp_path, "dirname", "mkdir", "rm", "rmdir", "cat", "sleep", "sed", "awk"
+        )
+    )
     for name, output in {"node": "v22.99.0", "npm": "10.9.0"}.items():
         executable = bin_dir / name
         executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n")
@@ -445,11 +506,19 @@ def test_claude_code_install_hook_matches_session_start_modes() -> None:
 
 
 def test_codex_session_start_hook_has_install_recovery_budget() -> None:
-    hooks = json.loads((REPO_ROOT / "plugin" / "hooks" / "codex-hooks.json").read_text())
+    hooks = json.loads(
+        (REPO_ROOT / "plugin" / "hooks" / "codex-hooks.json").read_text()
+    )
     session_hooks = hooks["hooks"]["SessionStart"][0]["hooks"]
-    hook_entry = next(hook for hook in session_hooks if "hook_entry.sh" in hook["command"])
-    backend_hook = next(hook for hook in session_hooks if "backend-service.sh" in hook["command"])
-    dashboard_hook = next(hook for hook in session_hooks if "dashboard-service.sh" in hook["command"])
+    hook_entry = next(
+        hook for hook in session_hooks if "hook_entry.sh" in hook["command"]
+    )
+    backend_hook = next(
+        hook for hook in session_hooks if "backend-service.sh" in hook["command"]
+    )
+    dashboard_hook = next(
+        hook for hook in session_hooks if "dashboard-service.sh" in hook["command"]
+    )
 
     assert hook_entry["timeout"] == 300
     assert backend_hook["timeout"] == 300
@@ -459,7 +528,10 @@ def test_codex_session_start_hook_has_install_recovery_budget() -> None:
 def test_hook_entry_self_heals_missing_uv_without_cli_command() -> None:
     script = HOOK_ENTRY.read_text()
 
-    assert "CLAUDE_SMART_BOOTSTRAPPING=1 bash \"$PLUGIN_ROOT/scripts/smart-install.sh\"" in script
+    assert (
+        'CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh"'
+        in script
+    )
     assert "claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1" in script
     assert 'bash "$HERE/backend-service.sh" start' in script
     assert 'bash "$HERE/dashboard-service.sh" start' in script
@@ -518,11 +590,38 @@ def test_node_installer_platform_preflight_messages() -> None:
         "console.log(installer.platformSupportError() || 'ok');"
     )
     cases = [
-        ({"CLAUDE_SMART_TEST_PLATFORM": "darwin", "CLAUDE_SMART_TEST_ARCH": "arm64", "CLAUDE_SMART_TEST_RELEASE": "23.0.0"}, "ok"),
-        ({"CLAUDE_SMART_TEST_PLATFORM": "darwin", "CLAUDE_SMART_TEST_ARCH": "x64", "CLAUDE_SMART_TEST_RELEASE": "23.0.0"}, "Intel Mac is not supported"),
-        ({"CLAUDE_SMART_TEST_PLATFORM": "darwin", "CLAUDE_SMART_TEST_ARCH": "arm64", "CLAUDE_SMART_TEST_RELEASE": "22.6.0"}, "macOS 13 and older are not supported"),
-        ({"CLAUDE_SMART_TEST_PLATFORM": "win32", "CLAUDE_SMART_TEST_ARCH": "arm64"}, "Windows ARM is not supported"),
-        ({"CLAUDE_SMART_TEST_PLATFORM": "win32", "CLAUDE_SMART_TEST_ARCH": "x64"}, "ok"),
+        (
+            {
+                "CLAUDE_SMART_TEST_PLATFORM": "darwin",
+                "CLAUDE_SMART_TEST_ARCH": "arm64",
+                "CLAUDE_SMART_TEST_RELEASE": "23.0.0",
+            },
+            "ok",
+        ),
+        (
+            {
+                "CLAUDE_SMART_TEST_PLATFORM": "darwin",
+                "CLAUDE_SMART_TEST_ARCH": "x64",
+                "CLAUDE_SMART_TEST_RELEASE": "23.0.0",
+            },
+            "Intel Mac is not supported",
+        ),
+        (
+            {
+                "CLAUDE_SMART_TEST_PLATFORM": "darwin",
+                "CLAUDE_SMART_TEST_ARCH": "arm64",
+                "CLAUDE_SMART_TEST_RELEASE": "22.6.0",
+            },
+            "macOS 13 and older are not supported",
+        ),
+        (
+            {"CLAUDE_SMART_TEST_PLATFORM": "win32", "CLAUDE_SMART_TEST_ARCH": "arm64"},
+            "Windows ARM is not supported",
+        ),
+        (
+            {"CLAUDE_SMART_TEST_PLATFORM": "win32", "CLAUDE_SMART_TEST_ARCH": "x64"},
+            "ok",
+        ),
     ]
     for overrides, expected in cases:
         env = os.environ.copy()
@@ -622,7 +721,9 @@ def test_node_installer_does_not_treat_global_node_as_private_runtime(
     assert "Intel Mac is not supported" in result.stdout
 
 
-def test_node_installer_bootstraps_runtime_with_private_node_and_uv(tmp_path: Path) -> None:
+def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
+    tmp_path: Path,
+) -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for installer wrapper tests")
@@ -649,16 +750,48 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(tmp_path: Pa
                         {
                             "hooks": [
                                 {"command": 'bash "$_R/scripts/smart-install.sh"'},
-                                {"command": 'bash "$_R/scripts/ensure-plugin-root.sh" "$_R"'},
-                                {"command": 'bash "$_R/scripts/backend-service.sh" start'},
-                                {"command": 'bash "$_R/scripts/dashboard-service.sh" start'},
-                                {"command": 'bash "$_R/scripts/hook_entry.sh" codex session-start'},
+                                {
+                                    "command": 'bash "$_R/scripts/ensure-plugin-root.sh" "$_R"'
+                                },
+                                {
+                                    "command": 'bash "$_R/scripts/backend-service.sh" start'
+                                },
+                                {
+                                    "command": 'bash "$_R/scripts/dashboard-service.sh" start'
+                                },
+                                {
+                                    "command": 'bash "$_R/scripts/hook_entry.sh" codex session-start'
+                                },
                             ]
                         }
                     ],
-                    "UserPromptSubmit": [{"hooks": [{"command": 'bash "$_R/scripts/hook_entry.sh" codex user-prompt'}]}],
-                    "PostToolUse": [{"hooks": [{"command": 'bash "$_R/scripts/hook_entry.sh" codex post-tool'}]}],
-                    "Stop": [{"hooks": [{"command": 'bash "$_R/scripts/hook_entry.sh" codex stop'}]}],
+                    "UserPromptSubmit": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": 'bash "$_R/scripts/hook_entry.sh" codex user-prompt'
+                                }
+                            ]
+                        }
+                    ],
+                    "PostToolUse": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": 'bash "$_R/scripts/hook_entry.sh" codex post-tool'
+                                }
+                            ]
+                        }
+                    ],
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": 'bash "$_R/scripts/hook_entry.sh" codex stop'
+                                }
+                            ]
+                        }
+                    ],
                 }
             }
         )
@@ -666,10 +799,10 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(tmp_path: Pa
     )
     (private_node / "node").write_text("#!/bin/sh\nexit 0\n")
     (private_node / "npm").write_text(
-        "#!/bin/sh\nprintf 'npm %s\\n' \"$*\" >> \"$HOME/npm.log\"\nexit 0\n"
+        '#!/bin/sh\nprintf \'npm %s\\n\' "$*" >> "$HOME/npm.log"\nexit 0\n'
     )
     (uv_bin / "uv").write_text(
-        "#!/bin/sh\nprintf 'uv %s\\n' \"$*\" >> \"$HOME/uv.log\"\nexit 0\n"
+        '#!/bin/sh\nprintf \'uv %s\\n\' "$*" >> "$HOME/uv.log"\nexit 0\n'
     )
     for executable in [private_node / "node", private_node / "npm", uv_bin / "uv"]:
         executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
@@ -712,7 +845,12 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(tmp_path: Pa
     # the right codex-hook.js subcommand and references the private node.
     # Each arg is independently shell-quoted, so the sub-event appears as
     # `"hook" "session-start"` rather than `hook session-start`.
-    expected_subs = [["ensure-root"], ["backend"], ["dashboard"], ["hook", "session-start"]]
+    expected_subs = [
+        ["ensure-root"],
+        ["backend"],
+        ["dashboard"],
+        ["hook", "session-start"],
+    ]
     for idx, sub_tokens in enumerate(expected_subs, start=1):
         cmd = session_hooks[idx]["command"]
         assert str(private_node / "node") in cmd, f"index {idx}: {cmd}"
@@ -772,14 +910,14 @@ def test_codex_claude_compat_translates_claude_contract(tmp_path: Path) -> None:
     codex = tmp_path / "codex"
     codex.write_text(
         "#!/bin/sh\n"
-        "while [ \"$#\" -gt 0 ]; do\n"
-        "  if [ \"$1\" = \"--output-last-message\" ]; then\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        '  if [ "$1" = "--output-last-message" ]; then\n'
         "    shift\n"
-        "    out=\"$1\"\n"
+        '    out="$1"\n'
         "  fi\n"
         "  shift || exit 1\n"
         "done\n"
-        "cat > \"$out.prompt\"\n"
+        'cat > "$out.prompt"\n'
         "printf 'codex reply' > \"$out\"\n"
     )
     codex.chmod(codex.stat().st_mode | stat.S_IXUSR)
@@ -818,10 +956,10 @@ def test_codex_claude_compat_accepts_stream_json_flags(tmp_path: Path) -> None:
     codex = tmp_path / "codex"
     codex.write_text(
         "#!/bin/sh\n"
-        "while [ \"$#\" -gt 0 ]; do\n"
-        "  if [ \"$1\" = \"--output-last-message\" ]; then\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        '  if [ "$1" = "--output-last-message" ]; then\n'
         "    shift\n"
-        "    out=\"$1\"\n"
+        '    out="$1"\n'
         "  fi\n"
         "  shift || exit 1\n"
         "done\n"
@@ -955,8 +1093,7 @@ def test_codex_hook_normalizer_removes_suppress_output_for_hooks(
     bin_dir.mkdir()
     uv = bin_dir / "uv"
     uv.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\\n' '{\"continue\":true,\"suppressOutput\":true}'\n"
+        "#!/bin/sh\nprintf '%s\\n' '{\"continue\":true,\"suppressOutput\":true}'\n"
     )
     uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
 
@@ -1036,8 +1173,7 @@ def test_install_fingerprint_hash_tracks_lib_changes(tmp_path: Path) -> None:
         "openssl",
     )
     command = (
-        f'. "{LIB}"; '
-        f'claude_smart_install_fingerprint_hash "{plugin_root}" "{scripts}"'
+        f'. "{LIB}"; claude_smart_install_fingerprint_hash "{plugin_root}" "{scripts}"'
     )
     before = subprocess.run(
         ["/bin/bash", "--noprofile", "--norc", "-c", command],
@@ -1073,7 +1209,9 @@ def test_install_private_node_installs_from_verified_archive(tmp_path: Path) -> 
     assert not (tmp_path / ".claude-smart" / "install-failed").exists()
 
 
-def test_install_private_node_checksum_failure_is_dashboard_only(tmp_path: Path) -> None:
+def test_install_private_node_checksum_failure_is_dashboard_only(
+    tmp_path: Path,
+) -> None:
     dist = _fake_node_dist(tmp_path, bad_checksum=True)
     result = _run_private_node_install(tmp_path, f"file://{dist}")
 
@@ -1084,7 +1222,9 @@ def test_install_private_node_checksum_failure_is_dashboard_only(tmp_path: Path)
     assert not (tmp_path / ".claude-smart" / "install-failed").exists()
 
 
-def test_install_private_node_download_failure_is_dashboard_only(tmp_path: Path) -> None:
+def test_install_private_node_download_failure_is_dashboard_only(
+    tmp_path: Path,
+) -> None:
     missing_dist = tmp_path / "missing-node-dist"
     result = _run_private_node_install(tmp_path, f"file://{missing_dist}")
 

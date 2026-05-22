@@ -1,16 +1,42 @@
 import { NextResponse } from "next/server";
 import { originOnly } from "@/lib/reflexio-url";
+import { readConfig } from "@/lib/config-file";
 
 export const dynamic = "force-dynamic";
 
 const DEFAULT_URL = "http://localhost:8071";
 
-function reflexioBase(req: Request): string {
+function isLocalUrl(raw: string | null): boolean {
+  if (!raw) return false;
+  try {
+    const url = new URL(raw);
+    return ["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function reflexioConfig(req: Request): Promise<{ base: string; apiKey: string }> {
+  const config = await readConfig();
   const header = req.headers.get("x-reflexio-url");
   const fromHeader = header ? originOnly(header) : null;
-  if (fromHeader) return fromHeader;
+  const apiKey = config.REFLEXIO_API_KEY || process.env.REFLEXIO_API_KEY || "";
   const fromEnv = originOnly(process.env.REFLEXIO_URL ?? "");
-  return fromEnv ?? DEFAULT_URL;
+  const fromConfig = originOnly(config.REFLEXIO_URL ?? "");
+  const configuredBase = fromEnv ?? fromConfig;
+  if (
+    fromHeader &&
+    !(isLocalUrl(fromHeader) && configuredBase && !isLocalUrl(configuredBase))
+  ) {
+    return {
+      base: fromHeader,
+      apiKey: fromHeader === configuredBase ? apiKey : "",
+    };
+  }
+  return {
+    base: configuredBase ?? DEFAULT_URL,
+    apiKey: configuredBase ? apiKey : "",
+  };
 }
 
 async function proxy(
@@ -20,12 +46,16 @@ async function proxy(
   const { path } = await context.params;
   const targetPath = path.join("/");
   const url = new URL(req.url);
-  const target = `${reflexioBase(req)}/${targetPath}${url.search}`;
+  const { base, apiKey } = await reflexioConfig(req);
+  const target = `${base}/${targetPath}${url.search}`;
 
   const headers = new Headers(req.headers);
   headers.delete("host");
   headers.delete("x-reflexio-url");
   headers.delete("connection");
+  headers.delete("authorization");
+  headers.set("user-agent", "claude-smart");
+  if (apiKey) headers.set("authorization", `Bearer ${apiKey}`);
 
   const init: RequestInit = {
     method: req.method,

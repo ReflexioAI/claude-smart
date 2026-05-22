@@ -32,6 +32,59 @@ claude_smart_prepend_node_bins() {
   export PATH="$_CS_NODE_ROOT/bin:$_CS_NODE_ROOT:$PATH"
 }
 
+claude_smart_env_unquote() {
+  local value first last
+  value="$1"
+  first="${value%"${value#?}"}"
+  last="${value#"${value%?}"}"
+  if { [ "$first" = '"' ] && [ "$last" = '"' ]; } || { [ "$first" = "'" ] && [ "$last" = "'" ]; }; then
+    value="${value#?}"
+    value="${value%?}"
+  fi
+  printf '%s\n' "$value"
+}
+
+claude_smart_source_reflexio_env() {
+  local env_file line key value
+  env_file="$HOME/.reflexio/.env"
+  [ -f "$env_file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -n "$line" ] || continue
+    case "$line" in
+      \#*) continue ;;
+      export\ *) line="${line#export }" ;;
+    esac
+    key="${line%%=*}"
+    [ "$key" != "$line" ] || continue
+    value="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    case "$key" in
+      REFLEXIO_URL|REFLEXIO_API_KEY|CLAUDE_SMART_USE_LOCAL_CLI|CLAUDE_SMART_USE_LOCAL_EMBEDDING|CLAUDE_SMART_BACKEND_AUTOSTART|CLAUDE_SMART_DASHBOARD_AUTOSTART|CLAUDE_SMART_CLI_PATH|CLAUDE_SMART_CLI_TIMEOUT|CLAUDE_SMART_STATE_DIR|CLAUDE_SMART_ENABLE_OPTIMIZER)
+        if [ -z "$(eval "printf '%s' \"\${$key:-}\"")" ]; then
+          value="$(claude_smart_env_unquote "$value")"
+          export "$key=$value"
+        fi
+        ;;
+    esac
+  done < "$env_file"
+}
+
+claude_smart_reflexio_url_is_remote() {
+  local url
+  url="${REFLEXIO_URL:-}"
+  [ -n "$url" ] || return 1
+  case "$url" in
+    http://localhost|http://localhost/|http://localhost:*|http://127.0.0.1|http://127.0.0.1/|http://127.0.0.1:*|http://0.0.0.0|http://0.0.0.0/|http://0.0.0.0:*|http://\[::1\]|http://\[::1\]/|http://\[::1\]:*)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
 claude_smart_is_internal_invocation_env() {
   if [ "${CLAUDE_SMART_INTERNAL:-}" = "1" ]; then
     return 0

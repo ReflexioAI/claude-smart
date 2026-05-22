@@ -5,13 +5,15 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
-from claude_smart import cs_cite
+from claude_smart import cs_cite, env_config
 
 _DASHBOARD_URL_ENV = "CLAUDE_SMART_DASHBOARD_URL"
 _CITATION_LINK_STYLE_ENV = "CLAUDE_SMART_CITATION_LINK_STYLE"
 _DEFAULT_DASHBOARD_URL = "http://localhost:3001"
+_REFLEXIO_URL_ENV = "REFLEXIO_URL"
+_LOCAL_REFLEXIO_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
 
 def _first_nonempty(*values: Any) -> str:
@@ -100,13 +102,15 @@ def render_with_registry(
     if profile_lines:
         sections.append("### Project preferences")
         sections.extend(profile_lines)
-    instruction = cs_cite.citation_instruction(
+    instruction = _citation_instruction(
         os.environ.get("CLAUDE_SMART_CITATIONS", "on"),
         os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
     )
     if instruction:
         sections.append(instruction)
-    exact_osc8_marker = _exact_osc8_marker_instruction(playbook_entries + profile_entries)
+    exact_osc8_marker = _exact_osc8_marker_instruction(
+        playbook_entries + profile_entries
+    )
     if exact_osc8_marker:
         sections.append(exact_osc8_marker)
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
@@ -179,13 +183,15 @@ def render_inline_with_registry(
     if profile_lines:
         sections.append("### Relevant project preferences")
         sections.extend(profile_lines)
-    instruction = cs_cite.citation_instruction(
+    instruction = _citation_instruction(
         os.environ.get("CLAUDE_SMART_CITATIONS", "on"),
         os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
     )
     if instruction:
         sections.append(instruction)
-    exact_osc8_marker = _exact_osc8_marker_instruction(playbook_entries + profile_entries)
+    exact_osc8_marker = _exact_osc8_marker_instruction(
+        playbook_entries + profile_entries
+    )
     if exact_osc8_marker:
         sections.append(exact_osc8_marker)
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
@@ -223,7 +229,9 @@ def render_inline_compact_with_registry(
         content = _one_line(str(entry["content"]))
         rule_url = str(entry.get("rule_url") or "")
         if link_style == "osc8" and rule_url:
-            linked_title = _osc8_link(rule_url, _strip_trailing_sentence_punctuation(title))
+            linked_title = _osc8_link(
+                rule_url, _strip_trailing_sentence_punctuation(title)
+            )
             item = _osc8_link(rule_url, _strip_trailing_sentence_punctuation(content))
             marker_parts.append(linked_title)
         else:
@@ -261,22 +269,38 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
             if len(marker_parts) > 1
             else ""
         )
-        return (
+        return _remoteize_citation_instruction(
             f"If used, copy this final marker exactly, preserving its hidden "
             f"OSC 8 terminal link: `{marker}`.{separator_instruction} "
             f"Skip when unrelated."
         )
     if link_style == "osc8":
-        return (
+        return _remoteize_citation_instruction(
             "If used, end with `✨ claude-smart rule applied:` followed by "
             "the same linked memory text; keep the link, but do not show the "
             "URL. Skip when unrelated."
         )
-    return (
+    return _remoteize_citation_instruction(
         "Only if a listed [cs:...] item materially changes your answer, end "
         "with one final marker like `✨ claude-smart rule applied: "
         "[verify process state](http://localhost:3001/rules/s1-123)` using "
         "the shown rule URL; skip the marker when unrelated."
+    )
+
+
+def _citation_instruction(mode: str, link_style: str) -> str:
+    return _remoteize_citation_instruction(
+        cs_cite.citation_instruction(mode, link_style)
+    )
+
+
+def _remoteize_citation_instruction(text: str) -> str:
+    playbooks_url = _remote_reflexio_page_url("playbook")
+    profiles_url = _remote_reflexio_page_url("profile")
+    if not text or not playbooks_url or not profiles_url:
+        return text
+    return text.replace("http://localhost:3001/rules/s1-123", playbooks_url).replace(
+        "http://localhost:3001/rules/p1-pref", profiles_url
     )
 
 
@@ -344,7 +368,7 @@ def _append_playbook_bullet(
     item_id = cs_cite.rank_id("playbook", rank, real_id)
     title = _title_from_content(content)
     dashboard_url = _dashboard_url("playbook", real_id, source_kind)
-    rule_url = _rule_url(item_id)
+    rule_url = _rule_url(item_id, "playbook")
     bullet = f"- [cs:{item_id}] {content}"
     if trigger:
         bullet += f" _(when: {trigger})_"
@@ -383,7 +407,7 @@ def _format_profiles(
         item_id = cs_cite.rank_id("profile", rank, real_id)
         title = _title_from_content(content)
         dashboard_url = _dashboard_url("profile", real_id)
-        rule_url = _rule_url(item_id)
+        rule_url = _rule_url(item_id, "profile")
         bullet = f"- [cs:{item_id}] {content}"
         if rule_url:
             bullet += f" _(open: {rule_url})_"
@@ -403,6 +427,9 @@ def _format_profiles(
 
 
 def _dashboard_url(kind: str, real_id: Any, source_kind: str | None = None) -> str:
+    remote_url = _remote_reflexio_page_url(kind)
+    if remote_url:
+        return remote_url
     if real_id is None:
         return ""
     encoded_id = quote(str(real_id), safe="")
@@ -415,12 +442,39 @@ def _dashboard_url(kind: str, real_id: Any, source_kind: str | None = None) -> s
     return ""
 
 
-def _rule_url(item_id: str) -> str:
+def _rule_url(item_id: str, kind: str) -> str:
+    remote_url = _remote_reflexio_page_url(kind)
+    if remote_url:
+        return remote_url
     if not item_id:
         return ""
     encoded_id = quote(item_id, safe="")
     base = os.environ.get(_DASHBOARD_URL_ENV, _DEFAULT_DASHBOARD_URL).rstrip("/")
     return f"{base}/rules/{encoded_id}"
+
+
+def _remote_reflexio_page_url(kind: str) -> str:
+    origin = _remote_reflexio_origin()
+    if not origin:
+        return ""
+    if kind == "profile":
+        return f"{origin}/profiles"
+    if kind == "playbook":
+        return f"{origin}/playbooks"
+    return ""
+
+
+def _remote_reflexio_origin() -> str:
+    env_config.load_reflexio_env()
+    raw = os.environ.get(_REFLEXIO_URL_ENV, "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    if (parsed.hostname or "").lower() in _LOCAL_REFLEXIO_HOSTS:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
 
 
 def _title_from_content(content: str, limit: int = 80) -> str:

@@ -8,17 +8,26 @@ from __future__ import annotations
 
 import logging
 import os
+import inspect
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+from claude_smart import env_config
 from claude_smart import runtime
 
 _LOGGER = logging.getLogger(__name__)
 
 _ENV_URL = "REFLEXIO_URL"
+_ENV_API_KEY = "REFLEXIO_API_KEY"
 _DEFAULT_URL = "http://localhost:8071/"
+# Cap every HTTP round-trip from a hook so a hung backend can't stall the
+# Claude Code / Codex session. reflexio's client default is 300s, which is
+# fine for batch workloads but unacceptable on the hook path — a single
+# unhealthy POST would freeze the user's prompt. 5s matches the precedent
+# in ``ids.py`` for short-lived hook HTTP calls.
+_HTTP_TIMEOUT_SECONDS = 5
 _SEARCH_MODE_HYBRID = "hybrid"  # reflexio.models.config_schema.SearchMode.HYBRID
 _UNIFIED_ENTITY_TYPES = ("profiles", "user_playbooks", "agent_playbooks")
 _AGENT_PLAYBOOK_APPROVAL_STATUSES = ("pending", "approved")
@@ -35,9 +44,13 @@ class Adapter:
     """
 
     url: str = ""
+    api_key: str = ""
+    read_errors: list[str] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
+        env_config.load_reflexio_env()
         self.url = self.url or os.environ.get(_ENV_URL, _DEFAULT_URL)
+        self.api_key = self.api_key or os.environ.get(_ENV_API_KEY, "")
         self._client: Any | None = None
 
     # -----------------------------------------------------------------
@@ -54,7 +67,18 @@ class Adapter:
             _LOGGER.debug("reflexio not importable: %s", exc)
             return None
         try:
-            self._client = ReflexioClient(url_endpoint=self.url)
+            try:
+                self._client = ReflexioClient(
+                    url_endpoint=self.url,
+                    api_key=self.api_key,
+                    timeout=_HTTP_TIMEOUT_SECONDS,
+                )
+            except TypeError:
+                # Pre-0.2.x reflexio releases didn't accept ``timeout``;
+                # fall back so hooks still work against older pinned clients.
+                self._client = ReflexioClient(
+                    url_endpoint=self.url, api_key=self.api_key
+                )
         except Exception as exc:  # noqa: BLE001 — adapter must never raise.
             _LOGGER.warning("Failed to construct ReflexioClient: %s", exc)
             return None
@@ -81,16 +105,22 @@ class Adapter:
         if client is None:
             return False
         try:
-            client.publish_interaction(
-                user_id=project_id,
-                interactions=list(interactions),
-                agent_version=runtime.agent_version(),
-                session_id=session_id,
-                wait_for_response=False,
-                force_extraction=force_extraction,
-                override_learning_stall=override_learning_stall,
-                skip_aggregation=skip_aggregation,
-            )
+            kwargs = {
+                "user_id": project_id,
+                "interactions": list(interactions),
+                "agent_version": runtime.agent_version(),
+                "session_id": session_id,
+                "wait_for_response": False,
+                "force_extraction": force_extraction,
+                "skip_aggregation": skip_aggregation,
+            }
+            if _supports_keyword(client.publish_interaction, "override_learning_stall"):
+                kwargs["override_learning_stall"] = override_learning_stall
+            elif override_learning_stall:
+                _LOGGER.debug(
+                    "publish_interaction client does not support override_learning_stall"
+                )
+            client.publish_interaction(**kwargs)
             return True
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("publish_interaction failed: %s", exc)
@@ -235,13 +265,20 @@ class Adapter:
         if client is None:
             return []
         try:
-            response = client.search_user_playbooks(
-                user_id=project_id,
-                status_filter=[None],  # None => CURRENT in reflexio's filter API
-                top_k=top_k,
-            )
+            if hasattr(client, "get_user_playbooks"):
+                response = client.get_user_playbooks(
+                    user_id=project_id,
+                    status_filter=[None],  # None => CURRENT in reflexio's filter API
+                    limit=top_k,
+                )
+            else:
+                response = client.search_user_playbooks(
+                    user_id=project_id,
+                    status_filter=[None],
+                    top_k=top_k,
+                )
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("search_user_playbooks failed: %s", exc)
+            self._record_read_error("fetch_user_playbooks", exc)
             return []
         return _extract_items(response, "user_playbooks")
 
@@ -263,13 +300,20 @@ class Adapter:
         if client is None:
             return []
         try:
-            response = client.search_agent_playbooks(
-                agent_version=runtime.agent_version(),
-                status_filter=[None],
-                top_k=top_k,
-            )
+            if hasattr(client, "get_agent_playbooks"):
+                response = client.get_agent_playbooks(
+                    agent_version=runtime.agent_version(),
+                    status_filter=[None],
+                    limit=top_k,
+                )
+            else:
+                response = client.search_agent_playbooks(
+                    agent_version=runtime.agent_version(),
+                    status_filter=[None],
+                    top_k=top_k,
+                )
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("search_agent_playbooks failed: %s", exc)
+            self._record_read_error("fetch_agent_playbooks", exc)
             return []
         return _filter_rejected_agent_playbooks(
             _extract_items(response, "agent_playbooks")
@@ -281,13 +325,20 @@ class Adapter:
         if client is None:
             return []
         try:
+            if hasattr(client, "get_all_profiles"):
+                response = client.get_all_profiles(limit=max(top_k * 20, 100))
+                return [
+                    item
+                    for item in _extract_items(response, "user_profiles")
+                    if _field(item, "user_id") == project_id
+                ][:top_k]
             response = client.search_user_profiles(
                 user_id=project_id,
                 query="",
                 top_k=top_k,
             )
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("search_user_profiles failed: %s", exc)
+            self._record_read_error("fetch_project_profiles", exc)
             return []
         return _extract_items(response, "user_profiles")
 
@@ -332,7 +383,7 @@ class Adapter:
                 search_mode=_SEARCH_MODE_HYBRID,
             )
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("unified search failed: %s", exc)
+            self._record_read_error("unified search", exc)
             return [], [], []
         return (
             _extract_items(response, "user_playbooks"),
@@ -377,6 +428,11 @@ class Adapter:
             )
         return up_future.result(), ap_future.result(), pr_future.result()
 
+    def _record_read_error(self, operation: str, exc: Exception) -> None:
+        message = f"{operation}: {exc}"
+        self.read_errors.append(message)
+        _LOGGER.debug("%s failed: %s", operation, exc)
+
 
 def _extract_items(response: Any, field: str) -> list[Any]:
     """Pull a list field from a reflexio response object or dict, tolerating shape drift."""
@@ -387,6 +443,23 @@ def _extract_items(response: Any, field: str) -> list[Any]:
     else:
         value = getattr(response, field, None)
     return list(value) if value else []
+
+
+def _field(item: Any, field: str) -> Any:
+    if isinstance(item, dict):
+        return item.get(field)
+    return getattr(item, field, None)
+
+
+def _supports_keyword(callable_obj: Any, keyword: str) -> bool:
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return keyword in signature.parameters
 
 
 def _filter_rejected_agent_playbooks(items: list[Any]) -> list[Any]:

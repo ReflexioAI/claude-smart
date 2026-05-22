@@ -50,6 +50,16 @@ def test_codex_skill_documents_command_mapping() -> None:
     assert "bash ~/.reflexio/plugin-root/scripts/cli.sh clear-all --yes" in skill
 
 
+def test_codex_hook_loads_managed_reflexio_env_and_skips_backend_start() -> None:
+    script = (REPO_ROOT / "plugin" / "scripts" / "codex-hook.js").read_text()
+
+    assert "function loadReflexioEnv()" in script
+    assert '"REFLEXIO_API_KEY"' in script
+    assert "function reflexioUrlIsRemote()" in script
+    assert "remote REFLEXIO_URL configured; skipping local backend start" in script
+    assert "loadReflexioEnv();" in script
+
+
 def test_codex_marketplace_points_at_plugin_root() -> None:
     marketplace = _read_json(".agents/plugins/marketplace.json")
     entry = marketplace["plugins"][0]
@@ -310,9 +320,7 @@ def test_codex_stop_skips_orphan_title_response(session_dir, monkeypatch) -> Non
     assert calls == []
 
 
-def test_codex_stop_skips_orphan_suggestions_response(
-    session_dir, monkeypatch
-) -> None:
+def test_codex_stop_skips_orphan_suggestions_response(session_dir, monkeypatch) -> None:
     runtime.set_host(runtime.HOST_CODEX)
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
