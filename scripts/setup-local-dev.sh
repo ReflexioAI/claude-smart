@@ -327,7 +327,10 @@ if not isinstance(data, dict):
     )
     sys.exit(1)
 
-enabled = data.setdefault("enabledPlugins", {})
+enabled = data.get("enabledPlugins")
+if not isinstance(enabled, dict):
+    data["enabledPlugins"] = {}
+    enabled = data["enabledPlugins"]
 enabled["claude-smart@reflexioai-local"] = True
 enabled["claude-smart@reflexioai"] = False
 
@@ -372,7 +375,10 @@ if not isinstance(data, dict):
     )
     sys.exit(1)
 
-enabled = data.setdefault("enabledPlugins", {})
+enabled = data.get("enabledPlugins")
+if not isinstance(enabled, dict):
+    data["enabledPlugins"] = {}
+    enabled = data["enabledPlugins"]
 enabled["claude-smart@reflexioai-local"] = True
 # Shadow the remote so both don't load side-by-side in this repo.
 enabled["claude-smart@reflexioai"] = False

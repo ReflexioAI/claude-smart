@@ -101,7 +101,6 @@ claude_smart_is_internal_invocation_env() {
     ""|"cli"|"claude-desktop") return 1 ;;
     *) return 0 ;;
   esac
-  return 1
 }
 
 claude_smart_emit_continue() {

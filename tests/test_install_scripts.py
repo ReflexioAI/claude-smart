@@ -594,6 +594,8 @@ def test_setup_local_dev_refreshes_claude_code_local_plugin() -> None:
     assert "CLAUDE_SMART_READ_ONLY" in script
     assert "node bin/claude-smart.js install --host codex --read-only" in script
     assert 'USER_SETTINGS_FILE="$HOME/.claude/settings.json"' in script
+    assert 'enabled = data.get("enabledPlugins")' in script
+    assert 'data["enabledPlugins"] = {}' in script
     assert 'enabled["claude-smart@reflexioai-local"] = True' in script
     assert 'enabled["claude-smart@reflexioai"] = False' in script
     assert "user-scope local enabled, @reflexioai disabled" in script

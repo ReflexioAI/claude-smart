@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from claude_smart import hook, hook_log
 
 
@@ -112,10 +111,21 @@ def test_log_path_honors_env_override(tmp_path, monkeypatch) -> None:
     assert _read_lines(target)[0]["event"] == "stop"
 
 
-def test_log_path_treats_boolean_env_as_default(hook_log_path, monkeypatch) -> None:
-    monkeypatch.setenv("CLAUDE_SMART_HOOK_LOG", "1")
+@pytest.mark.parametrize("raw", ["1", "true", "TRUE", " yes ", "On", "  "])
+def test_log_path_treats_boolean_env_as_default(
+    hook_log_path, monkeypatch, raw: str
+) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_HOOK_LOG", raw)
     hook_log.log_event(event="stop", host="claude-code")
     assert _read_lines(hook_log_path)[0]["event"] == "stop"
+
+
+def test_log_path_trims_env_override_path(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "override.log"
+    monkeypatch.setenv("CLAUDE_SMART_HOOK_LOG", f"  {target}  ")
+    hook_log.log_event(event="stop", host="claude-code")
+    assert target.is_file()
+    assert _read_lines(target)[0]["event"] == "stop"
 
 
 # -----------------------------------------------------------------------------
@@ -186,8 +196,9 @@ def test_dispatcher_logs_publish_outcome_from_stop(
     assert rec["publish_count"] == 3
 
 
+@pytest.mark.parametrize("cwd_key", ["workingDirectory", "currentWorkingDirectory"])
 def test_dispatcher_normalizes_desktop_payload_keys(
-    hook_log_path, stdin_payload, monkeypatch
+    hook_log_path, stdin_payload, monkeypatch, cwd_key: str
 ) -> None:
     seen: dict[str, Any] = {}
 
@@ -204,7 +215,7 @@ def test_dispatcher_normalizes_desktop_payload_keys(
             "toolInput": {"command": "pytest"},
             "toolResponse": {"ok": True},
             "lastAssistantMessage": "done",
-            "workingDirectory": "/tmp/project",
+            cwd_key: "/tmp/project",
         }
     )
     hook.main(["claude-code", "stop"])

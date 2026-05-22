@@ -173,7 +173,10 @@ def log_path() -> Path:
     """
     override = os.environ.get("CLAUDE_SMART_HOOK_LOG")
     if override:
-        if override.strip().lower() in {"1", "true", "yes", "on"}:
+        override = override.strip()
+        if not override:
+            return _LOG_PATH
+        if override.lower() in {"1", "true", "yes", "on"}:
             return _LOG_PATH
         return Path(override)
     return _LOG_PATH
