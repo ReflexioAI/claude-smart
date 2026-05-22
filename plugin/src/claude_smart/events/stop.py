@@ -9,7 +9,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from claude_smart import cs_cite, env_config, ids, internal_call, publish, runtime, state
+from claude_smart import (
+    cs_cite,
+    env_config,
+    ids,
+    internal_call,
+    publish,
+    runtime,
+    state,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -362,9 +370,7 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
         if path.is_file():
             entries = _load_transcript_with_retry(path)
 
-    prompt = payload.get("prompt") or (
-        _scan_transcript_for_user_text(entries) if runtime.is_codex() else ""
-    )
+    prompt = payload.get("prompt") or _scan_transcript_for_user_text(entries)
     if runtime.is_codex() and internal_call.is_codex_internal_prompt(prompt):
         return None
 
@@ -393,13 +399,24 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
     plan_decisions = _scan_transcript_for_plan_decisions(entries)
 
     now = int(time.time())
-    for decision_text in plan_decisions:
+    if plan_decisions:
+        for decision_text in plan_decisions:
+            state.append(
+                session_id,
+                {
+                    "ts": now,
+                    "role": "User",
+                    "content": decision_text,
+                    "user_id": project_id,
+                },
+            )
+    elif prompt and not _has_unpublished_user_turn(session_id):
         state.append(
             session_id,
             {
                 "ts": now,
                 "role": "User",
-                "content": decision_text,
+                "content": prompt,
                 "user_id": project_id,
             },
         )

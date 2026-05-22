@@ -68,7 +68,26 @@ def _read_stdin_json() -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         _LOGGER.debug("stdin JSON decode failed: %s", exc)
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    return _normalize_payload_keys(parsed) if isinstance(parsed, dict) else {}
+
+
+def _normalize_payload_keys(payload: dict[str, Any]) -> dict[str, Any]:
+    """Accept both classic Claude Code and Desktop/Cowork hook key shapes."""
+    aliases = {
+        "sessionId": "session_id",
+        "transcriptPath": "transcript_path",
+        "toolName": "tool_name",
+        "toolInput": "tool_input",
+        "toolResponse": "tool_response",
+        "lastAssistantMessage": "last_assistant_message",
+        "workingDirectory": "cwd",
+        "currentWorkingDirectory": "cwd",
+    }
+    normalized = dict(payload)
+    for source, target in aliases.items():
+        if target not in normalized and source in normalized:
+            normalized[target] = normalized[source]
+    return normalized
 
 
 def emit_continue() -> None:

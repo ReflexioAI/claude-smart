@@ -19,10 +19,10 @@ Two distinct sources of unwanted hook fires:
    tool..."`` into reflexio as a fake user interaction.
 
 Detection signals, OR'd:
-  - ``CLAUDE_CODE_ENTRYPOINT`` is anything other than ``"cli"`` —
-    the interactive REPL sets ``cli``; headless ``claude -p`` sets
-    ``sdk-cli`` (and the SDKs may set other values). This catches
-    case (2) for any third-party tool, not just claude-mem.
+  - ``CLAUDE_CODE_ENTRYPOINT`` is anything other than an interactive entrypoint
+    (``"cli"`` or Claude Desktop's ``"claude-desktop"``). Headless
+    ``claude -p`` sets ``sdk-cli`` (and the SDKs may set other values). This
+    catches case (2) for any third-party tool, not just claude-mem.
   - Env var ``CLAUDE_SMART_INTERNAL=1``, set by reflexio's provider
     before spawning ``claude``. Belt-and-suspenders for case (1) in
     case the entrypoint check ever misses a future SDK variant.
@@ -46,7 +46,7 @@ from typing import Any
 from claude_smart import runtime
 
 _ENTRYPOINT_VAR = "CLAUDE_CODE_ENTRYPOINT"
-_INTERACTIVE_ENTRYPOINT = "cli"
+_INTERACTIVE_ENTRYPOINTS = frozenset({"cli", "claude-desktop"})
 _CODEX_TITLE_PROMPT_PREFIX = (
     "You are a helpful assistant. You will be presented with a user prompt, "
     "and your job is to provide a short title for a task"
@@ -92,7 +92,7 @@ def is_internal_invocation(payload: dict[str, Any]) -> bool:
     if runtime.is_internal_invocation_env():
         return True
     entrypoint = os.environ.get(_ENTRYPOINT_VAR)
-    if entrypoint and entrypoint != _INTERACTIVE_ENTRYPOINT:
+    if entrypoint and entrypoint not in _INTERACTIVE_ENTRYPOINTS:
         return True
     if runtime.is_codex() and is_codex_internal_prompt(payload.get("prompt")):
         return True

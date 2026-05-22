@@ -13,11 +13,13 @@
 #      ~/.reflexio/.env so reflexio runs without any external API key.
 #   6. For Claude Code (default): prepare and register the local marketplace
 #      (user scope) so `claude-smart@reflexioai-local` is available everywhere.
-#   7. For Claude Code: wire this repo's .claude/settings.local.json to enable
+#   7. For Claude Code: disable the published claude-smart plugin at user scope
+#      so Desktop/other projects don't load both plugins side by side.
+#   8. For Claude Code: wire this repo's .claude/settings.local.json to enable
 #      the local plugin and shadow the remote one for this project.
-#   8. With `--read-only`, write CLAUDE_SMART_READ_ONLY=1 so local hooks
+#   9. With `--read-only`, write CLAUDE_SMART_READ_ONLY=1 so local hooks
 #      buffer but do not publish interactions to Reflexio.
-#   9. For Codex (`--host codex` or `--host both`): run the maintained
+#   10. For Codex (`--host codex` or `--host both`): run the maintained
 #      Node install wrapper so Codex hooks are patched through the JSON-safe
 #      codex-hook.js adapter.
 #
@@ -292,6 +294,46 @@ PY
         exit 1
       fi
     fi
+
+    # `claude plugin disable -s user claude-smart@reflexioai` can be ambiguous
+    # when both local and published marketplaces provide a plugin named
+    # `claude-smart`. Write the user-scope enable map directly so Desktop and
+    # non-repo Claude Code sessions don't load both copies.
+    USER_SETTINGS_FILE="$HOME/.claude/settings.json"
+    python3 - "$USER_SETTINGS_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+data: dict = {}
+if settings_path.is_file():
+    try:
+        data = json.loads(settings_path.read_text() or "{}")
+    except json.JSONDecodeError:
+        print(
+            f"[setup-local-dev] ERROR: {settings_path} is not valid JSON; "
+            "refusing to overwrite",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+if not isinstance(data, dict):
+    print(
+        f"[setup-local-dev] ERROR: {settings_path} top-level is not a JSON object",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+enabled = data.setdefault("enabledPlugins", {})
+enabled["claude-smart@reflexioai-local"] = True
+enabled["claude-smart@reflexioai"] = False
+
+settings_path.write_text(json.dumps(data, indent=2) + "\n")
+PY
+    log "wrote $USER_SETTINGS_FILE (user-scope local enabled, @reflexioai disabled)"
   else
     log "WARNING: 'claude' CLI not on PATH — skipping marketplace registration."
     log "  Run it later: claude plugin marketplace add $LOCAL_MKT_DIR"

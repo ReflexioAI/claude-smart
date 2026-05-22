@@ -97,9 +97,10 @@ claude_smart_is_internal_invocation_env() {
   if [ "${CLAUDE_SMART_INTERNAL:-}" = "1" ]; then
     return 0
   fi
-  if [ -n "${CLAUDE_CODE_ENTRYPOINT:-}" ] && [ "${CLAUDE_CODE_ENTRYPOINT:-}" != "cli" ]; then
-    return 0
-  fi
+  case "${CLAUDE_CODE_ENTRYPOINT:-}" in
+    ""|"cli"|"claude-desktop") return 1 ;;
+    *) return 0 ;;
+  esac
   return 1
 }
 

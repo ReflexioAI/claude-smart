@@ -95,6 +95,14 @@ def test_returns_false_for_interactive_entrypoint(
     assert is_internal_invocation({}) is False
 
 
+def test_returns_false_for_desktop_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CLAUDE_SMART_INTERNAL", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "claude-desktop")
+    assert is_internal_invocation({}) is False
+
+
 def test_returns_true_for_codex_title_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CLAUDE_SMART_INTERNAL", raising=False)
     runtime.set_host(runtime.HOST_CODEX)

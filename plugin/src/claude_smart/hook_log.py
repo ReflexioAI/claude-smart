@@ -163,8 +163,8 @@ def log_path() -> Path:
 
     Resolution order:
 
-    1. ``CLAUDE_SMART_HOOK_LOG`` env var — escape hatch for tests and
-       advanced users who want the log elsewhere.
+    1. ``CLAUDE_SMART_HOOK_LOG`` env var — boolean-like values enable the
+       default log, while path-like values redirect it.
     2. ``_LOG_PATH`` module attribute — what monkeypatched tests override.
     3. ``~/.claude-smart/hook.log`` — the default.
 
@@ -173,6 +173,8 @@ def log_path() -> Path:
     """
     override = os.environ.get("CLAUDE_SMART_HOOK_LOG")
     if override:
+        if override.strip().lower() in {"1", "true", "yes", "on"}:
+            return _LOG_PATH
         return Path(override)
     return _LOG_PATH
 

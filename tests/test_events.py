@@ -235,6 +235,60 @@ def test_stop_appends_assistant_text_from_transcript(
     assert records[-1]["content"] == "hello there"
 
 
+def test_stop_recovers_user_turn_when_prompt_hook_did_not_fire(
+    session_dir, tmp_path, monkeypatch
+) -> None:
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            {"type": "user", "message": {"content": "remember I prefer km"}},
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Noted."}]},
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished",
+        lambda **_: ("nothing", 0),
+    )
+    stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
+    records = state.read_all("s1")
+    assert [record["role"] for record in records] == ["User", "Assistant"]
+    assert records[0]["content"] == "remember I prefer km"
+    assert records[1]["content"] == "Noted."
+
+
+def test_stop_does_not_duplicate_existing_unpublished_user_turn(
+    session_dir, tmp_path, monkeypatch
+) -> None:
+    state.append(
+        "s1",
+        {
+            "role": "User",
+            "content": "already buffered",
+            "user_id": "project",
+        },
+    )
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            {"type": "user", "message": {"content": "already buffered"}},
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Done."}]},
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished",
+        lambda **_: ("nothing", 0),
+    )
+    stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
+    records = state.read_all("s1")
+    assert [record["role"] for record in records] == ["User", "Assistant"]
+
+
 def test_stop_concatenates_text_across_multi_entry_assistant_turn(
     session_dir, tmp_path, monkeypatch
 ) -> None:
@@ -588,7 +642,8 @@ def test_stop_plan_decision_ignores_prior_turn(
     )
     stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
     records = state.read_all("s1")
-    assert [r["role"] for r in records] == ["Assistant"]
+    assert [r["role"] for r in records] == ["User", "Assistant"]
+    assert records[0]["content"] == "follow-up, no plan"
 
 
 def test_stop_plan_decision_ignores_non_exitplanmode_tool_result_with_marker_text(
@@ -638,8 +693,9 @@ def test_stop_plan_decision_ignores_non_exitplanmode_tool_result_with_marker_tex
     )
     stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
     records = state.read_all("s1")
-    # Only the Assistant record should be appended — no synthetic User turn.
-    assert [r["role"] for r in records] == ["Assistant"]
+    # No plan-decision record should be appended; only the recovered prompt.
+    assert [r["role"] for r in records] == ["User", "Assistant"]
+    assert records[0]["content"] == "do thing"
 
 
 def test_stop_exit_plan_mode_plan_interleaves_with_text_blocks_in_order(
@@ -755,7 +811,9 @@ def test_stop_read_only_marks_buffer_without_publishing(
 
     monkeypatch.setattr("claude_smart.publish.publish_unpublished", fail_publish)
 
-    result = stop.handle({"session_id": "s_read_only", "transcript_path": str(transcript)})
+    result = stop.handle(
+        {"session_id": "s_read_only", "transcript_path": str(transcript)}
+    )
 
     assert result == ("nothing", 0)
     records = state.read_all("s_read_only")
@@ -1156,8 +1214,7 @@ def test_stop_preserves_cited_item_source_kind(
                         {
                             "type": "text",
                             "text": (
-                                "Done.\n\n"
-                                "✨ 1 claude-smart learning applied [cs:s1-42]"
+                                "Done.\n\n✨ 1 claude-smart learning applied [cs:s1-42]"
                             ),
                         }
                     ]
@@ -1339,8 +1396,7 @@ def test_stop_citation_without_prior_registry_drops_all_ids(
                         {
                             "type": "text",
                             "text": (
-                                "Done.\n\n"
-                                "✨ 1 claude-smart learning applied [cs:s1-42]"
+                                "Done.\n\n✨ 1 claude-smart learning applied [cs:s1-42]"
                             ),
                         }
                     ]
@@ -1797,7 +1853,7 @@ def test_session_end_uses_force_extraction_for_final_flush(
     published_kwargs: dict[str, Any] = {}
     monkeypatch.setattr(
         "claude_smart.publish.publish_unpublished",
-        lambda **kwargs: (published_kwargs.update(kwargs) or ("ok", 1)),
+        lambda **kwargs: published_kwargs.update(kwargs) or ("ok", 1),
     )
     session_end.handle({"session_id": "s_force", "cwd": "/tmp/p"})
     assert published_kwargs["force_extraction"] is True

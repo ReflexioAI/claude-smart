@@ -284,8 +284,7 @@ def test_reflexio_env_file_overrides_stale_managed_process_env(
     env_path = tmp_path / ".reflexio" / ".env"
     env_path.parent.mkdir()
     env_path.write_text(
-        'REFLEXIO_URL="https://www.reflexio.ai/"\n'
-        'REFLEXIO_API_KEY="rflx-file-secret"\n'
+        'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-file-secret"\n'
     )
 
     script = (
@@ -357,12 +356,7 @@ def test_node_install_api_key_writes_env_and_bootstraps_latest_cache(
         pytest.skip("node is required for Node installer test")
 
     cache_root = (
-        tmp_path
-        / ".claude"
-        / "plugins"
-        / "cache"
-        / "reflexioai"
-        / "claude-smart"
+        tmp_path / ".claude" / "plugins" / "cache" / "reflexioai" / "claude-smart"
     )
     for version in ("0.2.31", "0.2.32"):
         plugin_root = cache_root / version
@@ -374,7 +368,7 @@ def test_node_install_api_key_writes_env_and_bootstraps_latest_cache(
             "#!/bin/sh\n"
             '[ "$CLAUDE_SMART_MANAGED_SETUP" = "1" ] || exit 41\n'
             '[ "$REFLEXIO_API_KEY" = "rflx-test-secret" ] || exit 42\n'
-            'printf \'bootstrapped %s\\n\' "$PWD"\n'
+            "printf 'bootstrapped %s\\n' \"$PWD\"\n"
         )
         install.chmod(install.stat().st_mode | stat.S_IXUSR)
 
@@ -387,9 +381,7 @@ def test_node_install_api_key_writes_env_and_bootstraps_latest_cache(
     fake_bin.mkdir()
     claude = fake_bin / "claude"
     claude.write_text(
-        "#!/bin/sh\n"
-        "printf 'claude %s\\n' \"$*\" >> \"$HOME/claude.log\"\n"
-        "exit 0\n"
+        '#!/bin/sh\nprintf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\nexit 0\n'
     )
     claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
 
@@ -498,9 +490,7 @@ def test_node_update_api_key_writes_managed_env(tmp_path: Path) -> None:
     fake_bin.mkdir()
     claude = fake_bin / "claude"
     claude.write_text(
-        "#!/bin/sh\n"
-        "printf 'claude %s\\n' \"$*\" >> \"$HOME/claude.log\"\n"
-        "exit 0\n"
+        '#!/bin/sh\nprintf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\nexit 0\n'
     )
     claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
 
@@ -588,6 +578,7 @@ def test_service_start_scripts_guard_internal_invocations() -> None:
 
     assert "claude_smart_is_internal_invocation_env()" in lib
     assert "CLAUDE_CODE_ENTRYPOINT" in lib
+    assert '"cli"|"claude-desktop"' in lib
     assert "if claude_smart_is_internal_invocation_env; then" in hook_entry
     assert "if claude_smart_is_internal_invocation_env; then" in backend
     assert "if claude_smart_is_internal_invocation_env; then" in dashboard
@@ -602,6 +593,10 @@ def test_setup_local_dev_refreshes_claude_code_local_plugin() -> None:
     assert "--read-only" in script
     assert "CLAUDE_SMART_READ_ONLY" in script
     assert "node bin/claude-smart.js install --host codex --read-only" in script
+    assert 'USER_SETTINGS_FILE="$HOME/.claude/settings.json"' in script
+    assert 'enabled["claude-smart@reflexioai-local"] = True' in script
+    assert 'enabled["claude-smart@reflexioai"] = False' in script
+    assert "user-scope local enabled, @reflexioai disabled" in script
 
 
 def test_setup_local_dev_prefers_workspace_reflexio_checkout() -> None:
