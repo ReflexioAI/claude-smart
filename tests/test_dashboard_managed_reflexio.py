@@ -52,20 +52,26 @@ def test_dashboard_proxy_forwards_bearer_auth_without_client_auth() -> None:
     assert 'headers.set("user-agent", "claude-smart")' in route
     assert 'headers.set("authorization", `Bearer ${apiKey}`)' in route
     assert "readConfig" in route
-    assert "function isLocalUrl" in route
     assert "configuredBase" in route
-    assert 'apiKey: fromHeader === configuredBase ? apiKey : ""' in route
     assert 'apiKey: configuredBase ? apiKey : ""' in route
+    assert "fromHeader" not in route
+    assert "x-reflexio-url" not in route
 
 
-def test_dashboard_settings_adopt_managed_reflexio_url() -> None:
+def test_dashboard_settings_read_configured_reflexio_url_only() -> None:
     settings = (
         REPO_ROOT / "plugin" / "dashboard" / "hooks" / "use-settings.tsx"
+    ).read_text()
+    page = (
+        REPO_ROOT / "plugin" / "dashboard" / "app" / "configure" / "env" / "page.tsx"
     ).read_text()
 
     assert 'fetch("/api/config", { cache: "no-store" })' in settings
     assert "REFLEXIO_URL?: string" in settings
-    assert "function isLocalUrl" in settings
-    assert "!isLocalUrl(configuredUrl)" in settings
-    assert "isLocalUrl(settings.reflexioUrl)" in settings
-    assert "writeStorage({ reflexioUrl: configuredUrl })" in settings
+    assert "localStorage" not in settings
+    assert "setReflexioUrl" not in settings
+    assert "claude-smart-dashboard-settings" not in settings
+    assert 'SETTINGS_CHANGED_EVENT = "claude-smart-settings-changed"' in settings
+    assert "window.dispatchEvent(new Event(SETTINGS_CHANGED_EVENT))" in page
+    assert "Stored in browser localStorage" not in page
+    assert "Reflexio endpoint (dashboard)" not in page

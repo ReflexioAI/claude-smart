@@ -6,7 +6,6 @@ import { PageHeader } from "@/components/common/page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useSettings } from "@/hooks/use-settings";
 import type { ReflexioConfig } from "@/lib/types";
 
 type ExtractorField =
@@ -14,7 +13,6 @@ type ExtractorField =
   | "user_playbook_extractor_configs";
 
 export default function ConfigureServerPage() {
-  const { reflexioUrl } = useSettings();
   const [srvConfig, setSrvConfig] = useState<ReflexioConfig | null>(null);
   const [srvError, setSrvError] = useState<string | null>(null);
   const [srvSaved, setSrvSaved] = useState(false);
@@ -22,11 +20,8 @@ export default function ConfigureServerPage() {
   const [srvLoading, setSrvLoading] = useState(true);
 
   const fetchSrvConfig = useCallback(async (): Promise<ReflexioConfig> => {
-    const headers: HeadersInit = {};
-    if (reflexioUrl) headers["x-reflexio-url"] = reflexioUrl;
     const res = await fetch("/api/reflexio/api/get_config", {
       cache: "no-store",
-      headers,
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null);
@@ -36,7 +31,7 @@ export default function ConfigureServerPage() {
       throw new Error(detail);
     }
     return (await res.json()) as ReflexioConfig;
-  }, [reflexioUrl]);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -84,7 +79,6 @@ export default function ConfigureServerPage() {
     setSrvError(null);
     try {
       const headers: HeadersInit = { "content-type": "application/json" };
-      if (reflexioUrl) headers["x-reflexio-url"] = reflexioUrl;
       const res = await fetch("/api/reflexio/api/set_config", {
         method: "POST",
         headers,

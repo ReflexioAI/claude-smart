@@ -28,7 +28,6 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { reflexio } from "@/lib/reflexio-client";
-import { useSettings } from "@/hooks/use-settings";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { statusLabel as status } from "@/lib/status";
@@ -42,7 +41,6 @@ export default function PreferenceDetailPage({
   const { id: rawId } = use(params);
   const id = decodeURIComponent(rawId);
   const router = useRouter();
-  const { reflexioUrl } = useSettings();
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -55,7 +53,7 @@ export default function PreferenceDetailPage({
   useEffect(() => {
     let cancelled = false;
     reflexio
-      .getAllProfiles({ reflexioUrl, limit: 500 })
+      .getAllProfiles({ limit: 500 })
       .then((res) => {
         if (cancelled) return;
         const found = (res.user_profiles ?? []).find(
@@ -74,7 +72,7 @@ export default function PreferenceDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [id, reflexioUrl]);
+  }, [id]);
 
   const dirty = useMemo(
     () => !!profile && profile.content !== content,
@@ -92,7 +90,6 @@ export default function PreferenceDetailPage({
           profile_id: profile.profile_id,
           content,
         },
-        reflexioUrl,
       );
       setProfile({ ...profile, content });
       setEditing(false);
@@ -109,7 +106,6 @@ export default function PreferenceDetailPage({
     try {
       await reflexio.deleteUserProfile(
         { user_id: profile.user_id, profile_id: profile.profile_id },
-        reflexioUrl,
       );
       router.push("/preferences");
     } catch (e) {

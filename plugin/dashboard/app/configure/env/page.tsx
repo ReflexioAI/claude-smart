@@ -8,11 +8,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
-import { useSettings } from "@/hooks/use-settings";
+import { SETTINGS_CHANGED_EVENT } from "@/hooks/use-settings";
 import type { ClaudeCodeHookConfig, ClaudeSmartConfig } from "@/lib/types";
 
 export default function ConfigureEnvPage() {
-  const { reflexioUrl, setReflexioUrl } = useSettings();
   const [config, setConfig] = useState<ClaudeSmartConfig | null>(null);
   const [hookConfig, setHookConfig] = useState<ClaudeCodeHookConfig | null>(null);
   const [hookDirty, setHookDirty] = useState(false);
@@ -94,6 +93,7 @@ export default function ConfigureEnvPage() {
       const updatedHook: ClaudeCodeHookConfig = await hookRes.json();
       setConfig(updated);
       setHookConfig(updatedHook);
+      window.dispatchEvent(new Event(SETTINGS_CHANGED_EVENT));
       setHookDirty(false);
       setApiKeyDirty(false);
       setSaved(true);
@@ -129,26 +129,6 @@ export default function ConfigureEnvPage() {
             Saved to ~/.reflexio/.env and Claude Code settings
           </div>
         )}
-
-        <section className="space-y-4 rounded-lg border border-border bg-card/92 p-5 shadow-sm">
-          <div>
-            <h2 className="text-sm font-semibold">Dashboard</h2>
-            <p className="text-xs text-muted-foreground">
-              Stored in browser localStorage — only affects this UI.
-            </p>
-          </div>
-          <div className="space-y-2">
-            <Label>Reflexio endpoint (dashboard)</Label>
-            <Input
-              value={reflexioUrl}
-              onChange={(e) => setReflexioUrl(e.target.value)}
-              className="font-mono text-xs bg-background/80"
-              placeholder="http://localhost:8071"
-            />
-          </div>
-        </section>
-
-        <Separator />
 
         <section className="space-y-4 rounded-lg border border-border bg-card/92 p-5 shadow-sm">
           <div>

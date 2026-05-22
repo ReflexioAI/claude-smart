@@ -3,14 +3,13 @@
 import { useTheme } from "next-themes";
 import Image from "next/image";
 import { Link2, Menu, Moon, Sun } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useSettings } from "@/hooks/use-settings";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Sidebar } from "./sidebar";
 
 export function TopBar() {
-  const { reflexioUrl, setReflexioUrl } = useSettings();
+  const { reflexioUrl } = useSettings();
   const { theme, setTheme } = useTheme();
 
   return (
@@ -41,30 +40,23 @@ export function TopBar() {
           <div className="text-sm font-semibold leading-5">Claude-Smart</div>
         </div>
         <div className="mx-2 h-8 w-px bg-border hidden md:block" />
-        <label
-          htmlFor="reflexio-url"
-          className="hidden items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1 text-xs text-muted-foreground md:flex"
-        >
+        <div className="hidden items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1 text-xs text-muted-foreground md:flex">
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_0_3px_oklch(0.72_0.14_148/0.16)]" />
           Reflexio
-        </label>
+        </div>
         <div
           className="relative max-w-md flex-1 sm:flex-none sm:w-[22rem]"
           suppressHydrationWarning
         >
           <Link2 className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
+          <div
             id="reflexio-url"
-            value={reflexioUrl}
-            onChange={(e) => setReflexioUrl(e.target.value)}
-            placeholder="http://localhost:8071"
-            className="h-9 pl-8 text-xs font-mono bg-background/80"
+            className="flex h-9 items-center rounded-md border border-input bg-background/80 pl-8 pr-3 text-xs font-mono text-muted-foreground"
             aria-label="Reflexio endpoint URL"
-            autoComplete="off"
-            data-1p-ignore
-            data-form-type="other"
-            data-lpignore="true"
-          />
+            title={reflexioUrl}
+          >
+            <span className="truncate">{reflexioUrl}</span>
+          </div>
         </div>
       </div>
 

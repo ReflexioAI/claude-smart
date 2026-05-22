@@ -16,7 +16,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { reflexio } from "@/lib/reflexio-client";
-import { useSettings } from "@/hooks/use-settings";
 import { formatRelative, truncateId } from "@/lib/format";
 import type { PlaybookApplicationStat, UserProfile } from "@/lib/types";
 
@@ -27,7 +26,6 @@ function profileStatKey(profile: UserProfile): string {
 }
 
 export default function PreferencesPage() {
-  const { reflexioUrl } = useSettings();
   const [profiles, setProfiles] = useState<UserProfile[] | null>(null);
   const [appStats, setAppStats] = useState<PlaybookApplicationStat[] | null>(
     null,
@@ -41,7 +39,7 @@ export default function PreferencesPage() {
     async function load() {
       try {
         const [profileRes, statsRes] = await Promise.all([
-          reflexio.getAllProfiles({ reflexioUrl }),
+          reflexio.getAllProfiles(),
           fetch("/api/rules/applied?daysBack=30&limit=200", {
             cache: "no-store",
           })
@@ -65,7 +63,7 @@ export default function PreferencesPage() {
     return () => {
       cancelled = true;
     };
-  }, [reflexioUrl]);
+  }, []);
 
   const statsByProfile = useMemo(() => {
     const map = new Map<string, PlaybookApplicationStat>();
@@ -129,7 +127,7 @@ export default function PreferencesPage() {
               confirmMessage={`Delete ALL ${profiles?.length ?? 0} preferences? Preferences regenerate from fresh interactions, but this cannot be undone.`}
               disabled={!profiles || profiles.length === 0}
               onConfirm={async () => {
-                await reflexio.deleteAllProfiles(reflexioUrl);
+                await reflexio.deleteAllProfiles();
                 setProfiles([]);
               }}
             />
@@ -140,7 +138,7 @@ export default function PreferencesPage() {
       <div className="p-6">
         {error && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm mb-4">
-            {error}. Is reflexio running on the URL in the top bar?
+            {error}. Is reflexio running on the configured backend URL?
           </div>
         )}
 

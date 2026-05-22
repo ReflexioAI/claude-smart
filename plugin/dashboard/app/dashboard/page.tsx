@@ -16,7 +16,6 @@ import { StatCard } from "@/components/common/stat-card";
 import { EmptyState } from "@/components/common/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { reflexio } from "@/lib/reflexio-client";
-import { useSettings } from "@/hooks/use-settings";
 import { formatRelative, truncate, truncateId } from "@/lib/format";
 import { agentPlaybookStatusLabel } from "@/lib/status";
 import type {
@@ -39,7 +38,6 @@ interface RecentLearning {
 }
 
 export default function DashboardPage() {
-  const { reflexioUrl } = useSettings();
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [projectSkills, setProjectSkills] = useState<UserPlaybook[] | null>(null);
   const [sharedSkills, setSharedSkills] = useState<AgentPlaybook[] | null>(null);
@@ -57,13 +55,13 @@ export default function DashboardPage() {
         const [sRes, projectRes, sharedRes, prefRes, statsRes] = await Promise.all([
           fetch("/api/sessions", { cache: "no-store" }).then((r) => r.json()),
           reflexio
-            .getUserPlaybooks({ reflexioUrl })
+            .getUserPlaybooks({})
             .catch(() => ({ user_playbooks: [] as UserPlaybook[] })),
           reflexio
-            .getAgentPlaybooks({ reflexioUrl })
+            .getAgentPlaybooks({})
             .catch(() => ({ agent_playbooks: [] as AgentPlaybook[] })),
           reflexio
-            .getAllProfiles({ reflexioUrl, limit: 100 })
+            .getAllProfiles({ limit: 100 })
             .catch(() => ({ user_profiles: [] as UserProfile[] })),
           fetch("/api/rules/applied?daysBack=30&limit=200", {
             cache: "no-store",
@@ -89,7 +87,7 @@ export default function DashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [reflexioUrl]);
+  }, []);
 
   // CURRENT project-specific skills arrive as `status: null` (response_model_exclude_none
   // strips the field). Anything else (e.g. "archived", "pending") is excluded.

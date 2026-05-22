@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useSettings } from "@/hooks/use-settings";
 
 const POLL_INTERVAL_MS = 60_000;
 
@@ -19,24 +18,21 @@ export interface StallState {
 /**
  * Polls reflexio's GET /stall_state every minute. Returns the latest
  * snapshot or `null` while still loading / when the server is unreachable.
- *
- * Reads the reflexio URL from the dashboard's settings context (the same
- * URL the user can override in the top bar) so the banner follows whatever
- * reflexio backend the rest of the dashboard is pointed at.
  */
 export function useStallState(): StallState | null {
-  const { reflexioUrl } = useSettings();
   const [state, setState] = useState<StallState | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    const base = reflexioUrl.replace(/\/$/, "");
 
     const tick = async () => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
       try {
-        const resp = await fetch(`${base}/stall_state`, { signal: controller.signal });
+        const resp = await fetch("/api/reflexio/stall_state", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
         if (!resp.ok) return;
         const body: StallState = await resp.json();
         if (!cancelled) setState(body);
@@ -53,7 +49,7 @@ export function useStallState(): StallState | null {
       cancelled = true;
       clearInterval(id);
     };
-  }, [reflexioUrl]);
+  }, []);
 
   return state;
 }

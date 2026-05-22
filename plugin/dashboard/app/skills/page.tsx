@@ -17,7 +17,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { reflexio } from "@/lib/reflexio-client";
-import { useSettings } from "@/hooks/use-settings";
 import { formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
@@ -100,7 +99,6 @@ function skillStatKey(skill: SkillCard): string {
 }
 
 export default function SkillsPage() {
-  const { reflexioUrl } = useSettings();
   const [projectSkills, setProjectSkills] = useState<UserPlaybook[] | null>(null);
   const [sharedSkills, setSharedSkills] = useState<AgentPlaybook[] | null>(null);
   const [appStats, setAppStats] = useState<PlaybookApplicationStat[] | null>(
@@ -119,12 +117,10 @@ export default function SkillsPage() {
       try {
         const [projectRes, sharedRes, statsRes] = await Promise.all([
           reflexio.getUserPlaybooks({
-            reflexioUrl,
             limit: 500,
             statusFilter: ALL_LIFECYCLE_STATUSES,
           }),
           reflexio.getAgentPlaybooks({
-            reflexioUrl,
             limit: 500,
             statusFilter: ALL_LIFECYCLE_STATUSES,
           }),
@@ -150,7 +146,7 @@ export default function SkillsPage() {
     return () => {
       cancelled = true;
     };
-  }, [reflexioUrl]);
+  }, []);
 
   const statsByRule = useMemo(() => {
     const map = new Map<string, PlaybookApplicationStat>();
@@ -302,10 +298,10 @@ export default function SkillsPage() {
               disabled={activeCount === 0}
               onConfirm={async () => {
                 if (activeKind === "project") {
-                  await reflexio.deleteAllUserPlaybooks(reflexioUrl);
+                  await reflexio.deleteAllUserPlaybooks();
                   setProjectSkills([]);
                 } else {
-                  await reflexio.deleteAllAgentPlaybooks(reflexioUrl);
+                  await reflexio.deleteAllAgentPlaybooks();
                   setSharedSkills([]);
                 }
               }}
@@ -338,7 +334,7 @@ export default function SkillsPage() {
 
         {error && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm">
-            {error}. Is reflexio running on the URL in the top bar?
+            {error}. Is reflexio running on the configured backend URL?
           </div>
         )}
 

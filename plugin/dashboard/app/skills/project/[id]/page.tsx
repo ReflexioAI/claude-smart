@@ -25,7 +25,6 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { reflexio } from "@/lib/reflexio-client";
-import { useSettings } from "@/hooks/use-settings";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { statusLabel } from "@/lib/status";
@@ -54,7 +53,6 @@ export default function ProjectSkillDetailPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
-  const { reflexioUrl } = useSettings();
 
   const [playbook, setPlaybook] = useState<UserPlaybook | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -71,7 +69,7 @@ export default function ProjectSkillDetailPage({
   useEffect(() => {
     let cancelled = false;
     reflexio
-      .getUserPlaybooks({ reflexioUrl })
+      .getUserPlaybooks({})
       .then((res) => {
         if (cancelled) return;
         const found = (res.user_playbooks ?? []).find(
@@ -90,7 +88,7 @@ export default function ProjectSkillDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [id, reflexioUrl]);
+  }, [id]);
 
   const dirty = useMemo(() => {
     if (!playbook) return false;
@@ -114,7 +112,6 @@ export default function ProjectSkillDetailPage({
           trigger: form.trigger || null,
           rationale: form.rationale || null,
         },
-        reflexioUrl,
       );
       setPlaybook({
         ...playbook,
@@ -134,7 +131,7 @@ export default function ProjectSkillDetailPage({
     if (!playbook) return;
     setDeleting(true);
     try {
-      await reflexio.deleteUserPlaybook(playbook.user_playbook_id, reflexioUrl);
+      await reflexio.deleteUserPlaybook(playbook.user_playbook_id);
       router.push("/skills");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

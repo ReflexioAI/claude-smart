@@ -32,7 +32,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { reflexio } from "@/lib/reflexio-client";
-import { useSettings } from "@/hooks/use-settings";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { agentPlaybookStatusLabel, statusLabel } from "@/lib/status";
@@ -85,7 +84,6 @@ export default function SharedSkillDetailPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
-  const { reflexioUrl } = useSettings();
 
   const [playbook, setPlaybook] = useState<AgentPlaybook | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -105,7 +103,7 @@ export default function SharedSkillDetailPage({
   useEffect(() => {
     let cancelled = false;
     reflexio
-      .getAgentPlaybooks({ reflexioUrl })
+      .getAgentPlaybooks({})
       .then((res) => {
         if (cancelled) return;
         const found = (res.agent_playbooks ?? []).find(
@@ -124,7 +122,7 @@ export default function SharedSkillDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [id, reflexioUrl]);
+  }, [id]);
 
   const dirty = useMemo(() => {
     if (!playbook) return false;
@@ -150,7 +148,6 @@ export default function SharedSkillDetailPage({
           rationale: form.rationale || null,
           playbook_status: form.playbookStatus,
         },
-        reflexioUrl,
       );
       setPlaybook({
         ...playbook,
@@ -186,7 +183,6 @@ export default function SharedSkillDetailPage({
           agent_playbook_id: playbook.agent_playbook_id,
           playbook_status: nextStatus,
         },
-        reflexioUrl,
       );
       setPlaybook((current) =>
         current ? { ...current, playbook_status: nextStatus } : current,
@@ -203,7 +199,7 @@ export default function SharedSkillDetailPage({
     if (!playbook) return;
     setDeleting(true);
     try {
-      await reflexio.deleteAgentPlaybook(playbook.agent_playbook_id, reflexioUrl);
+      await reflexio.deleteAgentPlaybook(playbook.agent_playbook_id);
       router.push("/skills");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
