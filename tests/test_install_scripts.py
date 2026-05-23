@@ -236,6 +236,12 @@ def test_backend_service_uses_capped_logging() -> None:
     assert '>>"$LOG_FILE"' not in service
 
 
+def test_backend_service_forces_utf8_stdio_for_managed_backend() -> None:
+    service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+
+    assert 'env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"' in service
+
+
 def test_service_start_scripts_recover_missing_dependencies_without_cli_command() -> (
     None
 ):

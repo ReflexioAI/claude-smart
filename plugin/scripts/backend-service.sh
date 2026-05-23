@@ -233,6 +233,7 @@ case "$CMD" in
     workers="${CLAUDE_SMART_BACKEND_WORKERS:-1}"
     claude_smart_spawn_detached bash "$HERE/backend-log-runner.sh" \
       "$LOG_FILE" "$LOG_MAX_BYTES" -- \
+      env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
       uv run --project "$PLUGIN_ROOT" --quiet \
       reflexio services start --only backend --no-reload --workers "$workers"
     svc_pid=$!
