@@ -127,6 +127,34 @@ def test_clear_all_missing_storage_root_is_success(clear_all_harness, capsys) ->
     assert "nothing to wipe" in capsys.readouterr().out
 
 
+def test_service_status_returns_probe_failed_when_bash_missing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "backend-service.sh"
+    script.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(cli, "_resolve_bash", lambda: None)
+
+    assert cli._service_status(script, wait_ready_s=0.0) == "probe_failed"
+
+
+def test_clear_all_aborts_when_initial_backend_status_probe_fails(
+    clear_all_harness, capsys
+) -> None:
+    root = clear_all_harness["storage_root"]
+    root.mkdir(parents=True)
+    (root / "reflexio.db").write_text("db")
+    clear_all_harness["statuses"][:] = ["probe_failed"]
+
+    rc = cli.cmd_clear_all(_args(yes=True))
+
+    assert rc == 1
+    assert root.exists()
+    assert clear_all_harness["calls"] == []
+    err = capsys.readouterr().err
+    assert "could not confirm reflexio backend is stopped" in err
+    assert "probe_failed" in err
+
+
 def test_clear_all_stops_and_restarts_running_backend(clear_all_harness) -> None:
     root = clear_all_harness["storage_root"]
     root.mkdir(parents=True)
@@ -182,6 +210,27 @@ def test_clear_all_aborts_when_backend_still_running(clear_all_harness, capsys) 
     assert root.exists()
     assert clear_all_harness["calls"] == [("backend-service.sh", "stop")]
     assert "still running" in capsys.readouterr().err
+
+
+def test_clear_all_aborts_when_post_stop_status_probe_fails(
+    clear_all_harness, capsys
+) -> None:
+    root = clear_all_harness["storage_root"]
+    root.mkdir(parents=True)
+    (root / "reflexio.db").write_text("db")
+    clear_all_harness["statuses"][:] = [
+        "running on http://localhost:8071",
+        "probe_failed",
+    ]
+
+    rc = cli.cmd_clear_all(_args(yes=True))
+
+    assert rc == 1
+    assert root.exists()
+    assert clear_all_harness["calls"] == [("backend-service.sh", "stop")]
+    err = capsys.readouterr().err
+    assert "could not confirm reflexio backend stopped" in err
+    assert "probe_failed" in err
 
 
 def test_clear_all_reports_start_failure_after_wipe(

@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -82,6 +83,7 @@ _LOCAL_DATA_NOTICE = (
     "  rm -rf ~/.claude-smart ~/.reflexio\n"
 )
 _INSTALL_FAILURE_MARKER = _STATE_DIR / "install-failed"
+_SERVICE_STATUS_PROBE_FAILED = "probe_failed"
 _DEFAULT_STORAGE_ROOT = _REFLEXIO_DIR / "data"
 _REFLEXIO_CONFIG_PATH = _REFLEXIO_DIR / "configs" / "config_self-host-org.json"
 _LOCAL_STORAGE_ENV = "LOCAL_STORAGE_PATH"
@@ -106,6 +108,94 @@ _COPYTREE_IGNORE = shutil.ignore_patterns(
     ".next",
     "node_modules",
 )
+
+
+def _windows_path_text(path: str) -> str:
+    """Normalize slashes/case for Windows path checks."""
+    return path.replace("/", "\\").lower()
+
+
+_WINDOWS_SYSTEM_BASH_SUFFIXES = (
+    "\\windows\\system32\\bash.exe",
+    "\\windows\\sysnative\\bash.exe",
+    "\\windows\\syswow64\\bash.exe",
+)
+
+
+def _is_windows_system_bash(path: str) -> bool:
+    normalized = _windows_path_text(path)
+    return normalized.endswith(_WINDOWS_SYSTEM_BASH_SUFFIXES)
+
+
+def _resolve_candidate(candidate: str) -> str | None:
+    expanded = os.path.expandvars(os.path.expanduser(candidate))
+    if os.path.isfile(expanded):
+        return expanded
+    return shutil.which(expanded)
+
+
+def _iter_path_candidates(names: tuple[str, ...]) -> list[str]:
+    found: list[str] = []
+    for raw_dir in os.environ.get("PATH", "").split(os.pathsep):
+        if not raw_dir:
+            continue
+        directory = os.path.expandvars(os.path.expanduser(raw_dir))
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate):
+                found.append(candidate)
+    return found
+
+
+def _first_non_system_bash(candidates: Iterable[str]) -> str | None:
+    for candidate in candidates:
+        resolved = _resolve_candidate(candidate)
+        if resolved and not _is_windows_system_bash(resolved):
+            return resolved
+    return None
+
+
+def _resolve_bash() -> str | None:
+    """Resolve a bash executable suitable for running bundled shell scripts.
+
+    Returns:
+        Absolute path to a usable bash, or None when none is available.
+        On Windows, the WSL stub under ``\\Windows\\System32`` (and the
+        ``Sysnative`` / ``SysWOW64`` redirectors) is rejected so that bundled
+        ``*.sh`` scripts run under Git-Bash instead.
+    """
+    if os.name != "nt":
+        return shutil.which("bash")
+
+    sources: list[Iterable[str]] = []
+    bash_env = os.environ.get("BASH", "").strip()
+    if bash_env:
+        sources.append((bash_env,))
+    sources.append(
+        (
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+        )
+    )
+    sources.append(_iter_path_candidates(("bash.exe", "bash")))
+    sources.append(("bash.exe", "bash"))
+
+    for source in sources:
+        resolved = _first_non_system_bash(source)
+        if resolved:
+            return resolved
+    return None
+
+
+def _resolve_npm() -> str | None:
+    """Resolve npm, accounting for Windows .cmd/.exe shims."""
+    if os.name == "nt":
+        for candidate in ("npm.cmd", "npm.exe", "npm"):
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved
+        return None
+    return shutil.which("npm")
 
 
 def _latest_session_id() -> str | None:
@@ -201,7 +291,7 @@ def _bootstrap_claude_code_install() -> tuple[bool, str]:
         _force_plugin_root(plugin_root)
     except OSError as exc:
         return False, str(exc)
-    bash = shutil.which("bash")
+    bash = _resolve_bash()
     if not bash:
         return False, "bash is required to bootstrap claude-smart dependencies"
     result = subprocess.run(
@@ -1251,8 +1341,12 @@ def _run_service(script: Path, subcmd: str) -> int:
     if not script.exists():
         sys.stderr.write(f"error: {script} not found\n")
         return 1
+    bash = _resolve_bash()
+    if not bash:
+        sys.stderr.write("error: bash is required to run claude-smart service scripts\n")
+        return 1
     try:
-        subprocess.run([str(script), subcmd], check=True)
+        subprocess.run([bash, str(script), subcmd], check=True)
         return 0
     except subprocess.CalledProcessError as exc:
         return exc.returncode or 1
@@ -1277,10 +1371,16 @@ def _service_status(script: Path, wait_ready_s: float = 3.0) -> str:
     """
     if not script.exists():
         return "script missing"
+    bash = _resolve_bash()
+    if not bash:
+        return _SERVICE_STATUS_PROBE_FAILED
     deadline = time.monotonic() + wait_ready_s
     while True:
         result = subprocess.run(
-            [str(script), "status"], capture_output=True, text=True, check=False
+            [bash, str(script), "status"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
         status = result.stdout.strip() or "unknown"
         if status != "not running" or time.monotonic() >= deadline:
@@ -1303,6 +1403,10 @@ class _ClearAllTarget:
 
 def _is_running_status(status: str) -> bool:
     return status.startswith("running on ")
+
+
+def _is_confirmed_stopped_status(status: str) -> bool:
+    return status == "not running"
 
 
 def _read_dotenv_value(env_path: Path, key: str) -> str | None:
@@ -1536,15 +1640,15 @@ def cmd_restart(args: argparse.Namespace) -> int:
             sys.stderr.write(
                 f"warning: dashboard dir {_DASHBOARD_DIR} missing; skipping rebuild\n"
             )
-        elif not shutil.which("npm"):
+        elif not (npm := _resolve_npm()):
             sys.stderr.write("warning: npm not on PATH; serving previous build\n")
         else:
             next_bin = _DASHBOARD_DIR / "node_modules" / ".bin" / "next"
             if not next_bin.exists():
                 install_cmd = (
-                    ["npm", "ci", "--no-audit", "--no-fund"]
+                    [npm, "ci", "--no-audit", "--no-fund"]
                     if (_DASHBOARD_DIR / "package-lock.json").exists()
-                    else ["npm", "install", "--no-audit", "--no-fund"]
+                    else [npm, "install", "--no-audit", "--no-fund"]
                 )
                 install_label = " ".join(install_cmd)
                 sys.stdout.write(
@@ -1573,10 +1677,11 @@ def cmd_restart(args: argparse.Namespace) -> int:
                 "Rebuilding dashboard (npm run build, may take a minute)…\n"
             )
             try:
-                subprocess.run(["npm", "run", "build"], cwd=_DASHBOARD_DIR, check=True)
-            except subprocess.CalledProcessError as exc:
+                subprocess.run([npm, "run", "build"], cwd=_DASHBOARD_DIR, check=True)
+            except (subprocess.CalledProcessError, OSError) as exc:
+                returncode = getattr(exc, "returncode", 1) or 1
                 sys.stderr.write(
-                    f"error: dashboard build failed (exit {exc.returncode}); "
+                    f"error: dashboard build failed (exit {returncode}); "
                     "not starting dashboard.\n"
                 )
                 if do_backend:
@@ -1585,7 +1690,7 @@ def cmd_restart(args: argparse.Namespace) -> int:
                     sys.stdout.write(
                         f"reflexio backend: {_service_status(_BACKEND_SCRIPT)}\n"
                     )
-                return exc.returncode or 1
+                return returncode
 
     start_rc = 0
     if do_backend:
@@ -1643,7 +1748,14 @@ def cmd_clear_all(args: argparse.Namespace) -> int:
         )
         return 1
 
-    was_running = _is_running_status(_service_status(_BACKEND_SCRIPT, wait_ready_s=0.0))
+    initial_status = _service_status(_BACKEND_SCRIPT, wait_ready_s=0.0)
+    was_running = _is_running_status(initial_status)
+    if not was_running and not _is_confirmed_stopped_status(initial_status):
+        sys.stderr.write(
+            "error: could not confirm reflexio backend is stopped "
+            f"({initial_status}); aborting without deleting data\n"
+        )
+        return 1
     if was_running:
         sys.stdout.write("Stopping reflexio backend…\n")
         stop_rc = _run_service(_BACKEND_SCRIPT, "stop")
@@ -1657,6 +1769,12 @@ def cmd_clear_all(args: argparse.Namespace) -> int:
             sys.stderr.write(
                 "error: reflexio backend is still running after stop; "
                 "aborting without deleting data\n"
+            )
+            return 1
+        if not _is_confirmed_stopped_status(stopped_status):
+            sys.stderr.write(
+                "error: could not confirm reflexio backend stopped "
+                f"({stopped_status}); aborting without deleting data\n"
             )
             return 1
 

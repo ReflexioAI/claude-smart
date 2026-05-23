@@ -58,6 +58,33 @@ def test_bootstrap_claude_code_install_runs_installed_smart_install(
     assert (tmp_path / ".reflexio" / "plugin-root").resolve() == plugin_root
 
 
+def test_bootstrap_claude_code_install_runs_smart_install_via_resolved_bash(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    plugin_root = _installed_plugin(tmp_path)
+    _isolate_home(monkeypatch, tmp_path)
+    calls: list[tuple[list[str], Path | None]] = []
+
+    def fake_run(cmd, cwd=None):
+        calls.append(([str(part) for part in cmd], cwd))
+        return argparse.Namespace(returncode=0)
+
+    monkeypatch.setattr(cli, "_resolve_bash", lambda: "/bin/bash")
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    ok, message = cli._bootstrap_claude_code_install()
+
+    assert ok, message
+    assert message == str(plugin_root)
+    assert calls == [
+        (
+            ["/bin/bash", str(plugin_root / "scripts" / "smart-install.sh")],
+            plugin_root,
+        )
+    ]
+
+
 def test_bootstrap_claude_code_install_prefers_highest_cache_version(
     monkeypatch,
     tmp_path: Path,
