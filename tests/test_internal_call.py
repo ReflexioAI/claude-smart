@@ -8,6 +8,8 @@ each detection path has an explicit test.
 
 from __future__ import annotations
 
+import importlib
+
 import pytest
 
 from claude_smart import internal_call, runtime
@@ -38,6 +40,19 @@ def test_returns_true_when_cwd_inside_reflexio(
     (fake_reflexio / "server").mkdir(parents=True)
     monkeypatch.setattr(internal_call, "_REFLEXIO_DIR", fake_reflexio)
     assert is_internal_invocation({"cwd": str(fake_reflexio / "server")}) is True
+
+
+def test_reflexio_dir_env_override_is_resolved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLAUDE_SMART_REFLEXIO_DIR", "reflexio")
+    try:
+        reloaded = importlib.reload(internal_call)
+        assert reloaded._REFLEXIO_DIR == (tmp_path / "reflexio").resolve()  # noqa: SLF001
+    finally:
+        monkeypatch.delenv("CLAUDE_SMART_REFLEXIO_DIR", raising=False)
+        importlib.reload(internal_call)
 
 
 def test_returns_false_for_external_cwd(

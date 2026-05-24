@@ -74,7 +74,7 @@ _CODEX_SUGGESTIONS_APPS_MARKER = (
 _THIS_DIR = Path(__file__).resolve().parent
 _REFLEXIO_DIR = Path(
     os.environ.get("CLAUDE_SMART_REFLEXIO_DIR") or _THIS_DIR.parents[3] / "reflexio"
-)
+).resolve()
 
 
 def is_internal_invocation(payload: dict[str, Any]) -> bool:

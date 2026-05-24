@@ -26,12 +26,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--check-vendor",
         action="store_true",
-        help="If reflexio.lock.json uses source=vendor, require the generated vendor bundle",
+        help=(
+            "If reflexio.lock.json uses source=vendor, require the generated "
+            "vendor bundle"
+        ),
     )
     return parser.parse_args()
 
 
-def require_str(payload: dict, key: str) -> str:
+def read_lock_file(lock_path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(lock_path.read_text())
+    except json.JSONDecodeError as exc:
+        fail(f"reflexio.lock.json is not valid JSON: {exc}")
+    if not isinstance(payload, dict):
+        fail("reflexio.lock.json top-level value must be a JSON object")
+    return payload
+
+
+def require_str(payload: dict[str, object], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value:
         fail(f"reflexio.lock.json is missing a non-empty {key!r} field")
@@ -51,7 +64,10 @@ def read_vendor_version(vendor: Path) -> str:
     name = project.get("name")
     version = project.get("version")
     if name != PACKAGE_NAME:
-        fail(f"vendored Reflexio package name mismatch: expected {PACKAGE_NAME!r}, got {name!r}")
+        fail(
+            "vendored Reflexio package name mismatch: "
+            f"expected {PACKAGE_NAME!r}, got {name!r}"
+        )
     if not isinstance(version, str) or not version:
         fail(f"vendored Reflexio is missing [project].version in {pyproject}")
     return version
@@ -65,13 +81,13 @@ def fix_command_for(source: str) -> str:
 
 def main() -> int:
     args = parse_args()
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[1].resolve()
     lock_path = repo_root / "reflexio.lock.json"
     pyproject_path = repo_root / "plugin" / "pyproject.toml"
 
     if not lock_path.is_file():
         fail("reflexio.lock.json is missing")
-    lock_data = json.loads(lock_path.read_text())
+    lock_data = read_lock_file(lock_path)
     package = require_str(lock_data, "package")
     repo = require_str(lock_data, "repo")
     version = require_str(lock_data, "version")
@@ -80,7 +96,10 @@ def main() -> int:
     source = require_str(lock_data, "source")
 
     if package != PACKAGE_NAME:
-        fail(f"reflexio.lock.json package mismatch: expected {PACKAGE_NAME!r}, got {package!r}")
+        fail(
+            "reflexio.lock.json package mismatch: "
+            f"expected {PACKAGE_NAME!r}, got {package!r}"
+        )
     if repo != REPO_URL:
         fail(f"reflexio.lock.json repo mismatch: expected {REPO_URL!r}, got {repo!r}")
     if source not in VALID_SOURCES:
@@ -111,7 +130,11 @@ def main() -> int:
 
     if source == "vendor":
         vendor_path = require_str(lock_data, "vendor_path")
-        vendor = repo_root / vendor_path
+        vendor = (repo_root / vendor_path).resolve()
+        try:
+            vendor_display = vendor.relative_to(repo_root)
+        except ValueError:
+            fail(f"vendor_path must stay within repo root: {vendor}")
         if args.check_vendor:
             vendor_version = read_vendor_version(vendor)
             if vendor_version != version:
@@ -121,7 +144,7 @@ def main() -> int:
                     f"  reflexio.lock.json:       {version}\n"
                     "Run: bash scripts/release-with-reflexio.sh"
                 )
-            print(f"OK: vendored Reflexio bundle present at {vendor.relative_to(repo_root)}")
+            print(f"OK: vendored Reflexio bundle present at {vendor_display}")
 
     print(f"OK: {actual} ({source})")
     return 0

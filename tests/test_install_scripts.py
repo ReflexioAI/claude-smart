@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 from pathlib import Path
@@ -892,6 +893,12 @@ def test_setup_local_dev_prefers_workspace_reflexio_checkout() -> None:
 
     assert "CLAUDE_SMART_LOCAL_REFLEXIO_PATH" in script
     assert "REFLEXIO_PATH" in script
+    assert "expand_user_path()" in script
+    assert 'reflexio_env_path="$(expand_user_path "$REFLEXIO_PATH")"' in script
+    assert (
+        'reflexio_env_path="$(expand_user_path '
+        '"$CLAUDE_SMART_LOCAL_REFLEXIO_PATH")"'
+    ) in script
     assert 'sibling_reflexio="$REPO_ROOT/../reflexio"' in script
     assert 'bundled_reflexio="$REPO_ROOT/reflexio"' not in script
     assert "git submodule update --init --recursive reflexio" not in script
@@ -908,8 +915,11 @@ def test_use_local_reflexio_installs_into_plugin_venv() -> None:
     makefile = (REPO_ROOT / "Makefile").read_text()
 
     assert 'REFLEXIO_PATH="${REFLEXIO_PATH:-$REPO_ROOT/../reflexio}"' in script
+    assert 'REFLEXIO_PATH="$(expand_user_path "$REFLEXIO_PATH")"' in script
     assert 'uv sync --project "$PLUGIN_ROOT"' in script
-    assert 'PLUGIN_PYTHON="$PLUGIN_ROOT/.venv/bin/python"' in script
+    assert 'resolve_venv_python()' in script
+    assert 'if ! PLUGIN_PYTHON="$(resolve_venv_python "$PLUGIN_ROOT")"; then' in script
+    assert '$venv_root/Scripts/python.exe' in script
     assert (
         'uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" '
         '-e "$REFLEXIO_PATH"'
@@ -968,6 +978,10 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     assert "VALID_SOURCES" in lock_script
     assert "source=pypi must not include vendor_path" in lock_script
     assert "vendored Reflexio version mismatch" in lock_script
+    assert "read_lock_file(lock_path)" in lock_script
+    assert "reflexio.lock.json is not valid JSON" in lock_script
+    assert "top-level value must be a JSON object" in lock_script
+    assert "vendor_path must stay within repo root" in lock_script
     assert "installVendoredReflexio(pluginRoot, uv, env)" in installer
     assert 'join(pluginRoot, "vendor", "reflexio")' in installer
     assert '"pip", "install", "--project", pluginRoot' in installer
@@ -980,6 +994,91 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     assert "install_vendored_reflexio" in smart_install
     assert "vendor_reflexio_pyproject" in lib
     assert "/plugin/vendor/" in gitignore
+
+
+def test_check_reflexio_lock_reports_invalid_json(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    plugin = tmp_path / "plugin"
+    scripts.mkdir()
+    plugin.mkdir()
+    shutil.copy2(CHECK_REFLEXIO_LOCK, scripts / "check-reflexio-lock.py")
+    (plugin / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["reflexio-ai>=0.2.22"]\n'
+    )
+    (tmp_path / "reflexio.lock.json").write_text("{broken")
+
+    result = subprocess.run(
+        [sys.executable, str(scripts / "check-reflexio-lock.py")],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "error: reflexio.lock.json is not valid JSON" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_check_reflexio_lock_requires_json_object(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    plugin = tmp_path / "plugin"
+    scripts.mkdir()
+    plugin.mkdir()
+    shutil.copy2(CHECK_REFLEXIO_LOCK, scripts / "check-reflexio-lock.py")
+    (plugin / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["reflexio-ai>=0.2.22"]\n'
+    )
+    (tmp_path / "reflexio.lock.json").write_text("[]\n")
+
+    result = subprocess.run(
+        [sys.executable, str(scripts / "check-reflexio-lock.py")],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "top-level value must be a JSON object" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_check_reflexio_lock_rejects_out_of_repo_vendor_path(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    plugin = tmp_path / "plugin"
+    outside_vendor = tmp_path.parent / "outside-reflexio"
+    scripts.mkdir()
+    plugin.mkdir()
+    outside_vendor.mkdir()
+    shutil.copy2(CHECK_REFLEXIO_LOCK, scripts / "check-reflexio-lock.py")
+    dependency = "reflexio-ai>=0.2.22"
+    (plugin / "pyproject.toml").write_text(
+        f'[project]\ndependencies = ["{dependency}"]\n'
+    )
+    (tmp_path / "reflexio.lock.json").write_text(
+        json.dumps(
+            {
+                "package": "reflexio-ai",
+                "repo": "https://github.com/ReflexioAI/reflexio.git",
+                "version": "0.2.22",
+                "commit": "a" * 40,
+                "dependency": dependency,
+                "source": "vendor",
+                "vendor_path": str(outside_vendor),
+                "updated_at": "2026-05-24T00:00:00Z",
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(scripts / "check-reflexio-lock.py"), "--check-vendor"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "error: vendor_path must stay within repo root" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_smart_install_installs_vendored_reflexio(tmp_path: Path) -> None:

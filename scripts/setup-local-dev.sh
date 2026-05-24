@@ -35,22 +35,51 @@ is_reflexio_checkout() {
   [ -f "$1/pyproject.toml" ] && [ -d "$1/reflexio" ]
 }
 
+expand_user_path() {
+  case "$1" in
+    "~")
+      printf '%s\n' "$HOME"
+      ;;
+    "~/"*)
+      printf '%s/%s\n' "$HOME" "${1#"~/"}"
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
+  esac
+}
+
+resolve_venv_python() {
+  venv_root="$1/.venv"
+  if [ -x "$venv_root/bin/python" ]; then
+    printf '%s\n' "$venv_root/bin/python"
+    return 0
+  fi
+  if [ -x "$venv_root/Scripts/python.exe" ]; then
+    printf '%s\n' "$venv_root/Scripts/python.exe"
+    return 0
+  fi
+  return 1
+}
+
 resolve_reflexio_source() {
   if [ -n "${CLAUDE_SMART_LOCAL_REFLEXIO_PATH:-}" ]; then
-    if is_reflexio_checkout "$CLAUDE_SMART_LOCAL_REFLEXIO_PATH"; then
-      (cd "$CLAUDE_SMART_LOCAL_REFLEXIO_PATH" && pwd)
+    reflexio_env_path="$(expand_user_path "$CLAUDE_SMART_LOCAL_REFLEXIO_PATH")"
+    if is_reflexio_checkout "$reflexio_env_path"; then
+      (cd "$reflexio_env_path" && pwd)
       return 0
     fi
-    log "ERROR: CLAUDE_SMART_LOCAL_REFLEXIO_PATH is not a Reflexio checkout: $CLAUDE_SMART_LOCAL_REFLEXIO_PATH"
+    log "ERROR: CLAUDE_SMART_LOCAL_REFLEXIO_PATH is not a Reflexio checkout: $reflexio_env_path"
     exit 1
   fi
 
   if [ -n "${REFLEXIO_PATH:-}" ]; then
-    if is_reflexio_checkout "$REFLEXIO_PATH"; then
-      (cd "$REFLEXIO_PATH" && pwd)
+    reflexio_env_path="$(expand_user_path "$REFLEXIO_PATH")"
+    if is_reflexio_checkout "$reflexio_env_path"; then
+      (cd "$reflexio_env_path" && pwd)
       return 0
     fi
-    log "ERROR: REFLEXIO_PATH is not a Reflexio checkout: $REFLEXIO_PATH"
+    log "ERROR: REFLEXIO_PATH is not a Reflexio checkout: $reflexio_env_path"
     exit 1
   fi
 
@@ -165,9 +194,8 @@ install_editable_reflexio_into_codex_cache() {
 
   log "installing editable Reflexio into Codex plugin cache..."
   uv sync --project "$cache_root"
-  cache_python="$cache_root/.venv/bin/python"
-  if [ ! -x "$cache_python" ]; then
-    log "ERROR: Codex plugin cache Python was not created by uv sync: $cache_python"
+  if ! cache_python="$(resolve_venv_python "$cache_root")"; then
+    log "ERROR: Codex plugin cache Python was not created by uv sync under $cache_root/.venv"
     exit 1
   fi
   uv pip install --project "$cache_root" --python "$cache_python" -e "$REFLEXIO_ABS"
