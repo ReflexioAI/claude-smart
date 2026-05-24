@@ -11,6 +11,38 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REFLEXIO_PATH="${REFLEXIO_PATH:-$REPO_ROOT/../reflexio}"
 REFLEXIO_RELEASE_SOURCE="${REFLEXIO_RELEASE_SOURCE:-vendor}"
+PYTHON_BIN="${PYTHON:-python3}"
+
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  echo "error: Python interpreter not found: $PYTHON_BIN" >&2
+  echo "Set PYTHON=/path/to/python3 or install python3." >&2
+  exit 1
+fi
+
+verify_vendor_in_npm_pack() {
+  pack_json="$(mktemp "${TMPDIR:-/tmp}/claude-smart-pack.XXXXXX.json")"
+  npm pack --dry-run --json > "$pack_json"
+  "$PYTHON_BIN" - "$pack_json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text())
+files = {entry["path"] for package in payload for entry in package.get("files", [])}
+required = {
+    "plugin/vendor/reflexio/pyproject.toml",
+    "plugin/vendor/reflexio/reflexio/__init__.py",
+}
+missing = sorted(required.difference(files))
+if missing:
+    raise SystemExit(
+        "error: npm pack is missing vendored Reflexio files:\n  "
+        + "\n  ".join(missing)
+    )
+print("OK: npm tarball includes vendored Reflexio files")
+PY
+  rm -f "$pack_json"
+}
 
 cd "$REPO_ROOT"
 
@@ -18,7 +50,7 @@ echo "Using Reflexio checkout: $REFLEXIO_PATH"
 
 case "$REFLEXIO_RELEASE_SOURCE" in
   vendor)
-    python scripts/vendor-reflexio.py \
+    "$PYTHON_BIN" scripts/vendor-reflexio.py \
       --reflexio-path "$REFLEXIO_PATH" \
       --write
     uv sync --project plugin --locked
@@ -30,7 +62,7 @@ case "$REFLEXIO_RELEASE_SOURCE" in
     uv pip install --project plugin --python "$PLUGIN_PYTHON" -e plugin/vendor/reflexio
     ;;
   pypi)
-    python scripts/sync-reflexio-dep.py \
+    "$PYTHON_BIN" scripts/sync-reflexio-dep.py \
       --reflexio-path "$REFLEXIO_PATH" \
       --write \
       --check-pypi \
@@ -45,7 +77,11 @@ case "$REFLEXIO_RELEASE_SOURCE" in
 esac
 
 (cd plugin && uv run --project . --no-sync pytest --rootdir .. -o addopts= ../tests -q)
-npm pack --dry-run
+if [ "$REFLEXIO_RELEASE_SOURCE" = "vendor" ]; then
+  verify_vendor_in_npm_pack
+else
+  npm pack --dry-run
+fi
 
 if [ "$REFLEXIO_RELEASE_SOURCE" = "vendor" ]; then
   cat <<'EOF'

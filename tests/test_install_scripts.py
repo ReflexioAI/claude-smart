@@ -20,6 +20,7 @@ SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
 SETUP_LOCAL_DEV = REPO_ROOT / "scripts" / "setup-local-dev.sh"
 USE_LOCAL_REFLEXIO = REPO_ROOT / "scripts" / "use-local-reflexio.sh"
 SYNC_REFLEXIO_DEP = REPO_ROOT / "scripts" / "sync-reflexio-dep.py"
+CHECK_REFLEXIO_LOCK = REPO_ROOT / "scripts" / "check-reflexio-lock.py"
 VENDOR_REFLEXIO = REPO_ROOT / "scripts" / "vendor-reflexio.py"
 RELEASE_WITH_REFLEXIO = REPO_ROOT / "scripts" / "release-with-reflexio.sh"
 SETUP_CLAUDE_SMART = REPO_ROOT / "scripts" / "setup-claude-smart.sh"
@@ -902,6 +903,8 @@ def test_reflexio_release_sync_has_strict_release_checks() -> None:
     assert "rev-parse\", \"origin/main" in sync_script
     assert "tag\", \"--points-at\", \"HEAD" in sync_script
     assert "v{version}" in sync_script
+    assert "PyPI reflexio-ai dependency" in sync_script
+    assert '"source": "pypi"' in sync_script
     assert 'REFLEXIO_PATH="${REFLEXIO_PATH:-$REPO_ROOT/../reflexio}"' in release_script
     assert '--reflexio-path "$REFLEXIO_PATH"' in release_script
     assert "--check-pypi" in release_script
@@ -911,6 +914,7 @@ def test_reflexio_release_sync_has_strict_release_checks() -> None:
 def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     vendor_script = VENDOR_REFLEXIO.read_text()
     release_script = RELEASE_WITH_REFLEXIO.read_text()
+    lock_script = CHECK_REFLEXIO_LOCK.read_text()
     installer = NODE_INSTALLER.read_text()
     gitignore = (REPO_ROOT / ".gitignore").read_text()
 
@@ -918,12 +922,19 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     assert "git\", \"-C\", str(reflexio_path), \"archive\"" in vendor_script
     assert '"source": "vendor"' in vendor_script
     assert '"vendor_path": str(VENDOR_PATH)' in vendor_script
+    assert "package_include_paths" in vendor_script
+    assert "only-include" in vendor_script
     assert 'REFLEXIO_RELEASE_SOURCE="${REFLEXIO_RELEASE_SOURCE:-vendor}"' in release_script
-    assert "python scripts/vendor-reflexio.py" in release_script
+    assert 'PYTHON_BIN="${PYTHON:-python3}"' in release_script
+    assert '"$PYTHON_BIN" scripts/vendor-reflexio.py' in release_script
     assert "uv pip install --project plugin --python" in release_script
     assert "-e plugin/vendor/reflexio" in release_script
+    assert "OK: npm tarball includes vendored Reflexio files" in release_script
     assert "Keep generated plugin/vendor/reflexio in place" in release_script
     assert "make release-npm VERSION=<new-claude-smart-version>" in release_script
+    assert "VALID_SOURCES" in lock_script
+    assert "source=pypi must not include vendor_path" in lock_script
+    assert "vendored Reflexio version mismatch" in lock_script
     assert "installVendoredReflexio(pluginRoot, uv, env)" in installer
     assert 'join(pluginRoot, "vendor", "reflexio")' in installer
     assert '"pip", "install", "--project", pluginRoot' in installer

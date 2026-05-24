@@ -22,6 +22,7 @@ from pathlib import Path
 PACKAGE_NAME = "reflexio-ai"
 REPO_URL = "https://github.com/ReflexioAI/reflexio.git"
 VENDOR_PATH = Path("plugin/vendor/reflexio")
+DEFAULT_INCLUDE = ["pyproject.toml", "README.md", "LICENSE", ".env.example", "reflexio"]
 
 
 def fail(message: str) -> None:
@@ -61,6 +62,35 @@ def read_project_metadata(reflexio_path: Path) -> tuple[str, str]:
     return name, version
 
 
+def read_toml(path: Path) -> dict:
+    with path.open("rb") as handle:
+        return tomllib.load(handle)
+
+
+def package_include_paths(reflexio_path: Path) -> list[str]:
+    pyproject = reflexio_path / "pyproject.toml"
+    data = read_toml(pyproject)
+    sdist = (
+        data.get("tool", {})
+        .get("hatch", {})
+        .get("build", {})
+        .get("targets", {})
+        .get("sdist", {})
+    )
+    include = sdist.get("only-include")
+    if not isinstance(include, list) or not all(isinstance(item, str) for item in include):
+        return DEFAULT_INCLUDE
+    required = {"pyproject.toml", "reflexio"}
+    merged = list(dict.fromkeys([*include, "README.md", "LICENSE", ".env.example"]))
+    missing_required = required.difference(merged)
+    if missing_required:
+        fail(
+            "Reflexio sdist include list does not contain required package paths: "
+            + ", ".join(sorted(missing_required))
+        )
+    return merged
+
+
 def current_dependency(repo_root: Path) -> str:
     pyproject = repo_root / "plugin" / "pyproject.toml"
     text = pyproject.read_text()
@@ -81,8 +111,12 @@ def current_dependency(repo_root: Path) -> str:
     return dependency
 
 
-def export_reflexio(reflexio_path: Path, commit: str, vendor_dest: Path) -> None:
-    files = ["pyproject.toml", "README.md", "LICENSE", ".env.example", "reflexio"]
+def export_reflexio(
+    reflexio_path: Path,
+    commit: str,
+    vendor_dest: Path,
+    files: list[str],
+) -> None:
     with tempfile.TemporaryDirectory(prefix="claude-smart-reflexio-") as tmp:
         archive = Path(tmp) / "reflexio.tar"
         try:
@@ -203,6 +237,7 @@ def main() -> int:
             )
 
     dependency = current_dependency(repo_root)
+    include_paths = package_include_paths(reflexio_path)
     vendor_dest = repo_root / VENDOR_PATH
     lock_file = repo_root / "reflexio.lock.json"
     lock_changed = write_lock(lock_file, version, commit, dependency, write=args.write)
@@ -213,9 +248,12 @@ def main() -> int:
     print(f"Reflexio commit: {commit}")
     print(f"PyPI fallback dependency: {dependency}")
     print(f"Vendor path: {VENDOR_PATH}")
+    print("Vendored paths:")
+    for include_path in include_paths:
+        print(f"  {include_path}")
 
     if args.write:
-        export_reflexio(reflexio_path, commit, vendor_dest)
+        export_reflexio(reflexio_path, commit, vendor_dest, include_paths)
         print(f"Updated: {VENDOR_PATH}")
         print(f"{'Updated' if lock_changed else 'Unchanged'}: reflexio.lock.json")
     else:

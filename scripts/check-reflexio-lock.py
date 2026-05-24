@@ -7,9 +7,13 @@ import argparse
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 DEPENDENCY_RE = re.compile(r'"reflexio-ai[^"]*"')
+PACKAGE_NAME = "reflexio-ai"
+REPO_URL = "https://github.com/ReflexioAI/reflexio.git"
+VALID_SOURCES = {"pypi", "vendor"}
 
 
 def fail(message: str) -> None:
@@ -27,6 +31,38 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def require_str(payload: dict, key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        fail(f"reflexio.lock.json is missing a non-empty {key!r} field")
+    return value
+
+
+def read_vendor_version(vendor: Path) -> str:
+    pyproject = vendor / "pyproject.toml"
+    if not pyproject.is_file():
+        fail(
+            f"reflexio.lock.json requires vendored Reflexio but {vendor} is missing; "
+            "run bash scripts/release-with-reflexio.sh before npm publish"
+        )
+    with pyproject.open("rb") as handle:
+        data = tomllib.load(handle)
+    project = data.get("project", {})
+    name = project.get("name")
+    version = project.get("version")
+    if name != PACKAGE_NAME:
+        fail(f"vendored Reflexio package name mismatch: expected {PACKAGE_NAME!r}, got {name!r}")
+    if not isinstance(version, str) or not version:
+        fail(f"vendored Reflexio is missing [project].version in {pyproject}")
+    return version
+
+
+def fix_command_for(source: str) -> str:
+    if source == "vendor":
+        return "Run: bash scripts/release-with-reflexio.sh"
+    return "Run: REFLEXIO_RELEASE_SOURCE=pypi bash scripts/release-with-reflexio.sh"
+
+
 def main() -> int:
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[1]
@@ -36,9 +72,26 @@ def main() -> int:
     if not lock_path.is_file():
         fail("reflexio.lock.json is missing")
     lock_data = json.loads(lock_path.read_text())
-    expected = lock_data.get("dependency")
-    if not isinstance(expected, str) or not expected:
-        fail("reflexio.lock.json is missing a non-empty dependency field")
+    package = require_str(lock_data, "package")
+    repo = require_str(lock_data, "repo")
+    version = require_str(lock_data, "version")
+    commit = require_str(lock_data, "commit")
+    expected = require_str(lock_data, "dependency")
+    source = require_str(lock_data, "source")
+
+    if package != PACKAGE_NAME:
+        fail(f"reflexio.lock.json package mismatch: expected {PACKAGE_NAME!r}, got {package!r}")
+    if repo != REPO_URL:
+        fail(f"reflexio.lock.json repo mismatch: expected {REPO_URL!r}, got {repo!r}")
+    if source not in VALID_SOURCES:
+        fail(
+            f"reflexio.lock.json source must be one of {sorted(VALID_SOURCES)}, "
+            f"got {source!r}"
+        )
+    if len(commit) != 40 or not re.fullmatch(r"[0-9a-fA-F]+", commit):
+        fail(f"reflexio.lock.json commit must be a full git SHA, got {commit!r}")
+    if source == "pypi" and "vendor_path" in lock_data:
+        fail("reflexio.lock.json source=pypi must not include vendor_path")
 
     pyproject_text = pyproject_path.read_text()
     matches = [match.strip('"') for match in DEPENDENCY_RE.findall(pyproject_text)]
@@ -53,19 +106,24 @@ def main() -> int:
             "reflexio-ai dependency mismatch:\n"
             f"  plugin/pyproject.toml: {actual}\n"
             f"  reflexio.lock.json:   {expected}\n"
-            "Run: python scripts/sync-reflexio-dep.py --write"
+            f"{fix_command_for(source)}"
         )
 
-    if args.check_vendor and lock_data.get("source") == "vendor":
-        vendor = repo_root / str(lock_data.get("vendor_path") or "plugin/vendor/reflexio")
-        if not (vendor / "pyproject.toml").is_file():
-            fail(
-                f"reflexio.lock.json requires vendored Reflexio but {vendor} is missing; "
-                "run bash scripts/release-with-reflexio.sh before npm publish"
-            )
-        print(f"OK: vendored Reflexio bundle present at {vendor.relative_to(repo_root)}")
+    if source == "vendor":
+        vendor_path = require_str(lock_data, "vendor_path")
+        vendor = repo_root / vendor_path
+        if args.check_vendor:
+            vendor_version = read_vendor_version(vendor)
+            if vendor_version != version:
+                fail(
+                    "vendored Reflexio version mismatch:\n"
+                    f"  {vendor / 'pyproject.toml'}: {vendor_version}\n"
+                    f"  reflexio.lock.json:       {version}\n"
+                    "Run: bash scripts/release-with-reflexio.sh"
+                )
+            print(f"OK: vendored Reflexio bundle present at {vendor.relative_to(repo_root)}")
 
-    print(f"OK: {actual}")
+    print(f"OK: {actual} ({source})")
     return 0
 
 

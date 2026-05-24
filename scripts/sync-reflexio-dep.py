@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Synchronize claude-smart's reflexio-ai dependency from a Reflexio checkout."""
+"""Synchronize claude-smart's PyPI reflexio-ai dependency from Reflexio.
+
+Use this for the strict PyPI release path. For fast npm releases that need
+unpublished Reflexio changes, use scripts/vendor-reflexio.py via
+scripts/release-with-reflexio.sh.
+"""
 
 from __future__ import annotations
 
@@ -136,6 +141,7 @@ def current_lock_updated_at(
         "version": version,
         "commit": commit,
         "dependency": dependency,
+        "source": "pypi",
     }
     for key, value in expected.items():
         if payload.get(key) != value:
@@ -151,6 +157,7 @@ def build_lock(version: str, commit: str, dependency: str, updated_at: str | Non
         "version": version,
         "commit": commit,
         "dependency": dependency,
+        "source": "pypi",
         "updated_at": updated_at
         or datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
     }
@@ -220,7 +227,7 @@ def main() -> int:
     print(f"Reflexio package: {package}")
     print(f"Reflexio version: {version}")
     print(f"Reflexio commit: {commit}")
-    print(f"New dependency: {dependency}")
+    print(f"New PyPI dependency: {dependency}")
 
     if args.write:
         if pyproject_changed:

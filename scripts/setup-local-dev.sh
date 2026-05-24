@@ -6,7 +6,7 @@
 #   1. Install a side-by-side Reflexio checkout into the plugin venv as editable.
 #   2. `uv sync` from plugin/.
 #   3. Append CLAUDE_SMART_USE_LOCAL_CLI=1 / _USE_LOCAL_EMBEDDING=1 to
-#      ~/.reflexio/.env so reflexio runs without any external API key.
+#      ~/.reflexio/.env so Reflexio runs without any external API key.
 #   4. For Claude Code (default): prepare and register the local marketplace
 #      (user scope) so `claude-smart@reflexioai-local` is available everywhere.
 #   5. For Claude Code: disable the published claude-smart plugin at user scope
@@ -26,8 +26,6 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 PLUGIN_ROOT="$REPO_ROOT/plugin"
-PYPROJECT="$PLUGIN_ROOT/pyproject.toml"
-LOCKFILE="$PLUGIN_ROOT/uv.lock"
 
 log() { printf '[setup-local-dev] %s\n' "$*" >&2; }
 
@@ -200,7 +198,7 @@ if ! grep -q '^CLAUDE_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
   log "appended CLAUDE_SMART_USE_LOCAL_CLI=1 to $REFLEXIO_ENV"
 fi
 if ! grep -q '^CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
-  printf '# Use the in-process ONNX embedder (chromadb) — no API key for semantic search\nCLAUDE_SMART_USE_LOCAL_EMBEDDING=1\n' >> "$REFLEXIO_ENV"
+  printf '# Use Reflexio local embedding support — no API key for semantic search\nCLAUDE_SMART_USE_LOCAL_EMBEDDING=1\n' >> "$REFLEXIO_ENV"
   log "appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 to $REFLEXIO_ENV"
 fi
 python3 - "$REFLEXIO_ENV" "$READ_ONLY" <<'PY'
