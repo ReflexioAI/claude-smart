@@ -350,8 +350,9 @@ Idempotent. This single script handles the shared local-dev prep for every host 
 4. For `--host claude-code`, writes `.claude/settings.local.json` → enable `claude-smart@reflexioai-local`, disable `claude-smart@reflexioai`.
 5. For `--host claude-code`, force-sets `~/.reflexio/plugin-root` → `plugin/` so slash commands resolve to editable in-repo sources.
 6. For `--host codex`, runs `node bin/claude-smart.js install --host codex` so the installed Codex hooks are patched through the JSON-safe `scripts/codex-hook.js` adapter.
-7. For `--host both`, force-sets `~/.reflexio/plugin-root` back to editable `plugin/` after the Codex install step, since the Codex installer may point it at the copied cache.
-8. Refreshes the local dashboard process. The dashboard health endpoint exposes the serving plugin root, so setup can stop a stale claude-smart dashboard from an older cache while leaving a foreign app on port `3001` alone.
+7. For `--host codex`, writes a local-only `reflexio-ai` source override into the generated Codex marketplace/cache copies and installs the same side-by-side Reflexio checkout as editable into Codex's copied plugin cache venv, because Codex hooks run from `~/.codex/plugins/cache/...` instead of directly from this checkout.
+8. For `--host both`, force-sets `~/.reflexio/plugin-root` back to editable `plugin/` after the Codex install step, since the Codex installer may point it at the copied cache.
+9. Refreshes the local dashboard process. The dashboard health endpoint exposes the serving plugin root, so setup can stop a stale claude-smart dashboard from an older cache while leaving a foreign app on port `3001` alone.
 
 Then restart the target host. In a new Claude Code session, `/plugin` should show `claude-smart@reflexioai-local` and should not also show the published `claude-smart@reflexioai`. In Codex, `/plugins` should show `claude-smart` installed from the **ReflexioAI** marketplace.
 

@@ -17,7 +17,8 @@
 #      buffer but do not publish interactions to Reflexio.
 #   8. For Codex (`--host codex` or `--host both`): run the maintained
 #      Node install wrapper so Codex hooks are patched through the JSON-safe
-#      codex-hook.js adapter.
+#      codex-hook.js adapter, then install the same editable Reflexio checkout
+#      into the Codex plugin cache venv used by those hooks.
 #   9. Print a Reflexio source diagnostic so local/PyPI mixups are visible.
 #
 # Idempotent: safe to re-run.
@@ -86,6 +87,111 @@ if "override_learning_stall" not in signature.parameters:
     sys.exit(1)
 PY
   )
+}
+
+codex_plugin_cache_root() {
+  python3 - "$REPO_ROOT/plugin/.codex-plugin/plugin.json" "$HOME/.codex/plugins/cache/reflexioai/claude-smart" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest = Path(sys.argv[1])
+cache_root = Path(sys.argv[2])
+version = json.loads(manifest.read_text())["version"]
+print(cache_root / version)
+PY
+}
+
+write_local_reflexio_uv_source() {
+  project_root="$1"
+  pyproject="$project_root/pyproject.toml"
+  if [ ! -f "$pyproject" ]; then
+    log "ERROR: expected pyproject.toml at $pyproject"
+    exit 1
+  fi
+  python3 - "$pyproject" "$REFLEXIO_ABS" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+reflexio_path = sys.argv[2]
+entry = f"reflexio-ai = {{ path = {json.dumps(reflexio_path)}, editable = true }}"
+lines = path.read_text().splitlines()
+out: list[str] = []
+in_sources = False
+sources_seen = False
+entry_written = False
+
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        if in_sources and not entry_written:
+            out.append(entry)
+            entry_written = True
+        in_sources = stripped == "[tool.uv.sources]"
+        sources_seen = sources_seen or in_sources
+        out.append(line)
+        continue
+    if in_sources and stripped.startswith("reflexio-ai "):
+        continue
+    out.append(line)
+
+if in_sources and not entry_written:
+    out.append(entry)
+    entry_written = True
+
+if not sources_seen:
+    if out and out[-1] != "":
+        out.append("")
+    out.append("[tool.uv.sources]")
+    out.append(entry)
+
+path.write_text("\n".join(out) + "\n")
+PY
+}
+
+install_editable_reflexio_into_codex_cache() {
+  cache_root="$(codex_plugin_cache_root)"
+  if [ ! -d "$cache_root" ]; then
+    log "ERROR: Codex plugin cache was not created at $cache_root"
+    exit 1
+  fi
+
+  marketplace_plugin_root="$HOME/.claude/plugins/marketplaces/reflexioai/plugin"
+  log "writing local Reflexio source override into Codex marketplace snapshot..."
+  write_local_reflexio_uv_source "$marketplace_plugin_root"
+  write_local_reflexio_uv_source "$cache_root"
+
+  log "installing editable Reflexio into Codex plugin cache..."
+  uv sync --project "$cache_root"
+  cache_python="$cache_root/.venv/bin/python"
+  if [ ! -x "$cache_python" ]; then
+    log "ERROR: Codex plugin cache Python was not created by uv sync: $cache_python"
+    exit 1
+  fi
+  uv pip install --project "$cache_root" --python "$cache_python" -e "$REFLEXIO_ABS"
+  REFLEXIO_SOURCE_PATH="$REFLEXIO_ABS" "$cache_python" - <<'PY'
+import os
+import sys
+from pathlib import Path
+
+import reflexio
+
+expected_package = Path(os.environ["REFLEXIO_SOURCE_PATH"]).resolve() / "reflexio"
+import_file = Path(reflexio.__file__).resolve()
+try:
+    import_file.relative_to(expected_package)
+except ValueError:
+    print(
+        "[setup-local-dev] ERROR: Codex plugin cache imports Reflexio from "
+        f"{import_file}, expected under {expected_package}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+print(f"[setup-local-dev] Codex cache Reflexio import path: {import_file}")
+PY
 }
 
 refresh_local_dashboard() {
@@ -399,6 +505,7 @@ if [ "$SETUP_CODEX" = "1" ]; then
   log "installing local claude-smart plugin for Codex..."
   rm -f "$HOME/plugins/claude-smart"
   (cd "$REPO_ROOT" && node bin/claude-smart.js install --host codex)
+  install_editable_reflexio_into_codex_cache
 fi
 
 if [ "$SETUP_CLAUDE_CODE" = "1" ] && [ "$SETUP_CODEX" = "1" ]; then
@@ -425,5 +532,6 @@ if [ "$SETUP_CLAUDE_CODE" = "1" ]; then
 fi
 if [ "$SETUP_CODEX" = "1" ]; then
   log "  Codex marketplace/cache/config → claude-smart@reflexioai"
+  log "  Codex cache venv → editable reflexio-ai from $REFLEXIO_ABS"
   log "  Codex hooks → patched through scripts/codex-hook.js"
 fi

@@ -868,6 +868,14 @@ def test_setup_local_dev_refreshes_claude_code_local_plugin() -> None:
     assert 'enabled["claude-smart@reflexioai-local"] = True' in script
     assert 'enabled["claude-smart@reflexioai"] = False' in script
     assert "user-scope local enabled, @reflexioai disabled" in script
+    assert "install_editable_reflexio_into_codex_cache" in script
+    assert "write_local_reflexio_uv_source" in script
+    assert "[tool.uv.sources]" in script
+    assert 'reflexio-ai = {{ path = {json.dumps(reflexio_path)}, editable = true }}' in script
+    assert "writing local Reflexio source override into Codex marketplace snapshot" in script
+    assert 'uv pip install --project "$cache_root" --python "$cache_python" -e "$REFLEXIO_ABS"' in script
+    assert "Codex plugin cache imports Reflexio from" in script
+    assert "Codex cache venv → editable reflexio-ai from $REFLEXIO_ABS" in script
 
 
 def test_setup_local_dev_prefers_workspace_reflexio_checkout() -> None:
