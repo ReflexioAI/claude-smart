@@ -26,9 +26,9 @@ Detection signals, OR'd:
   - Env var ``CLAUDE_SMART_INTERNAL=1``, set by reflexio's provider
     before spawning ``claude``. Belt-and-suspenders for case (1) in
     case the entrypoint check ever misses a future SDK variant.
-  - ``payload.cwd`` resolves inside the reflexio submodule. Catches
-    direct interactive ``claude`` runs from inside reflexio (manual
-    debugging) that would otherwise pollute the corpus.
+  - ``payload.cwd`` resolves inside the side-by-side reflexio checkout. Catches
+    direct interactive ``claude`` runs from inside reflexio during local
+    debugging that would otherwise pollute the corpus.
   - Known Codex-internal prompt templates (title generation and home-screen
     suggestions). These are model calls made by Codex itself, not user
     coding turns, and must never be reflected into claude-smart memory.
@@ -61,11 +61,11 @@ _CODEX_SUGGESTIONS_APPS_MARKER = (
     "their connected apps."
 )
 
-# Reflexio submodule lives at <repo>/reflexio when this package runs from
-# a dev checkout (<repo>/plugin/src/claude_smart/internal_call.py); anchor
-# relative to this file so the check follows the real checkout if the
-# repo is relocated. In install mode the submodule is absent — the env
-# marker is the primary signal and this path never matches.
+# Reflexio usually lives next to claude-smart during local development:
+# <workspace>/claude-smart and <workspace>/reflexio. Anchor relative to this
+# file so the check follows the real checkout if the repo is relocated. In
+# install mode that sibling checkout is absent — the env marker is the primary
+# signal and this path never matches.
 #
 # The path computation is tightly coupled to the current layout: if this
 # module moves, ``_REFLEXIO_DIR`` silently stops matching and only the
@@ -73,7 +73,7 @@ _CODEX_SUGGESTIONS_APPS_MARKER = (
 # tests) override the path without touching the module.
 _THIS_DIR = Path(__file__).resolve().parent
 _REFLEXIO_DIR = Path(
-    os.environ.get("CLAUDE_SMART_REFLEXIO_DIR") or _THIS_DIR.parents[2] / "reflexio"
+    os.environ.get("CLAUDE_SMART_REFLEXIO_DIR") or _THIS_DIR.parents[3] / "reflexio"
 )
 
 
@@ -86,7 +86,7 @@ def is_internal_invocation(payload: dict[str, Any]) -> bool:
 
     Returns:
         bool: True when the env marker is set or ``cwd`` points inside
-            the reflexio submodule. False otherwise, including when
+            the Reflexio checkout. False otherwise, including when
             ``cwd`` is missing or unresolvable.
     """
     if runtime.is_internal_invocation_env():

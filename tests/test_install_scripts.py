@@ -18,6 +18,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
 SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
 SETUP_LOCAL_DEV = REPO_ROOT / "scripts" / "setup-local-dev.sh"
+USE_LOCAL_REFLEXIO = REPO_ROOT / "scripts" / "use-local-reflexio.sh"
+SYNC_REFLEXIO_DEP = REPO_ROOT / "scripts" / "sync-reflexio-dep.py"
+RELEASE_WITH_REFLEXIO = REPO_ROOT / "scripts" / "release-with-reflexio.sh"
 SETUP_CLAUDE_SMART = REPO_ROOT / "scripts" / "setup-claude-smart.sh"
 HOOK_ENTRY = REPO_ROOT / "plugin" / "scripts" / "hook_entry.sh"
 CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
@@ -868,11 +871,40 @@ def test_setup_local_dev_prefers_workspace_reflexio_checkout() -> None:
     script = SETUP_LOCAL_DEV.read_text()
 
     assert "CLAUDE_SMART_LOCAL_REFLEXIO_PATH" in script
+    assert "REFLEXIO_PATH" in script
     assert 'sibling_reflexio="$REPO_ROOT/../reflexio"' in script
-    assert 'bundled_reflexio="$REPO_ROOT/reflexio"' in script
+    assert 'bundled_reflexio="$REPO_ROOT/reflexio"' not in script
+    assert "git submodule update --init --recursive reflexio" not in script
+    assert 'bash "$REPO_ROOT/scripts/use-local-reflexio.sh"' in script
     assert "using Reflexio source at $REFLEXIO_ABS" in script
     assert "override_learning_stall" in script
     assert "selected Reflexio client does not support" in script
+
+
+def test_use_local_reflexio_installs_into_plugin_venv() -> None:
+    script = USE_LOCAL_REFLEXIO.read_text()
+
+    assert 'REFLEXIO_PATH="${REFLEXIO_PATH:-$REPO_ROOT/../reflexio}"' in script
+    assert 'uv sync --project "$PLUGIN_ROOT"' in script
+    assert 'PLUGIN_PYTHON="$PLUGIN_ROOT/.venv/bin/python"' in script
+    assert 'uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" -e "$REFLEXIO_PATH"' in script
+    assert 'uv run --project "$PLUGIN_ROOT" --no-sync python' in script
+    assert "import reflexio; print(reflexio.__file__)" in script
+
+
+def test_reflexio_release_sync_has_strict_release_checks() -> None:
+    sync_script = SYNC_REFLEXIO_DEP.read_text()
+    release_script = RELEASE_WITH_REFLEXIO.read_text()
+
+    assert "--release-checks" in sync_script
+    assert "fetch\", \"origin\", \"main\", \"--tags" in sync_script
+    assert "rev-parse\", \"origin/main" in sync_script
+    assert "tag\", \"--points-at\", \"HEAD" in sync_script
+    assert "v{version}" in sync_script
+    assert 'REFLEXIO_PATH="${REFLEXIO_PATH:-$REPO_ROOT/../reflexio}"' in release_script
+    assert '--reflexio-path "$REFLEXIO_PATH"' in release_script
+    assert "--check-pypi" in release_script
+    assert "--release-checks" in release_script
 
 
 def test_backend_service_configures_shared_embedding_daemon() -> None:

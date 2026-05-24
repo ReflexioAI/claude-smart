@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run once on plugin install. Pulls the reflexio submodule, syncs the
-# Python env, and flips on the claude-code LiteLLM provider in reflexio's
-# .env so extraction works with no external API key.
+# Run once on plugin install. Syncs the Python env and flips on the
+# claude-code LiteLLM provider in reflexio's .env so extraction works with no
+# external API key.
 #
 # On failure, writes the reason to ~/.claude-smart/install-failed so
 # hook_entry.sh can short-circuit and surface a user-visible message
@@ -360,19 +360,6 @@ preflight_supported_runtime_platform
 if install_complete; then
   claude_smart_emit_continue
   exit 0
-fi
-
-# Dev-mode only: when running from a git checkout, pull the reflexio
-# submodule so tests/benchmarks can use its sources. In install mode the
-# plugin lives under ~/.claude/plugins/cache and reflexio-ai resolves
-# from PyPI instead. The guard checks for both `.git` and `.gitmodules`
-# at REPO_ROOT to distinguish a dev checkout from a marketplace cache
-# (where REPO_ROOT has neither).
-if [ -d "$REPO_ROOT/.git" ] && [ -f "$REPO_ROOT/.gitmodules" ]; then
-  echo "[claude-smart] initializing reflexio submodule..." >&2
-  if ! (cd "$REPO_ROOT" && git submodule update --init --recursive reflexio) >&2; then
-    echo "[claude-smart] WARNING: git submodule update failed; continuing with PyPI reflexio-ai" >&2
-  fi
 fi
 
 if ! command -v uv >/dev/null 2>&1; then

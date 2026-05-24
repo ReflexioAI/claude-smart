@@ -234,7 +234,7 @@ case "$CMD" in
     claude_smart_spawn_detached bash "$HERE/backend-log-runner.sh" \
       "$LOG_FILE" "$LOG_MAX_BYTES" -- \
       env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
-      uv run --project "$PLUGIN_ROOT" --quiet \
+      uv run --project "$PLUGIN_ROOT" --no-sync --quiet \
       reflexio services start --only backend --no-reload --workers "$workers"
     svc_pid=$!
     # Record the spawned pid, not a pgid sampled with ps. On POSIX,

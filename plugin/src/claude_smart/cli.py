@@ -14,9 +14,8 @@ Exposes the following subcommands:
 - ``learn``: publish unpublished interactions and force reflexio
   extraction now over the active session buffer.
 - ``restart``: stop and restart the reflexio backend + dashboard services
-  (rebuilding the dashboard bundle) so local edits under the ``reflexio``
-  submodule or ``plugin/dashboard/`` take effect without restarting Claude
-  Code.
+  (rebuilding the dashboard bundle) so local Reflexio checkout edits or
+  ``plugin/dashboard/`` edits take effect without restarting Claude Code.
 """
 
 from __future__ import annotations
@@ -1611,7 +1610,7 @@ def cmd_restart(args: argparse.Namespace) -> int:
     Stops both long-lived services, optionally rebuilds the dashboard's
     Next.js bundle so source edits under ``plugin/dashboard/`` take effect,
     then starts them again. Useful during local development when iterating
-    on the ``reflexio`` submodule or the dashboard.
+    on the local Reflexio checkout or the dashboard.
 
     Args:
         args (argparse.Namespace): Parsed CLI args. Honors ``args.skip_backend``,

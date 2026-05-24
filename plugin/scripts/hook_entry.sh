@@ -3,7 +3,8 @@
 # CLAUDE_PLUGIN_ROOT points at the plugin dir (dev: <repo>/plugin;
 # installed: ~/.claude/plugins/cache/reflexioai/claude-smart/<version>),
 # which is also the Python project root with pyproject.toml + uv.lock.
-# We invoke via `uv run --project` so the pinned env from uv.lock is used.
+# We invoke via `uv run --project --no-sync` so the prepared env is used without
+# undoing editable Reflexio installs from local development.
 #
 # If the Setup hook recorded an install failure at
 # ~/.claude-smart/install-failed, short-circuit with a user-visible
@@ -114,4 +115,4 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 # Stdin is the hook payload JSON — stream it through to the Python CLI.
-exec uv run --project "$PLUGIN_ROOT" --quiet python -m claude_smart.hook "$HOST" "$EVENT"
+exec uv run --project "$PLUGIN_ROOT" --no-sync --quiet python -m claude_smart.hook "$HOST" "$EVENT"

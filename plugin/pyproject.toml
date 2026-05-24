@@ -5,6 +5,7 @@ description = "Self-improving Claude Code plugin — learns from corrections via
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    # Keep this Reflexio minimum in sync via scripts/sync-reflexio-dep.py.
     "reflexio-ai>=0.2.22",
     # Used by reflexio's local embedding provider (ONNXMiniLM_L6_V2).
     # Pulls in onnxruntime + tokenizers; the ~80 MB ONNX model itself is
@@ -17,14 +18,6 @@ dependencies = [
 claude-smart-hook = "claude_smart.hook:main"
 claude-smart = "claude_smart.cli:main"
 claude-smart-optimizer-assistant = "claude_smart.optimizer_assistant:main"
-
-# NOTE: LOCAL DEV ONLY — do not commit this block to main.
-# Published installs must resolve reflexio-ai from PyPI. This override
-# points at the vendored submodule so editable changes flow through.
-# `git update-index --skip-worktree plugin/pyproject.toml plugin/uv.lock`
-# hides the local divergence from `git status`.
-# [tool.uv.sources]
-# reflexio-ai = { path = "/Users/yilu/repos/claude-smart/reflexio", editable = true }
 
 [build-system]
 requires = ["hatchling"]

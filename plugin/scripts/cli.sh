@@ -63,4 +63,4 @@ if ! command -v uv >/dev/null 2>&1; then
   fi
 fi
 
-exec uv run --project "$PLUGIN_ROOT" --quiet python -m claude_smart.cli "$@"
+exec uv run --project "$PLUGIN_ROOT" --no-sync --quiet python -m claude_smart.cli "$@"

@@ -224,7 +224,7 @@ For troubleshooting, see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
 
 ## License
 
-This project is licensed under the **Apache License 2.0**. The bundled `reflexio/` submodule is also Apache 2.0. Claude Code is Anthropic's and not covered by this license.
+This project is licensed under the **Apache License 2.0**. Reflexio is a separate Apache 2.0 project consumed as the `reflexio-ai` Python package. Claude Code is Anthropic's and not covered by this license.
 
 See the [LICENSE](LICENSE) file for details.
 

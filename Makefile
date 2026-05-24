@@ -14,13 +14,13 @@
 #   - git (for the release flow)
 
 .PHONY: help bump release publish publish-npm publish-pypi publish-dry \
-        check-version check-clean check-npm-auth check-reflexio-pin \
+        check-version check-clean check-npm-auth check-reflexio-pin check-reflexio-lock \
         ensure-remote-reflexio unskip-worktree
 
 VERSION_FILES := package.json plugin/pyproject.toml \
                  plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
                  .claude-plugin/marketplace.json README.md
-LOCK_FILES    := plugin/uv.lock
+LOCK_FILES    := plugin/uv.lock reflexio.lock.json
 PYPROJECT     := plugin/pyproject.toml
 
 help:
@@ -50,6 +50,9 @@ check-reflexio-pin: ## Verify the reflexio-ai version pinned in plugin/pyproject
 	  fi; \
 	  echo "→ ok: reflexio-ai $$pin is on PyPI"
 
+check-reflexio-lock: ## Verify plugin/pyproject.toml matches reflexio.lock.json
+	@python3 scripts/check-reflexio-lock.py
+
 check-npm-auth: ## Verify npm auth via NPM_TOKEN or `npm whoami`; fail if neither is available
 	@if [ -n "$$NPM_TOKEN" ]; then \
 	  echo "→ npm: NPM_TOKEN is set"; \
@@ -64,15 +67,10 @@ unskip-worktree: ## Clear skip-worktree on plugin/pyproject.toml and plugin/uv.l
 	@echo "→ clearing skip-worktree on $(PYPROJECT) $(LOCK_FILES)"
 	@git update-index --no-skip-worktree $(PYPROJECT) $(LOCK_FILES) 2>/dev/null || true
 
-ensure-remote-reflexio: ## Ensure [tool.uv.sources] is commented out so published wheels resolve reflexio-ai from PyPI (see scripts/setup-local-dev.sh to re-enable for dev)
-	@echo "→ ensuring [tool.uv.sources] override is commented out in $(PYPROJECT)"
-	@sed -i.bak -E \
-	    -e 's|^\[tool\.uv\.sources\]$$|# [tool.uv.sources]|' \
-	    -e 's|^(reflexio-ai = \{ path = .*)$$|# \1|' \
-	    $(PYPROJECT)
-	@rm -f $(PYPROJECT).bak
-	@if grep -qE '^\[tool\.uv\.sources\]|^reflexio-ai = \{ path =' $(PYPROJECT); then \
-	  echo "error: [tool.uv.sources] block in $(PYPROJECT) is still active after sed" >&2; \
+ensure-remote-reflexio: ## Ensure published wheels resolve reflexio-ai from PyPI, not a local path
+	@echo "→ ensuring $(PYPROJECT) resolves reflexio-ai from PyPI"
+	@if grep -qE '^\[tool\.uv\.sources\]|reflexio-ai = \{ path =|file://' $(PYPROJECT); then \
+	  echo "error: local reflexio-ai source found in $(PYPROJECT); use scripts/use-local-reflexio.sh for editable local dev" >&2; \
 	  exit 1; \
 	fi
 
@@ -112,7 +110,7 @@ publish-dry: unskip-worktree ensure-remote-reflexio ## Show what would be publis
 
 publish: publish-npm publish-pypi ## Publish to both npm and PyPI
 
-release: check-version check-clean check-npm-auth check-reflexio-pin bump ## Bump + commit + tag + publish + push
+release: check-version check-clean check-npm-auth check-reflexio-lock check-reflexio-pin bump ## Bump + commit + tag + publish + push
 	@echo "→ committing release v$(VERSION)"
 	git add $(VERSION_FILES) $(LOCK_FILES)
 	git commit -m "Release v$(VERSION)"

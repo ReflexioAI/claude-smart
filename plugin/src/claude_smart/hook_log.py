@@ -79,7 +79,7 @@ def log_event(
             fires against workspace directories.
         internal_skipped (bool): True when ``is_internal_invocation``
             short-circuited the dispatcher (reflexio-internal sub-claude
-            calls, or invocations from inside the reflexio submodule).
+            calls, or invocations from inside a Reflexio checkout).
         handler_status (str): ``"ok"`` for a clean return, ``"unknown_event"``
             when no handler is registered, or ``"raised:<ExcClass>: <msg>"``
             when the handler raised — formatted by ``hook.main``.
