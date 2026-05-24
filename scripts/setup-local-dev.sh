@@ -513,11 +513,6 @@ enabled["claude-smart@reflexioai"] = False
 settings_path.write_text(json.dumps(data, indent=2) + "\n")
 PY
   log "wrote $SETTINGS_FILE (claude-smart@reflexioai-local enabled, @reflexioai shadowed off)"
-
-  # Warn (don't abort) on failure — marketplace registration and settings
-  # have already been committed by this point, so aborting would leave the
-  # user in a half-configured state.
-  force_plugin_root_to_checkout
 fi
 
 if [ "$SETUP_CODEX" = "1" ]; then
@@ -536,10 +531,13 @@ if [ "$SETUP_CODEX" = "1" ]; then
   install_editable_reflexio_into_codex_cache
 fi
 
-if [ "$SETUP_CLAUDE_CODE" = "1" ] && [ "$SETUP_CODEX" = "1" ]; then
-  log "restoring plugin-root to editable checkout after Codex install..."
-  force_plugin_root_to_checkout
-fi
+# Point ~/.reflexio/plugin-root at this repo's plugin/ regardless of host.
+# Codex install rewrites the link to its cache; Claude Code's SessionStart
+# self-heal would otherwise leave a stale cache target in place. Forcing this
+# unconditionally at the end keeps slash commands and CLI shims resolving to
+# the live working tree.
+log "pointing ~/.reflexio/plugin-root at editable checkout..."
+force_plugin_root_to_checkout
 
 refresh_local_dashboard
 
