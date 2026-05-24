@@ -111,6 +111,32 @@ install_complete() {
   return 0
 }
 
+install_vendored_reflexio() {
+  local VENDORED_REFLEXIO PLUGIN_PYTHON
+
+  VENDORED_REFLEXIO="$PLUGIN_ROOT/vendor/reflexio"
+  [ -f "$VENDORED_REFLEXIO/pyproject.toml" ] || return 0
+
+  if claude_smart_is_windows; then
+    PLUGIN_PYTHON="$PLUGIN_ROOT/.venv/Scripts/python.exe"
+  else
+    PLUGIN_PYTHON="$PLUGIN_ROOT/.venv/bin/python"
+  fi
+  if [ ! -x "$PLUGIN_PYTHON" ]; then
+    write_failure "plugin Python was not created by uv sync: $PLUGIN_PYTHON"
+  fi
+
+  echo "[claude-smart] installing bundled Reflexio source from $VENDORED_REFLEXIO" >&2
+  if uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" --quiet -e "$VENDORED_REFLEXIO" >&2; then
+    return 0
+  fi
+
+  echo "[claude-smart] warning: quiet vendored Reflexio install failed in $PLUGIN_ROOT; retrying with full output." >&2
+  if ! uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" -e "$VENDORED_REFLEXIO" >&2; then
+    write_failure "vendored Reflexio install failed in $PLUGIN_ROOT"
+  fi
+}
+
 write_success_marker() {
   install_fingerprint > "$SUCCESS_MARKER"
 }
@@ -409,6 +435,7 @@ echo "[claude-smart] running uv sync..." >&2
 if ! uv sync --locked --python 3.12 --quiet >&2; then
   write_failure "uv sync failed in $PLUGIN_ROOT — run 'uv sync --locked --python 3.12' there to diagnose"
 fi
+install_vendored_reflexio
 
 # Reflexio's CLI reads ~/.reflexio/.env (see reflexio/cli/env_loader.py);
 # append our two opt-in flags there so `reflexio services start` picks

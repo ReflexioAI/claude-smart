@@ -932,6 +932,8 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     release_script = RELEASE_WITH_REFLEXIO.read_text()
     lock_script = CHECK_REFLEXIO_LOCK.read_text()
     installer = NODE_INSTALLER.read_text()
+    smart_install = SMART_INSTALL.read_text()
+    lib = LIB.read_text()
     gitignore = (REPO_ROOT / ".gitignore").read_text()
 
     assert "plugin/vendor/reflexio" in vendor_script
@@ -954,7 +956,74 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     assert "installVendoredReflexio(pluginRoot, uv, env)" in installer
     assert 'join(pluginRoot, "vendor", "reflexio")' in installer
     assert '"pip", "install", "--project", pluginRoot' in installer
+    assert 'VENDORED_REFLEXIO="$PLUGIN_ROOT/vendor/reflexio"' in smart_install
+    assert (
+        'uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" '
+        '--quiet -e "$VENDORED_REFLEXIO"'
+    ) in smart_install
+    assert "vendored Reflexio install failed" in smart_install
+    assert "install_vendored_reflexio" in smart_install
+    assert "vendor_reflexio_pyproject" in lib
     assert "/plugin/vendor/" in gitignore
+
+
+def test_smart_install_installs_vendored_reflexio(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin"
+    scripts = plugin_root / "scripts"
+    vendor = plugin_root / "vendor" / "reflexio"
+    fake_bin = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    vendor.mkdir(parents=True)
+    fake_bin.mkdir()
+    shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(
+        REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
+        scripts / "ensure-plugin-root.sh",
+    )
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    (plugin_root / "uv.lock").write_text("")
+    (vendor / "pyproject.toml").write_text("[project]\nname='reflexio-ai'\n")
+
+    uv = fake_bin / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$HOME/uv.log"\n'
+        'if [ "$1" = "sync" ]; then\n'
+        '  mkdir -p "$PWD/.venv/bin"\n'
+        '  printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
+        '  chmod +x "$PWD/.venv/bin/python"\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$1" = "python" ] && [ "$2" = "find" ]; then\n'
+        '  printf "%s\\n" "$PWD/.venv/bin/python"\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$1" = "pip" ] && [ "$2" = "install" ]; then\n'
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(scripts / "smart-install.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / ".claude-smart" / "install-failed").exists()
+    assert (tmp_path / ".claude-smart" / "install-complete").exists()
+    assert "installing bundled Reflexio source" in result.stderr
+    uv_log = (tmp_path / "uv.log").read_text()
+    assert "sync --locked --python 3.12 --quiet" in uv_log
+    assert f"pip install --project {plugin_root}" in uv_log
+    assert f"-e {vendor}" in uv_log
 
 
 def test_vendor_release_is_npm_only() -> None:

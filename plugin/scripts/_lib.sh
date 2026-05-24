@@ -298,6 +298,8 @@ claude_smart_install_fingerprint() {
   printf 'lib=%s\n' "$(claude_smart_fingerprint_file "$script_dir/_lib.sh")"
   printf 'pyproject=%s\n' "$(claude_smart_fingerprint_file "$plugin_root/pyproject.toml")"
   printf 'uv_lock=%s\n' "$(claude_smart_fingerprint_file "$plugin_root/uv.lock")"
+  printf 'vendor_reflexio_pyproject=%s\n' \
+    "$(claude_smart_fingerprint_file "$plugin_root/vendor/reflexio/pyproject.toml")"
   # Resolved python interpreter — catches a system upgrade (3.12.4 → 3.12.5)
   # that would otherwise let install_complete return true against a venv
   # built against a now-deleted interpreter.
