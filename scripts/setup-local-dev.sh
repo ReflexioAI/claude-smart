@@ -18,6 +18,7 @@
 #   8. For Codex (`--host codex` or `--host both`): run the maintained
 #      Node install wrapper so Codex hooks are patched through the JSON-safe
 #      codex-hook.js adapter.
+#   9. Print a Reflexio source diagnostic so local/PyPI mixups are visible.
 #
 # Idempotent: safe to re-run.
 
@@ -416,6 +417,7 @@ else
   log "done. Restart Claude Code to pick up the local plugin."
 fi
 log "  plugin venv → editable reflexio-ai from $REFLEXIO_ABS"
+log "  verify source → make doctor-reflexio"
 log "  ~/.reflexio/.env → local-CLI + local-embedding providers"
 if [ "$SETUP_CLAUDE_CODE" = "1" ]; then
   log "  Claude Code user marketplaces → reflexioai-local ($LOCAL_MKT_DIR)"

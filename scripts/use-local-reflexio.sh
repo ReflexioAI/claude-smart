@@ -27,4 +27,4 @@ if [ ! -x "$PLUGIN_PYTHON" ]; then
   exit 1
 fi
 uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" -e "$REFLEXIO_PATH"
-uv run --project "$PLUGIN_ROOT" --no-sync python -c 'import reflexio; print(reflexio.__file__)'
+REFLEXIO_PATH="$REFLEXIO_PATH" python3 "$REPO_ROOT/scripts/doctor-reflexio.py"

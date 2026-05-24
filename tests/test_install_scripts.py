@@ -19,6 +19,7 @@ LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
 SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
 SETUP_LOCAL_DEV = REPO_ROOT / "scripts" / "setup-local-dev.sh"
 USE_LOCAL_REFLEXIO = REPO_ROOT / "scripts" / "use-local-reflexio.sh"
+DOCTOR_REFLEXIO = REPO_ROOT / "scripts" / "doctor-reflexio.py"
 SYNC_REFLEXIO_DEP = REPO_ROOT / "scripts" / "sync-reflexio-dep.py"
 CHECK_REFLEXIO_LOCK = REPO_ROOT / "scripts" / "check-reflexio-lock.py"
 VENDOR_REFLEXIO = REPO_ROOT / "scripts" / "vendor-reflexio.py"
@@ -881,17 +882,24 @@ def test_setup_local_dev_prefers_workspace_reflexio_checkout() -> None:
     assert "using Reflexio source at $REFLEXIO_ABS" in script
     assert "override_learning_stall" in script
     assert "selected Reflexio client does not support" in script
+    assert "verify source → make doctor-reflexio" in script
 
 
 def test_use_local_reflexio_installs_into_plugin_venv() -> None:
     script = USE_LOCAL_REFLEXIO.read_text()
+    doctor = DOCTOR_REFLEXIO.read_text()
+    makefile = (REPO_ROOT / "Makefile").read_text()
 
     assert 'REFLEXIO_PATH="${REFLEXIO_PATH:-$REPO_ROOT/../reflexio}"' in script
     assert 'uv sync --project "$PLUGIN_ROOT"' in script
     assert 'PLUGIN_PYTHON="$PLUGIN_ROOT/.venv/bin/python"' in script
     assert 'uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" -e "$REFLEXIO_PATH"' in script
-    assert 'uv run --project "$PLUGIN_ROOT" --no-sync python' in script
-    assert "import reflexio; print(reflexio.__file__)" in script
+    assert 'python3 "$REPO_ROOT/scripts/doctor-reflexio.py"' in script
+    assert "Detected source: {source}" in doctor
+    assert "Fix: bash scripts/use-local-reflexio.sh" in doctor
+    assert "using PyPI/other Reflexio even though a local checkout exists" in doctor
+    assert "doctor-reflexio:" in makefile
+    assert "python3 scripts/doctor-reflexio.py" in makefile
 
 
 def test_reflexio_release_sync_has_strict_release_checks() -> None:

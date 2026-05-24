@@ -483,6 +483,16 @@ bash scripts/use-local-reflexio.sh
 REFLEXIO_PATH=/absolute/path/to/reflexio bash scripts/use-local-reflexio.sh
 ```
 
+If you cloned both repos and are unsure which Reflexio source claude-smart is
+actually importing, run:
+
+```bash
+make doctor-reflexio
+```
+
+If a sibling `../reflexio` checkout exists but the plugin environment is still
+using PyPI, the doctor exits non-zero and prints the fix command.
+
 Return to the locked PyPI dependency by syncing the plugin environment:
 
 ```bash

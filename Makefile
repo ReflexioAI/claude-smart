@@ -17,7 +17,7 @@
 .PHONY: help bump release release-npm publish publish-npm publish-pypi publish-dry \
         check-version check-clean check-npm-auth check-reflexio-pin check-reflexio-lock \
         check-vendor-reflexio check-pypi-compatible-reflexio ensure-remote-reflexio \
-        unskip-worktree
+        doctor-reflexio unskip-worktree
 
 VERSION_FILES := package.json plugin/pyproject.toml \
                  plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
@@ -60,6 +60,9 @@ check-vendor-reflexio: ## Verify generated Reflexio vendor bundle exists when th
 
 check-pypi-compatible-reflexio: ## Refuse PyPI publish when this release relies on a generated vendor bundle
 	@python3 -c 'import json, pathlib, sys; p=pathlib.Path("reflexio.lock.json"); data=json.loads(p.read_text()) if p.exists() else {}; sys.exit("error: reflexio.lock.json uses source=vendor; publish npm only with `make release-npm VERSION=...`, or run `REFLEXIO_RELEASE_SOURCE=pypi bash scripts/release-with-reflexio.sh` first" if data.get("source") == "vendor" else 0)'
+
+doctor-reflexio: ## Show whether plugin/.venv imports local, vendor, or PyPI Reflexio
+	@python3 scripts/doctor-reflexio.py
 
 check-npm-auth: ## Verify npm auth via NPM_TOKEN or `npm whoami`; fail if neither is available
 	@if [ -n "$$NPM_TOKEN" ]; then \
