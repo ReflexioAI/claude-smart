@@ -45,6 +45,9 @@ benchmarks/memory_comparison/results
 # Local marketplace
 local-marketplace/
 
+# Generated release vendor bundle
+/plugin/vendor/
+
 # Scheduled tasks lock
 .claude/scheduled_tasks.lock
 .coverage

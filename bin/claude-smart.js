@@ -795,6 +795,36 @@ function ensurePluginRoot(pluginRoot) {
   }
 }
 
+async function installVendoredReflexio(pluginRoot, uv, env) {
+  const vendorRoot = join(pluginRoot, "vendor", "reflexio");
+  if (!existsSync(join(vendorRoot, "pyproject.toml"))) return;
+
+  const pythonPath = isWindows()
+    ? join(pluginRoot, ".venv", "Scripts", "python.exe")
+    : join(pluginRoot, ".venv", "bin", "python");
+  if (!existsSync(pythonPath)) {
+    throw new Error(`plugin Python was not created by uv sync: ${pythonPath}`);
+  }
+
+  process.stdout.write(`Installing bundled Reflexio source from ${vendorRoot}...\n`);
+  let code = await runChecked(
+    uv,
+    ["pip", "install", "--project", pluginRoot, "--python", pythonPath, "--quiet", "-e", vendorRoot],
+    { cwd: pluginRoot, env },
+  );
+  if (code !== 0) {
+    process.stderr.write(
+      `warning: quiet vendored Reflexio install failed in ${pluginRoot}; retrying with full output.\n`,
+    );
+    code = await runChecked(
+      uv,
+      ["pip", "install", "--project", pluginRoot, "--python", pythonPath, "-e", vendorRoot],
+      { cwd: pluginRoot, env },
+    );
+  }
+  if (code !== 0) throw new Error(`vendored Reflexio install failed in ${pluginRoot}`);
+}
+
 async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   assertSupportedRuntimePlatform();
   process.stdout.write("Preparing claude-smart runtime for hooks...\n");
@@ -830,6 +860,7 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
     );
   }
   if (code !== 0) throw new Error(`uv sync failed in ${pluginRoot}`);
+  await installVendoredReflexio(pluginRoot, uv, env);
 
   const dashboardDir = join(pluginRoot, "dashboard");
   if (existsSync(dashboardDir)) {

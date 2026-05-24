@@ -20,6 +20,7 @@ SMART_INSTALL = REPO_ROOT / "plugin" / "scripts" / "smart-install.sh"
 SETUP_LOCAL_DEV = REPO_ROOT / "scripts" / "setup-local-dev.sh"
 USE_LOCAL_REFLEXIO = REPO_ROOT / "scripts" / "use-local-reflexio.sh"
 SYNC_REFLEXIO_DEP = REPO_ROOT / "scripts" / "sync-reflexio-dep.py"
+VENDOR_REFLEXIO = REPO_ROOT / "scripts" / "vendor-reflexio.py"
 RELEASE_WITH_REFLEXIO = REPO_ROOT / "scripts" / "release-with-reflexio.sh"
 SETUP_CLAUDE_SMART = REPO_ROOT / "scripts" / "setup-claude-smart.sh"
 HOOK_ENTRY = REPO_ROOT / "plugin" / "scripts" / "hook_entry.sh"
@@ -905,6 +906,40 @@ def test_reflexio_release_sync_has_strict_release_checks() -> None:
     assert '--reflexio-path "$REFLEXIO_PATH"' in release_script
     assert "--check-pypi" in release_script
     assert "--release-checks" in release_script
+
+
+def test_reflexio_vendor_release_uses_generated_bundle() -> None:
+    vendor_script = VENDOR_REFLEXIO.read_text()
+    release_script = RELEASE_WITH_REFLEXIO.read_text()
+    installer = NODE_INSTALLER.read_text()
+    gitignore = (REPO_ROOT / ".gitignore").read_text()
+
+    assert "plugin/vendor/reflexio" in vendor_script
+    assert "git\", \"-C\", str(reflexio_path), \"archive\"" in vendor_script
+    assert '"source": "vendor"' in vendor_script
+    assert '"vendor_path": str(VENDOR_PATH)' in vendor_script
+    assert 'REFLEXIO_RELEASE_SOURCE="${REFLEXIO_RELEASE_SOURCE:-vendor}"' in release_script
+    assert "python scripts/vendor-reflexio.py" in release_script
+    assert "uv pip install --project plugin --python" in release_script
+    assert "-e plugin/vendor/reflexio" in release_script
+    assert "Keep generated plugin/vendor/reflexio in place" in release_script
+    assert "make release-npm VERSION=<new-claude-smart-version>" in release_script
+    assert "installVendoredReflexio(pluginRoot, uv, env)" in installer
+    assert 'join(pluginRoot, "vendor", "reflexio")' in installer
+    assert '"pip", "install", "--project", pluginRoot' in installer
+    assert "/plugin/vendor/" in gitignore
+
+
+def test_vendor_release_is_npm_only() -> None:
+    makefile = (REPO_ROOT / "Makefile").read_text()
+    developer = (REPO_ROOT / "DEVELOPER.md").read_text()
+
+    assert "release-npm:" in makefile
+    assert "check-pypi-compatible-reflexio:" in makefile
+    assert "source=vendor" in makefile
+    assert "make release-npm VERSION=..." in makefile
+    assert "make release-npm VERSION=<new-claude-smart-version>" in developer
+    assert "intentionally refuses to publish PyPI" in developer
 
 
 def test_backend_service_configures_shared_embedding_daemon() -> None:

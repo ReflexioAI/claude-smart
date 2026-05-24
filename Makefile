@@ -3,6 +3,7 @@
 # Usage:
 #   make bump VERSION=0.1.1          Update version in all release manifests
 #   make release VERSION=0.1.1       Bump, commit, tag v0.1.1, publish, push
+#   make release-npm VERSION=0.1.1   Bump, commit, tag, publish npm only
 #   make publish                     Publish current version to npm + PyPI
 #   make publish-npm                 npm publish only
 #   make publish-pypi                uv build + uv publish only
@@ -13,9 +14,10 @@
 #   - uv (UV_PUBLISH_TOKEN set for PyPI uploads)
 #   - git (for the release flow)
 
-.PHONY: help bump release publish publish-npm publish-pypi publish-dry \
+.PHONY: help bump release release-npm publish publish-npm publish-pypi publish-dry \
         check-version check-clean check-npm-auth check-reflexio-pin check-reflexio-lock \
-        ensure-remote-reflexio unskip-worktree
+        check-vendor-reflexio check-pypi-compatible-reflexio ensure-remote-reflexio \
+        unskip-worktree
 
 VERSION_FILES := package.json plugin/pyproject.toml \
                  plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
@@ -53,6 +55,12 @@ check-reflexio-pin: ## Verify the reflexio-ai version pinned in plugin/pyproject
 check-reflexio-lock: ## Verify plugin/pyproject.toml matches reflexio.lock.json
 	@python3 scripts/check-reflexio-lock.py
 
+check-vendor-reflexio: ## Verify generated Reflexio vendor bundle exists when the lock requires it
+	@python3 scripts/check-reflexio-lock.py --check-vendor
+
+check-pypi-compatible-reflexio: ## Refuse PyPI publish when this release relies on a generated vendor bundle
+	@python3 -c 'import json, pathlib, sys; p=pathlib.Path("reflexio.lock.json"); data=json.loads(p.read_text()) if p.exists() else {}; sys.exit("error: reflexio.lock.json uses source=vendor; publish npm only with `make release-npm VERSION=...`, or run `REFLEXIO_RELEASE_SOURCE=pypi bash scripts/release-with-reflexio.sh` first" if data.get("source") == "vendor" else 0)'
+
 check-npm-auth: ## Verify npm auth via NPM_TOKEN or `npm whoami`; fail if neither is available
 	@if [ -n "$$NPM_TOKEN" ]; then \
 	  echo "→ npm: NPM_TOKEN is set"; \
@@ -89,17 +97,17 @@ bump: check-version unskip-worktree ensure-remote-reflexio ## Rewrite version in
 	@echo "→ resulting versions:"
 	@grep -HE '("version"|^version)' $(VERSION_FILES)
 
-publish-npm: ## Publish the current version to npm
+publish-npm: check-vendor-reflexio ## Publish the current version to npm
 	@echo "→ npm publish"
 	npm publish --access public
 
-publish-pypi: unskip-worktree ensure-remote-reflexio ## Build and publish the current version to PyPI
+publish-pypi: check-pypi-compatible-reflexio unskip-worktree ensure-remote-reflexio ## Build and publish the current version to PyPI
 	@echo "→ uv build + uv publish"
 	rm -rf plugin/dist/
 	uv build --project plugin
 	uv publish --project plugin plugin/dist/*
 
-publish-dry: unskip-worktree ensure-remote-reflexio ## Show what would be published without uploading
+publish-dry: unskip-worktree ensure-remote-reflexio check-vendor-reflexio ## Show what would be published without uploading
 	@echo "→ npm publish --dry-run"
 	@npm publish --dry-run
 	@echo ""
@@ -108,9 +116,9 @@ publish-dry: unskip-worktree ensure-remote-reflexio ## Show what would be publis
 	uv build --project plugin
 	@ls -la plugin/dist/
 
-publish: publish-npm publish-pypi ## Publish to both npm and PyPI
+publish: check-pypi-compatible-reflexio publish-npm publish-pypi ## Publish to both npm and PyPI
 
-release: check-version check-clean check-npm-auth check-reflexio-lock check-reflexio-pin bump ## Bump + commit + tag + publish + push
+release: check-version check-clean check-npm-auth check-reflexio-lock check-reflexio-pin check-pypi-compatible-reflexio bump ## Bump + commit + tag + publish + push
 	@echo "→ committing release v$(VERSION)"
 	git add $(VERSION_FILES) $(LOCK_FILES)
 	git commit -m "Release v$(VERSION)"
@@ -119,3 +127,13 @@ release: check-version check-clean check-npm-auth check-reflexio-lock check-refl
 	@echo "→ pushing commit + tag"
 	git push --follow-tags
 	@echo "✓ released v$(VERSION)"
+
+release-npm: check-version check-clean check-npm-auth check-reflexio-lock check-reflexio-pin check-vendor-reflexio bump ## Bump + commit + tag + publish npm only
+	@echo "→ committing npm release v$(VERSION)"
+	git add $(VERSION_FILES) $(LOCK_FILES)
+	git commit -m "Release v$(VERSION)"
+	git tag -a v$(VERSION) -m "Release v$(VERSION)"
+	@$(MAKE) publish-npm
+	@echo "→ pushing commit + tag"
+	git push --follow-tags
+	@echo "✓ released npm v$(VERSION)"
