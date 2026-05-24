@@ -871,9 +871,18 @@ def test_setup_local_dev_refreshes_claude_code_local_plugin() -> None:
     assert "install_editable_reflexio_into_codex_cache" in script
     assert "write_local_reflexio_uv_source" in script
     assert "[tool.uv.sources]" in script
-    assert 'reflexio-ai = {{ path = {json.dumps(reflexio_path)}, editable = true }}' in script
-    assert "writing local Reflexio source override into Codex marketplace snapshot" in script
-    assert 'uv pip install --project "$cache_root" --python "$cache_python" -e "$REFLEXIO_ABS"' in script
+    assert (
+        'reflexio-ai = {{ path = {json.dumps(reflexio_path)}, editable = true }}'
+        in script
+    )
+    assert (
+        "writing local Reflexio source override into Codex marketplace snapshot"
+        in script
+    )
+    assert (
+        'uv pip install --project "$cache_root" --python "$cache_python" '
+        '-e "$REFLEXIO_ABS"'
+    ) in script
     assert "Codex plugin cache imports Reflexio from" in script
     assert "Codex cache venv → editable reflexio-ai from $REFLEXIO_ABS" in script
 
@@ -901,7 +910,10 @@ def test_use_local_reflexio_installs_into_plugin_venv() -> None:
     assert 'REFLEXIO_PATH="${REFLEXIO_PATH:-$REPO_ROOT/../reflexio}"' in script
     assert 'uv sync --project "$PLUGIN_ROOT"' in script
     assert 'PLUGIN_PYTHON="$PLUGIN_ROOT/.venv/bin/python"' in script
-    assert 'uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" -e "$REFLEXIO_PATH"' in script
+    assert (
+        'uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" '
+        '-e "$REFLEXIO_PATH"'
+    ) in script
     assert 'python3 "$REPO_ROOT/scripts/doctor-reflexio.py"' in script
     assert "Detected source: {source}" in doctor
     assert "Fix: bash scripts/use-local-reflexio.sh" in doctor
@@ -942,7 +954,10 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     assert '"vendor_path": str(VENDOR_PATH)' in vendor_script
     assert "package_include_paths" in vendor_script
     assert "only-include" in vendor_script
-    assert 'REFLEXIO_RELEASE_SOURCE="${REFLEXIO_RELEASE_SOURCE:-vendor}"' in release_script
+    assert (
+        'REFLEXIO_RELEASE_SOURCE="${REFLEXIO_RELEASE_SOURCE:-vendor}"'
+        in release_script
+    )
     assert 'PYTHON_BIN="${PYTHON:-python3}"' in release_script
     assert '"$PYTHON_BIN" scripts/vendor-reflexio.py' in release_script
     assert "uv pip install --project plugin --python" in release_script
@@ -1312,12 +1327,15 @@ def test_node_installer_codex_marketplace_cache_uses_manifest_plugin_path(
         "const pluginRoot = installer.codexMarketplacePluginRoot(root);"
         "const fs = require('fs');"
         "const path = require('path');"
-        "const manifest = JSON.parse(fs.readFileSync(path.join(root, '.agents/plugins/marketplace.json'), 'utf8'));"
+        "const manifestPath = path.join(root, '.agents/plugins/marketplace.json');"
+        "const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));"
         "console.log(JSON.stringify({"
         "root,"
         "path: manifest.plugins[0].source.path,"
         "pluginRoot,"
-        "hasManifest: fs.existsSync(path.join(pluginRoot, '.codex-plugin/plugin.json')),"
+        "hasManifest: fs.existsSync(path.join("
+        "pluginRoot, '.codex-plugin/plugin.json'"
+        ")),"
         "legacyPathExists: fs.existsSync(path.join(root, 'plugins/claude-smart'))"
         "}));"
     )
@@ -1414,16 +1432,28 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
                             "hooks": [
                                 {"command": 'bash "$_R/scripts/smart-install.sh"'},
                                 {
-                                    "command": 'bash "$_R/scripts/ensure-plugin-root.sh" "$_R"'
+                                    "command": (
+                                        'bash "$_R/scripts/ensure-plugin-root.sh" '
+                                        '"$_R"'
+                                    )
                                 },
                                 {
-                                    "command": 'bash "$_R/scripts/backend-service.sh" start'
+                                    "command": (
+                                        'bash "$_R/scripts/backend-service.sh" '
+                                        "start"
+                                    )
                                 },
                                 {
-                                    "command": 'bash "$_R/scripts/dashboard-service.sh" start'
+                                    "command": (
+                                        'bash "$_R/scripts/dashboard-service.sh" '
+                                        "start"
+                                    )
                                 },
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" codex session-start'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" codex '
+                                        "session-start"
+                                    )
                                 },
                             ]
                         }
@@ -1432,7 +1462,10 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
                         {
                             "hooks": [
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" codex user-prompt'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" codex '
+                                        "user-prompt"
+                                    )
                                 }
                             ]
                         }
@@ -1441,7 +1474,10 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
                         {
                             "hooks": [
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" codex post-tool'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" codex '
+                                        "post-tool"
+                                    )
                                 }
                             ]
                         }
@@ -1450,7 +1486,9 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
                         {
                             "hooks": [
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" codex stop'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" codex stop'
+                                    )
                                 }
                             ]
                         }
@@ -1473,7 +1511,8 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
     script = (
         f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
         f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))})"
-        ".then(() => console.log('done')).catch((err) => { console.error(err.message); process.exit(1); });"
+        ".then(() => console.log('done'))"
+        ".catch((err) => { console.error(err.message); process.exit(1); });"
     )
     env = os.environ.copy()
     env.update(
@@ -1540,7 +1579,10 @@ def test_node_installer_read_only_prunes_publish_hooks(tmp_path: Path) -> None:
                         {
                             "hooks": [
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" claude-code session-start'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" '
+                                        "claude-code session-start"
+                                    )
                                 }
                             ]
                         }
@@ -1549,7 +1591,10 @@ def test_node_installer_read_only_prunes_publish_hooks(tmp_path: Path) -> None:
                         {
                             "hooks": [
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" claude-code stop'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" '
+                                        "claude-code stop"
+                                    )
                                 }
                             ]
                         }
@@ -1558,10 +1603,16 @@ def test_node_installer_read_only_prunes_publish_hooks(tmp_path: Path) -> None:
                         {
                             "hooks": [
                                 {
-                                    "command": 'bash "$_R/scripts/hook_entry.sh" claude-code session-end'
+                                    "command": (
+                                        'bash "$_R/scripts/hook_entry.sh" '
+                                        "claude-code session-end"
+                                    )
                                 },
                                 {
-                                    "command": 'bash "$_R/scripts/backend-service.sh" session-end'
+                                    "command": (
+                                        'bash "$_R/scripts/backend-service.sh" '
+                                        "session-end"
+                                    )
                                 },
                             ]
                         }
@@ -1579,7 +1630,10 @@ def test_node_installer_read_only_prunes_publish_hooks(tmp_path: Path) -> None:
                         {
                             "hooks": [
                                 {
-                                    "command": '"/node" "/plugin/scripts/codex-hook.js" "hook" "session-start"'
+                                    "command": (
+                                        '"/node" "/plugin/scripts/codex-hook.js" '
+                                        '"hook" "session-start"'
+                                    )
                                 }
                             ]
                         }
@@ -1588,7 +1642,10 @@ def test_node_installer_read_only_prunes_publish_hooks(tmp_path: Path) -> None:
                         {
                             "hooks": [
                                 {
-                                    "command": '"/node" "/plugin/scripts/codex-hook.js" "hook" "stop"'
+                                    "command": (
+                                        '"/node" "/plugin/scripts/codex-hook.js" '
+                                        '"hook" "stop"'
+                                    )
                                 }
                             ]
                         }
