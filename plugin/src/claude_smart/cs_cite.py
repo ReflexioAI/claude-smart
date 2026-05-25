@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 _FINGERPRINT_LEN = 4
 
@@ -287,6 +287,17 @@ def dashboard_url_token(url: str) -> str:
     parsed = urlparse(url)
     path = parsed.path if parsed.scheme else url.split("?", 1)[0].split("#", 1)[0]
     parts = [unquote(part) for part in path.strip("/").split("/") if part]
+    query = parse_qs(parsed.query)
+    if len(parts) == 1 and parts[0] == "profiles":
+        profile_ids = query.get("profile_id") or []
+        return f"route:profile:profile:{profile_ids[0]}" if profile_ids else ""
+    if len(parts) == 1 and parts[0] == "playbooks":
+        user_playbook_ids = query.get("user_playbook_id") or []
+        if query.get("resource") == ["user_playbook"] and user_playbook_ids:
+            return f"route:playbook:user_playbook:{user_playbook_ids[0]}"
+        agent_playbook_ids = query.get("agent_playbook_id") or []
+        if agent_playbook_ids:
+            return f"route:playbook:agent_playbook:{agent_playbook_ids[0]}"
     if len(parts) == 3 and parts[0] == "skills" and parts[1] in {"project", "shared"}:
         source_kind = "user_playbook" if parts[1] == "project" else "agent_playbook"
         return f"route:playbook:{source_kind}:{parts[2]}"

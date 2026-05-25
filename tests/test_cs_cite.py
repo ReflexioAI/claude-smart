@@ -71,6 +71,22 @@ def test_parse_text_citations_accepts_direct_dashboard_links() -> None:
     ]
 
 
+def test_parse_text_citations_accepts_managed_reflexio_item_links() -> None:
+    text = (
+        "Done.\n\n"
+        "✨ claude-smart rules applied: "
+        "[shared skill](https://www.reflexio.ai/playbooks?agent_playbook_id=42), "
+        "[project skill](https://www.reflexio.ai/playbooks?"
+        "resource=user_playbook&user_playbook_id=7536), "
+        "[brief answers](https://www.reflexio.ai/profiles?profile_id=pref%2Fone)"
+    )
+    assert cs_cite.parse_text_citations(text) == [
+        "route:playbook:agent_playbook:42",
+        "route:playbook:user_playbook:7536",
+        "route:profile:profile:pref/one",
+    ]
+
+
 def test_parse_text_citations_keeps_old_applied_marker_compatible() -> None:
     text = "Done.\n\n✨ Applied: [git safety](http://localhost:3001/skills/project/7536)"
     assert cs_cite.parse_text_citations(text) == ["route:playbook:user_playbook:7536"]

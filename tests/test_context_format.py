@@ -354,7 +354,7 @@ def test_render_inline_with_registry_includes_dashboard_urls(monkeypatch) -> Non
     assert by_id["p1-pref"]["rule_url"] == "http://127.0.0.1:3333/rules/p1-pref"
 
 
-def test_render_inline_with_registry_uses_remote_reflexio_list_pages(
+def test_render_inline_with_registry_uses_remote_reflexio_item_pages(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("REFLEXIO_URL", "https://www.reflexio.ai/")
@@ -365,19 +365,64 @@ def test_render_inline_with_registry_uses_remote_reflexio_list_pages(
         profiles=[{"content": "prefers concise answers", "profile_id": "pref/one"}],
     )
 
-    assert "open: https://www.reflexio.ai/playbooks" in md
-    assert "open: https://www.reflexio.ai/profiles" in md
+    assert "open: https://www.reflexio.ai/playbooks?agent_playbook_id=42" in md
+    assert (
+        "open: https://www.reflexio.ai/playbooks?"
+        "resource=user_playbook&user_playbook_id=17"
+    ) in md
+    assert "open: https://www.reflexio.ai/profiles?profile_id=pref%2Fone" in md
     assert "/rules/" not in md
     by_id = {e["id"]: e for e in registry}
-    assert by_id["s1-42"]["dashboard_url"] == "https://www.reflexio.ai/playbooks"
-    assert by_id["s1-42"]["rule_url"] == "https://www.reflexio.ai/playbooks"
-    assert by_id["s2-17"]["dashboard_url"] == "https://www.reflexio.ai/playbooks"
-    assert by_id["s2-17"]["rule_url"] == "https://www.reflexio.ai/playbooks"
-    assert by_id["p1-pref"]["dashboard_url"] == "https://www.reflexio.ai/profiles"
-    assert by_id["p1-pref"]["rule_url"] == "https://www.reflexio.ai/profiles"
+    assert (
+        by_id["s1-42"]["dashboard_url"]
+        == "https://www.reflexio.ai/playbooks?agent_playbook_id=42"
+    )
+    assert (
+        by_id["s1-42"]["rule_url"]
+        == "https://www.reflexio.ai/playbooks?agent_playbook_id=42"
+    )
+    assert (
+        by_id["s2-17"]["dashboard_url"]
+        == "https://www.reflexio.ai/playbooks?resource=user_playbook&user_playbook_id=17"
+    )
+    assert (
+        by_id["s2-17"]["rule_url"]
+        == "https://www.reflexio.ai/playbooks?resource=user_playbook&user_playbook_id=17"
+    )
+    assert (
+        by_id["p1-pref"]["dashboard_url"]
+        == "https://www.reflexio.ai/profiles?profile_id=pref%2Fone"
+    )
+    assert (
+        by_id["p1-pref"]["rule_url"]
+        == "https://www.reflexio.ai/profiles?profile_id=pref%2Fone"
+    )
 
 
-def test_render_inline_osc8_uses_remote_reflexio_list_pages(monkeypatch) -> None:
+def test_render_inline_compact_uses_remote_reflexio_item_pages(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXIO_URL", "https://www.reflexio.ai/")
+
+    md, _ = context_format.render_inline_compact_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "use safe git flow", "user_playbook_id": 17}],
+        agent_playbooks=[{"content": "use shared flow", "agent_playbook_id": 42}],
+        profiles=[{"content": "prefers concise answers", "profile_id": "pref/one"}],
+    )
+
+    assert (
+        "[use shared flow](https://www.reflexio.ai/playbooks?agent_playbook_id=42)"
+    ) in md
+    assert (
+        "[use safe git flow](https://www.reflexio.ai/playbooks?"
+        "resource=user_playbook&user_playbook_id=17)"
+    ) in md
+    assert (
+        "[prefers concise answers](https://www.reflexio.ai/profiles?profile_id=pref%2Fone)"
+    ) in md
+    assert "http://localhost:3001/rules/" not in md
+
+
+def test_render_inline_osc8_uses_remote_reflexio_item_pages(monkeypatch) -> None:
     monkeypatch.setenv("REFLEXIO_URL", "https://www.reflexio.ai/")
     monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", "osc8")
 
@@ -388,10 +433,31 @@ def test_render_inline_osc8_uses_remote_reflexio_list_pages(monkeypatch) -> None
         profiles=[{"content": "prefers concise answers", "profile_id": "pref/one"}],
     )
 
-    assert "\x1b]8;;https://www.reflexio.ai/playbooks\x1b\\" in md
-    assert "\x1b]8;;https://www.reflexio.ai/profiles\x1b\\" in md
+    assert (
+        "\x1b]8;;https://www.reflexio.ai/playbooks?"
+        "resource=user_playbook&user_playbook_id=17\x1b\\"
+    ) in md
+    assert "\x1b]8;;https://www.reflexio.ai/profiles?profile_id=pref%2Fone\x1b\\" in md
     assert "http://localhost:3001/rules/s1-17" not in md
     assert "http://localhost:3001/rules/p1-pref" not in md
+
+
+def test_render_inline_with_registry_remote_items_without_real_ids_use_list_pages(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_URL", "https://www.reflexio.ai/")
+    md, registry = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "use safe git flow"}],
+        agent_playbooks=[],
+        profiles=[{"content": "prefers concise answers"}],
+    )
+
+    assert "open: https://www.reflexio.ai/playbooks" in md
+    assert "open: https://www.reflexio.ai/profiles" in md
+    by_id = {e["id"]: e for e in registry}
+    assert by_id["s1"]["rule_url"] == "https://www.reflexio.ai/playbooks"
+    assert by_id["p1"]["rule_url"] == "https://www.reflexio.ai/profiles"
 
 
 def test_render_inline_with_registry_off_omits_instruction(monkeypatch) -> None:

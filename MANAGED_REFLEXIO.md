@@ -232,6 +232,12 @@ Open the dashboard the same way as local mode:
 - Claude Code: `/claude-smart:dashboard`
 - Codex: `bash ~/.reflexio/plugin-root/scripts/dashboard-open.sh`
 
+When managed citations include stored Reflexio IDs, claude-smart links directly
+to the managed Reflexio profile or playbook page, for example
+`https://www.reflexio.ai/profiles?profile_id=...` or
+`https://www.reflexio.ai/playbooks?resource=user_playbook&user_playbook_id=...`.
+Items without stored IDs fall back to the managed list page.
+
 ## Troubleshooting
 
 If `npx claude-smart setup` prints `unknown command 'setup'`, the machine is

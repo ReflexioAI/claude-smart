@@ -384,7 +384,7 @@ def _append_playbook_bullet(
     item_id = cs_cite.rank_id("playbook", rank, real_id)
     title = _title_from_content(content)
     dashboard_url = _dashboard_url("playbook", real_id, source_kind)
-    rule_url = _rule_url(item_id, "playbook")
+    rule_url = _rule_url(item_id, "playbook", real_id, source_kind)
     bullet = f"- [cs:{item_id}] {content}"
     if trigger:
         bullet += f" _(when: {trigger})_"
@@ -423,7 +423,7 @@ def _format_profiles(
         item_id = cs_cite.rank_id("profile", rank, real_id)
         title = _title_from_content(content)
         dashboard_url = _dashboard_url("profile", real_id)
-        rule_url = _rule_url(item_id, "profile")
+        rule_url = _rule_url(item_id, "profile", real_id)
         bullet = f"- [cs:{item_id}] {content}"
         if rule_url:
             bullet += f" _(open: {rule_url})_"
@@ -443,7 +443,7 @@ def _format_profiles(
 
 
 def _dashboard_url(kind: str, real_id: Any, source_kind: str | None = None) -> str:
-    remote_url = _remote_reflexio_page_url(kind)
+    remote_url = _remote_reflexio_item_url(kind, real_id, source_kind)
     if remote_url:
         return remote_url
     if real_id is None:
@@ -458,8 +458,10 @@ def _dashboard_url(kind: str, real_id: Any, source_kind: str | None = None) -> s
     return ""
 
 
-def _rule_url(item_id: str, kind: str) -> str:
-    remote_url = _remote_reflexio_page_url(kind)
+def _rule_url(
+    item_id: str, kind: str, real_id: Any = None, source_kind: str | None = None
+) -> str:
+    remote_url = _remote_reflexio_item_url(kind, real_id, source_kind)
     if remote_url:
         return remote_url
     if not item_id:
@@ -467,6 +469,27 @@ def _rule_url(item_id: str, kind: str) -> str:
     encoded_id = quote(item_id, safe="")
     base = os.environ.get(_DASHBOARD_URL_ENV, _DEFAULT_DASHBOARD_URL).rstrip("/")
     return f"{base}/rules/{encoded_id}"
+
+
+def _remote_reflexio_item_url(
+    kind: str, real_id: Any, source_kind: str | None = None
+) -> str:
+    origin = _remote_reflexio_origin()
+    if not origin:
+        return ""
+    if real_id is None:
+        return _remote_reflexio_page_url(kind)
+    encoded_id = quote(str(real_id), safe="")
+    if kind == "profile":
+        return f"{origin}/profiles?profile_id={encoded_id}"
+    if kind == "playbook":
+        if source_kind == "user_playbook":
+            return (
+                f"{origin}/playbooks?resource=user_playbook&"
+                f"user_playbook_id={encoded_id}"
+            )
+        return f"{origin}/playbooks?agent_playbook_id={encoded_id}"
+    return ""
 
 
 def _remote_reflexio_page_url(kind: str) -> str:
