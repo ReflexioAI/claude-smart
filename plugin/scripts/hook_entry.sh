@@ -59,8 +59,9 @@ if [ -f "$FAILURE_MARKER" ]; then
   if [ -z "$stored_fp" ] || [ "$stored_fp" != "$current_fp" ]; then
     rm -f "$FAILURE_MARKER"
   else
-    if [ "$EVENT" = "session-start" ] && command -v python3 >/dev/null 2>&1; then
-      python3 - "$FAILURE_MARKER" <<'PY'
+    failure_py="$(claude_smart_resolve_python 2>/dev/null || true)"
+    if [ "$EVENT" = "session-start" ] && [ -n "$failure_py" ]; then
+      "$failure_py" - "$FAILURE_MARKER" <<'PY'
 import json, pathlib, sys
 first = pathlib.Path(sys.argv[1]).read_text().splitlines()
 msg = (first[0].strip() if first else "") or "unknown error"

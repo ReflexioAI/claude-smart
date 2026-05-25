@@ -879,7 +879,7 @@ def test_setup_local_dev_refreshes_claude_code_local_plugin() -> None:
     assert "write_local_reflexio_uv_source" in script
     assert "[tool.uv.sources]" in script
     assert (
-        'reflexio-ai = {{ path = {json.dumps(reflexio_path)}, editable = true }}'
+        "reflexio-ai = {{ path = {json.dumps(reflexio_path)}, editable = true }}"
         in script
     )
     assert (
@@ -902,8 +902,7 @@ def test_setup_local_dev_prefers_workspace_reflexio_checkout() -> None:
     assert "expand_user_path()" in script
     assert 'reflexio_env_path="$(expand_user_path "$REFLEXIO_PATH")"' in script
     assert (
-        'reflexio_env_path="$(expand_user_path '
-        '"$CLAUDE_SMART_LOCAL_REFLEXIO_PATH")"'
+        'reflexio_env_path="$(expand_user_path "$CLAUDE_SMART_LOCAL_REFLEXIO_PATH")"'
     ) in script
     assert 'sibling_reflexio="$REPO_ROOT/../reflexio"' in script
     assert 'bundled_reflexio="$REPO_ROOT/reflexio"' not in script
@@ -923,9 +922,9 @@ def test_use_local_reflexio_installs_into_plugin_venv() -> None:
     assert 'REFLEXIO_PATH="${REFLEXIO_PATH:-$REPO_ROOT/../reflexio}"' in script
     assert 'REFLEXIO_PATH="$(expand_user_path "$REFLEXIO_PATH")"' in script
     assert 'uv sync --project "$PLUGIN_ROOT"' in script
-    assert 'resolve_venv_python()' in script
+    assert "resolve_venv_python()" in script
     assert 'if ! PLUGIN_PYTHON="$(resolve_venv_python "$PLUGIN_ROOT")"; then' in script
-    assert '$venv_root/Scripts/python.exe' in script
+    assert "$venv_root/Scripts/python.exe" in script
     assert (
         'uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" '
         '-e "$REFLEXIO_PATH"'
@@ -943,9 +942,9 @@ def test_reflexio_release_sync_has_strict_release_checks() -> None:
     release_script = RELEASE_WITH_REFLEXIO.read_text()
 
     assert "--release-checks" in sync_script
-    assert "fetch\", \"origin\", \"main\", \"--tags" in sync_script
-    assert "rev-parse\", \"origin/main" in sync_script
-    assert "tag\", \"--points-at\", \"HEAD" in sync_script
+    assert 'fetch", "origin", "main", "--tags' in sync_script
+    assert 'rev-parse", "origin/main' in sync_script
+    assert 'tag", "--points-at", "HEAD' in sync_script
     assert "v{version}" in sync_script
     assert "PyPI reflexio-ai dependency" in sync_script
     assert '"source": "pypi"' in sync_script
@@ -965,14 +964,13 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     gitignore = (REPO_ROOT / ".gitignore").read_text()
 
     assert "plugin/vendor/reflexio" in vendor_script
-    assert "git\", \"-C\", str(reflexio_path), \"archive\"" in vendor_script
+    assert 'git", "-C", str(reflexio_path), "archive"' in vendor_script
     assert '"source": "vendor"' in vendor_script
     assert '"vendor_path": str(VENDOR_PATH)' in vendor_script
     assert "package_include_paths" in vendor_script
     assert "only-include" in vendor_script
     assert (
-        'REFLEXIO_RELEASE_SOURCE="${REFLEXIO_RELEASE_SOURCE:-vendor}"'
-        in release_script
+        'REFLEXIO_RELEASE_SOURCE="${REFLEXIO_RELEASE_SOURCE:-vendor}"' in release_script
     )
     assert 'PYTHON_BIN="${PYTHON:-python3}"' in release_script
     assert '"$PYTHON_BIN" scripts/vendor-reflexio.py' in release_script
@@ -1379,6 +1377,78 @@ def test_hook_entry_skips_cleanly_when_cached_package_missing(tmp_path: Path) ->
     assert "uv should not execute" not in result.stderr
 
 
+def test_hook_entry_failure_marker_uses_resolved_python_on_windows(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "plugin"
+    scripts = plugin_root / "scripts"
+    bin_dir = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    bin_dir.mkdir()
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(HOOK_ENTRY, scripts / "hook_entry.sh")
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    (plugin_root / "uv.lock").write_text("")
+    (bin_dir / "uname").write_text("#!/bin/sh\nprintf 'MINGW64_NT-10.0\\n'\n")
+    (bin_dir / "python3").write_text(
+        "#!/bin/sh\n"
+        "printf 'python3 stub should not be used\\n' >&2\n"
+        'touch "$HOME/python3-called"\n'
+        "exit 99\n"
+    )
+    (bin_dir / "python").write_text(
+        "#!/bin/sh\n"
+        "cat >/dev/null\n"
+        "printf '%s\\n' "
+        '\'{"hookSpecificOutput":{"hookEventName":"SessionStart",'
+        '"additionalContext":"> **claude-smart is not installed correctly:** '
+        "cached env is broken\"}}}'\n"
+    )
+    for executable in [
+        scripts / "hook_entry.sh",
+        bin_dir / "uname",
+        bin_dir / "python",
+        bin_dir / "python3",
+    ]:
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    fingerprint = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            (
+                f'. "{scripts / "_lib.sh"}"; '
+                f'claude_smart_install_fingerprint_hash "{plugin_root}" "{scripts}"'
+            ),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    marker_dir = tmp_path / ".claude-smart"
+    marker_dir.mkdir()
+    (marker_dir / "install-failed").write_text(
+        f"cached env is broken\nfingerprint={fingerprint}\n"
+    )
+
+    result = subprocess.run(
+        [str(scripts / "hook_entry.sh"), "claude-code", "session-start"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "claude-smart is not installed correctly" in result.stdout
+    assert not (tmp_path / "python3-called").exists()
+
+
 def test_hook_entry_defaults_codex_citation_links_to_osc8(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -1597,20 +1667,17 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
                                 {"command": 'bash "$_R/scripts/smart-install.sh"'},
                                 {
                                     "command": (
-                                        'bash "$_R/scripts/ensure-plugin-root.sh" '
-                                        '"$_R"'
+                                        'bash "$_R/scripts/ensure-plugin-root.sh" "$_R"'
                                     )
                                 },
                                 {
                                     "command": (
-                                        'bash "$_R/scripts/backend-service.sh" '
-                                        "start"
+                                        'bash "$_R/scripts/backend-service.sh" start'
                                     )
                                 },
                                 {
                                     "command": (
-                                        'bash "$_R/scripts/dashboard-service.sh" '
-                                        "start"
+                                        'bash "$_R/scripts/dashboard-service.sh" start'
                                     )
                                 },
                                 {
