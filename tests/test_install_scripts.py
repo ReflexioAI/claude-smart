@@ -1449,7 +1449,7 @@ def test_hook_entry_failure_marker_uses_resolved_python_on_windows(
     assert not (tmp_path / "python3-called").exists()
 
 
-def test_hook_entry_defaults_codex_citation_links_to_osc8(tmp_path: Path) -> None:
+def test_hook_entry_defaults_codex_citation_links_to_markdown(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     uv = bin_dir / "uv"
@@ -1475,9 +1475,9 @@ def test_hook_entry_defaults_codex_citation_links_to_osc8(tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
-    assert parsed["hookSpecificOutput"]["additionalContext"] == "osc8"
+    assert parsed["hookSpecificOutput"]["additionalContext"] == "markdown"
 
-    env["CLAUDE_SMART_CITATION_LINK_STYLE"] = "markdown"
+    env["CLAUDE_SMART_CITATION_LINK_STYLE"] = "osc8"
     result = subprocess.run(
         [str(HOOK_ENTRY), "codex", "user-prompt"],
         env=env,
@@ -1489,7 +1489,7 @@ def test_hook_entry_defaults_codex_citation_links_to_osc8(tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
-    assert parsed["hookSpecificOutput"]["additionalContext"] == "markdown"
+    assert parsed["hookSpecificOutput"]["additionalContext"] == "osc8"
 
 
 def test_node_installer_platform_preflight_messages() -> None:
@@ -2212,7 +2212,7 @@ def test_codex_hook_normalizer_removes_suppress_output_for_hooks(
     assert json.loads(result.stdout) == {"continue": True}
 
 
-def test_codex_hook_defaults_citation_links_to_osc8(tmp_path: Path) -> None:
+def test_codex_hook_defaults_citation_links_to_markdown(tmp_path: Path) -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for codex hook wrapper tests")
@@ -2243,7 +2243,7 @@ def test_codex_hook_defaults_citation_links_to_osc8(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
-    assert parsed["hookSpecificOutput"]["additionalContext"] == "osc8"
+    assert parsed["hookSpecificOutput"]["additionalContext"] == "markdown"
     assert parsed["continue"] is True
 
 

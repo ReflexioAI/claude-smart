@@ -21,7 +21,7 @@ case "$EVENT" in
 esac
 export CLAUDE_SMART_HOST="$HOST"
 if [ "$HOST" = "codex" ] && [ -z "${CLAUDE_SMART_CITATION_LINK_STYLE:-}" ]; then
-  export CLAUDE_SMART_CITATION_LINK_STYLE="osc8"
+  export CLAUDE_SMART_CITATION_LINK_STYLE="markdown"
 fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

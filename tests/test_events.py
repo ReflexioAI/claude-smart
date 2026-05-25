@@ -1027,7 +1027,7 @@ def test_user_prompt_injects_compact_context_for_codex(
 ) -> None:
     """Codex receives a one-line context because the TUI displays it."""
     monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
-    monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", "osc8")
+    monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
     _stub_user_prompt_adapter(
         monkeypatch,
         playbooks=[
@@ -1060,10 +1060,14 @@ def test_user_prompt_injects_compact_context_for_codex(
     assert "Then run an import smoke test before committing" in markdown
     assert "Run uv sync after pyproject edits: Run uv sync" not in markdown
     assert "prefers anyio over asyncio" in markdown
-    assert "\x1b]8;;http://localhost:3001/rules/s1\x1b\\" in markdown
     assert "✨ claude-smart rule applied:" in markdown
-    assert "preserving its hidden OSC 8 terminal link" in markdown
-    assert "open: http://localhost:3001/rules/s1" not in markdown
+    assert "copy this final marker exactly with markdown links" in markdown
+    assert (
+        "✨ claude-smart rule applied: "
+        "[Run uv sync after pyproject edits](http://localhost:3001/rules/s1) | "
+        "[prefers anyio over asyncio](http://localhost:3001/rules/p1)"
+    ) in markdown
+    assert "\x1b]8;;" not in markdown
 
 
 def test_user_prompt_writes_nothing_when_search_empty(session_dir, monkeypatch) -> None:

@@ -238,6 +238,11 @@ def render_inline_compact_with_registry(
             item = f"{content} (title: {title}"
             if rule_url:
                 item += f"; open: {rule_url}"
+                marker_parts.append(
+                    _markdown_link(
+                        rule_url, _strip_trailing_sentence_punctuation(title)
+                    )
+                )
             item += ")"
         if entry.get("kind") == "profile":
             preference_parts.append(item)
@@ -279,6 +284,17 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
             "If used, end with `✨ claude-smart rule applied:` followed by "
             "the same linked memory text; keep the link, but do not show the "
             "URL. Skip when unrelated."
+        )
+    if marker_parts:
+        marker = f"✨ claude-smart rule applied: {' | '.join(marker_parts)}"
+        separator_instruction = (
+            " Separate multiple linked memories with the visible ` | ` separator."
+            if len(marker_parts) > 1
+            else ""
+        )
+        return _remoteize_citation_instruction(
+            f"If used, copy this final marker exactly with markdown links: "
+            f"`{marker}`.{separator_instruction} Skip when unrelated."
         )
     return _remoteize_citation_instruction(
         "Only if a listed [cs:...] item materially changes your answer, end "
@@ -502,6 +518,12 @@ def _one_line(text: str) -> str:
 
 def _osc8_link(url: str, label: str) -> str:
     return f"\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\"
+
+
+def _markdown_link(url: str, label: str) -> str:
+    safe_label = label.replace("[", "\\[").replace("]", "\\]")
+    safe_url = url.replace(")", "%29")
+    return f"[{safe_label}]({safe_url})"
 
 
 def _strip_trailing_sentence_punctuation(text: str) -> str:

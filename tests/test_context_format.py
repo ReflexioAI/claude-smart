@@ -247,7 +247,7 @@ def test_render_inline_with_registry_can_inject_osc8_instruction(monkeypatch) ->
 def test_render_inline_compact_with_registry_is_one_logical_line(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", "osc8")
+    monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
     md, registry = context_format.render_inline_compact_with_registry(
         project_id="demo",
         user_playbooks=[
@@ -270,26 +270,47 @@ def test_render_inline_compact_with_registry_is_one_logical_line(
     assert "[cs:" not in md
     assert "claude-smart: using relevant memory. Skill:" in md
     assert "Preference:" in md
-    assert "\x1b]8;;http://localhost:3001/rules/s1-17\x1b\\" in md
     assert "Run uv sync after pyproject edits" in md
     assert "Then run an import smoke test before committing" in md
     assert "Run uv sync after pyproject edits: Run uv sync" not in md
-    assert "title:" not in md
-    assert "\x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\" in md
+    assert "title: Run uv sync after pyproject edits" in md
+    assert "open: http://localhost:3001/rules/s1-17" in md
     assert "prefers concise answers" in md
     assert "✨ claude-smart rule applied:" in md
     assert md.count("✨ claude-smart rule applied:") == 1
-    assert "preserving its hidden OSC 8 terminal link" in md
+    assert "copy this final marker exactly with markdown links" in md
     assert (
         "✨ claude-smart rule applied: "
-        "\x1b]8;;http://localhost:3001/rules/s1-17\x1b\\"
-        "Run uv sync after pyproject edits"
-        "\x1b]8;;\x1b\\ | "
-        "\x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\"
-        "prefers concise answers"
-        "\x1b]8;;\x1b\\"
+        "[Run uv sync after pyproject edits](http://localhost:3001/rules/s1-17) | "
+        "[prefers concise answers](http://localhost:3001/rules/p1-pref)"
     ) in md
     assert "visible ` | ` separator" in md
+    assert "\x1b]8;;" not in md
+    assert {entry["id"] for entry in registry} == {"s1-17", "p1-pref"}
+
+
+def test_render_inline_compact_with_registry_can_emit_osc8_when_requested(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", "osc8")
+    md, registry = context_format.render_inline_compact_with_registry(
+        project_id="demo",
+        user_playbooks=[
+            {
+                "content": (
+                    "Run uv sync after pyproject edits. "
+                    "Then run an import smoke test before committing."
+                ),
+                "user_playbook_id": 17,
+            }
+        ],
+        agent_playbooks=[],
+        profiles=[{"content": "prefers concise answers", "profile_id": "pref"}],
+    )
+
+    assert "\x1b]8;;http://localhost:3001/rules/s1-17\x1b\\" in md
+    assert "\x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\" in md
+    assert "preserving its hidden OSC 8 terminal link" in md
     assert "open: http://localhost:3001/rules/s1-17" not in md
     assert {entry["id"] for entry in registry} == {"s1-17", "p1-pref"}
 
