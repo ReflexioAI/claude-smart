@@ -894,7 +894,7 @@ def _register_codex_marketplace(root: Path) -> tuple[bool, str]:
 
 
 def _configure_reflexio_setup() -> bool:
-    """Load setup state from ``~/.reflexio/.env`` without writing local defaults.
+    """Load setup state and ensure local defaults when unmanaged.
 
     Returns:
         bool: Whether read-only mode is enabled.
@@ -939,7 +939,11 @@ def _configure_reflexio_setup() -> bool:
     else:
         os.environ.pop(env_config.REFLEXIO_URL_ENV, None)
         os.environ.pop(env_config.REFLEXIO_API_KEY_ENV, None)
+        os.environ.pop("REFLEXIO_USER_ID", None)
         os.environ.pop("CLAUDE_SMART_MANAGED_SETUP", None)
+        added = env_config.ensure_local_env_defaults(_REFLEXIO_ENV_PATH)
+        if added:
+            sys.stdout.write(f"Seeded {_REFLEXIO_ENV_PATH} with {', '.join(added)}.\n")
     return read_only
 
 
@@ -1342,7 +1346,9 @@ def _run_service(script: Path, subcmd: str) -> int:
         return 1
     bash = _resolve_bash()
     if not bash:
-        sys.stderr.write("error: bash is required to run claude-smart service scripts\n")
+        sys.stderr.write(
+            "error: bash is required to run claude-smart service scripts\n"
+        )
         return 1
     try:
         subprocess.run([bash, str(script), subcmd], check=True)

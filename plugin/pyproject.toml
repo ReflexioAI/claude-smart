@@ -15,6 +15,10 @@ dependencies = [
     # downloaded on first use, not at install time.
     "chromadb>=0.5",
     "einops>=0.8.0",
+    # Native SQLite vector KNN for local storage. Reflexio can fall back to
+    # Python ranking without this, but installed claude-smart should include
+    # the accelerator by default.
+    "sqlite-vec>=0.1.6",
 ]
 
 [project.scripts]

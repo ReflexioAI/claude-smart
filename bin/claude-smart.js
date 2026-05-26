@@ -16,6 +16,7 @@
 const { execSync, spawn, spawnSync } = require("child_process");
 const crypto = require("crypto");
 const {
+  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -41,6 +42,8 @@ const REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
 const MANAGED_SETUP_ENV = "CLAUDE_SMART_MANAGED_SETUP";
 const CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY";
+const CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI";
+const CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING";
 const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
@@ -89,6 +92,24 @@ const COPYTREE_IGNORE_NAMES = new Set([
   ".ruff_cache",
   "node_modules",
   ".next",
+]);
+const LOCAL_DEFAULT_ENV_ENTRIES = [
+  [
+    "# Route reflexio generation through the local Claude Code CLI",
+    CLAUDE_SMART_USE_LOCAL_CLI_ENV,
+    "1",
+  ],
+  [
+    "# Use the in-process ONNX embedder (chromadb) - no API key for semantic search",
+    CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV,
+    "1",
+  ],
+  [null, CLAUDE_SMART_READ_ONLY_ENV, "0"],
+];
+const LOCAL_MODE_PRUNE_KEYS = new Set([
+  "REFLEXIO_URL",
+  "REFLEXIO_API_KEY",
+  REFLEXIO_USER_ID_ENV,
 ]);
 
 function shouldCopyPath(src) {
@@ -216,6 +237,57 @@ function parseEnvLine(line) {
   return { key, value };
 }
 
+function escapeEnvValue(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function ensureLocalReflexioEnv() {
+  mkdirSync(dirname(REFLEXIO_ENV_PATH), { recursive: true });
+  const existing = existsSync(REFLEXIO_ENV_PATH)
+    ? readFileSync(REFLEXIO_ENV_PATH, "utf8")
+    : "";
+  const present = new Set();
+  const keptLines = [];
+  let pruned = false;
+  for (const line of existing.split(/\r?\n/)) {
+    const parsed = parseEnvLine(line);
+    if (parsed) {
+      if (LOCAL_MODE_PRUNE_KEYS.has(parsed.key)) {
+        pruned = true;
+        continue;
+      }
+      present.add(parsed.key);
+    }
+    keptLines.push(line);
+  }
+
+  const additions = [];
+  const added = [];
+  for (const [comment, key, value] of LOCAL_DEFAULT_ENV_ENTRIES) {
+    if (present.has(key)) continue;
+    if (comment) additions.push(comment);
+    if (key === CLAUDE_SMART_READ_ONLY_ENV) {
+      additions.push(`${key}="${escapeEnvValue(value)}"`);
+    } else {
+      additions.push(`${key}=${escapeEnvValue(value)}`);
+    }
+    added.push(key);
+  }
+
+  if (additions.length > 0 || pruned) {
+    let content = keptLines.join("\n").replace(/\n*$/, "");
+    if (additions.length > 0) {
+      const prefix = content ? "\n" : "";
+      content = content + prefix + additions.join("\n");
+    }
+    writeFileSync(REFLEXIO_ENV_PATH, content ? `${content}\n` : "");
+  } else if (!existsSync(REFLEXIO_ENV_PATH)) {
+    writeFileSync(REFLEXIO_ENV_PATH, "");
+  }
+  chmodSync(REFLEXIO_ENV_PATH, 0o600);
+  return added;
+}
+
 function maskSecret(value) {
   if (!value) return "";
   if (value.length <= 8) return "*".repeat(value.length);
@@ -254,7 +326,12 @@ function loadReflexioSetupEnv() {
   } else {
     delete process.env.REFLEXIO_URL;
     delete process.env.REFLEXIO_API_KEY;
+    delete process.env[REFLEXIO_USER_ID_ENV];
     delete process.env[MANAGED_SETUP_ENV];
+    const added = ensureLocalReflexioEnv();
+    if (added.length > 0) {
+      process.stdout.write(`Seeded ${REFLEXIO_ENV_PATH} with ${added.join(", ")}.\n`);
+    }
   }
   const readOnly = ["1", "true", "yes", "on"].includes(
     String(readOnlyValue).trim().toLowerCase(),

@@ -106,6 +106,34 @@ append_env_value() {
   chmod 600 "$REFLEXIO_ENV"
 }
 
+append_env_raw() {
+  local key value
+  key="$1"
+  value="$2"
+  mkdir -p "$(dirname "$REFLEXIO_ENV")"
+  touch "$REFLEXIO_ENV"
+  chmod 600 "$REFLEXIO_ENV"
+  printf '%s=%s\n' "$key" "$value" >> "$REFLEXIO_ENV"
+  chmod 600 "$REFLEXIO_ENV"
+}
+
+ensure_local_env_defaults() {
+  mkdir -p "$(dirname "$REFLEXIO_ENV")"
+  touch "$REFLEXIO_ENV"
+  chmod 600 "$REFLEXIO_ENV"
+  if ! get_env_value CLAUDE_SMART_USE_LOCAL_CLI >/dev/null 2>&1; then
+    printf '# Route reflexio generation through the local Claude Code CLI\n' >> "$REFLEXIO_ENV"
+    append_env_raw CLAUDE_SMART_USE_LOCAL_CLI "1"
+  fi
+  if ! get_env_value CLAUDE_SMART_USE_LOCAL_EMBEDDING >/dev/null 2>&1; then
+    printf '# Use the in-process ONNX embedder (chromadb) - no API key for semantic search\n' >> "$REFLEXIO_ENV"
+    append_env_raw CLAUDE_SMART_USE_LOCAL_EMBEDDING "1"
+  fi
+  if ! get_env_value CLAUDE_SMART_READ_ONLY >/dev/null 2>&1; then
+    append_env_value CLAUDE_SMART_READ_ONLY "0"
+  fi
+}
+
 mask_secret() {
   local value len suffix
   value="$1"
@@ -283,11 +311,11 @@ main() {
 
   if [ "$mode" = "local" ]; then
     if [ -f "$REFLEXIO_ENV" ]; then
-      remove_env_keys
+      remove_env_keys REFLEXIO_API_KEY REFLEXIO_URL REFLEXIO_USER_ID
       log "removed managed Reflexio settings from $REFLEXIO_ENV"
-    else
-      log "local mode selected; no $REFLEXIO_ENV exists, so no env file was created"
     fi
+    ensure_local_env_defaults
+    log "configured local Reflexio defaults in $REFLEXIO_ENV"
     install_for_host "$host"
     return 0
   fi

@@ -287,13 +287,15 @@ def test_backend_service_skips_local_start_for_remote_reflexio_url() -> None:
     assert "remote configured at $REFLEXIO_URL" in backend
 
 
-def test_smart_install_does_not_create_local_env_defaults() -> None:
+def test_smart_install_repairs_local_env_defaults() -> None:
     script = (REPO_ROOT / "plugin" / "scripts" / "smart-install.sh").read_text()
     lib = (REPO_ROOT / "plugin" / "scripts" / "_lib.sh").read_text()
 
-    assert 'touch "$REFLEXIO_ENV"' not in script
-    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" not in script
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" not in script
+    assert 'touch "$REFLEXIO_ENV"' in script
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in script
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in script
+    assert "CLAUDE_SMART_READ_ONLY=0" in script
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=" in script.split("install_complete()", 1)[1]
     assert "claude_smart_source_reflexio_env" in script
     assert "CLAUDE_SMART_READ_ONLY" in lib
     assert "REFLEXIO_USER_ID" in lib
@@ -368,11 +370,14 @@ def _run_setup_script(tmp_path: Path, stdin: str) -> subprocess.CompletedProcess
     )
 
 
-def test_setup_script_local_mode_does_not_create_env(tmp_path: Path) -> None:
+def test_setup_script_local_mode_creates_env(tmp_path: Path) -> None:
     result = _run_setup_script(tmp_path, "claude-code\nlocal\n")
 
     assert result.returncode == 0, result.stderr
-    assert not (tmp_path / ".reflexio" / ".env").exists()
+    text = (tmp_path / ".reflexio" / ".env").read_text()
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in text
+    assert 'CLAUDE_SMART_READ_ONLY="0"' in text
 
 
 def test_setup_script_local_mode_cleans_managed_keys(tmp_path: Path) -> None:
@@ -392,10 +397,13 @@ def test_setup_script_local_mode_cleans_managed_keys(tmp_path: Path) -> None:
     assert "REFLEXIO_URL" not in text
     assert "REFLEXIO_API_KEY" not in text
     assert "REFLEXIO_USER_ID" not in text
-    assert "CLAUDE_SMART_READ_ONLY" not in text
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in text
+    assert "CLAUDE_SMART_READ_ONLY=1" in text
+    assert 'CLAUDE_SMART_READ_ONLY="0"' not in text
 
 
-def test_setup_script_local_mode_deletes_empty_env(tmp_path: Path) -> None:
+def test_setup_script_local_mode_replaces_managed_only_env(tmp_path: Path) -> None:
     env_path = tmp_path / ".reflexio" / ".env"
     env_path.parent.mkdir()
     env_path.write_text('REFLEXIO_API_KEY="rflx-test"\n')
@@ -403,7 +411,11 @@ def test_setup_script_local_mode_deletes_empty_env(tmp_path: Path) -> None:
     result = _run_setup_script(tmp_path, "claude-code\nlocal\n")
 
     assert result.returncode == 0, result.stderr
-    assert not env_path.exists()
+    text = env_path.read_text()
+    assert "REFLEXIO_API_KEY" not in text
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in text
+    assert 'CLAUDE_SMART_READ_ONLY="0"' in text
 
 
 def test_setup_script_managed_project_scoped(tmp_path: Path) -> None:
@@ -564,7 +576,15 @@ def test_node_installer_ignores_stale_url_without_api_key(tmp_path: Path) -> Non
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == ""
+    assert result.stdout.endswith(
+        "CLAUDE_SMART_USE_LOCAL_CLI, "
+        "CLAUDE_SMART_USE_LOCAL_EMBEDDING, CLAUDE_SMART_READ_ONLY.\n"
+    )
+    env_text = env_path.read_text()
+    assert "REFLEXIO_URL" not in env_text
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in env_text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in env_text
+    assert 'CLAUDE_SMART_READ_ONLY="0"' in env_text
 
 
 def test_node_installer_supports_managed_reflexio_setup() -> None:
@@ -1142,6 +1162,74 @@ def test_smart_install_installs_vendored_reflexio(tmp_path: Path) -> None:
     assert "sync --locked --python 3.12 --quiet" in uv_log
     assert f"pip install --project {plugin_root}" in uv_log
     assert f"-e {vendor}" in uv_log
+
+
+def test_smart_install_repairs_reflexio_template_env_drift(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin"
+    scripts = plugin_root / "scripts"
+    fake_bin = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    fake_bin.mkdir()
+    shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(
+        REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
+        scripts / "ensure-plugin-root.sh",
+    )
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    (plugin_root / "uv.lock").write_text("")
+
+    uv = fake_bin / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$HOME/uv.log"\n'
+        'if [ "$1" = "sync" ]; then\n'
+        '  mkdir -p "$PWD/.venv/bin"\n'
+        '  printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
+        '  chmod +x "$PWD/.venv/bin/python"\n'
+        "fi\n"
+        "exit 0\n"
+    )
+    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    command = ["/bin/bash", "--noprofile", "--norc", str(scripts / "smart-install.sh")]
+
+    first = subprocess.run(
+        command,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert first.returncode == 0, first.stderr
+    assert (tmp_path / ".claude-smart" / "install-complete").exists()
+
+    reflexio_env = tmp_path / ".reflexio" / ".env"
+    reflexio_env.write_text(
+        "# Reflexio template-style env without claude-smart local defaults\n"
+        "OPENAI_API_KEY=\n"
+        "ANTHROPIC_API_KEY=\n"
+    )
+
+    second = subprocess.run(
+        command,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert second.returncode == 0, second.stderr
+    env_text = reflexio_env.read_text()
+    assert "OPENAI_API_KEY=" in env_text
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in env_text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in env_text
+    assert 'CLAUDE_SMART_READ_ONLY="0"' in env_text
+    assert (tmp_path / "uv.log").read_text().count(
+        "sync --locked --python 3.12 --quiet"
+    ) == 2
 
 
 def test_vendor_release_is_npm_only() -> None:

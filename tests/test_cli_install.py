@@ -160,16 +160,18 @@ def test_cmd_install_fails_when_dependency_bootstrap_fails(
     assert rc == 1
 
 
-def test_install_setup_default_does_not_create_local_env(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_install_setup_default_creates_local_env(monkeypatch, tmp_path: Path) -> None:
     env_path = tmp_path / ".reflexio" / ".env"
     monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
 
     read_only = cli._configure_reflexio_setup()
 
     assert read_only is False
-    assert not env_path.exists()
+    text = env_path.read_text()
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in text
+    assert 'CLAUDE_SMART_READ_ONLY="0"' in text
+    assert env_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_install_setup_reads_managed_reflexio_from_env(
@@ -230,6 +232,10 @@ def test_install_setup_ignores_stale_url_without_api_key(
 
     assert read_only is False
     assert "REFLEXIO_URL" not in os.environ
+    text = env_path.read_text()
+    assert "REFLEXIO_URL" not in text
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in text
 
 
 def test_install_parser_keeps_plain_install() -> None:

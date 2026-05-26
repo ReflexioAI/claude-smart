@@ -10,6 +10,27 @@ MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/"
 REFLEXIO_URL_ENV = "REFLEXIO_URL"
 REFLEXIO_API_KEY_ENV = "REFLEXIO_API_KEY"
 CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY"
+CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
+CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
+
+_LOCAL_DEFAULT_ENTRIES = (
+    (
+        "# Route reflexio generation through the local Claude Code CLI",
+        CLAUDE_SMART_USE_LOCAL_CLI_ENV,
+        "1",
+    ),
+    (
+        "# Use the in-process ONNX embedder (chromadb) - no API key for semantic search",
+        CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV,
+        "1",
+    ),
+    (None, CLAUDE_SMART_READ_ONLY_ENV, "0"),
+)
+_LOCAL_MODE_PRUNE_KEYS = {
+    REFLEXIO_URL_ENV,
+    REFLEXIO_API_KEY_ENV,
+    "REFLEXIO_USER_ID",
+}
 
 
 def parse_env_line(line: str) -> tuple[str, str] | None:
@@ -87,6 +108,59 @@ def set_env_vars(path: Path, values: dict[str, str]) -> list[str]:
     path.write_text(content + ("\n" if content else ""), encoding="utf-8")
     path.chmod(0o600)
     return added
+
+
+def ensure_local_env_defaults(path: Path | None = None) -> list[str]:
+    """Create or augment ``~/.reflexio/.env`` for claude-smart local mode.
+
+    Existing active assignments win. This repairs first installs and deleted
+    env files without clobbering explicit user overrides such as
+    ``CLAUDE_SMART_READ_ONLY=1``.
+    """
+    path = path or REFLEXIO_ENV_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing = path.read_text()
+    except OSError:
+        existing = ""
+
+    present: set[str] = set()
+    kept_lines: list[str] = []
+    pruned = False
+    for line in existing.splitlines():
+        parsed = parse_env_line(line)
+        if parsed is not None:
+            key, _value = parsed
+            if key in _LOCAL_MODE_PRUNE_KEYS:
+                pruned = True
+                continue
+            present.add(key)
+        kept_lines.append(line)
+
+    additions: list[str] = []
+    added_keys: list[str] = []
+    for comment, key, value in _LOCAL_DEFAULT_ENTRIES:
+        if key in present:
+            continue
+        if comment:
+            additions.append(comment)
+        if key == CLAUDE_SMART_READ_ONLY_ENV:
+            additions.append(f'{key}="{_escape_env_value(value)}"')
+        else:
+            additions.append(f"{key}={_escape_env_value(value)}")
+        added_keys.append(key)
+
+    if additions or pruned:
+        content = "\n".join(kept_lines)
+        if additions:
+            prefix = "" if not content or content.endswith("\n") else "\n"
+            content = content + prefix + "\n".join(additions)
+        content = content + ("\n" if content else "")
+        path.write_text(content, encoding="utf-8")
+    elif not path.exists():
+        path.touch()
+    path.chmod(0o600)
+    return added_keys
 
 
 def env_truthy(name: str) -> bool:

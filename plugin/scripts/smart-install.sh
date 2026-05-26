@@ -106,6 +106,12 @@ install_complete() {
   command -v uv >/dev/null 2>&1 || return 1
   [ -d "$PLUGIN_ROOT/.venv" ] || return 1
   claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook || return 1
+  if [ -z "${REFLEXIO_API_KEY:-}" ]; then
+    [ -f "$HOME/.reflexio/.env" ] || return 1
+    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$HOME/.reflexio/.env" || return 1
+    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$HOME/.reflexio/.env" || return 1
+    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY=' "$HOME/.reflexio/.env" || return 1
+  fi
   if [ -d "$PLUGIN_ROOT/dashboard" ]; then
     [ -d "$PLUGIN_ROOT/dashboard/.next" ] || [ -f "$MARKER_DIR/dashboard-build.pid" ] || [ -f "$(claude_smart_dashboard_unavailable_marker)" ] || return 1
   fi
@@ -490,6 +496,63 @@ claude_smart_env_upsert() {
     printf '%s="%s"\n' "$key" "$quoted" >> "$REFLEXIO_ENV"
   fi
 }
+
+claude_smart_env_append_raw_if_missing() {
+  local key value
+  key="$1"
+  value="$2"
+  if ! grep -qE "^(export[[:space:]]+)?${key}=" "$REFLEXIO_ENV"; then
+    printf '%s=%s\n' "$key" "$value" >> "$REFLEXIO_ENV"
+  fi
+}
+
+claude_smart_prune_managed_env_keys_for_local() {
+  local tmp line raw_key key
+  [ -f "$REFLEXIO_ENV" ] || return 0
+  tmp="$(mktemp "${REFLEXIO_ENV}.tmp.XXXXXX")"
+  while IFS= read -r line || [ -n "$line" ]; do
+    raw_key="$line"
+    raw_key="${raw_key#"${raw_key%%[![:space:]]*}"}"
+    case "$raw_key" in
+      export\ *) raw_key="${raw_key#export }" ;;
+    esac
+    key="${raw_key%%=*}"
+    key="${key%"${key##*[![:space:]]}"}"
+    case "$key" in
+      REFLEXIO_URL|REFLEXIO_API_KEY|REFLEXIO_USER_ID)
+        continue
+        ;;
+    esac
+    printf '%s\n' "$line" >> "$tmp"
+  done < "$REFLEXIO_ENV"
+  mv "$tmp" "$REFLEXIO_ENV"
+}
+
+claude_smart_ensure_local_env_defaults() {
+  [ -z "${REFLEXIO_API_KEY:-}" ] || return 0
+  mkdir -p "$(dirname "$REFLEXIO_ENV")"
+  touch "$REFLEXIO_ENV"
+  chmod 600 "$REFLEXIO_ENV"
+  claude_smart_prune_managed_env_keys_for_local
+  unset REFLEXIO_URL REFLEXIO_API_KEY REFLEXIO_USER_ID CLAUDE_SMART_MANAGED_SETUP
+  if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
+    printf '# Route reflexio generation through the local Claude Code CLI\n' >> "$REFLEXIO_ENV"
+    claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_CLI "1"
+    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_CLI=1 to $REFLEXIO_ENV" >&2
+  fi
+  if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
+    printf '# Use the in-process ONNX embedder (chromadb) - no API key for semantic search\n' >> "$REFLEXIO_ENV"
+    claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_EMBEDDING "1"
+    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 to $REFLEXIO_ENV" >&2
+  fi
+  if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY=' "$REFLEXIO_ENV"; then
+    claude_smart_env_upsert CLAUDE_SMART_READ_ONLY "0"
+    echo "[claude-smart] appended CLAUDE_SMART_READ_ONLY=0 to $REFLEXIO_ENV" >&2
+  fi
+  chmod 600 "$REFLEXIO_ENV"
+}
+
+claude_smart_ensure_local_env_defaults
 
 # Migrate stale REFLEXIO_URL from reflexio's library default (8081) to the
 # plugin backend port (8071). Matches the quoted and unquoted forms but
