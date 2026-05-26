@@ -85,29 +85,18 @@ PY
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
-  # Self-heal from skipped Setup/SessionStart bootstrap. SessionStart can
-  # afford to wait because it has the install budget; prompt/tool hooks start
-  # the same installer detached so normal work is not blocked by first-run
-  # dependency setup.
+  # Self-heal from skipped setup without blocking the first prompt. The
+  # installer and Setup hook own dependency bootstrap; hooks only schedule
+  # recovery and return so SessionStart stays lightweight.
   if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" = "1" ]; then
     claude_smart_emit_continue
     exit 0
   fi
   if [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
     mkdir -p "$STATE_DIR"
-    if [ "$EVENT" = "session-start" ]; then
-      CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >&2
-      claude_smart_prepend_astral_bins
-      claude_smart_prepend_node_bins
-      if command -v uv >/dev/null 2>&1; then
-        bash "$HERE/backend-service.sh" start >/dev/null 2>&1 || true
-        bash "$HERE/dashboard-service.sh" start >/dev/null 2>&1 || true
-      fi
-    else
-      claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
-        bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
-        >>"$STATE_DIR/install.log" 2>&1 || true
-    fi
+    claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+      bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
+      >>"$STATE_DIR/install.log" 2>&1 || true
   fi
   if ! command -v uv >/dev/null 2>&1; then
     claude_smart_emit_continue
@@ -128,17 +117,13 @@ ensure_hook_package_importable() {
   fi
 
   mkdir -p "$STATE_DIR"
-  if [ "$EVENT" = "session-start" ]; then
-    CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >&2
-  else
-    {
-      printf '%s\n' "[claude-smart] hook: claude_smart.hook is not importable; retrying install in background"
-      date 2>/dev/null || true
-    } >>"$STATE_DIR/install.log" 2>&1
-    claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
-      bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
-      >>"$STATE_DIR/install.log" 2>&1 || true
-  fi
+  {
+    printf '%s\n' "[claude-smart] hook: claude_smart.hook is not importable; retrying install in background"
+    date 2>/dev/null || true
+  } >>"$STATE_DIR/install.log" 2>&1
+  claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+    bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
+    >>"$STATE_DIR/install.log" 2>&1 || true
 
   claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook
 }

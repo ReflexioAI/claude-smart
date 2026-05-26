@@ -508,14 +508,14 @@ function runChecked(command, args, options = {}) {
   });
 }
 
-function runPluginService(pluginRoot, scriptName, subcommand) {
+function runPluginService(pluginRoot, scriptName, subcommand, envOverrides = {}) {
   const script = join(pluginRoot, "scripts", scriptName);
   if (!existsSync(script)) return false;
   const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
   if (!bash) return false;
   const result = spawnSync(bash, [script, subcommand], {
     cwd: pluginRoot,
-    env: runtimeEnv(),
+    env: { ...runtimeEnv(), ...envOverrides },
     stdio: "ignore",
     windowsHide: true,
     timeout: PLUGIN_SERVICE_TIMEOUT_MS,
@@ -540,6 +540,12 @@ function refreshDashboardService(pluginRoot) {
   // identifies as claude-smart, so foreign apps on 3001 are left alone.
   runPluginService(pluginRoot, "dashboard-service.sh", "stop");
   return runPluginService(pluginRoot, "dashboard-service.sh", "start");
+}
+
+function startBackendService(pluginRoot, host) {
+  return runPluginService(pluginRoot, "backend-service.sh", "start", {
+    CLAUDE_SMART_HOST: host,
+  });
 }
 
 function stopClaudeSmartServices(pluginRoot) {
@@ -834,9 +840,7 @@ function patchCodexHooksForNode(pluginRoot, nodePath) {
   const runner = join(pluginRoot, "scripts", "codex-hook.js");
   const command = (...args) => [nodePath, runner, ...args].map(quoteCommandPart).join(" ");
   // Dispatch by command content rather than index — entries can be added or
-  // reordered (e.g. the SessionStart install hook at index 0) without
-  // breaking the patch. Entries that must run as bash (smart-install.sh)
-  // are left untouched.
+  // reordered without breaking the patch.
   const patchOne = (original) => {
     if (typeof original !== "string") return original;
     if (original.includes("smart-install.sh")) return original;
@@ -1512,6 +1516,9 @@ async function runInstall(args) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
+    if (startBackendService(pluginRoot, "claude-code")) {
+      process.stdout.write("Started claude-smart backend service.\n");
+    }
     if (refreshDashboardService(pluginRoot)) {
       process.stdout.write("Refreshed claude-smart dashboard service.\n");
     }
@@ -1591,6 +1598,9 @@ async function runInstallCodex(args) {
     await bootstrapPluginRuntime(cacheDir, { readOnly });
     if (readOnly) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
+    }
+    if (startBackendService(cacheDir, "codex")) {
+      process.stdout.write("Started claude-smart backend service.\n");
     }
     if (refreshDashboardService(cacheDir)) {
       process.stdout.write("Refreshed claude-smart dashboard service.\n");

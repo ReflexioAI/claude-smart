@@ -118,6 +118,13 @@ install_complete() {
   return 0
 }
 
+start_backend_service() {
+  if [ -x "$HERE/backend-service.sh" ]; then
+    echo "[claude-smart] starting backend service in background" >&2
+    bash "$HERE/backend-service.sh" start >/dev/null 2>&1 || true
+  fi
+}
+
 install_vendored_reflexio() {
   local VENDORED_REFLEXIO PLUGIN_PYTHON
 
@@ -391,6 +398,7 @@ fi
 preflight_supported_runtime_platform
 
 if install_complete; then
+  start_backend_service
   claude_smart_emit_continue
   exit 0
 fi
@@ -624,6 +632,8 @@ if ! bash "$HERE/ensure-plugin-root.sh" "$PLUGIN_ROOT"; then
   echo "[claude-smart] WARNING: failed to set ~/.reflexio/plugin-root symlink — slash commands may not resolve" >&2
 fi
 
+start_backend_service
+
 write_success_marker
-echo "[claude-smart] install complete. Backend and dashboard auto-start on session start." >&2
+echo "[claude-smart] install complete. Backend started; dashboard auto-starts on session start." >&2
 claude_smart_emit_continue

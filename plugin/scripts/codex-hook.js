@@ -302,33 +302,6 @@ function detached(command, args, options = {}) {
   return child.pid;
 }
 
-function runInstaller(root, reason) {
-  if (process.env.CLAUDE_SMART_BOOTSTRAPPING === "1") return false;
-  const script = path.join(root, "scripts", "smart-install.sh");
-  if (!fs.existsSync(script)) return false;
-  const bash = bashPath();
-  if (!bash) return false;
-  appendLog("backend.log", `[claude-smart] ${reason}; running installer`);
-  const result = spawnSync(bash, [script], {
-    cwd: root,
-    env: {
-      ...process.env,
-      CLAUDE_SMART_BOOTSTRAPPING: "1",
-    },
-    encoding: "utf8",
-    maxBuffer: 20 * 1024 * 1024,
-    windowsHide: true,
-  });
-  const output = `${result.stdout || ""}${result.stderr || ""}`.trim();
-  if (output) {
-    ensureDir(STATE_DIR);
-    fs.appendFileSync(path.join(STATE_DIR, "install.log"), `${output}\n`);
-    trimLog(path.join(STATE_DIR, "install.log"));
-  }
-  prependRuntimePath();
-  return result.status === 0;
-}
-
 function startInstallerDetached(root, reason) {
   if (process.env.CLAUDE_SMART_BOOTSTRAPPING === "1") return false;
   const script = path.join(root, "scripts", "smart-install.sh");
@@ -410,11 +383,11 @@ async function startBackend(root) {
   }
   const uv = uvPath();
   if (!uv) {
-    runInstaller(root, "backend: uv not on PATH");
+    startInstallerDetached(root, "backend: uv not on PATH");
   }
   const readyUv = uvPath();
   if (!readyUv) {
-    appendLog("backend.log", "[claude-smart] backend: uv not on PATH after installer; skipping");
+    appendLog("backend.log", "[claude-smart] backend: uv not on PATH; installer recovery scheduled; skipping");
     emitOk();
     return;
   }
@@ -478,11 +451,11 @@ async function startDashboard(root) {
   }
   const npm = npmPath();
   if (!npm) {
-    runInstaller(root, "dashboard: npm not on PATH");
+    startInstallerDetached(root, "dashboard: npm not on PATH");
   }
   const readyNpm = npmPath();
   if (!readyNpm) {
-    appendLog("dashboard.log", "[claude-smart] dashboard: npm not on PATH after installer; skipping");
+    appendLog("dashboard.log", "[claude-smart] dashboard: npm not on PATH; installer recovery scheduled; skipping");
     emitOk();
     return;
   }
@@ -512,14 +485,10 @@ function runHook(root, event) {
   trimLog(path.join(STATE_DIR, "backend.log"));
   let uv = uvPath();
   if (!uv) {
-    if (event === "session-start") {
-      runInstaller(root, "hook: uv not on PATH");
-      uv = uvPath();
-    } else {
-      startInstallerDetached(root, "hook: uv not on PATH");
-    }
+    startInstallerDetached(root, "hook: uv not on PATH");
+    uv = uvPath();
     if (!uv) {
-      appendLog("backend.log", "[claude-smart] hook: uv not on PATH after installer; skipping");
+      appendLog("backend.log", "[claude-smart] hook: uv not on PATH; installer recovery scheduled; skipping");
       emitHookOk();
       return 0;
     }

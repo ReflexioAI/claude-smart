@@ -19,16 +19,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/smart-install.sh\"",
-            "timeout": 300
-          }
-        ]
-      },
-      {
-        "matcher": "startup|clear|compact|resume",
-        "hooks": [
-          {
-            "type": "command",
             "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/reflexioai/plugin\"; bash \"$_R/scripts/ensure-plugin-root.sh\" \"$_R\" || true",
             "timeout": 10
           },

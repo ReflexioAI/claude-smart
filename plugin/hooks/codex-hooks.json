@@ -7,11 +7,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; [ -z \"$_R\" ] && _R=$(ls -dt \"$HOME/.codex/plugins/cache/reflexioai/claude-smart\"/*/ 2>/dev/null | head -n 1); [ -n \"$_R\" ] && . \"${_R%/}/scripts/_codex_env.sh\" && bash \"$_R/scripts/smart-install.sh\" || true",
-            "timeout": 300
-          },
-          {
-            "type": "command",
             "command": "_R=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; [ -z \"$_R\" ] && _R=$(ls -dt \"$HOME/.codex/plugins/cache/reflexioai/claude-smart\"/*/ 2>/dev/null | head -n 1); [ -n \"$_R\" ] && . \"${_R%/}/scripts/_codex_env.sh\" && bash \"$_R/scripts/ensure-plugin-root.sh\" \"$_R\" || true",
             "timeout": 10
           },

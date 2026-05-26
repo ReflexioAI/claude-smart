@@ -261,20 +261,30 @@ def test_service_start_scripts_recover_missing_dependencies_without_cli_command(
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
     dashboard = (REPO_ROOT / "plugin" / "scripts" / "dashboard-service.sh").read_text()
 
-    assert "[claude-smart] backend: uv not on PATH; running installer" in backend
     assert (
-        'CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh"'
+        "[claude-smart] backend: uv not on PATH; starting installer in background"
         in backend
     )
-    assert "[claude-smart] backend: uv not on PATH after installer; skipping" in backend
     assert (
-        "[claude-smart] dashboard: npm is not on PATH; running installer" in dashboard
+        'claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1'
+        in backend
     )
     assert (
-        'CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh"'
+        "[claude-smart] backend: uv not on PATH; installer recovery scheduled; skipping"
+        in backend
+    )
+    assert (
+        "[claude-smart] dashboard: npm is not on PATH; starting installer in background"
         in dashboard
     )
-    assert "npm is not on PATH after installer; dashboard cannot start" in dashboard
+    assert (
+        'claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1'
+        in dashboard
+    )
+    assert (
+        "npm is not on PATH; installer recovery scheduled; dashboard cannot start yet"
+        in dashboard
+    )
 
 
 def test_backend_service_skips_local_start_for_remote_reflexio_url() -> None:
@@ -842,18 +852,33 @@ def test_dashboard_service_restarts_stale_claude_smart_dashboard() -> None:
     assert "foreign app on 3001 is never killed" in dashboard
 
 
-def test_installers_refresh_or_stop_dashboard_services() -> None:
+def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     setup = SETUP_LOCAL_DEV.read_text()
     node_installer = NODE_INSTALLER.read_text()
+    smart_install = SMART_INSTALL.read_text()
 
     assert "refresh_local_dashboard()" in setup
+    assert "restart_local_backend()" in setup
+    assert 'bash "$backend_script" start' in setup
+    assert 'bash "$HERE/backend-service.sh" start' in smart_install
+    assert "start_backend_service()" in smart_install
+    assert "if install_complete; then\n  start_backend_service" in smart_install
+    assert "Backend started; dashboard auto-starts on session start." in smart_install
     assert 'bash "$PLUGIN_ROOT/scripts/dashboard-service.sh" stop' in setup
     assert 'bash "$PLUGIN_ROOT/scripts/dashboard-service.sh" start' in setup
+    assert "function startBackendService(pluginRoot, host)" in node_installer
+    assert "CLAUDE_SMART_HOST: host" in node_installer
     assert "function refreshDashboardService(pluginRoot)" in node_installer
     assert "const PLUGIN_SERVICE_TIMEOUT_MS = 15_000" in node_installer
     assert "timeout: PLUGIN_SERVICE_TIMEOUT_MS" in node_installer
     assert 'killSignal: "SIGTERM"' in node_installer
     assert 'result.error && result.error.code === "ETIMEDOUT"' in node_installer
+    assert (
+        'runPluginService(pluginRoot, "backend-service.sh", "start"'
+        in node_installer
+    )
+    assert 'startBackendService(pluginRoot, "claude-code")' in node_installer
+    assert 'startBackendService(cacheDir, "codex")' in node_installer
     assert (
         'runPluginService(pluginRoot, "dashboard-service.sh", "stop")' in node_installer
     )
@@ -862,6 +887,7 @@ def test_installers_refresh_or_stop_dashboard_services() -> None:
         in node_installer
     )
     assert "function stopClaudeSmartServices(pluginRoot)" in node_installer
+    assert "Started claude-smart backend service." in node_installer
     assert "Refreshed claude-smart dashboard service." in node_installer
 
 
@@ -1255,11 +1281,10 @@ def test_backend_service_configures_shared_embedding_daemon() -> None:
 def test_codex_hook_recovers_missing_dependencies_without_cli_command() -> None:
     script = CODEX_HOOK.read_text()
 
-    assert "function runInstaller(root, reason)" in script
     assert "function startInstallerDetached(root, reason)" in script
-    assert 'runInstaller(root, "backend: uv not on PATH")' in script
-    assert 'runInstaller(root, "dashboard: npm not on PATH")' in script
-    assert 'runInstaller(root, "hook: uv not on PATH")' in script
+    assert 'startInstallerDetached(root, "backend: uv not on PATH")' in script
+    assert 'startInstallerDetached(root, "dashboard: npm not on PATH")' in script
+    assert 'startInstallerDetached(root, "hook: uv not on PATH")' in script
 
 
 def test_smart_install_waits_on_existing_lock() -> None:
@@ -1357,12 +1382,15 @@ def test_smart_install_reaps_stale_portable_lock_without_flock(tmp_path: Path) -
 
 def test_claude_code_install_hook_matches_session_start_modes() -> None:
     hooks = json.loads((REPO_ROOT / "plugin" / "hooks" / "hooks.json").read_text())
-    install_block = hooks["hooks"]["SessionStart"][0]
-    runtime_block = hooks["hooks"]["SessionStart"][1]
+    setup_block = hooks["hooks"]["Setup"][0]
+    runtime_block = hooks["hooks"]["SessionStart"][0]
 
-    assert install_block["matcher"] == runtime_block["matcher"]
-    assert install_block["matcher"] == "startup|clear|compact|resume"
-    assert "smart-install.sh" in install_block["hooks"][0]["command"]
+    assert "smart-install.sh" in setup_block["hooks"][0]["command"]
+    assert runtime_block["matcher"] == "startup|clear|compact|resume"
+    assert all(
+        "smart-install.sh" not in hook["command"]
+        for hook in runtime_block["hooks"]
+    )
     session_start_hook = runtime_block["hooks"][1]
     assert "hook_entry.sh" in session_start_hook["command"]
     assert session_start_hook["timeout"] == 300
@@ -1397,13 +1425,10 @@ def test_codex_session_start_hook_has_install_recovery_budget() -> None:
 def test_hook_entry_self_heals_missing_uv_without_cli_command() -> None:
     script = HOOK_ENTRY.read_text()
 
-    assert (
-        'CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh"'
-        in script
-    )
     assert "claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1" in script
-    assert 'bash "$HERE/backend-service.sh" start' in script
-    assert 'bash "$HERE/dashboard-service.sh" start' in script
+    assert 'bash "$PLUGIN_ROOT/scripts/smart-install.sh"' in script
+    assert 'bash "$HERE/backend-service.sh" start' not in script
+    assert 'bash "$HERE/dashboard-service.sh" start' not in script
 
 
 def test_install_complete_requires_importable_hook_package() -> None:
@@ -1743,8 +1768,7 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
     uv_bin.mkdir(parents=True)
     (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
     # Use realistic command fixtures so the content-based patcher in
-    # patchCodexHooksForNode can dispatch by script name. The install hook
-    # at index 0 must survive patching because it has to run as bash.
+    # patchCodexHooksForNode can dispatch by script name.
     (hooks / "codex-hooks.json").write_text(
         json.dumps(
             {
@@ -1752,7 +1776,6 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
                     "SessionStart": [
                         {
                             "hooks": [
-                                {"command": 'bash "$_R/scripts/smart-install.sh"'},
                                 {
                                     "command": (
                                         'bash "$_R/scripts/ensure-plugin-root.sh" "$_R"'
@@ -1858,11 +1881,7 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
     assert "npm run build" in npm_log
     parsed = json.loads((hooks / "codex-hooks.json").read_text())
     session_hooks = parsed["hooks"]["SessionStart"][0]["hooks"]
-    # Index 0 is smart-install.sh — must run as bash, not through node.
-    install_cmd = session_hooks[0]["command"]
-    assert "smart-install.sh" in install_cmd
-    assert "codex-hook.js" not in install_cmd
-    # Indices 1-4 dispatch to node by command content. Verify each maps to
+    # Each SessionStart hook dispatches to node by command content. Verify each maps to
     # the right codex-hook.js subcommand and references the private node.
     # Each arg is independently shell-quoted, so the sub-event appears as
     # `"hook" "session-start"` rather than `hook session-start`.
@@ -1872,7 +1891,7 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
         ["dashboard"],
         ["hook", "session-start"],
     ]
-    for idx, sub_tokens in enumerate(expected_subs, start=1):
+    for idx, sub_tokens in enumerate(expected_subs):
         cmd = session_hooks[idx]["command"]
         assert str(private_node / "node") in cmd, f"index {idx}: {cmd}"
         assert "codex-hook.js" in cmd, f"index {idx}: {cmd}"

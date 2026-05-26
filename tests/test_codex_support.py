@@ -509,7 +509,10 @@ def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
     rc = cli.cmd_install(argparse.Namespace(host="codex", source="unused"))
 
     assert rc == 0
-    assert not env_path.exists()
+    env_text = env_path.read_text()
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in env_text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in env_text
+    assert 'CLAUDE_SMART_READ_ONLY="0"' in env_text
     config = config_path.read_text()
     assert "plugin_hooks = true" in config
     assert '[plugins."claude-smart@reflexioai"]' in config
