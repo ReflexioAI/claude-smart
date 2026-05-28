@@ -5,10 +5,16 @@
   "keywords": [
     "claude",
     "claude-code",
+    "claude-code-plugin",
+    "codex",
+    "codex-plugin",
+    "memory",
+    "agent-memory",
     "plugin",
     "reflexio",
     "self-improvement",
-    "playbook",
+    "self-improving-agents",
+    "skills",
     "learning"
   ],
   "homepage": "https://github.com/ReflexioAI/claude-smart#readme",
