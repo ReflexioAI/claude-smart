@@ -316,14 +316,35 @@ make package
 Install the tarball globally and run the host installer:
 
 ```bash
-npm install -g /abs/path/claude-smart-<version>.tgz
+npm install -g /abs/path/claude-smart-<version>.tgz   # path or ./prefix, not a bare name
 claude-smart install                   # Claude Code
 claude-smart install --host codex      # Codex
 ```
 
+npm decides the source from the *shape* of the argument: a filesystem path (absolute, or relative with a `./` prefix) is installed as a local tarball, while a bare `claude-smart-<version>.tgz` is treated as a registry package name and fails. Always pass a path.
+
 Restart the host. `claude-smart install` (Claude Code) registers the bundled package root as a local marketplace and runs `claude plugin install claude-smart@reflexioai`; the Codex variant copies the bundled plugin into Codex's marketplace cache. Either way, your local plugin changes are what gets loaded.
 
-To iterate: edit plugin code, rerun `make package`, reinstall the tarball, restart the host.
+To iterate: edit plugin code, rerun `make package`, reinstall the tarball, rerun `claude-smart install`, restart the host.
+
+### Reinstalling a rebuilt tarball (same name/version)
+
+During active development you'll often rebuild the tarball without bumping the version. A plain `npm install -g` can then be a no-op, because npm sees the version already satisfied. Force the overwrite, or uninstall first:
+
+```bash
+npm install -g --force /abs/path/claude-smart-<version>.tgz   # force overwrite
+# or, most predictable:
+npm uninstall -g claude-smart && npm install -g /abs/path/claude-smart-<version>.tgz
+```
+
+Reinstalling the npm package only refreshes the `claude-smart` CLI wrapper — the plugin payload the host loads is whatever `claude-smart install` last copied in, so always re-run `claude-smart install` and restart the host afterward. If a same-version change still doesn't take effect (the host may dedupe the plugin by version), force a clean re-ingest:
+
+```bash
+claude plugin uninstall claude-smart@reflexioai   # Claude Code
+claude-smart install
+```
+
+Do **not** use `claude-smart update` for this loop — it wraps `claude plugin update claude-smart@reflexioai`, the end-user path for pulling a newer *published* release from the marketplace. It is version-driven (a same-version rebuild has nothing to update to) and updates from the registered source rather than re-ingesting a tarball you just built. Bumping the patch version with `make bump` sidesteps all version-dedup ambiguity if you'd rather not use `--force`.
 
 For Reflexio backend changes, edit `open_source/reflexio/` and either:
 - Publish `reflexio-ai` to PyPI and bump `plugin/pyproject.toml`, or
