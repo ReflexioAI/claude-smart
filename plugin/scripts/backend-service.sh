@@ -45,6 +45,7 @@ fi
 # CLI dir (commonly ~/.local/bin or /opt/homebrew/bin). Pin the CLI
 # explicitly if we can resolve it from our own (post-login-path) PATH.
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
+claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "backend-service.sh" "$@"
 
 if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
   if [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ]; then

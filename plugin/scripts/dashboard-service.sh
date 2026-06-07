@@ -29,6 +29,7 @@ CMD="${1:-start}"
 PORT=3001
 
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
+claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "dashboard-service.sh" "$@"
 DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
 WORKSPACE_CWD="${PWD:-}"
 

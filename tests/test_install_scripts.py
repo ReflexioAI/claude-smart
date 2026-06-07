@@ -1351,6 +1351,87 @@ def test_smart_install_installs_vendored_reflexio(tmp_path: Path) -> None:
     assert f"-e {vendor}" in uv_log
 
 
+@pytest.mark.parametrize(
+    "copy_dirname",
+    [
+        # Windows cwd C:\Users\Alice\repo with ':' and '\' stripped by the host
+        # (issue #65). Capital 'U' — a `Cu*` glob would miss this.
+        "CUsersAliceRepo",
+        # A different drive/dir: D:\repos\proj -> Dreposproj. No `Cu`/`CUsers`
+        # prefix at all; only structural (under ~/.reflexio) detection catches it.
+        "Dreposproj",
+        # Lowercased host mangling, to be casing-agnostic.
+        "cusersbobwork",
+    ],
+)
+def test_smart_install_redirects_reflexio_stray_copies_to_stable_root(
+    tmp_path: Path,
+    copy_dirname: str,
+) -> None:
+    """Regression: a host can expose CLAUDE_PLUGIN_ROOT as a cwd-derived copy
+    physically under ~/.reflexio (e.g. ``CUsers...`` on Windows, issue #65).
+    Installing .venv/node_modules there duplicates the full runtime per
+    project; smart-install must instead use the stable plugin root recorded in
+    ~/.reflexio/plugin-root. Detection is structural (any plugin dir under
+    ~/.reflexio), so it must hold regardless of the mangled name's prefix/case.
+    """
+    session_root = tmp_path / ".reflexio" / copy_dirname / "plugin"
+    stable_root = tmp_path / ".claude" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.42"
+    fake_bin = tmp_path / "bin"
+    for root in (session_root, stable_root):
+        scripts = root / "scripts"
+        scripts.mkdir(parents=True)
+        shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
+        shutil.copy2(LIB, scripts / "_lib.sh")
+        shutil.copy2(
+            REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
+            scripts / "ensure-plugin-root.sh",
+        )
+        (root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+        (root / "uv.lock").write_text("")
+
+    (tmp_path / ".reflexio").mkdir(exist_ok=True)
+    (tmp_path / ".reflexio" / "plugin-root").symlink_to(
+        stable_root,
+        target_is_directory=True,
+    )
+    fake_bin.mkdir()
+    uv = fake_bin / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        'printf "%s|%s\\n" "$PWD" "$*" >> "$HOME/uv.log"\n'
+        'if [ "$1" = "sync" ]; then\n'
+        '  mkdir -p "$PWD/.venv/bin"\n'
+        '  printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
+        '  chmod +x "$PWD/.venv/bin/python"\n'
+        "fi\n"
+        "exit 0\n"
+    )
+    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            str(session_root / "scripts" / "smart-install.sh"),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not (session_root / ".venv").exists()
+    assert (stable_root / ".venv" / "bin" / "python").exists()
+    uv_log = (tmp_path / "uv.log").read_text()
+    assert f"{stable_root}|sync --locked --python 3.12 --quiet" in uv_log
+    assert str(session_root) not in uv_log
+
+
 def test_smart_install_repairs_reflexio_template_env_drift(tmp_path: Path) -> None:
     plugin_root = tmp_path / "plugin"
     scripts = plugin_root / "scripts"

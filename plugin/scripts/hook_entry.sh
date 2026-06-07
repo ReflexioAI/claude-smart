@@ -46,6 +46,7 @@ claude_smart_prepend_astral_bins
 claude_smart_source_reflexio_env
 
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
+claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "hook_entry.sh" "$@"
 
 FAILURE_MARKER="$HOME/.claude-smart/install-failed"
 STATE_DIR="$HOME/.claude-smart"

@@ -220,6 +220,97 @@ importlib.import_module(sys.argv[1])
 PY
 }
 
+claude_smart_canonical_dir() {
+  local dir
+  dir="$1"
+  [ -d "$dir" ] || return 1
+  (cd "$dir" 2>/dev/null && pwd -P)
+}
+
+# True when $1 canonicalizes to a plugin directory that physically lives
+# *inside* ~/.reflexio. claude-smart's real install never places the live
+# plugin tree there: the only entry under ~/.reflexio is the `plugin-root`
+# symlink, whose `pwd -P` resolves to a cache dir *outside* ~/.reflexio
+# (~/.claude, ~/.codex, or the npm global). So any plugin root that resolves
+# to a descendant of ~/.reflexio is a stray host-made copy — e.g. the Windows
+# cwd-derived `CUsers...` directories from issue #65 — that we must not
+# bootstrap a heavy .venv/node_modules into.
+#
+# Detection is structural (descendant-of-~/.reflexio + plugin markers) rather
+# than name-based on purpose: the host mangles the cwd differently per drive
+# and user dir (C:\Users -> CUsers..., D:\repos -> Drepos..., varying case),
+# so matching a fixed prefix like `Cu*` misses most real copies.
+claude_smart_is_reflexio_session_copy() {
+  local plugin_root reflexio_root
+  plugin_root="$(claude_smart_canonical_dir "$1" 2>/dev/null || true)"
+  [ -n "$plugin_root" ] || return 1
+  # Must look like a plugin root — not ~/.reflexio/data, /configs, or .env.
+  [ -f "$plugin_root/pyproject.toml" ] || return 1
+  [ -d "$plugin_root/scripts" ] || return 1
+  reflexio_root="$(claude_smart_canonical_dir "$HOME/.reflexio" 2>/dev/null || true)"
+  [ -n "$reflexio_root" ] || return 1
+  # Descendant of ~/.reflexio. The trailing slash on the subject plus the
+  # "/" before * pins the boundary so a sibling like ~/.reflexio-bak/plugin
+  # does not match.
+  case "$plugin_root/" in
+    "$reflexio_root"/*) return 0 ;;
+  esac
+  return 1
+}
+
+claude_smart_stable_plugin_root_for_session_copy() {
+  local current candidate current_real candidate_real glob
+  current="$1"
+  if ! claude_smart_is_reflexio_session_copy "$current"; then
+    return 1
+  fi
+  current_real="$(claude_smart_canonical_dir "$current" 2>/dev/null || true)"
+
+  for candidate in \
+    "$HOME/.reflexio/plugin-root" \
+    "$HOME/.claude/plugins/marketplaces/reflexioai/plugin" \
+    "$HOME/.codex/plugins/cache/reflexioai/claude-smart/current"
+  do
+    [ -f "$candidate/pyproject.toml" ] || continue
+    candidate_real="$(claude_smart_canonical_dir "$candidate" 2>/dev/null || true)"
+    [ -n "$candidate_real" ] || continue
+    [ "$candidate_real" != "$current_real" ] || continue
+    if claude_smart_is_reflexio_session_copy "$candidate_real"; then
+      continue
+    fi
+    printf '%s\n' "$candidate_real"
+    return 0
+  done
+
+  for glob in "$HOME/.claude/plugins/cache/reflexioai/claude-smart"/* "$HOME/.codex/plugins/cache/reflexioai/claude-smart"/*; do
+    [ -f "$glob/pyproject.toml" ] || continue
+    candidate_real="$(claude_smart_canonical_dir "$glob" 2>/dev/null || true)"
+    [ -n "$candidate_real" ] || continue
+    [ "$candidate_real" != "$current_real" ] || continue
+    if claude_smart_is_reflexio_session_copy "$candidate_real"; then
+      continue
+    fi
+    printf '%s\n' "$candidate_real"
+    return 0
+  done
+  return 1
+}
+
+claude_smart_reexec_stable_plugin_root_if_needed() {
+  local plugin_root script stable
+  plugin_root="$1"
+  script="$2"
+  stable="$(claude_smart_stable_plugin_root_for_session_copy "$plugin_root" 2>/dev/null || true)"
+  [ -n "$stable" ] || return 0
+  # `-f` not `-x`: we re-run via `exec bash <script>`, which does not need the
+  # executable bit. Cached copies on Windows/NTFS often lack +x, so requiring
+  # -x would no-op the guard on the very platform issue #65 affects.
+  [ -f "$stable/scripts/$script" ] || return 0
+  echo "[claude-smart] redirecting stray plugin copy under ~/.reflexio ($plugin_root) to stable root $stable" >&2
+  shift 2
+  exec bash "$stable/scripts/$script" "$@"
+}
+
 claude_smart_download() {
   local url dest src _CS_PY
   url="$1"

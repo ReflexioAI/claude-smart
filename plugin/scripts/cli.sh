@@ -18,6 +18,7 @@ claude_smart_prepend_node_bins
 claude_smart_source_reflexio_env
 
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
+claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "cli.sh" "$@"
 
 # If the Setup hook recorded an install failure, surface that reason
 # instead of falling through to a generic "uv not found" — mirrors the
