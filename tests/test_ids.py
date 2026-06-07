@@ -45,6 +45,26 @@ def test_resolve_handles_missing_git_binary(tmp_path, monkeypatch) -> None:
     assert ids.resolve_project_id(tmp_path) == tmp_path.name
 
 
+def test_resolve_handles_windows_cwd_when_git_fails(monkeypatch) -> None:
+    def _boom(*_a, **_kw):
+        raise FileNotFoundError("git missing")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    assert ids.resolve_project_id(r"C:\Users\Alice\repo") == "repo"
+
+
+def test_resolve_handles_windows_git_toplevel(monkeypatch) -> None:
+    def _git(*_a, **_kw):
+        return subprocess.CompletedProcess(
+            args=["git", "rev-parse", "--show-toplevel"],
+            returncode=0,
+            stdout="C:\\Users\\Alice\\repo\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _git)
+    assert ids.resolve_project_id(r"C:\Users\Alice\repo\packages\core") == "repo"
+
+
 def test_resolve_project_id_ignores_user_id_override(tmp_path, monkeypatch) -> None:
     _isolate_git_env(monkeypatch)
     monkeypatch.setenv("REFLEXIO_API_KEY", "rflx-test-key")

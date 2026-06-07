@@ -19,13 +19,21 @@ from __future__ import annotations
 import logging
 import os
 import subprocess  # noqa: S404 — git invocation with a fixed flag set.
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from claude_smart import env_config
 
 _LOGGER = logging.getLogger(__name__)
 
 _USER_ID_OVERRIDE_ENV = "REFLEXIO_USER_ID"
+
+
+def _basename(path: str | os.PathLike[str]) -> str:
+    """Return a cwd basename, including native Windows paths under Git Bash."""
+    text = os.fspath(path)
+    if "\\" in text or (len(text) >= 2 and text[0].isalpha() and text[1] == ":"):
+        return PureWindowsPath(text).name or "unknown-project"
+    return Path(path).name or "unknown-project"
 
 
 def resolve_project_id(cwd: str | os.PathLike[str] | None = None) -> str:
@@ -47,7 +55,7 @@ def resolve_project_id(cwd: str | os.PathLike[str] | None = None) -> str:
     base = Path(cwd) if cwd is not None else Path.cwd()
     try:
         result = subprocess.run(  # noqa: S603, S607 — fixed argv, cwd is a Path.
-            ["git", "rev-parse", "--show-toplevel"],
+            ["git", "rev-parse", "--show-toplevel"],  # noqa: S607
             cwd=base,
             capture_output=True,
             text=True,
@@ -57,10 +65,10 @@ def resolve_project_id(cwd: str | os.PathLike[str] | None = None) -> str:
         if result.returncode == 0:
             toplevel = result.stdout.strip()
             if toplevel:
-                return Path(toplevel).name
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                return _basename(toplevel)
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
         _LOGGER.debug("git toplevel resolution failed: %s", exc)
-    return base.name or "unknown-project"
+    return _basename(cwd) if cwd is not None else _basename(base)
 
 
 def resolve_user_id(cwd: str | os.PathLike[str] | None = None) -> str:
