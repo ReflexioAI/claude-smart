@@ -107,7 +107,7 @@ def test_render_with_registry_emits_citation_instruction() -> None:
         profiles=[],
     )
     assert cs_cite.CITATION_INSTRUCTION in md
-    assert "If you use any listed" in md
+    assert "When to cite:" in md
     assert "Do not call a shell command" not in md
     assert "✨ claude-smart rule applied: [verify process state]" in md
     assert "[brief answer preference]" in md
@@ -326,7 +326,7 @@ def test_render_inline_with_registry_marker_only_is_enabled_alias(
         profiles=[],
     )
     assert cs_cite.CITATION_INSTRUCTION in md
-    assert "materially changes your answer" in md
+    assert "materially and meaningfully changed your response" in md
     assert "citation block is up to two lines" not in md
 
 

@@ -12,7 +12,6 @@ from typing import Any
 from claude_smart import cli, cs_cite, hook, runtime, state
 from claude_smart.events import post_tool, pre_tool, stop
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -231,7 +230,7 @@ def test_codex_citation_instruction_uses_text_marker_not_tool_call() -> None:
 
     instruction = cs_cite.CITATION_INSTRUCTION
 
-    assert "materially changes your answer" in instruction
+    assert "materially and meaningfully changed your response" in instruction
     assert "✨ claude-smart rule applied:" in instruction
     assert "tool call" not in instruction
 

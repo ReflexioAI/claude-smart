@@ -88,7 +88,9 @@ def test_parse_text_citations_accepts_managed_reflexio_item_links() -> None:
 
 
 def test_parse_text_citations_keeps_old_applied_marker_compatible() -> None:
-    text = "Done.\n\n✨ Applied: [git safety](http://localhost:3001/skills/project/7536)"
+    text = (
+        "Done.\n\n✨ Applied: [git safety](http://localhost:3001/skills/project/7536)"
+    )
     assert cs_cite.parse_text_citations(text) == ["route:playbook:user_playbook:7536"]
 
 
@@ -109,8 +111,7 @@ def test_parse_text_citations_ignores_plain_inline_tags() -> None:
 def test_parse_text_citations_rejects_standalone_wrapper() -> None:
     assert cs_cite.parse_text_citations("Answer.\n\n✨s2-cd34✨") == []
     assert (
-        cs_cite.parse_text_citations("Answer.\n\n✨1gkgg8b9r7fx99kr2j3q6k5c1v✨")
-        == []
+        cs_cite.parse_text_citations("Answer.\n\n✨1gkgg8b9r7fx99kr2j3q6k5c1v✨") == []
     )
 
 
@@ -174,10 +175,10 @@ def test_rank_id_rejects_unknown_kind() -> None:
 def test_citation_instruction_on_returns_compact_string() -> None:
     text = cs_cite.citation_instruction("on")
     assert text == cs_cite.CITATION_INSTRUCTION
-    assert "If you use any listed" in text
-    assert "Skip the marker only when no listed item affected" in text
+    assert "When to cite:" in text
+    assert "materially and meaningfully changed your response" in text
     assert "citation block is up to two lines" not in text
-    assert "counterfactual" not in text.lower()
+    assert "counterfactual" in text.lower()
     assert "✨ claude-smart rule applied:" in text
     assert "Never use the old" in text
     assert "✨ 1 claude-smart learning applied [cs:...]" in text
@@ -197,7 +198,7 @@ def test_citation_instruction_osc8_uses_terminal_hyperlink_examples() -> None:
     assert "✨ claude-smart rules applied:" not in text
     assert " | \x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\" in text
     assert "visible ` | ` separator" in text
-    assert "Do not omit the marker after using listed memory" in text
+    assert "materially and meaningfully changed your response" in text
     assert "markdown links" in text
 
 
@@ -211,10 +212,7 @@ def test_citation_instruction_unknown_stays_enabled() -> None:
 
 
 def test_strip_marker_lines_removes_single_marker() -> None:
-    text = (
-        "Here's the answer.\n\n"
-        "✨ 1 claude-smart learning applied [cs:s1-1a2b]"
-    )
+    text = "Here's the answer.\n\n✨ 1 claude-smart learning applied [cs:s1-1a2b]"
     assert cs_cite.strip_marker_lines(text) == "Here's the answer."
 
 

@@ -55,9 +55,7 @@ _APPLIED_LINK_LINE_RE = re.compile(
     r"(?im)^\s*✨\s+(?:Applied|claude-smart rules? applied):\s+(?P<body>.+?)\s*$"
 )
 _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\((?P<url>[^)]+)\)")
-_OSC8_URL_RE = re.compile(
-    r"\x1b\]8;[^\x07\x1b]*;(?P<url>[^\x07\x1b]+)(?:\x07|\x1b\\)"
-)
+_OSC8_URL_RE = re.compile(r"\x1b\]8;[^\x07\x1b]*;(?P<url>[^\x07\x1b]+)(?:\x07|\x1b\\)")
 _RAW_DASHBOARD_URL_RE = re.compile(
     r"(?P<url>(?:https?://[^\s),\x1b\\]+)?/"
     r"(?:skills/(?:project|shared)/[^\s),\x1b\\]+|"
@@ -65,14 +63,31 @@ _RAW_DASHBOARD_URL_RE = re.compile(
     r"rules/[^\s),\x1b\\]+))"
 )
 
-_COMPACT_INTRO = (
-    "_If you use any listed `[cs:…]` item to answer and it materially changes "
-    "your answer, you must end with one final marker line. Skip the marker "
-    "only when no listed item affected the answer."
+# The single "when to cite" decision, shared across every render path so the
+# bar can't drift between markdown / OSC8 / compact-Codex variants. The
+# counterfactual is the deciding test; relatedness alone is not enough.
+WHEN_TO_CITE = (
+    "When to cite: add a marker only when a listed `[cs:…]` item materially "
+    "and meaningfully changed your response — it must be clearly related to "
+    "what you actually did, and your answer would be substantively different "
+    "if the item had not been shown. The counterfactual is the deciding test: "
+    "if your response would be essentially the same without the item, omit the "
+    "marker."
 )
 
+# One-line form of WHEN_TO_CITE for the compact Codex path, which renders the
+# whole context block as a single logical line.
+WHEN_TO_CITE_COMPACT = (
+    "Cite only if a listed memory materially and meaningfully changed your "
+    "response — counterfactual: the answer would be substantively different "
+    "without it; otherwise omit."
+)
+
+_COMPACT_INTRO = f"_{WHEN_TO_CITE}"
+
 _MARKDOWN_MARKER_PARAGRAPH = (
-    "Use human-readable linked titles, not raw ids. Format for one item: "
+    "How to format: use human-readable linked titles, not raw ids. "
+    "Format for one item: "
     "`✨ claude-smart rule applied: "
     "[verify process state](http://localhost:3001/rules/s1-123)`. "
     "For multiple items: "
@@ -102,14 +117,13 @@ _OSC8_EXAMPLE_MULTI = (
     "\x1b]8;;\x1b\\"
 )
 _OSC8_MARKER_PARAGRAPH = (
-    "Use human-readable OSC 8 terminal hyperlinks, not raw ids or visible "
-    "URLs. Format for one item: "
+    "How to format: use human-readable OSC 8 terminal hyperlinks, not raw ids "
+    "or visible URLs. Format for one item: "
     f"`{_OSC8_EXAMPLE_ONE}`. For multiple items: "
     f"`{_OSC8_EXAMPLE_MULTI}`. Use the dashboard URL shown beside each cited "
     "item; do not invent URLs. Separate multiple linked memories with the "
     "visible ` | ` separator. If OSC 8 is unavailable, use markdown links. "
-    "Do not include `[cs:…]` ids in the marker line. Do not omit the marker "
-    "after using listed memory._"
+    "Do not include `[cs:…]` ids in the marker line._"
 )
 
 CITATION_MODES = ("on", "auto", "marker-only", "off")

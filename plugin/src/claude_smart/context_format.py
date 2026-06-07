@@ -266,6 +266,7 @@ def render_inline_compact_with_registry(
 def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
     if os.environ.get("CLAUDE_SMART_CITATIONS", "on") == "off":
         return ""
+    gate = cs_cite.WHEN_TO_CITE_COMPACT
     link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
     if link_style == "osc8" and marker_parts:
         marker = f"✨ claude-smart rule applied: {' | '.join(marker_parts)}"
@@ -275,15 +276,14 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
             else ""
         )
         return _remoteize_citation_instruction(
-            f"If used, copy this final marker exactly, preserving its hidden "
-            f"OSC 8 terminal link: `{marker}`.{separator_instruction} "
-            f"Skip when unrelated."
+            f"{gate} If you do, copy this final marker exactly, preserving its "
+            f"hidden OSC 8 terminal link: `{marker}`.{separator_instruction}"
         )
     if link_style == "osc8":
         return _remoteize_citation_instruction(
-            "If used, end with `✨ claude-smart rule applied:` followed by "
-            "the same linked memory text; keep the link, but do not show the "
-            "URL. Skip when unrelated."
+            f"{gate} If you do, end with `✨ claude-smart rule applied:` "
+            "followed by the same linked memory text; keep the link, but do "
+            "not show the URL."
         )
     if marker_parts:
         marker = f"✨ claude-smart rule applied: {' | '.join(marker_parts)}"
@@ -293,14 +293,13 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
             else ""
         )
         return _remoteize_citation_instruction(
-            f"If used, copy this final marker exactly with markdown links: "
-            f"`{marker}`.{separator_instruction} Skip when unrelated."
+            f"{gate} If you do, copy this final marker exactly with markdown "
+            f"links: `{marker}`.{separator_instruction}"
         )
     return _remoteize_citation_instruction(
-        "Only if a listed [cs:...] item materially changes your answer, end "
-        "with one final marker like `✨ claude-smart rule applied: "
-        "[verify process state](http://localhost:3001/rules/s1-123)` using "
-        "the shown rule URL; skip the marker when unrelated."
+        f"{gate} If you do, end with one final marker like `✨ claude-smart "
+        "rule applied: [verify process state](http://localhost:3001/rules/"
+        "s1-123)` using the shown rule URL."
     )
 
 
