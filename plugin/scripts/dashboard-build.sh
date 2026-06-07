@@ -27,6 +27,7 @@ claude_smart_source_login_path
 claude_smart_prepend_node_bins
 
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
+claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "dashboard-build.sh" "$@"
 DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
 
 STATE_DIR="$HOME/.claude-smart"

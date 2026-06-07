@@ -2464,6 +2464,49 @@ def test_codex_hook_ensure_root_tracks_active_plugin_root(tmp_path: Path) -> Non
     assert json.loads(result.stdout) == {"continue": True}
 
 
+def test_codex_hook_redirects_reflexio_stray_copy_to_stable_root(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for codex hook wrapper tests")
+
+    stray_root = tmp_path / ".reflexio" / "CUsersAliceRepo" / "plugin"
+    stable_root = (
+        tmp_path
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.42"
+    )
+    for root in (stray_root, stable_root):
+        (root / "scripts").mkdir(parents=True)
+        (root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+
+    reflexio = tmp_path / ".reflexio"
+    (reflexio / "plugin-root").symlink_to(stable_root, target_is_directory=True)
+
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_PLUGIN_ROOT"] = str(stray_root)
+    result = subprocess.run(
+        [node, str(CODEX_HOOK), "ensure-root"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (reflexio / "plugin-root").resolve() == stable_root
+    assert json.loads(result.stdout) == {"continue": True}
+    assert not (reflexio / "plugin-root").resolve() == stray_root
+    assert "redirecting stray plugin copy" in (
+        tmp_path / ".claude-smart" / "backend.log"
+    ).read_text()
+
+
 def test_codex_hook_caps_backend_log_appends(tmp_path: Path) -> None:
     node = shutil.which("node")
     if not node:

@@ -89,14 +89,82 @@ function appendLog(name, line) {
   trimLog(file);
 }
 
+function realDir(dir) {
+  try {
+    if (!fs.statSync(dir).isDirectory()) return null;
+    return fs.realpathSync(dir);
+  } catch {
+    return null;
+  }
+}
+
+function isInsideDir(parent, child) {
+  const rel = path.relative(parent, child);
+  return rel && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+function isPluginLikeRoot(root) {
+  return fs.existsSync(path.join(root, "pyproject.toml")) && fs.existsSync(path.join(root, "scripts"));
+}
+
+function isReflexioStrayPluginCopy(root) {
+  if (!isPluginLikeRoot(root)) return false;
+  const rootReal = realDir(root);
+  const reflexioReal = realDir(REFLEXIO_DIR);
+  if (!rootReal || !reflexioReal) return false;
+  return isInsideDir(reflexioReal, rootReal);
+}
+
+function stablePluginRootForStrayCopy(root) {
+  if (!isReflexioStrayPluginCopy(root)) return null;
+  const rootReal = realDir(root);
+  const candidates = [
+    path.join(REFLEXIO_DIR, "plugin-root"),
+    path.join(HOME, ".claude", "plugins", "marketplaces", "reflexioai", "plugin"),
+    path.join(HOME, ".codex", "plugins", "cache", "reflexioai", "claude-smart", "current"),
+  ];
+  for (const cacheRoot of [
+    path.join(HOME, ".claude", "plugins", "cache", "reflexioai", "claude-smart"),
+    path.join(HOME, ".codex", "plugins", "cache", "reflexioai", "claude-smart"),
+  ]) {
+    try {
+      const versions = fs
+        .readdirSync(cacheRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => path.join(cacheRoot, entry.name))
+        .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+      candidates.push(...versions);
+    } catch {
+      // Missing cache roots are fine; try the next candidate family.
+    }
+  }
+  for (const candidate of candidates) {
+    if (!isPluginLikeRoot(candidate)) continue;
+    const candidateReal = realDir(candidate);
+    if (!candidateReal || candidateReal === rootReal) continue;
+    if (isReflexioStrayPluginCopy(candidateReal)) continue;
+    return candidateReal;
+  }
+  return null;
+}
+
+function stablePluginRoot(root) {
+  const stable = stablePluginRootForStrayCopy(root);
+  if (stable) {
+    appendLog("backend.log", `[claude-smart] redirecting stray plugin copy under ~/.reflexio (${root}) to stable root ${stable}`);
+    return stable;
+  }
+  return root;
+}
+
 function pluginRoot() {
   for (const value of [process.env.CLAUDE_PLUGIN_ROOT, process.env.PLUGIN_ROOT]) {
     if (value && fs.existsSync(path.join(value, "pyproject.toml"))) {
-      return path.resolve(value);
+      return stablePluginRoot(path.resolve(value));
     }
   }
   const fromScript = path.resolve(__dirname, "..");
-  if (fs.existsSync(path.join(fromScript, "pyproject.toml"))) return fromScript;
+  if (fs.existsSync(path.join(fromScript, "pyproject.toml"))) return stablePluginRoot(fromScript);
   const cacheRoot = path.join(HOME, ".codex", "plugins", "cache", "reflexioai", "claude-smart");
   try {
     const versions = fs
@@ -105,12 +173,12 @@ function pluginRoot() {
       .map((entry) => path.join(cacheRoot, entry.name))
       .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
     for (const candidate of versions) {
-      if (fs.existsSync(path.join(candidate, "pyproject.toml"))) return candidate;
+      if (fs.existsSync(path.join(candidate, "pyproject.toml"))) return stablePluginRoot(candidate);
     }
   } catch {
     // Fall through to the stable plugin-root link.
   }
-  return path.join(REFLEXIO_DIR, "plugin-root");
+  return stablePluginRoot(path.join(REFLEXIO_DIR, "plugin-root"));
 }
 
 function prependRuntimePath() {
