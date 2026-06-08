@@ -6,6 +6,8 @@ This directory is the published Python package (`claude-smart` on PyPI) and the 
 
 ## Install
 
+### Claude Code
+
 ```bash
 claude plugin marketplace add ReflexioAI/claude-smart
 claude plugin install claude-smart@reflexioai
@@ -25,7 +27,18 @@ embedding/ML dependency stack does not provide a complete native wheel set.
 
 Then restart Claude Code.
 
+### Codex
+
+```bash
+npx claude-smart install --host codex
+```
+
+Then fully quit and reopen Codex so hooks reload. Codex installs reuse the same
+local Preferences, Project-specific skills, and Shared skills as Claude Code.
+
 ## Uninstall
+
+### Claude Code
 
 ```bash
 claude plugin uninstall claude-smart@reflexioai
@@ -37,7 +50,14 @@ Or, if Node.js or uv is already installed:
 npx claude-smart uninstall   # or: uvx claude-smart uninstall
 ```
 
-Local data under `~/.reflexio/` and `~/.claude-smart/` is left in place — remove manually if desired.
+### Codex
+
+```bash
+npx claude-smart uninstall --host codex
+```
+
+Restart Codex after uninstalling. Local data under `~/.reflexio/` and
+`~/.claude-smart/` is left in place for both hosts — remove manually if desired.
 
 ## License
 
