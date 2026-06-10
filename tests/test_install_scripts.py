@@ -319,14 +319,16 @@ def test_backend_service_forces_utf8_stdio_for_managed_backend() -> None:
 def test_backend_service_uses_prepared_venv_reflexio_cli() -> None:
     service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
-    assert '"$PLUGIN_ROOT/.venv/bin/reflexio" services start' in service
+    assert 'backend_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"' in service
+    assert '"$backend_python" -m reflexio.cli services start' in service
     assert 'uv run --project "$PLUGIN_ROOT" --no-sync --quiet' not in service
     assert "ensure_vendored_reflexio_active" in service
+    assert 'plugin_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"' in service
     assert (
         'uv pip install --project "$PLUGIN_ROOT" --python "$plugin_python" '
         '--quiet --reinstall --no-deps "$vendor"'
     ) in service
-    assert 'backend_pythonpath="$PLUGIN_ROOT/vendor/reflexio' in service
+    assert 'vendor_pythonpath="$PLUGIN_ROOT/vendor/reflexio"' in service
     assert 'PYTHONPATH="$backend_pythonpath"' in service
 
 
