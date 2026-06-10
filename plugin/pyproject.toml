@@ -9,7 +9,7 @@ dependencies = [
     # normal installs; vendor releases may override it after uv sync by
     # installing plugin/vendor/reflexio. Keep in sync via
     # scripts/sync-reflexio-dep.py.
-    "reflexio-ai>=0.2.23",
+    "reflexio-ai>=0.2.25",
     # Needed when Reflexio runs the local embedding provider (ONNXMiniLM_L6_V2).
     # Pulls in onnxruntime + tokenizers; the ~80 MB ONNX model itself is
     # downloaded on first use, not at install time.
