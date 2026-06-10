@@ -5,8 +5,8 @@
 #
 # Subcommands:
 #   start         probe /health; if nothing we recognize is on the port,
-#                 spawn `uv run reflexio services start --only backend
-#                 --no-reload` detached. Polls /health briefly so first
+#                 spawn the prepared venv's `reflexio services start --only
+#                 backend --no-reload` detached. Polls /health briefly so first
 #                 use after session start lands on a warm server, then
 #                 returns a continue payload regardless.
 #   stop          SIGTERM the recorded process group, escalating to
@@ -183,6 +183,35 @@ port_holder() {
     | awk 'NR==2 {print $1" (pid "$2")"; exit}'
 }
 
+ensure_vendored_reflexio_active() {
+  vendor="$PLUGIN_ROOT/vendor/reflexio"
+  [ -f "$vendor/pyproject.toml" ] || return 0
+  plugin_python="$PLUGIN_ROOT/.venv/bin/python"
+  [ -x "$plugin_python" ] || return 0
+  if "$plugin_python" - "$vendor/pyproject.toml" <<'PY' >/dev/null 2>&1; then
+import importlib.metadata
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+if not match:
+    raise SystemExit(1)
+expected = match.group(1)
+try:
+    installed = importlib.metadata.version("reflexio-ai")
+except importlib.metadata.PackageNotFoundError:
+    raise SystemExit(1)
+raise SystemExit(0 if installed == expected else 1)
+PY
+    return 0
+  fi
+  claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
+    "[claude-smart] backend: repairing vendored Reflexio install before start"
+  uv pip install --project "$PLUGIN_ROOT" --python "$plugin_python" --quiet --reinstall --no-deps "$vendor" >&2
+}
+
 # Full shutdown: kill the recorded process group (if any) then sweep
 # both the backend port and the embedding-service port for surviving
 # reflexio listeners. Used by both `stop` and the opt-in `session-end`
@@ -243,6 +272,7 @@ case "$CMD" in
       fi
     fi
     cd "$PLUGIN_ROOT"
+    ensure_vendored_reflexio_active
 
     # Cap local interaction history to keep the SQLite store small for
     # claude-smart users. Reflexio's library defaults are much higher
@@ -266,6 +296,11 @@ case "$CMD" in
     # without touching the file on disk.
     export REFLEXIO_STORAGE="sqlite"
 
+    backend_pythonpath="${PYTHONPATH:-}"
+    if [ -d "$PLUGIN_ROOT/vendor/reflexio/reflexio" ]; then
+      backend_pythonpath="$PLUGIN_ROOT/vendor/reflexio${backend_pythonpath:+:$backend_pythonpath}"
+    fi
+
     # (nohup; no process groups). backend-log-runner.sh owns stdout/stderr
     # capture so process output cannot grow backend.log past its cap.
     #
@@ -280,8 +315,8 @@ case "$CMD" in
     claude_smart_spawn_detached bash "$HERE/backend-log-runner.sh" \
       "$LOG_FILE" "$LOG_MAX_BYTES" -- \
       env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
-      uv run --project "$PLUGIN_ROOT" --no-sync --quiet \
-      reflexio services start --only backend --no-reload --workers "$workers"
+      PYTHONPATH="$backend_pythonpath" \
+      "$PLUGIN_ROOT/.venv/bin/reflexio" services start --only backend --no-reload --workers "$workers"
     svc_pid=$!
     # Record the spawned pid, not a pgid sampled with ps. On POSIX,
     # setsid/python os.setsid make this pid the new process group leader;

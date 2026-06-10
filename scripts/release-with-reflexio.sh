@@ -59,7 +59,7 @@ case "$REFLEXIO_RELEASE_SOURCE" in
       echo "error: plugin Python was not created by uv sync: $PLUGIN_PYTHON" >&2
       exit 1
     fi
-    uv pip install --project plugin --python "$PLUGIN_PYTHON" -e plugin/vendor/reflexio
+    uv pip install --project plugin --python "$PLUGIN_PYTHON" --reinstall --no-deps plugin/vendor/reflexio
     ;;
   pypi)
     "$PYTHON_BIN" scripts/sync-reflexio-dep.py \

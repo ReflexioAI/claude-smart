@@ -142,12 +142,12 @@ install_vendored_reflexio() {
   fi
 
   echo "[claude-smart] installing bundled Reflexio source from $VENDORED_REFLEXIO" >&2
-  if uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" --quiet -e "$VENDORED_REFLEXIO" >&2; then
+  if uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" --quiet --reinstall --no-deps "$VENDORED_REFLEXIO" >&2; then
     return 0
   fi
 
   echo "[claude-smart] warning: quiet vendored Reflexio install failed in $PLUGIN_ROOT; retrying with full output." >&2
-  if ! uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" -e "$VENDORED_REFLEXIO" >&2; then
+  if ! uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" --reinstall --no-deps "$VENDORED_REFLEXIO" >&2; then
     write_failure "vendored Reflexio install failed in $PLUGIN_ROOT"
   fi
 }

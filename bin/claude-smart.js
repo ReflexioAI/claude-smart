@@ -905,7 +905,7 @@ async function installVendoredReflexio(pluginRoot, uv, env) {
   process.stdout.write(`Installing bundled Reflexio source from ${vendorRoot}...\n`);
   let code = await runChecked(
     uv,
-    ["pip", "install", "--project", pluginRoot, "--python", pythonPath, "--quiet", "-e", vendorRoot],
+    ["pip", "install", "--project", pluginRoot, "--python", pythonPath, "--quiet", "--reinstall", "--no-deps", vendorRoot],
     { cwd: pluginRoot, env },
   );
   if (code !== 0) {
@@ -914,7 +914,7 @@ async function installVendoredReflexio(pluginRoot, uv, env) {
     );
     code = await runChecked(
       uv,
-      ["pip", "install", "--project", pluginRoot, "--python", pythonPath, "-e", vendorRoot],
+      ["pip", "install", "--project", pluginRoot, "--python", pythonPath, "--reinstall", "--no-deps", vendorRoot],
       { cwd: pluginRoot, env },
     );
   }

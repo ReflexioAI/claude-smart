@@ -20,6 +20,7 @@ if [ ! -f "$TARGET/pyproject.toml" ]; then
     echo "[claude-smart] ensure-plugin-root: $TARGET is not a plugin dir (no pyproject.toml)" >&2
     exit 1
 fi
+TARGET="$(cd "$TARGET" && pwd -P)"
 
 LINK="$HOME/.reflexio/plugin-root"
 mkdir -p "$(dirname "$LINK")"

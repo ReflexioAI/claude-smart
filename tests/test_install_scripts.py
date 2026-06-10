@@ -316,6 +316,20 @@ def test_backend_service_forces_utf8_stdio_for_managed_backend() -> None:
     assert 'env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"' in service
 
 
+def test_backend_service_uses_prepared_venv_reflexio_cli() -> None:
+    service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+
+    assert '"$PLUGIN_ROOT/.venv/bin/reflexio" services start' in service
+    assert 'uv run --project "$PLUGIN_ROOT" --no-sync --quiet' not in service
+    assert "ensure_vendored_reflexio_active" in service
+    assert (
+        'uv pip install --project "$PLUGIN_ROOT" --python "$plugin_python" '
+        '--quiet --reinstall --no-deps "$vendor"'
+    ) in service
+    assert 'backend_pythonpath="$PLUGIN_ROOT/vendor/reflexio' in service
+    assert 'PYTHONPATH="$backend_pythonpath"' in service
+
+
 def test_backend_service_pins_reflexio_home_to_user_home() -> None:
     service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
@@ -1082,7 +1096,12 @@ def test_cli_sh_suppresses_installer_hook_payload_on_self_heal(tmp_path: Path) -
         'touch "$HOME/import-ok"\n'
     )
     (venv_bin / "python").write_text(
-        '#!/bin/sh\n[ -f "$HOME/import-ok" ] && exit 0\nexit 1\n'
+        "#!/bin/sh\n"
+        'if [ "$1" = "-" ]; then\n'
+        '  [ -f "$HOME/import-ok" ] && exit 0\n'
+        "  exit 1\n"
+        "fi\n"
+        "printf 'cli ran\\n'\n"
     )
     (bin_dir / "uv").write_text("#!/bin/sh\nprintf 'cli ran\\n'\nexit 0\n")
     for executable in [
@@ -1182,7 +1201,7 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     assert 'PYTHON_BIN="${PYTHON:-python3}"' in release_script
     assert '"$PYTHON_BIN" scripts/vendor-reflexio.py' in release_script
     assert "uv pip install --project plugin --python" in release_script
-    assert "-e plugin/vendor/reflexio" in release_script
+    assert "--reinstall --no-deps plugin/vendor/reflexio" in release_script
     assert "OK: npm tarball includes vendored Reflexio files" in release_script
     assert "Keep generated plugin/vendor/reflexio in place" in release_script
     assert "make release-npm VERSION=<new-claude-smart-version>" in release_script
@@ -1199,7 +1218,7 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     assert 'VENDORED_REFLEXIO="$PLUGIN_ROOT/vendor/reflexio"' in smart_install
     assert (
         'uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" '
-        '--quiet -e "$VENDORED_REFLEXIO"'
+        '--quiet --reinstall --no-deps "$VENDORED_REFLEXIO"'
     ) in smart_install
     assert "vendored Reflexio install failed" in smart_install
     assert "install_vendored_reflexio" in smart_install
@@ -1348,7 +1367,7 @@ def test_smart_install_installs_vendored_reflexio(tmp_path: Path) -> None:
     uv_log = (tmp_path / "uv.log").read_text()
     assert "sync --locked --python 3.12 --quiet" in uv_log
     assert f"pip install --project {plugin_root}" in uv_log
-    assert f"-e {vendor}" in uv_log
+    assert f"--reinstall --no-deps {vendor}" in uv_log
 
 
 @pytest.mark.parametrize(
@@ -1430,6 +1449,40 @@ def test_smart_install_redirects_reflexio_stray_copies_to_stable_root(
     uv_log = (tmp_path / "uv.log").read_text()
     assert f"{stable_root}|sync --locked --python 3.12 --quiet" in uv_log
     assert str(session_root) not in uv_log
+
+
+def test_ensure_plugin_root_canonicalizes_symlink_target(tmp_path: Path) -> None:
+    plugin_root = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.43"
+    scripts = plugin_root / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(
+        REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
+        scripts / "ensure-plugin-root.sh",
+    )
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+
+    link = tmp_path / ".reflexio" / "plugin-root"
+    link.parent.mkdir()
+    link.symlink_to(plugin_root, target_is_directory=True)
+
+    env = _isolated_env(tmp_path)
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            str(link / "scripts" / "ensure-plugin-root.sh"),
+            str(link),
+            "--force",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert os.readlink(link) == str(plugin_root)
 
 
 def test_smart_install_repairs_reflexio_template_env_drift(tmp_path: Path) -> None:
@@ -1838,8 +1891,25 @@ def test_hook_entry_failure_marker_uses_resolved_python_on_windows(
 
 
 def test_hook_entry_defaults_codex_citation_links_to_markdown(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin"
+    scripts = plugin_root / "scripts"
+    venv_bin = plugin_root / ".venv" / "bin"
     bin_dir = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    venv_bin.mkdir(parents=True)
     bin_dir.mkdir()
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(HOOK_ENTRY, scripts / "hook_entry.sh")
+    (venv_bin / "python").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-" ]; then\n'
+        "  cat >/dev/null\n"
+        "  exit 0\n"
+        "fi\n"
+        'printf \'%s\\n\' "{\\"hookSpecificOutput\\":'
+        '{\\"hookEventName\\":\\"UserPromptSubmit\\",'
+        '\\"additionalContext\\":\\"$CLAUDE_SMART_CITATION_LINK_STYLE\\"}}"\n'
+    )
     uv = bin_dir / "uv"
     uv.write_text(
         "#!/bin/sh\n"
@@ -1847,13 +1917,18 @@ def test_hook_entry_defaults_codex_citation_links_to_markdown(tmp_path: Path) ->
         '{\\"hookEventName\\":\\"UserPromptSubmit\\",'
         '\\"additionalContext\\":\\"$CLAUDE_SMART_CITATION_LINK_STYLE\\"}}"\n'
     )
-    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+    for executable in [
+        scripts / "hook_entry.sh",
+        venv_bin / "python",
+        uv,
+    ]:
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
 
     env = _isolated_env(tmp_path)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env.pop("CLAUDE_SMART_CITATION_LINK_STYLE", None)
     result = subprocess.run(
-        [str(HOOK_ENTRY), "codex", "user-prompt"],
+        [str(scripts / "hook_entry.sh"), "codex", "user-prompt"],
         env=env,
         text=True,
         input=json.dumps({"session_id": "s1", "prompt": "What food do I like?"}),
@@ -1867,7 +1942,7 @@ def test_hook_entry_defaults_codex_citation_links_to_markdown(tmp_path: Path) ->
 
     env["CLAUDE_SMART_CITATION_LINK_STYLE"] = "osc8"
     result = subprocess.run(
-        [str(HOOK_ENTRY), "codex", "user-prompt"],
+        [str(scripts / "hook_entry.sh"), "codex", "user-prompt"],
         env=env,
         text=True,
         input=json.dumps({"session_id": "s1", "prompt": "What food do I like?"}),

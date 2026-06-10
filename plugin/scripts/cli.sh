@@ -91,4 +91,5 @@ if ! claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.cli; then
   fi
 fi
 
-exec uv run --project "$PLUGIN_ROOT" --no-sync --quiet python -m claude_smart.cli "$@"
+PLUGIN_PYTHON="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
+exec "$PLUGIN_PYTHON" -m claude_smart.cli "$@"
