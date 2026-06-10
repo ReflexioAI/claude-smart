@@ -4,7 +4,8 @@
 # installed: ~/.claude/plugins/cache/reflexioai/claude-smart/<version>),
 # which is also the Python project root with pyproject.toml + uv.lock.
 # We invoke the prepared venv Python directly so hooks use the dependency set
-# produced by smart-install.sh, including editable vendored Reflexio installs.
+# produced by smart-install.sh, including the vendored Reflexio snapshot it
+# installs non-editably (--reinstall --no-deps).
 #
 # If the Setup hook recorded an install failure at
 # ~/.claude-smart/install-failed, short-circuit with a user-visible
