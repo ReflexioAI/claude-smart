@@ -1,15 +1,15 @@
 ---
 name: sync-agent-instructions
-description: Sync AI coding tool instruction files (AGENTS.md, GEMINI.md, AGENTS.md) so they stay aligned. Detects which file changed and copies it to the others. Use when syncing md files, syncing instructions, updating GEMINI.md, or updating AGENTS.md.
+description: Sync AI coding tool instruction files (CLAUDE.md, GEMINI.md, AGENTS.md) so they stay aligned. Detects which file changed and copies it to the others. Use when syncing md files, syncing instructions, updating GEMINI.md, or updating AGENTS.md.
 ---
 
 # Sync Agent Instructions
 
-Keep AGENTS.md, GEMINI.md, and AGENTS.md in sync so all AI coding tools share the same project instructions.
+Keep CLAUDE.md, GEMINI.md, and AGENTS.md in sync so all AI coding tools share the same project instructions.
 
 ## Workflow
 
-1. **Detect changes** — Run `git diff HEAD -- AGENTS.md GEMINI.md AGENTS.md` to see which file(s) have uncommitted changes.
+1. **Detect changes** — Run `git diff HEAD -- CLAUDE.md GEMINI.md AGENTS.md` to see which file(s) have uncommitted changes.
 
 2. **Determine source file:**
    - **One file changed** — That file is the source. Copy its content to the other two.
