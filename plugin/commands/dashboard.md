@@ -1,4 +1,5 @@
 ---
+name: dashboard
 description: Open the claude-smart dashboard (http://localhost:3001) in the browser, starting the backend and dashboard if they aren't running
 allowed-tools: Bash(bash:*)
 ---

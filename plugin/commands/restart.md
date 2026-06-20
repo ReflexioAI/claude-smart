@@ -1,4 +1,5 @@
 ---
+name: restart
 description: Restart the reflexio backend and dashboard to pick up new changes
 allowed-tools: Bash(bash:*)
 ---

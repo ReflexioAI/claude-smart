@@ -1,4 +1,5 @@
 ---
+name: show
 description: Show current project-specific skills and session preferences
 allowed-tools: Bash(bash:*)
 ---

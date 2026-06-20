@@ -1,4 +1,5 @@
 ---
+name: learn
 description: Force claude-smart to extract learnings from this session now
 argument-hint: [optional note to capture]
 allowed-tools: Bash(bash:*)

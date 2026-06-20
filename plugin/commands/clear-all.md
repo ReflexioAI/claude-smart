@@ -1,4 +1,5 @@
 ---
+name: clear-all
 description: Delete ALL local claude-smart learned data and restart the backend (destructive)
 allowed-tools: Bash(bash:*)
 ---
