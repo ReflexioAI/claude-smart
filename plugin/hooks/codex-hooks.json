@@ -1,5 +1,4 @@
 {
-  "description": "claude-smart hooks for Codex — learn from sessions via reflexio",
   "hooks": {
     "SessionStart": [
       {
