@@ -184,6 +184,15 @@ def test_codex_hooks_use_expected_events_and_marketplace_fallback() -> None:
         assert ".codex/plugins/cache/reflexioai/claude-smart" in command
 
 
+def test_codex_hooks_top_level_matches_codex_schema() -> None:
+    # Codex's plugin hook schema is strict and rejects any top-level field
+    # other than "hooks" (e.g. "description" causes
+    # "unknown field description, expected hooks"). Tests that only read
+    # `["hooks"]` would silently miss a regression of this kind, so guard the
+    # top-level shape explicitly.
+    assert set(_read_json("plugin/hooks/codex-hooks.json")) == {"hooks"}
+
+
 def test_hook_main_accepts_legacy_and_host_argv(monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
 
