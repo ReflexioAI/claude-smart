@@ -135,7 +135,10 @@ def export_reflexio(
             shutil.rmtree(vendor_dest)
         vendor_dest.mkdir(parents=True)
         with tarfile.open(archive) as tar:
-            tar.extractall(vendor_dest)
+            if sys.version_info >= (3, 12):
+                tar.extractall(vendor_dest, filter="data")
+            else:
+                tar.extractall(vendor_dest)
 
 
 def existing_updated_at(lock_file: Path, payload: dict[str, str]) -> str | None:
