@@ -94,6 +94,9 @@ _CODEX_REQUIRED_FILES = (
     Path("plugin/scripts/codex-claude-compat"),
     Path("plugin/scripts/codex-claude-compat.cmd"),
     Path("plugin/scripts/codex-claude-compat.js"),
+    Path("plugin/scripts/opencode-claude-compat"),
+    Path("plugin/scripts/opencode-claude-compat.cmd"),
+    Path("plugin/scripts/opencode-claude-compat.js"),
     Path("plugin/scripts/codex-hook.js"),
     Path("plugin/scripts/backend-log-runner.sh"),
     Path("plugin/scripts/_codex_env.sh"),
@@ -1117,14 +1120,14 @@ def _has_extraction_provider() -> bool:
         resolved = Path(cli_path).expanduser()
         if resolved.is_file() and os.access(resolved, os.X_OK):
             return True
-    return bool(shutil.which("claude") or shutil.which("codex"))
+    return bool(shutil.which("claude") or shutil.which("codex") or shutil.which("opencode"))
 
 
 def _extraction_provider_error() -> str:
     return (
         "error: OpenCode support needs a working learning/extraction provider.\n"
         "Run `npx claude-smart setup` to configure Reflexio, or install "
-        "Claude Code or Codex so local extraction can use a supported CLI.\n"
+        "OpenCode, Claude Code, or Codex so local extraction can use a supported CLI.\n"
     )
 
 

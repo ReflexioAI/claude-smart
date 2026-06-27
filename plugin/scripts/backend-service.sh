@@ -50,11 +50,15 @@ PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "backend-service.sh" "$@"
 
 if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
-  if [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ] || { [ "${CLAUDE_SMART_HOST:-claude-code}" = "opencode" ] && command -v codex >/dev/null 2>&1; }; then
+  if [ "${CLAUDE_SMART_HOST:-claude-code}" = "opencode" ] && command -v opencode >/dev/null 2>&1; then
+    # Preserve Reflexio's Claude CLI provider contract while routing
+    # generation through the user's authenticated OpenCode setup.
+    claude_smart_prepend_node_bins
+    export CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/opencode-claude-compat"
+  elif [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ]; then
     # Reflexio's provider still calls CLAUDE_SMART_CLI_PATH with Claude CLI
     # flags. Use a small compatibility executable that translates that narrow
-    # contract to `codex exec`. OpenCode can reuse this path when Codex is
-    # installed; otherwise fall through to a real Claude CLI or managed setup.
+    # contract to `codex exec`.
     claude_smart_prepend_node_bins
     export CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"
   elif _cs_cli_path=$(command -v claude 2>/dev/null) && [ -n "$_cs_cli_path" ]; then

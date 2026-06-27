@@ -83,6 +83,9 @@ const CODEX_REQUIRED_FILES = [
   "plugin/scripts/codex-claude-compat",
   "plugin/scripts/codex-claude-compat.cmd",
   "plugin/scripts/codex-claude-compat.js",
+  "plugin/scripts/opencode-claude-compat",
+  "plugin/scripts/opencode-claude-compat.cmd",
+  "plugin/scripts/opencode-claude-compat.js",
   "plugin/scripts/codex-hook.js",
   "plugin/scripts/_codex_env.sh",
 ];
@@ -480,7 +483,7 @@ function hasExtractionProvider() {
   if ((process.env.REFLEXIO_API_KEY || "").trim()) return true;
   const cliPath = (process.env.CLAUDE_SMART_CLI_PATH || "").trim();
   if (cliPath && isExecutableFile(cliPath)) return true;
-  return hasCli("claude") || hasCli("codex");
+  return hasCli("claude") || hasCli("codex") || hasCli("opencode");
 }
 
 function isExecutableFile(path) {
@@ -497,7 +500,7 @@ function extractionProviderError() {
   return (
     "error: OpenCode support needs a working learning/extraction provider.\n" +
     "Run `npx claude-smart setup` to configure Reflexio, or install " +
-    "Claude Code or Codex so local extraction can use a supported CLI.\n"
+    "OpenCode, Claude Code, or Codex so local extraction can use a supported CLI.\n"
   );
 }
 
@@ -2027,6 +2030,7 @@ module.exports = {
   patchCodexHooksForNode,
   opencodeConfigPath,
   patchOpenCodePluginConfig,
+  hasExtractionProvider,
   platformSupportError,
   prunePublishHooksForReadOnly,
   restorePublishHooksFromSource,

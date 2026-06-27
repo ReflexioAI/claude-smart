@@ -106,7 +106,7 @@ npx claude-smart install --host opencode
 
 Then restart OpenCode in your project so it loads the plugin from `opencode.json`, the documented project config file. If that project does not already have a root config but does have `.opencode/opencode.json` or `.opencode/opencode.jsonc`, the installer updates that existing file instead of creating a second config. Use `--global` to install into `~/.config/opencode/opencode.json` for all OpenCode projects on this machine.
 
-OpenCode support is new and uses OpenCode's npm plugin loader to inject relevant learned context before each model request. Learning extraction needs either Reflexio configured by `npx claude-smart setup` or a local Claude Code/Codex CLI available for claude-smart's extractor.
+OpenCode support is new and uses OpenCode's npm plugin loader to inject relevant learned context before each model request. Learning extraction works with OpenCode's configured model through the local `opencode` CLI; set `CLAUDE_SMART_OPENCODE_MODEL=provider/model` only if you want claude-smart extraction to use a specific OpenCode model instead of the OpenCode default.
 
 To uninstall:
 
@@ -181,7 +181,7 @@ A web UI for browsing session histories, inspecting preferences, and editing pro
 
 ## How It Works
 
-claude-smart builds three artifacts as you work and injects the relevant ones into Claude Code or Codex:
+claude-smart builds three artifacts as you work and injects the relevant ones into Claude Code, Codex, or OpenCode:
 
 - **Preferences** (project-scoped) — how you work in this specific repo (stack, role, small quirks). *e.g.* "uses pnpm, not npm"; "prefers terse answers"; "backend engineer — explain frontend with backend analogues."
 - **Project-specific skills** — durable rules with triggers and rationales learned from corrections in a project. *e.g.* "always pass `--run` to `npm test` — watch mode hangs CI."

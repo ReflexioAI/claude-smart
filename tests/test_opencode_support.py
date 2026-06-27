@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import subprocess
+import textwrap
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,15 @@ def test_package_exposes_opencode_server_entrypoint() -> None:
     assert package["engines"]["opencode"] == ">=1.17.0"
     assert package["description"].startswith("Self-improving Claude Code, Codex, and OpenCode")
     assert package["oc-plugin"] == ["server"]
+
+
+def test_opencode_package_includes_local_cli_bridge() -> None:
+    for name in (
+        "opencode-claude-compat",
+        "opencode-claude-compat.cmd",
+        "opencode-claude-compat.js",
+    ):
+        assert (REPO_ROOT / "plugin" / "scripts" / name).is_file()
 
 
 def test_opencode_bridge_does_not_call_pre_tool() -> None:
@@ -484,6 +494,118 @@ def test_opencode_extraction_provider_requires_executable_cli_path(
 
     cli_path.chmod(0o755)
     assert cli._has_extraction_provider() is True
+
+
+def test_opencode_extraction_provider_accepts_opencode_only(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+    monkeypatch.delenv(cli.env_config.REFLEXIO_API_KEY_ENV, raising=False)
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: f"/bin/{name}" if name == "opencode" else None
+    )
+
+    assert cli._has_extraction_provider() is True
+
+
+def test_opencode_backend_service_prefers_opencode_bridge() -> None:
+    service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+
+    assert 'CLAUDE_SMART_HOST:-claude-code}" = "opencode"' in service
+    assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/opencode-claude-compat"' in service
+    assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"' in service
+
+
+def test_opencode_cli_bridge_translates_claude_contract(tmp_path: Path) -> None:
+    if shutil_which_node() is None:
+        return
+    bridge = REPO_ROOT / "plugin" / "scripts" / "opencode-claude-compat.js"
+    fake_opencode = tmp_path / "opencode"
+    call_log = tmp_path / "calls.json"
+    fake_opencode.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env node
+            const fs = require("fs");
+            fs.writeFileSync(
+              {json.dumps(str(call_log))},
+              JSON.stringify({{
+                args: process.argv.slice(2),
+                cwd: process.cwd(),
+                env: {{
+                  CLAUDE_SMART_HOST: process.env.CLAUDE_SMART_HOST,
+                  CLAUDE_SMART_INTERNAL: process.env.CLAUDE_SMART_INTERNAL
+                }}
+              }})
+            );
+            process.stdout.write(JSON.stringify({{
+              type: "text",
+              part: {{ type: "text", text: "bridge output" }}
+            }}) + "\\n");
+            """
+        )
+    )
+    fake_opencode.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
+
+    result = subprocess.run(
+        [
+            shutil_which_node() or "node",
+            str(bridge),
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--append-system-prompt",
+            "system text",
+            "--model",
+            "claude-sonnet-4-6",
+        ],
+        input="user prompt",
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "type": "result",
+        "subtype": "success",
+        "result": "bridge output",
+    }
+    call = json.loads(call_log.read_text())
+    assert call["env"] == {
+        "CLAUDE_SMART_HOST": "opencode",
+        "CLAUDE_SMART_INTERNAL": "1",
+    }
+    assert call["args"][:4] == ["run", "--pure", "--format", "json"]
+    assert "--agent" in call["args"]
+    assert "--dir" in call["args"]
+    assert "--model" not in call["args"]
+    assert call["args"][-1] == "system text\n\n## Task\nuser prompt"
+
+
+def test_node_installer_accepts_opencode_only_extraction_provider(tmp_path: Path) -> None:
+    if shutil_which_node() is None:
+        return
+    fake_opencode = tmp_path / "opencode"
+    fake_opencode.write_text("#!/bin/sh\nexit 0\n")
+    fake_opencode.chmod(0o755)
+    script = (
+        f"process.env.PATH = {json.dumps(str(tmp_path))} + ':' + process.env.PATH;"
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        "process.stdout.write(String(installer.hasExtractionProvider()));"
+    )
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "true"
 
 
 def test_opencode_install_patches_project_config_after_bootstrap(
