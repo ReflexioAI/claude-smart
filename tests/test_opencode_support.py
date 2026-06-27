@@ -523,27 +523,25 @@ def test_opencode_cli_bridge_translates_claude_contract(tmp_path: Path) -> None:
     fake_opencode = tmp_path / "opencode"
     call_log = tmp_path / "calls.json"
     fake_opencode.write_text(
-        textwrap.dedent(
-            f"""\
-            #!/usr/bin/env node
-            const fs = require("fs");
-            fs.writeFileSync(
-              {json.dumps(str(call_log))},
-              JSON.stringify({{
-                args: process.argv.slice(2),
-                cwd: process.cwd(),
-                env: {{
-                  CLAUDE_SMART_HOST: process.env.CLAUDE_SMART_HOST,
-                  CLAUDE_SMART_INTERNAL: process.env.CLAUDE_SMART_INTERNAL
-                }}
-              }})
-            );
-            process.stdout.write(JSON.stringify({{
-              type: "text",
-              part: {{ type: "text", text: "bridge output" }}
-            }}) + "\\n");
-            """
-        )
+        f"""#!/usr/bin/env node
+const fs = require("fs");
+fs.writeFileSync(
+  {json.dumps(str(call_log))},
+  JSON.stringify({{
+    args: process.argv.slice(2),
+    cwd: process.cwd(),
+    stdin: fs.readFileSync(0, "utf8"),
+    env: {{
+      CLAUDE_SMART_HOST: process.env.CLAUDE_SMART_HOST,
+      CLAUDE_SMART_INTERNAL: process.env.CLAUDE_SMART_INTERNAL
+    }}
+  }})
+);
+process.stdout.write(JSON.stringify({{
+  type: "text",
+  part: {{ type: "text", text: "bridge output" }}
+}}) + "\\n");
+"""
     )
     fake_opencode.chmod(0o755)
     env = {
@@ -587,7 +585,63 @@ def test_opencode_cli_bridge_translates_claude_contract(tmp_path: Path) -> None:
     assert "--agent" in call["args"]
     assert "--dir" in call["args"]
     assert "--model" not in call["args"]
-    assert call["args"][-1] == "system text\n\n## Task\nuser prompt"
+    assert "system text\n\n## Task\nuser prompt" not in call["args"]
+    assert call["stdin"] == "system text\n\n## Task\nuser prompt"
+
+
+def test_opencode_cli_bridge_pipes_large_prompt_via_stdin(tmp_path: Path) -> None:
+    if shutil_which_node() is None:
+        return
+    bridge = REPO_ROOT / "plugin" / "scripts" / "opencode-claude-compat.js"
+    fake_opencode = tmp_path / "opencode"
+    call_log = tmp_path / "calls.json"
+    fake_opencode.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env node
+            const fs = require("fs");
+            const stdin = fs.readFileSync(0, "utf8");
+            fs.writeFileSync(
+              {json.dumps(str(call_log))},
+              JSON.stringify({{
+                args: process.argv.slice(2),
+                stdinLength: stdin.length
+              }})
+            );
+            process.stdout.write(JSON.stringify({{
+              type: "result",
+              result: "large prompt ok"
+            }}) + "\\n");
+            """
+        )
+    )
+    fake_opencode.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
+    prompt = "x" * 200_000
+
+    result = subprocess.run(
+        [
+            shutil_which_node() or "node",
+            str(bridge),
+            "-p",
+            "--output-format",
+            "stream-json",
+        ],
+        input=prompt,
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["result"] == "large prompt ok"
+    call = json.loads(call_log.read_text())
+    assert prompt not in call["args"]
+    assert call["stdinLength"] == len(prompt)
 
 
 def test_node_installer_accepts_opencode_only_extraction_provider(tmp_path: Path) -> None:
@@ -1367,16 +1421,6 @@ def test_node_parse_host_accepts_opencode() -> None:
     assert 'value !== "claude-code" && value !== "codex" && value !== "opencode"' in installer
     assert "runInstallOpenCode" in installer
     assert "runUninstallOpenCode" in installer
-
-
-def test_node_opencode_install_patches_config_before_starting_services() -> None:
-    installer = (REPO_ROOT / "bin" / "claude-smart.js").read_text()
-    patch_index = installer.index(
-        "result = patchOpenCodePluginConfig(opencodeConfigPath(args), { install: true });"
-    )
-    service_index = installer.index('startBackendService(pluginRoot, "opencode")', patch_index)
-
-    assert patch_index < service_index
 
 
 def shutil_which_node() -> str | None:

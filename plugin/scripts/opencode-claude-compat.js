@@ -13,7 +13,6 @@
  */
 
 const { spawnSync } = require("node:child_process");
-const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -133,9 +132,9 @@ function runOpenCode({ prompt, model, workDir }) {
   if (variant) {
     args.push("--variant", variant);
   }
-  args.push(prompt);
 
   const proc = spawnSync(opencodePath, args, {
+    input: prompt,
     cwd: workDir,
     encoding: "utf8",
     env: {
