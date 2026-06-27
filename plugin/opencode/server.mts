@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { AssistantBuffer } from "./assistant-buffer.js"
-import { chatMessagePayload, eventPayload, stopPayload, toolAfterPayload, toolBeforePayload } from "./payload.js"
+import { chatMessagePayload, eventPayload, stopPayload, toolAfterPayload } from "./payload.js"
 
 type HookResult = Record<string, unknown>
 
@@ -68,10 +68,20 @@ function runScript(script: string, args: string[], payload?: Record<string, unkn
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString()
     })
+    child.stderr.on("data", (chunk) => {
+      process.stderr.write(chunk)
+    })
+    child.stdin.on("error", () => {
+      // Hooks can exit before reading stdin on marker-gated setup failures.
+    })
     child.on("error", () => resolvePromise({}))
     child.on("close", () => resolvePromise(parseFirstJsonObject(stdout)))
-    if (payload) child.stdin.write(JSON.stringify(payload))
-    child.stdin.end()
+    try {
+      if (payload) child.stdin.write(JSON.stringify(payload))
+      child.stdin.end()
+    } catch {
+      resolvePromise({})
+    }
   })
 }
 
@@ -97,22 +107,26 @@ async function server(input: PluginInput) {
       const type = event.type
       assistant.update(event)
       if (type === "session.created") {
+        const payload = eventPayload(event, cwd)
+        const sessionID = String(payload.session_id || "")
+        if (!sessionID) return
         await runService(BACKEND_SERVICE, "start")
         await runService(DASHBOARD_SERVICE, "start")
-        const payload = eventPayload(event, cwd)
         const result = await runScript(HOOK_ENTRY, ["opencode", "session-start"], payload)
-        cacheContext(pendingContext, String(payload.session_id || ""), result)
+        cacheContext(pendingContext, sessionID, result)
         return
       }
       if (type === "session.idle") {
         const payload = eventPayload(event, cwd)
         const sessionID = String(payload.session_id || "")
+        if (!sessionID) return
         await runScript(HOOK_ENTRY, ["opencode", "stop"], stopPayload(event, cwd, assistant.text(sessionID)))
         assistant.clear(sessionID)
       }
     },
     "chat.message": async (hookInput: Record<string, unknown>, output: Record<string, unknown>) => {
       const payload = chatMessagePayload(hookInput, output, cwd)
+      if (!payload.session_id || !payload.prompt) return
       const result = await runScript(HOOK_ENTRY, ["opencode", "user-prompt"], payload)
       cacheContext(pendingContext, String(payload.session_id || ""), result)
     },
@@ -123,11 +137,10 @@ async function server(input: PluginInput) {
       output.system.push(...pending)
       pendingContext.delete(sessionID)
     },
-    "tool.execute.before": async (hookInput: Record<string, unknown>, output: Record<string, unknown>) => {
-      toolBeforePayload(hookInput, output, cwd)
-    },
     "tool.execute.after": async (hookInput: Record<string, unknown>, output: Record<string, unknown>) => {
-      await runScript(HOOK_ENTRY, ["opencode", "post-tool"], toolAfterPayload(hookInput, output, cwd))
+      const payload = toolAfterPayload(hookInput, output, cwd)
+      if (!payload.session_id || !payload.tool_name) return
+      await runScript(HOOK_ENTRY, ["opencode", "post-tool"], payload)
     },
     dispose: async () => {
       await runService(DASHBOARD_SERVICE, "session-end")

@@ -202,8 +202,8 @@ normalize_host() {
   case "$1" in
     1|claude|claude-code|Claude*) printf 'claude-code\n' ;;
     2|codex|Codex*) printf 'codex\n' ;;
-    3|opencode|OpenCode*) printf 'opencode\n' ;;
-    4|all|both|Both*) printf 'all\n' ;;
+    3|all|both|Both*) printf 'all\n' ;;
+    4|opencode|OpenCode*) printf 'opencode\n' ;;
     *) return 1 ;;
   esac
 }
@@ -311,7 +311,7 @@ main() {
     default_scope="global"
   fi
 
-  host="$(prompt_normalized "Host (1=Claude Code, 2=Codex, 3=OpenCode, 4=all)" "claude-code" normalize_host)"
+  host="$(prompt_normalized "Host (1=Claude Code, 2=Codex, 3=all, 4=OpenCode)" "claude-code" normalize_host)"
   mode="$(prompt_normalized "Setup mode (1=local, 2=managed Reflexio)" "$default_mode" normalize_mode)"
 
   if [ "$mode" = "local" ]; then

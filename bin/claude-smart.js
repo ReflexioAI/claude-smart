@@ -17,8 +17,10 @@ const { execSync, spawn, spawnSync } = require("child_process");
 const crypto = require("crypto");
 const {
   chmodSync,
+  constants,
   cpSync,
   existsSync,
+  accessSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -348,6 +350,24 @@ function stripJsonc(text) {
   let out = "";
   let inString = false;
   let escaped = false;
+  const skipTrivia = (index) => {
+    while (index < text.length) {
+      while (index < text.length && /\s/.test(text[index])) index += 1;
+      if (text[index] === "/" && text[index + 1] === "/") {
+        index += 2;
+        while (index < text.length && !"\r\n".includes(text[index])) index += 1;
+        continue;
+      }
+      if (text[index] === "/" && text[index + 1] === "*") {
+        index += 2;
+        while (index + 1 < text.length && !(text[index] === "*" && text[index + 1] === "/")) index += 1;
+        index = Math.min(index + 2, text.length);
+        continue;
+      }
+      break;
+    }
+    return index;
+  };
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
     const next = text[i + 1] || "";
@@ -375,8 +395,7 @@ function stripJsonc(text) {
       continue;
     }
     if (ch === ",") {
-      let j = i + 1;
-      while (j < text.length && /\s/.test(text[j])) j += 1;
+      const j = skipTrivia(i + 1);
       if (text[j] === "}" || text[j] === "]") continue;
     }
     out += ch;
@@ -416,6 +435,9 @@ function opencodePluginSpec(entry) {
 
 function patchOpenCodePluginConfig(configPath, { install }) {
   const data = readJsoncObject(configPath);
+  if (data.plugin !== undefined && !Array.isArray(data.plugin)) {
+    throw new Error(`OpenCode config ${configPath} field "plugin" must be a JSON array`);
+  }
   const current = Array.isArray(data.plugin) ? data.plugin : [];
   const kept = current.filter((entry) => opencodePluginSpec(entry) !== OPENCODE_PLUGIN_SPEC);
   const next = install ? [...kept, OPENCODE_PLUGIN_SPEC] : kept;
@@ -432,8 +454,18 @@ function patchOpenCodePluginConfig(configPath, { install }) {
 function hasExtractionProvider() {
   if ((process.env.REFLEXIO_API_KEY || "").trim()) return true;
   const cliPath = (process.env.CLAUDE_SMART_CLI_PATH || "").trim();
-  if (cliPath && existsSync(cliPath)) return true;
+  if (cliPath && isExecutableFile(cliPath)) return true;
   return hasCli("claude") || hasCli("codex");
+}
+
+function isExecutableFile(path) {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function extractionProviderError() {
@@ -1828,15 +1860,6 @@ async function runInstallOpenCode(args) {
   const pluginRoot = join(PACKAGE_ROOT, "plugin");
   try {
     await bootstrapPluginRuntime(pluginRoot, { readOnly, patchCodexHooks: false });
-    if (readOnly) {
-      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
-    }
-    if (startBackendService(pluginRoot, "opencode")) {
-      process.stdout.write("Started claude-smart backend service.\n");
-    }
-    if (refreshDashboardService(pluginRoot)) {
-      process.stdout.write("Refreshed claude-smart dashboard service.\n");
-    }
   } catch (err) {
     process.stderr.write(
       `error: claude-smart OpenCode setup failed during dependency bootstrap: ${err && err.message ? err.message : err}\n`,
@@ -1850,6 +1873,15 @@ async function runInstallOpenCode(args) {
   } catch (err) {
     process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
     process.exit(1);
+  }
+  if (readOnly) {
+    process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
+  }
+  if (startBackendService(pluginRoot, "opencode")) {
+    process.stdout.write("Started claude-smart backend service.\n");
+  }
+  if (refreshDashboardService(pluginRoot)) {
+    process.stdout.write("Refreshed claude-smart dashboard service.\n");
   }
   process.stdout.write(
     [

@@ -32,7 +32,7 @@ function textFromPart(part: unknown): { id: string; text: string; messageID?: st
   if (!part || typeof part !== "object") return undefined
   const item = part as PartLike
   if (item.type !== "text") return undefined
-  if (typeof item.text !== "string" || !item.text) return undefined
+  if (typeof item.text !== "string") return undefined
   return {
     id: item.id || `${item.messageID || "message"}:${item.type}`,
     text: item.text,

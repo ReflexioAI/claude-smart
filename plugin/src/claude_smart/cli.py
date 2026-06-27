@@ -967,6 +967,25 @@ def _configure_reflexio_setup() -> bool:
 
 def _strip_jsonc(text: str) -> str:
     """Remove JSONC comments and trailing commas without touching strings."""
+
+    def skip_trivia(index: int) -> int:
+        while index < len(text):
+            while index < len(text) and text[index].isspace():
+                index += 1
+            if text[index : index + 2] == "//":
+                index += 2
+                while index < len(text) and text[index] not in "\r\n":
+                    index += 1
+                continue
+            if text[index : index + 2] == "/*":
+                index += 2
+                while index + 1 < len(text) and text[index : index + 2] != "*/":
+                    index += 1
+                index = min(index + 2, len(text))
+                continue
+            break
+        return index
+
     out: list[str] = []
     in_string = False
     escaped = False
@@ -1000,9 +1019,7 @@ def _strip_jsonc(text: str) -> str:
             i += 2
             continue
         if ch == ",":
-            j = i + 1
-            while j < len(text) and text[j].isspace():
-                j += 1
+            j = skip_trivia(i + 1)
             if j < len(text) and text[j] in "}]":
                 i += 1
                 continue
@@ -1048,6 +1065,10 @@ def _patch_opencode_plugin_config(
 ) -> tuple[bool, Path]:
     data = _read_jsonc_object(config_path)
     current = data.get("plugin")
+    if current is not None and not isinstance(current, list):
+        raise ValueError(
+            f'OpenCode config {config_path} field "plugin" must be a JSON array'
+        )
     plugins = list(current) if isinstance(current, list) else []
     kept = [
         item
@@ -1073,8 +1094,10 @@ def _has_extraction_provider() -> bool:
     if os.environ.get(env_config.REFLEXIO_API_KEY_ENV, "").strip():
         return True
     cli_path = os.environ.get("CLAUDE_SMART_CLI_PATH", "").strip()
-    if cli_path and Path(cli_path).expanduser().is_file():
-        return True
+    if cli_path:
+        resolved = Path(cli_path).expanduser()
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return True
     return bool(shutil.which("claude") or shutil.which("codex"))
 
 
@@ -1091,6 +1114,12 @@ def _opencode_install_supported_from_this_package() -> bool:
 
 
 def _bootstrap_opencode_install(read_only: bool) -> tuple[bool, str]:
+    if not _opencode_install_supported_from_this_package():
+        return (
+            False,
+            "OpenCode install is supported from the npm package. "
+            "Run `npx claude-smart install --host opencode`.",
+        )
     try:
         _force_plugin_root(_PLUGIN_ROOT)
     except OSError as exc:

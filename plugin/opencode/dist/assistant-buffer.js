@@ -13,7 +13,7 @@ function textFromPart(part) {
     const item = part;
     if (item.type !== "text")
         return undefined;
-    if (typeof item.text !== "string" || !item.text)
+    if (typeof item.text !== "string")
         return undefined;
     return {
         id: item.id || `${item.messageID || "message"}:${item.type}`,
