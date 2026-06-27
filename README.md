@@ -104,9 +104,9 @@ Restart Codex after uninstalling. The uninstaller stops local claude-smart servi
 npx claude-smart install --host opencode
 ```
 
-Then restart OpenCode in your project so it loads the plugin from `opencode.json`, the documented project config file. If your project already has `.opencode/opencode.json` or `.opencode/opencode.jsonc`, the installer updates that existing file instead of creating a second config.
+Then restart OpenCode in your project so it loads the plugin from `opencode.json`, the documented project config file. If that project does not already have a root config but does have `.opencode/opencode.json` or `.opencode/opencode.jsonc`, the installer updates that existing file instead of creating a second config. Use `--global` to install into `~/.config/opencode/opencode.json` for all OpenCode projects on this machine.
 
-OpenCode support uses OpenCode's npm plugin loader and injects relevant learned context before each model request. Learning extraction needs either Reflexio configured by `npx claude-smart setup` or a local Claude Code/Codex CLI available for claude-smart's extractor.
+OpenCode support is new and uses OpenCode's npm plugin loader to inject relevant learned context before each model request. Learning extraction needs either Reflexio configured by `npx claude-smart setup` or a local Claude Code/Codex CLI available for claude-smart's extractor.
 
 To uninstall:
 
@@ -114,7 +114,7 @@ To uninstall:
 npx claude-smart uninstall --host opencode
 ```
 
-Restart OpenCode after uninstalling. The uninstaller removes only the `claude-smart` entry from OpenCode's singular `plugin` array; learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved and shared across hosts.
+Restart OpenCode after uninstalling. The uninstaller removes only the `claude-smart` entry from OpenCode's plugin list; learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved and shared across hosts.
 
 Developing the plugin itself? See [DEVELOPER.md](./DEVELOPER.md#developing-locally) for what the installer does, manual toggles via `/plugins`, and clone-based development.
 
@@ -234,7 +234,7 @@ Advanced users can tune claude-smart via environment variables — see [DEVELOPE
 | `.claude/settings.local.json` or `~/.claude/settings.json` | Claude Code hook environment, such as `CLAUDE_SMART_ENABLE_OPTIMIZER`; use project-local settings for one repo or user settings for all projects. |
 | `~/.codex/config.toml` | Codex plugin state, hook feature flags, and per-hook trust entries after `claude-smart install --host codex`. |
 | `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/` | Codex's cached install of the `claude-smart` plugin from the `ReflexioAI` marketplace. |
-| `opencode.json` / `opencode.jsonc`, or existing `.opencode/opencode.json*` | OpenCode local plugin config patched by `claude-smart install --host opencode`; uses the singular `plugin` array. |
+| `opencode.json` / `opencode.jsonc`, or existing `.opencode/opencode.json*` | OpenCode local plugin config patched by `claude-smart install --host opencode`; the installer updates only the claude-smart entry in OpenCode's plugin list. |
 | `~/.reflexio/plugin-root` | Self-healed symlink to the active plugin dir (managed by `ensure-plugin-root.sh` — written on install, refreshed each `SessionStart`). Claude Code slash commands and Codex shell-command helpers resolve through it, so don't delete it; if you do, the next session will recreate it. |
 | `~/.claude-smart/sessions/{session_id}.jsonl` | Per-session buffer. User turns, assistant turns, tool invocations, `{"published_up_to": N}` watermarks. Safe to inspect and safe to delete — everything past the latest watermark has already been written to reflexio's DB. |
 | `~/.claude-smart/node/current/` | Private Node.js/npm runtime used by hooks and the dashboard after install. |

@@ -1076,11 +1076,14 @@ def _patch_opencode_plugin_config(
     config_path: Path, *, install: bool
 ) -> tuple[bool, Path]:
     data = _read_jsonc_object(config_path)
-    current = data.get("plugin")
-    if current is not None and not isinstance(current, list):
-        raise ValueError(
-            f'OpenCode config {config_path} field "plugin" must be a JSON array'
-        )
+    for field in ("plugins", "plugin"):
+        value = data.get(field)
+        if value is not None and not isinstance(value, list):
+            raise ValueError(
+                f'OpenCode config {config_path} field "{field}" must be a JSON array'
+            )
+    field = "plugins" if "plugins" in data else "plugin"
+    current = data.get(field)
     plugins = list(current) if isinstance(current, list) else []
     kept = [
         item
@@ -1099,7 +1102,7 @@ def _patch_opencode_plugin_config(
         original = config_path.read_text()
         if original.strip() and original != _strip_jsonc(original):
             config_path.with_suffix(config_path.suffix + ".bak").write_text(original)
-    data["plugin"] = next_plugins
+    data[field] = next_plugins
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(data, indent=2) + "\n")
     return True, config_path

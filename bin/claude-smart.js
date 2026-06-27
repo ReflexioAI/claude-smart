@@ -449,13 +449,16 @@ function opencodePluginSpec(entry) {
 
 function patchOpenCodePluginConfig(configPath, { install }) {
   const data = readJsoncObject(configPath);
-  if (data.plugin !== undefined && !Array.isArray(data.plugin)) {
-    throw new Error(`OpenCode config ${configPath} field "plugin" must be a JSON array`);
+  for (const field of ["plugins", "plugin"]) {
+    if (data[field] !== undefined && !Array.isArray(data[field])) {
+      throw new Error(`OpenCode config ${configPath} field "${field}" must be a JSON array`);
+    }
   }
-  const current = Array.isArray(data.plugin) ? data.plugin : [];
+  const field = data.plugins !== undefined ? "plugins" : "plugin";
+  const current = Array.isArray(data[field]) ? data[field] : [];
   const kept = current.filter((entry) => opencodePluginSpec(entry) !== OPENCODE_PLUGIN_SPEC);
   const next = install ? [...kept, OPENCODE_PLUGIN_SPEC] : kept;
-  const changed = Array.isArray(data.plugin)
+  const changed = Array.isArray(data[field])
     ? next.length !== current.length || next.some((entry, index) => entry !== current[index])
     : install && next.length > 0;
   if (!changed) return { changed: false, configPath };
@@ -467,7 +470,7 @@ function patchOpenCodePluginConfig(configPath, { install }) {
       writeFileSync(backupPath, original);
     }
   }
-  data.plugin = next;
+  data[field] = next;
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify(data, null, 2) + "\n");
   return { changed: true, configPath, backupPath };
@@ -1155,7 +1158,7 @@ function printHelp() {
       "",
       "OpenCode install:",
       "  1. Prepares the shared claude-smart runtime",
-      "  2. Adds \"claude-smart\" to the singular plugin array in opencode.json",
+      "  2. Adds \"claude-smart\" to OpenCode's plugins list in opencode.json",
       "  3. Restart OpenCode.",
       "",
       "Update:",

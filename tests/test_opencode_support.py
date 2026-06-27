@@ -193,7 +193,7 @@ def test_opencode_learning_loop_buffers_injects_tools_and_publishes(
     ]
 
 
-def test_opencode_config_patch_adds_singular_plugin_and_preserves_unrelated(
+def test_opencode_config_patch_preserves_legacy_plugin_field_and_unrelated(
     tmp_path: Path,
 ) -> None:
     config = tmp_path / ".opencode" / "opencode.jsonc"
@@ -259,6 +259,46 @@ def test_opencode_config_patch_install_dedupes_existing_entries(
     assert json.loads(config.read_text())["plugin"] == ["other-plugin", "claude-smart"]
 
 
+def test_opencode_config_patch_fresh_config_uses_current_plugin_field(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "opencode.json"
+
+    changed, _ = cli._patch_opencode_plugin_config(config, install=True)
+
+    assert changed is True
+    assert json.loads(config.read_text()) == {"plugin": ["claude-smart"]}
+
+
+def test_opencode_config_patch_preserves_existing_plugins_field(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({"plugins": ["other-plugin"], "theme": "system"}))
+
+    changed, _ = cli._patch_opencode_plugin_config(config, install=True)
+
+    parsed = json.loads(config.read_text())
+    assert changed is True
+    assert parsed["plugins"] == ["other-plugin", "claude-smart"]
+    assert "plugin" not in parsed
+    assert parsed["theme"] == "system"
+
+
+def test_opencode_config_patch_uninstalls_from_existing_plugins_field(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "opencode.json"
+    config.write_text(
+        json.dumps({"plugins": ["claude-smart", "other-plugin", "claude-smart"]})
+    )
+
+    changed, _ = cli._patch_opencode_plugin_config(config, install=False)
+
+    assert changed is True
+    assert json.loads(config.read_text()) == {"plugins": ["other-plugin"]}
+
+
 def test_opencode_jsonc_parser_preserves_comma_brace_inside_strings() -> None:
     parsed = cli._strip_jsonc('{"prompt": "keep,}", "plugin": ["claude-smart",],}\n')
 
@@ -286,6 +326,19 @@ def test_opencode_config_patch_rejects_non_array_plugin_without_rewrite(
     config.write_text(original)
 
     with pytest.raises(ValueError, match='field "plugin" must be a JSON array'):
+        cli._patch_opencode_plugin_config(config, install=True)
+
+    assert config.read_text() == original
+
+
+def test_opencode_config_patch_rejects_non_array_plugins_without_rewrite(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "opencode.json"
+    original = json.dumps({"plugins": "other-plugin", "theme": "system"})
+    config.write_text(original)
+
+    with pytest.raises(ValueError, match='field "plugins" must be a JSON array'):
         cli._patch_opencode_plugin_config(config, install=True)
 
     assert config.read_text() == original
@@ -474,6 +527,26 @@ def test_opencode_install_patches_existing_dot_opencode_config(
     ]
 
 
+def test_opencode_install_patches_existing_plugins_field(
+    monkeypatch, tmp_path
+) -> None:
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({"plugins": ["other-plugin"], "theme": "system"}))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: f"/bin/{name}" if name == "codex" else None
+    )
+    monkeypatch.setattr(cli, "_bootstrap_opencode_install", lambda _read_only: (True, "/plugin"))
+
+    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
+
+    parsed = json.loads(config.read_text())
+    assert rc == 0
+    assert parsed["plugins"] == ["other-plugin", "claude-smart"]
+    assert "plugin" not in parsed
+
+
 def test_node_installer_patches_opencode_jsonc(tmp_path: Path) -> None:
     if shutil_which_node() is None:
         return
@@ -526,6 +599,45 @@ def test_node_installer_uninstalls_and_preserves_other_plugin_shapes(
     parsed = json.loads(result.stdout)
     assert parsed["plugin"] == ["other", ["tuple-plugin", {"enabled": True}]]
     assert parsed["theme"] == "system"
+
+
+def test_node_installer_preserves_existing_plugins_field(tmp_path: Path) -> None:
+    if shutil_which_node() is None:
+        return
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({"plugins": ["other"], "theme": "system"}))
+    script = (
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        f"installer.patchOpenCodePluginConfig({json.dumps(str(config))}, {{install: true}});"
+        "process.stdout.write(require('fs').readFileSync(process.argv[1], 'utf8'));"
+    )
+
+    result = _run_node_script(script, str(config))
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["plugins"] == ["other", "claude-smart"]
+    assert "plugin" not in parsed
+    assert parsed["theme"] == "system"
+
+
+def test_node_installer_uninstalls_from_existing_plugins_field(tmp_path: Path) -> None:
+    if shutil_which_node() is None:
+        return
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({"plugins": ["claude-smart", "other", "claude-smart"]}))
+    script = (
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        f"installer.patchOpenCodePluginConfig({json.dumps(str(config))}, {{install: false}});"
+        "process.stdout.write(require('fs').readFileSync(process.argv[1], 'utf8'));"
+    )
+
+    result = _run_node_script(script, str(config))
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"plugins": ["other"]}
 
 
 def test_node_installer_uninstall_noops_without_plugin_array(tmp_path: Path) -> None:
@@ -674,6 +786,8 @@ def test_node_installer_rejects_non_array_plugin_without_rewrite(
 
 
 def test_node_opencode_payload_normalizes_tool_contracts() -> None:
+    if shutil_which_node() is None:
+        return
     script = f"""
       import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "payload.js"))}).then((payload) => {{
         const edit = payload.toolAfterPayload(
