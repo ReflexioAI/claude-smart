@@ -1,9 +1,4 @@
-function isRecord(value) {
-    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-function props(event) {
-    return isRecord(event.properties) ? event.properties : event;
-}
+import { eventProperties, isRecord, sessionIDFrom } from "./internal.js";
 function textFromParts(parts) {
     if (!Array.isArray(parts))
         return "";
@@ -12,12 +7,8 @@ function textFromParts(parts) {
         .filter(Boolean)
         .join("\n\n");
 }
-function sessionIDFrom(input) {
-    const raw = input.sessionID ?? input.session_id;
-    return typeof raw === "string" ? raw : "";
-}
 export function eventPayload(event, cwd) {
-    const properties = props(event);
+    const properties = eventProperties(event);
     const info = isRecord(properties.info) ? properties.info : {};
     return {
         session_id: sessionIDFrom(properties) || sessionIDFrom(info),

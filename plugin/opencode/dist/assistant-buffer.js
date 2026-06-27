@@ -1,12 +1,4 @@
-function eventProperties(event) {
-    return (event.properties && typeof event.properties === "object"
-        ? event.properties
-        : event);
-}
-function sessionIDFrom(properties) {
-    const raw = properties.sessionID ?? properties.session_id;
-    return typeof raw === "string" && raw ? raw : undefined;
-}
+import { eventProperties, sessionIDFrom } from "./internal.js";
 function textFromPart(part) {
     if (!part || typeof part !== "object")
         return undefined;

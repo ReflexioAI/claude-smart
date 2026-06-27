@@ -1,7 +1,4 @@
-type EventLike = {
-  type?: string
-  properties?: Record<string, unknown>
-}
+import { eventProperties, type EventLike, sessionIDFrom } from "./internal.js"
 
 type PartLike = {
   id?: string
@@ -15,17 +12,6 @@ type SessionText = {
   parts: Map<string, string>
   textPartIDs: Set<string>
   ignoredPartIDs: Set<string>
-}
-
-function eventProperties(event: EventLike): Record<string, unknown> {
-  return (event.properties && typeof event.properties === "object"
-    ? event.properties
-    : event) as Record<string, unknown>
-}
-
-function sessionIDFrom(properties: Record<string, unknown>): string | undefined {
-  const raw = properties.sessionID ?? properties.session_id
-  return typeof raw === "string" && raw ? raw : undefined
 }
 
 function textFromPart(part: unknown): { id: string; text: string; messageID?: string } | undefined {

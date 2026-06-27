@@ -1,22 +1,11 @@
+import { eventProperties, type EventLike, isRecord, sessionIDFrom } from "./internal.js"
+
 type PartLike = {
   type?: string
   text?: string
 }
 
-type EventLike = {
-  type?: string
-  properties?: Record<string, unknown>
-}
-
 export type PythonPayload = Record<string, unknown>
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-}
-
-function props(event: EventLike): Record<string, unknown> {
-  return isRecord(event.properties) ? event.properties : (event as Record<string, unknown>)
-}
 
 function textFromParts(parts: unknown): string {
   if (!Array.isArray(parts)) return ""
@@ -26,13 +15,8 @@ function textFromParts(parts: unknown): string {
     .join("\n\n")
 }
 
-function sessionIDFrom(input: Record<string, unknown>): string {
-  const raw = input.sessionID ?? input.session_id
-  return typeof raw === "string" ? raw : ""
-}
-
 export function eventPayload(event: EventLike, cwd: string): PythonPayload {
-  const properties = props(event)
+  const properties = eventProperties(event)
   const info = isRecord(properties.info) ? properties.info : {}
   return {
     session_id: sessionIDFrom(properties) || sessionIDFrom(info),

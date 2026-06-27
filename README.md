@@ -104,9 +104,9 @@ Restart Codex after uninstalling. The uninstaller stops local claude-smart servi
 npx claude-smart install --host opencode
 ```
 
-Then restart OpenCode in your project so it loads the plugin from `opencode.json`, the documented project config file. If that project does not already have a root config but does have `.opencode/opencode.json` or `.opencode/opencode.jsonc`, the installer updates that existing file instead of creating a second config. Use `--global` to install into `~/.config/opencode/opencode.json` for all OpenCode projects on this machine. When run through `npx`, long-lived local services are prepared from OpenCode's installed plugin package on the next OpenCode launch instead of from npm's temporary `npx` cache.
+Then restart OpenCode in your project so it loads the plugin from `opencode.json`, the documented project config file. If that project does not already have a root config but does have `.opencode/opencode.json` or `.opencode/opencode.jsonc`, the installer updates that existing file instead of creating a second config. If both locations exist, the root config wins. Use `--global` to install into `~/.config/opencode/opencode.json` for all OpenCode projects on this machine. When run through `npx`, long-lived local services are prepared from OpenCode's installed plugin package on the next OpenCode launch instead of from npm's temporary `npx` cache.
 
-OpenCode support is new and uses OpenCode's npm plugin loader to inject relevant learned context before each model request. Learning extraction works with OpenCode's configured model through the local `opencode` CLI; set `CLAUDE_SMART_OPENCODE_MODEL=provider/model` only if you want claude-smart extraction to use a specific OpenCode model instead of the OpenCode default.
+OpenCode support is new and uses OpenCode's npm plugin loader to inject relevant learned context before each model request. Learning extraction runs `opencode run --pure` from an isolated temp project, so it uses OpenCode's default model unless you set `CLAUDE_SMART_OPENCODE_MODEL=provider/model`. Set that env var if your normal project config pins a different provider or model.
 
 To uninstall:
 

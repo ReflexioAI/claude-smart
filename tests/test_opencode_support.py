@@ -48,6 +48,29 @@ def _run_node_script(script: str, *args: str) -> subprocess.CompletedProcess[str
     )
 
 
+def _write_fake_bash_recorder(tmp_path: Path, *, user_prompt_context: str = "") -> Path:
+    fake_bash = tmp_path / "bash"
+    response = (
+        f'{{"hookSpecificOutput":{{"additionalContext":{json.dumps(user_prompt_context)}}}}}'
+        if user_prompt_context
+        else "{}"
+    )
+    fake_bash.write_text(
+        "#!/bin/sh\n"
+        "script=\"$1\"\n"
+        "shift\n"
+        "payload=$(cat || true)\n"
+        "PAYLOAD=\"$payload\" node -e 'require(\"fs\").appendFileSync(process.env.CALL_LOG, JSON.stringify({ script: process.argv[1], args: process.argv.slice(2), payload: process.env.PAYLOAD }) + \"\\n\")' \"$script\" \"$@\"\n"
+        "if [ \"${2:-}\" = \"user-prompt\" ]; then\n"
+        f"  printf '%s\\n' '{response}'\n"
+        "else\n"
+        "  printf '%s\\n' '{}'\n"
+        "fi\n",
+    )
+    fake_bash.chmod(0o755)
+    return fake_bash
+
+
 def test_package_exposes_opencode_server_entrypoint() -> None:
     package = _read_json("package.json")
 
@@ -1225,21 +1248,8 @@ def test_node_opencode_server_dispatches_lifecycle_tool_idle_and_dispose(
 ) -> None:
     if shutil_which_node() is None:
         return
-    fake_bash = tmp_path / "bash"
     log_path = tmp_path / "calls.jsonl"
-    fake_bash.write_text(
-        "#!/bin/sh\n"
-        "script=\"$1\"\n"
-        "shift\n"
-        "payload=$(cat || true)\n"
-        "PAYLOAD=\"$payload\" node -e 'require(\"fs\").appendFileSync(process.env.CALL_LOG, JSON.stringify({ script: process.argv[1], args: process.argv.slice(2), payload: process.env.PAYLOAD }) + \"\\n\")' \"$script\" \"$@\"\n"
-        "if [ \"${2:-}\" = \"user-prompt\" ]; then\n"
-        "  printf '%s\\n' '{\"hookSpecificOutput\":{\"additionalContext\":\"learned context\"}}'\n"
-        "else\n"
-        "  printf '%s\\n' '{}'\n"
-        "fi\n",
-    )
-    fake_bash.chmod(0o755)
+    _write_fake_bash_recorder(tmp_path, user_prompt_context="learned context")
     script = f"""
       process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
       process.env.CALL_LOG = {json.dumps(str(log_path))};
@@ -1292,17 +1302,8 @@ def test_node_opencode_server_dispose_flushes_active_session_without_idle(
 ) -> None:
     if shutil_which_node() is None:
         return
-    fake_bash = tmp_path / "bash"
     log_path = tmp_path / "calls.jsonl"
-    fake_bash.write_text(
-        "#!/bin/sh\n"
-        "script=\"$1\"\n"
-        "shift\n"
-        "payload=$(cat || true)\n"
-        "PAYLOAD=\"$payload\" node -e 'require(\"fs\").appendFileSync(process.env.CALL_LOG, JSON.stringify({ script: process.argv[1], args: process.argv.slice(2), payload: process.env.PAYLOAD }) + \"\\n\")' \"$script\" \"$@\"\n"
-        "printf '%s\\n' '{}'\n",
-    )
-    fake_bash.chmod(0o755)
+    _write_fake_bash_recorder(tmp_path)
     script = f"""
       process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
       process.env.CALL_LOG = {json.dumps(str(log_path))};
@@ -1339,17 +1340,8 @@ def test_node_opencode_server_text_complete_flushes_once(
 ) -> None:
     if shutil_which_node() is None:
         return
-    fake_bash = tmp_path / "bash"
     log_path = tmp_path / "calls.jsonl"
-    fake_bash.write_text(
-        "#!/bin/sh\n"
-        "script=\"$1\"\n"
-        "shift\n"
-        "payload=$(cat || true)\n"
-        "PAYLOAD=\"$payload\" node -e 'require(\"fs\").appendFileSync(process.env.CALL_LOG, JSON.stringify({ script: process.argv[1], args: process.argv.slice(2), payload: process.env.PAYLOAD }) + \"\\n\")' \"$script\" \"$@\"\n"
-        "printf '%s\\n' '{}'\n",
-    )
-    fake_bash.chmod(0o755)
+    _write_fake_bash_recorder(tmp_path)
     script = f"""
       process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
       process.env.CALL_LOG = {json.dumps(str(log_path))};
@@ -1381,6 +1373,48 @@ def test_node_opencode_server_text_complete_flushes_once(
     ]
 
 
+def test_node_opencode_server_keeps_multi_segment_assistant_text(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        return
+    log_path = tmp_path / "calls.jsonl"
+    _write_fake_bash_recorder(tmp_path)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        const plugin = await mod.default.server({{ directory: "/repo" }});
+        await plugin["chat.message"]({{ sessionID: "s-multi" }}, {{ message: {{ content: "remember this" }} }});
+        await plugin.event({{ event: {{ type: "message.updated", properties: {{ sessionID: "s-multi", info: {{ id: "m1", role: "assistant" }} }} }} }});
+        await plugin.event({{ event: {{ type: "message.part.updated", properties: {{ sessionID: "s-multi", part: {{ id: "p1", messageID: "m1", type: "text", text: "first" }} }} }} }});
+        await plugin["experimental.text.complete"]({{ sessionID: "s-multi" }}, {{ text: "first" }});
+        await plugin.event({{ event: {{ type: "message.part.updated", properties: {{ sessionID: "s-multi", part: {{ id: "p2", messageID: "m1", type: "text", text: "second" }} }} }} }});
+        await plugin["experimental.text.complete"]({{ sessionID: "s-multi" }}, {{ text: "second" }});
+        await plugin.event({{ event: {{ type: "session.idle", properties: {{ sessionID: "s-multi" }} }} }});
+        await plugin.dispose();
+        process.stdout.write(require("fs").readFileSync(process.env.CALL_LOG, "utf8"));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in result.stdout.strip().split("\n")]
+    stop_calls = [
+        json.loads(call["payload"])
+        for call in calls
+        if Path(call["script"]).name == "hook_entry.sh" and call["args"] == ["opencode", "stop"]
+    ]
+    assert stop_calls == [
+        {"session_id": "s-multi", "cwd": "/repo", "last_assistant_message": "first\n\nsecond"}
+    ]
+
+
 def test_opencode_dist_files_are_packaged() -> None:
     package = _read_json("package.json")
 
@@ -1409,7 +1443,7 @@ def test_opencode_dist_matches_typescript_sources(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    for filename in ("assistant-buffer.js", "payload.js", "server.mjs"):
+    for filename in ("assistant-buffer.js", "internal.js", "payload.js", "server.mjs"):
         expected = REPO_ROOT / "plugin" / "opencode" / "dist" / filename
         generated = out_dir / filename
         assert filecmp.cmp(expected, generated, shallow=False), filename

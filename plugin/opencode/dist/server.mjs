@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AssistantBuffer } from "./assistant-buffer.js";
+import { sessionIDFrom } from "./internal.js";
 import { chatMessagePayload, eventPayload, stopPayload, toolAfterPayload } from "./payload.js";
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(MODULE_DIR, "../..");
@@ -9,13 +10,6 @@ const SCRIPTS_DIR = resolve(PLUGIN_ROOT, "scripts");
 const HOOK_ENTRY = resolve(SCRIPTS_DIR, "hook_entry.sh");
 const BACKEND_SERVICE = resolve(SCRIPTS_DIR, "backend-service.sh");
 const DASHBOARD_SERVICE = resolve(SCRIPTS_DIR, "dashboard-service.sh");
-function sessionIDFrom(value) {
-    if (!value || typeof value !== "object")
-        return "";
-    const record = value;
-    const raw = record.sessionID ?? record.session_id;
-    return typeof raw === "string" ? raw : "";
-}
 function contextFrom(result) {
     const hookOutput = result.hookSpecificOutput;
     if (!hookOutput || typeof hookOutput !== "object")
@@ -93,7 +87,7 @@ async function server(input) {
         if (!sessionID || !activeSessions.has(sessionID))
             return;
         activeSessions.delete(sessionID);
-        const text = completedAssistantText.get(sessionID) || assistant.text(sessionID);
+        const text = assistant.text(sessionID) || completedAssistantText.get(sessionID) || "";
         completedAssistantText.delete(sessionID);
         await runScript(HOOK_ENTRY, ["opencode", "stop"], stopPayload({ properties: { sessionID, info: { directory: cwd } } }, cwd, text));
         assistant.clear(sessionID);
@@ -148,10 +142,8 @@ async function server(input) {
             const sessionID = typeof hookInput.sessionID === "string" ? hookInput.sessionID : "";
             if (!sessionID)
                 return;
-            activeSessions.add(sessionID);
             if (typeof output.text === "string")
                 completedAssistantText.set(sessionID, output.text);
-            await flushStop(sessionID);
         },
         dispose: async () => {
             await Promise.all([...activeSessions].map((sessionID) => flushStop(sessionID)));
