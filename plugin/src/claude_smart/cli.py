@@ -56,6 +56,8 @@ _CODEX_PLUGIN_CACHE_DIR = (
     / "claude-smart"
 )
 _CODEX_CLI_TIMEOUT_SECONDS = 30
+_OPENCODE_PLUGIN_SPEC = "claude-smart"
+_OPENCODE_CONFIG_NAMES = ("opencode.json", "opencode.jsonc")
 _REFLEXIO_UNREACHABLE_MSG = (
     "Failed to reach reflexio. Check ~/.claude-smart/backend.log "
     "or restart Claude Code.\n"
@@ -963,6 +965,185 @@ def _configure_reflexio_setup() -> bool:
     return read_only
 
 
+def _strip_jsonc(text: str) -> str:
+    """Remove JSONC comments and trailing commas without touching strings."""
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and nxt == "/":
+            while i < len(text) and text[i] not in "\r\n":
+                i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            i += 2
+            while i + 1 < len(text) and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        if ch == ",":
+            j = i + 1
+            while j < len(text) and text[j].isspace():
+                j += 1
+            if j < len(text) and text[j] in "}]":
+                i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _read_jsonc_object(path: Path) -> dict[str, object]:
+    try:
+        text = path.read_text() if path.exists() else "{}"
+        parsed = json.loads(_strip_jsonc(text or "{}"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not parse OpenCode config {path}: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"OpenCode config {path} must be a JSON object")
+    return parsed
+
+
+def _opencode_config_path(*, global_config: bool = False, cwd: Path | None = None) -> Path:
+    config_dir = (
+        Path.home() / ".config" / "opencode"
+        if global_config
+        else (cwd or Path.cwd()) / ".opencode"
+    )
+    for name in _OPENCODE_CONFIG_NAMES:
+        candidate = config_dir / name
+        if candidate.exists():
+            return candidate
+    return config_dir / "opencode.json"
+
+
+def _opencode_plugin_spec(entry: object) -> str | None:
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, list) and entry and isinstance(entry[0], str):
+        return entry[0]
+    return None
+
+
+def _patch_opencode_plugin_config(
+    config_path: Path, *, install: bool
+) -> tuple[bool, Path]:
+    data = _read_jsonc_object(config_path)
+    current = data.get("plugin")
+    plugins = list(current) if isinstance(current, list) else []
+    kept = [
+        item
+        for item in plugins
+        if _opencode_plugin_spec(item) != _OPENCODE_PLUGIN_SPEC
+    ]
+    next_plugins = [*kept, _OPENCODE_PLUGIN_SPEC] if install else kept
+    changed = (
+        next_plugins != plugins
+        if isinstance(current, list)
+        else install and bool(next_plugins)
+    )
+    if not changed:
+        return False, config_path
+    data["plugin"] = next_plugins
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(data, indent=2) + "\n")
+    return True, config_path
+
+
+def _has_extraction_provider() -> bool:
+    env_config.load_reflexio_env(_REFLEXIO_ENV_PATH)
+    if os.environ.get(env_config.REFLEXIO_API_KEY_ENV, "").strip():
+        return True
+    cli_path = os.environ.get("CLAUDE_SMART_CLI_PATH", "").strip()
+    if cli_path and Path(cli_path).expanduser().is_file():
+        return True
+    return bool(shutil.which("claude") or shutil.which("codex"))
+
+
+def _extraction_provider_error() -> str:
+    return (
+        "error: OpenCode support needs a working learning/extraction provider.\n"
+        "Run `npx claude-smart setup` to configure Reflexio, or install "
+        "Claude Code or Codex so local extraction can use a supported CLI.\n"
+    )
+
+
+def _opencode_install_supported_from_this_package() -> bool:
+    return (_SCRIPTS_DIR / "smart-install.sh").is_file()
+
+
+def _bootstrap_opencode_install(read_only: bool) -> tuple[bool, str]:
+    try:
+        _force_plugin_root(_PLUGIN_ROOT)
+    except OSError as exc:
+        return False, str(exc)
+    bash = _resolve_bash()
+    if not bash:
+        return False, "bash is required to bootstrap claude-smart dependencies"
+    result = subprocess.run([bash, str(_SCRIPTS_DIR / "smart-install.sh")], cwd=_PLUGIN_ROOT)
+    if result.returncode != 0:
+        return False, f"smart-install.sh failed in {_PLUGIN_ROOT}"
+    if _INSTALL_FAILURE_MARKER.is_file():
+        first_line = _INSTALL_FAILURE_MARKER.read_text().splitlines()
+        reason = (first_line[0].strip() if first_line else "") or "unknown error"
+        return False, reason
+    if read_only:
+        _prune_publish_hooks_for_read_only(_PLUGIN_ROOT)
+    return True, str(_PLUGIN_ROOT)
+
+
+def cmd_install_opencode(args: argparse.Namespace) -> int:
+    if not _opencode_install_supported_from_this_package():
+        sys.stderr.write(
+            "error: OpenCode install is supported from the npm package. "
+            "Run `npx claude-smart install --host opencode`.\n"
+        )
+        return 1
+    read_only = _configure_reflexio_setup()
+    if not _has_extraction_provider():
+        sys.stderr.write(_extraction_provider_error())
+        return 1
+    bootstrapped, message = _bootstrap_opencode_install(read_only)
+    if not bootstrapped:
+        sys.stderr.write(
+            f"error: claude-smart OpenCode setup failed during dependency bootstrap: {message}\n"
+        )
+        return 1
+    config_path = _opencode_config_path(
+        global_config=bool(getattr(args, "global_config", False))
+    )
+    try:
+        changed, config_path = _patch_opencode_plugin_config(config_path, install=True)
+    except ValueError as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 1
+    action = "Updated" if changed else "OpenCode config already includes"
+    sys.stdout.write(
+        f"{action} `{_OPENCODE_PLUGIN_SPEC}` in {config_path}.\n"
+        f"Prepared claude-smart runtime at {message}.\n"
+        "Restart OpenCode in your project so it loads the plugin.\n"
+    )
+    return 0
+
+
 def cmd_install_codex(args: argparse.Namespace) -> int:
     """Install the claude-smart plugin marketplace for Codex.
 
@@ -1084,6 +1265,8 @@ def cmd_install(args: argparse.Namespace) -> int:
     """
     if getattr(args, "host", "claude-code") == "codex":
         return cmd_install_codex(args)
+    if getattr(args, "host", "claude-code") == "opencode":
+        return cmd_install_opencode(args)
 
     if not shutil.which("claude"):
         sys.stderr.write(
@@ -1156,6 +1339,8 @@ def cmd_update(args: argparse.Namespace) -> int:
     """
     if getattr(args, "host", "claude-code") == "codex":
         return cmd_update_codex(args)
+    if getattr(args, "host", "claude-code") == "opencode":
+        return cmd_update_opencode(args)
 
     _run_service(_DASHBOARD_SCRIPT, "stop")
     _run_service(_BACKEND_SCRIPT, "stop")
@@ -1182,6 +1367,17 @@ def cmd_update_codex(_args: argparse.Namespace) -> int:
     return cmd_install_codex(install_args)
 
 
+def cmd_update_opencode(args: argparse.Namespace) -> int:
+    _run_service(_DASHBOARD_SCRIPT, "stop")
+    _run_service(_BACKEND_SCRIPT, "stop")
+    sys.stdout.write(
+        "Updating claude-smart OpenCode support by reinstalling from this package...\n"
+    )
+    install_args = argparse.Namespace(**vars(args))
+    install_args.host = "opencode"
+    return cmd_install_opencode(install_args)
+
+
 def cmd_uninstall(_args: argparse.Namespace) -> int:
     """Uninstall claude-smart from Claude Code via the native plugin CLI.
 
@@ -1196,6 +1392,8 @@ def cmd_uninstall(_args: argparse.Namespace) -> int:
     """
     if getattr(_args, "host", "claude-code") == "codex":
         return cmd_uninstall_codex(_args)
+    if getattr(_args, "host", "claude-code") == "opencode":
+        return cmd_uninstall_opencode(_args)
 
     if not shutil.which("claude"):
         sys.stderr.write(
@@ -1251,6 +1449,28 @@ def cmd_uninstall_codex(_args: argparse.Namespace) -> int:
     sys.stdout.write(
         "claude-smart Codex plugin and marketplace state removed. Restart Codex to apply. "
         "Codex's global hook feature flags were left in place.\n"
+        f"{_LOCAL_DATA_NOTICE}"
+    )
+    return 0
+
+
+def cmd_uninstall_opencode(args: argparse.Namespace) -> int:
+    _run_service(_DASHBOARD_SCRIPT, "stop")
+    _run_service(_BACKEND_SCRIPT, "stop")
+    config_path = _opencode_config_path(
+        global_config=bool(getattr(args, "global_config", False))
+    )
+    try:
+        changed, config_path = _patch_opencode_plugin_config(config_path, install=False)
+    except ValueError as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 1
+    if changed:
+        sys.stdout.write(f"Removed `{_OPENCODE_PLUGIN_SPEC}` from {config_path}.\n")
+    else:
+        sys.stdout.write(f"OpenCode config did not include `{_OPENCODE_PLUGIN_SPEC}`.\n")
+    sys.stdout.write(
+        "Restart OpenCode to apply. "
         f"{_LOCAL_DATA_NOTICE}"
     )
     return 0
@@ -1981,27 +2201,45 @@ def _build_parser() -> argparse.ArgumentParser:
     inst = sub.add_parser("install", help="Install claude-smart")
     inst.add_argument(
         "--host",
-        choices=("claude-code", "codex"),
+        choices=("claude-code", "codex", "opencode"),
         default="claude-code",
         help="Install target host",
+    )
+    inst.add_argument(
+        "--global",
+        dest="global_config",
+        action="store_true",
+        help="For OpenCode, patch ~/.config/opencode instead of the project config",
     )
     inst.set_defaults(func=cmd_install)
 
     upd = sub.add_parser("update", help="Update claude-smart to the latest version")
     upd.add_argument(
         "--host",
-        choices=("claude-code", "codex"),
+        choices=("claude-code", "codex", "opencode"),
         default="claude-code",
         help="Update target host",
+    )
+    upd.add_argument(
+        "--global",
+        dest="global_config",
+        action="store_true",
+        help="For OpenCode, patch ~/.config/opencode instead of the project config",
     )
     upd.set_defaults(func=cmd_update)
 
     uni = sub.add_parser("uninstall", help="Remove claude-smart")
     uni.add_argument(
         "--host",
-        choices=("claude-code", "codex"),
+        choices=("claude-code", "codex", "opencode"),
         default="claude-code",
         help="Uninstall target host",
+    )
+    uni.add_argument(
+        "--global",
+        dest="global_config",
+        action="store_true",
+        help="For OpenCode, patch ~/.config/opencode instead of the project config",
     )
     uni.set_defaults(func=cmd_uninstall)
 

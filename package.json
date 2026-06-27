@@ -8,6 +8,8 @@
     "claude-code-plugin",
     "codex",
     "codex-plugin",
+    "opencode",
+    "opencode-plugin",
     "memory",
     "agent-memory",
     "plugin",
@@ -28,6 +30,15 @@
   "license": "Apache-2.0",
   "author": "Yi Lu",
   "type": "commonjs",
+  "exports": {
+    "./server": {
+      "import": "./plugin/opencode/dist/server.mjs"
+    }
+  },
+  "scripts": {
+    "build:opencode": "tsc -p plugin/opencode/tsconfig.json",
+    "prepack": "npm run build:opencode"
+  },
   "bin": {
     "claude-smart": "bin/claude-smart.js"
   },
@@ -49,6 +60,11 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=20.9.0",
+    "opencode": ">=1.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "typescript": "^5.8.3"
   }
 }

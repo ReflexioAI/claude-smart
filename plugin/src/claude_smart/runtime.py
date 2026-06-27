@@ -14,7 +14,8 @@ INTERNAL_ENV = "CLAUDE_SMART_INTERNAL"
 
 HOST_CLAUDE_CODE = "claude-code"
 HOST_CODEX = "codex"
-VALID_HOSTS = frozenset({HOST_CLAUDE_CODE, HOST_CODEX})
+HOST_OPENCODE = "opencode"
+VALID_HOSTS = frozenset({HOST_CLAUDE_CODE, HOST_CODEX, HOST_OPENCODE})
 
 _SHARED_AGENT_VERSION = "claude-code"
 _current_host: str | None = None
@@ -40,6 +41,11 @@ def host() -> str:
 def is_codex() -> bool:
     """True when the current hook invocation came from Codex."""
     return host() == HOST_CODEX
+
+
+def is_opencode() -> bool:
+    """True when the current hook invocation came from OpenCode."""
+    return host() == HOST_OPENCODE
 
 
 def agent_version() -> str:

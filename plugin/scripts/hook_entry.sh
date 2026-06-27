@@ -15,7 +15,7 @@ set -eu
 HOST="claude-code"
 EVENT="${1:-}"
 case "$EVENT" in
-  claude-code|codex)
+  claude-code|codex|opencode)
     HOST="$EVENT"
     EVENT="${2:-}"
     ;;

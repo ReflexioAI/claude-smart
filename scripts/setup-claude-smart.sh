@@ -202,7 +202,8 @@ normalize_host() {
   case "$1" in
     1|claude|claude-code|Claude*) printf 'claude-code\n' ;;
     2|codex|Codex*) printf 'codex\n' ;;
-    3|both|Both*) printf 'both\n' ;;
+    3|opencode|OpenCode*) printf 'opencode\n' ;;
+    4|all|both|Both*) printf 'all\n' ;;
     *) return 1 ;;
   esac
 }
@@ -276,9 +277,13 @@ install_for_host() {
     codex)
       "$node_bin" "$INSTALLER" install --host codex
       ;;
-    both)
+    opencode)
+      "$node_bin" "$INSTALLER" install --host opencode
+      ;;
+    all)
       "$node_bin" "$INSTALLER" install
       "$node_bin" "$INSTALLER" install --host codex
+      "$node_bin" "$INSTALLER" install --host opencode
       ;;
   esac
 }
@@ -306,7 +311,7 @@ main() {
     default_scope="global"
   fi
 
-  host="$(prompt_normalized "Host (1=Claude Code, 2=Codex, 3=both)" "claude-code" normalize_host)"
+  host="$(prompt_normalized "Host (1=Claude Code, 2=Codex, 3=OpenCode, 4=all)" "claude-code" normalize_host)"
   mode="$(prompt_normalized "Setup mode (1=local, 2=managed Reflexio)" "$default_mode" normalize_mode)"
 
   if [ "$mode" = "local" ]; then

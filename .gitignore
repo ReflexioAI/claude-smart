@@ -11,6 +11,8 @@ venv/
 /env/
 build/
 dist/
+!/plugin/opencode/dist/
+!/plugin/opencode/dist/**
 
 # Node
 node_modules/

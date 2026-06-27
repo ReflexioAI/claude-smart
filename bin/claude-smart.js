@@ -37,6 +37,8 @@ const PLUGIN_SPEC = "claude-smart@reflexioai";
 const CODEX_MARKETPLACE_NAME = "reflexioai";
 const CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI";
 const CODEX_PLUGIN_ID = `claude-smart@${CODEX_MARKETPLACE_NAME}`;
+const OPENCODE_PLUGIN_SPEC = "claude-smart";
+const OPENCODE_CONFIG_NAMES = ["opencode.json", "opencode.jsonc"];
 const REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
 const MANAGED_SETUP_ENV = "CLAUDE_SMART_MANAGED_SETUP";
@@ -340,6 +342,106 @@ function loadReflexioSetupEnv() {
 
 function configureReflexioSetup() {
   return loadReflexioSetupEnv();
+}
+
+function stripJsonc(text) {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    const next = text[i + 1] || "";
+    if (inString) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      while (i < text.length && !"\r\n".includes(text[i])) i += 1;
+      i -= 1;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i + 1 < text.length && !(text[i] === "*" && text[i + 1] === "/")) i += 1;
+      i += 1;
+      continue;
+    }
+    if (ch === ",") {
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j])) j += 1;
+      if (text[j] === "}" || text[j] === "]") continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function readJsoncObject(path) {
+  const text = existsSync(path) ? readFileSync(path, "utf8") : "{}";
+  const parsed = JSON.parse(stripJsonc(text || "{}"));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`OpenCode config ${path} must be a JSON object`);
+  }
+  return parsed;
+}
+
+function parseGlobalFlag(args) {
+  return args.includes("--global");
+}
+
+function opencodeConfigPath(args = [], cwd = process.cwd()) {
+  const configDir = parseGlobalFlag(args)
+    ? join(homedir(), ".config", "opencode")
+    : join(cwd, ".opencode");
+  for (const name of OPENCODE_CONFIG_NAMES) {
+    const candidate = join(configDir, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return join(configDir, "opencode.json");
+}
+
+function opencodePluginSpec(entry) {
+  if (typeof entry === "string") return entry;
+  if (Array.isArray(entry) && typeof entry[0] === "string") return entry[0];
+  return null;
+}
+
+function patchOpenCodePluginConfig(configPath, { install }) {
+  const data = readJsoncObject(configPath);
+  const current = Array.isArray(data.plugin) ? data.plugin : [];
+  const kept = current.filter((entry) => opencodePluginSpec(entry) !== OPENCODE_PLUGIN_SPEC);
+  const next = install ? [...kept, OPENCODE_PLUGIN_SPEC] : kept;
+  const changed = Array.isArray(data.plugin)
+    ? next.length !== current.length || next.some((entry, index) => entry !== current[index])
+    : install && next.length > 0;
+  if (!changed) return { changed: false, configPath };
+  data.plugin = next;
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(configPath, JSON.stringify(data, null, 2) + "\n");
+  return { changed: true, configPath };
+}
+
+function hasExtractionProvider() {
+  if ((process.env.REFLEXIO_API_KEY || "").trim()) return true;
+  const cliPath = (process.env.CLAUDE_SMART_CLI_PATH || "").trim();
+  if (cliPath && existsSync(cliPath)) return true;
+  return hasCli("claude") || hasCli("codex");
+}
+
+function extractionProviderError() {
+  return (
+    "error: OpenCode support needs a working learning/extraction provider.\n" +
+    "Run `npx claude-smart setup` to configure Reflexio, or install " +
+    "Claude Code or Codex so local extraction can use a supported CLI.\n"
+  );
 }
 
 function findClaudeCodePluginRoot() {
@@ -925,7 +1027,9 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   assertSupportedRuntimePlatform();
   process.stdout.write("Preparing claude-smart runtime for hooks...\n");
   const nodeRuntime = await ensurePrivateNode();
-  patchCodexHooksForNode(pluginRoot, nodeRuntime.node);
+  if (options.patchCodexHooks !== false) {
+    patchCodexHooksForNode(pluginRoot, nodeRuntime.node);
+  }
   if (options.readOnly) prunePublishHooksForReadOnly(pluginRoot);
   ensurePluginRoot(pluginRoot);
   const uv = await ensureUv();
@@ -970,13 +1074,15 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
 function printHelp() {
   process.stdout.write(
     [
-      "claude-smart — install helper for Claude Code and Codex",
+      "claude-smart — install helper for Claude Code, Codex, and OpenCode",
       "",
       "Usage:",
       "  npx claude-smart install                       Install the plugin into Claude Code",
       "  npx claude-smart install --host codex          Register the plugin marketplace for Codex",
+      "  npx claude-smart install --host opencode       Add claude-smart to OpenCode config",
       "  npx claude-smart setup                         Configure managed/read-only/global setup",
       "  npx claude-smart uninstall --host codex        Remove the Codex marketplace registration",
+      "  npx claude-smart uninstall --host opencode     Remove claude-smart from OpenCode config",
       "  npx claude-smart --help                        Show this help",
       "",
       "Claude Code install:",
@@ -993,9 +1099,15 @@ function printHelp() {
       "  6. Trusts and enables claude-smart hook entries in ~/.codex/config.toml",
       "  7. Restart Codex.",
       "",
+      "OpenCode install:",
+      "  1. Prepares the shared claude-smart runtime",
+      "  2. Adds \"claude-smart\" to the singular plugin array in .opencode/opencode.json",
+      "  3. Restart OpenCode.",
+      "",
       "Update:",
       "  npx claude-smart update                        Reinstall Claude Code support from this package",
       "  npx claude-smart update --host codex           Reinstall Codex support from this package",
+      "  npx claude-smart update --host opencode        Reinstall OpenCode support from this package",
       "  npx claude-smart setup                         Configure managed/read-only/global setup",
       "",
       "Uninstall:",
@@ -1010,11 +1122,11 @@ function parseHost(args) {
   if (idx === -1) return "claude-code";
   const value = args[idx + 1];
   if (!value) {
-    process.stderr.write("error: --host requires a value: claude-code or codex\n");
+    process.stderr.write("error: --host requires a value: claude-code, codex, or opencode\n");
     process.exit(1);
   }
-  if (value !== "claude-code" && value !== "codex") {
-    process.stderr.write("error: --host must be claude-code or codex\n");
+  if (value !== "claude-code" && value !== "codex" && value !== "opencode") {
+    process.stderr.write("error: --host must be claude-code, codex, or opencode\n");
     process.exit(1);
   }
   return value;
@@ -1433,6 +1545,10 @@ async function runUpdate(args) {
     await runUpdateCodex(args);
     return;
   }
+  if (parseHost(args) === "opencode") {
+    await runUpdateOpenCode(args);
+    return;
+  }
 
   const pluginRoot = findClaudeCodePluginRoot();
   if (pluginRoot) {
@@ -1449,9 +1565,20 @@ async function runUpdateCodex(args) {
   await runInstallCodex(args);
 }
 
+async function runUpdateOpenCode(args) {
+  const pluginRoot = join(PACKAGE_ROOT, "plugin");
+  stopClaudeSmartServices(pluginRoot);
+  process.stdout.write("Updating claude-smart OpenCode support by reinstalling from this package...\n");
+  await runInstallOpenCode(args);
+}
+
 async function runUninstall(args) {
   if (parseHost(args) === "codex") {
     await runUninstallCodex();
+    return;
+  }
+  if (parseHost(args) === "opencode") {
+    await runUninstallOpenCode(args);
     return;
   }
 
@@ -1502,6 +1629,10 @@ async function runSetup(args) {
 async function runInstall(args, options = {}) {
   if (parseHost(args) === "codex") {
     await runInstallCodex(args);
+    return;
+  }
+  if (parseHost(args) === "opencode") {
+    await runInstallOpenCode(args);
     return;
   }
 
@@ -1686,6 +1817,51 @@ async function runInstallCodex(args) {
   );
 }
 
+async function runInstallOpenCode(args) {
+  const setup = configureReflexioSetup();
+  const readOnly = setup.readOnly;
+  if (!hasExtractionProvider()) {
+    process.stderr.write(extractionProviderError());
+    process.exit(1);
+  }
+
+  const pluginRoot = join(PACKAGE_ROOT, "plugin");
+  try {
+    await bootstrapPluginRuntime(pluginRoot, { readOnly, patchCodexHooks: false });
+    if (readOnly) {
+      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
+    }
+    if (startBackendService(pluginRoot, "opencode")) {
+      process.stdout.write("Started claude-smart backend service.\n");
+    }
+    if (refreshDashboardService(pluginRoot)) {
+      process.stdout.write("Refreshed claude-smart dashboard service.\n");
+    }
+  } catch (err) {
+    process.stderr.write(
+      `error: claude-smart OpenCode setup failed during dependency bootstrap: ${err && err.message ? err.message : err}\n`,
+    );
+    process.exit(1);
+  }
+
+  let result;
+  try {
+    result = patchOpenCodePluginConfig(opencodeConfigPath(args), { install: true });
+  } catch (err) {
+    process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
+    process.exit(1);
+  }
+  process.stdout.write(
+    [
+      "",
+      `${result.changed ? "Updated" : "OpenCode config already includes"} "${OPENCODE_PLUGIN_SPEC}" in ${result.configPath}.`,
+      "claude-smart OpenCode support is installed.",
+      "Restart OpenCode in your project so it loads the plugin.",
+      "",
+    ].join("\n"),
+  );
+}
+
 async function runUninstallCodex() {
   stopClaudeSmartServices(join(PACKAGE_ROOT, "plugin"));
   if (!hasCli("codex")) {
@@ -1707,6 +1883,28 @@ async function runUninstallCodex() {
       "",
       "claude-smart Codex plugin and marketplace state removed. Restart Codex to apply.",
       "Codex's global hook feature flags were left in place.",
+      ...LOCAL_DATA_NOTICE,
+      "",
+    ].join("\n"),
+  );
+}
+
+async function runUninstallOpenCode(args) {
+  stopClaudeSmartServices(join(PACKAGE_ROOT, "plugin"));
+  let result;
+  try {
+    result = patchOpenCodePluginConfig(opencodeConfigPath(args), { install: false });
+  } catch (err) {
+    process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
+    process.exit(1);
+  }
+  process.stdout.write(
+    [
+      "",
+      result.changed
+        ? `Removed "${OPENCODE_PLUGIN_SPEC}" from ${result.configPath}.`
+        : `OpenCode config did not include "${OPENCODE_PLUGIN_SPEC}".`,
+      "Restart OpenCode to apply.",
       ...LOCAL_DATA_NOTICE,
       "",
     ].join("\n"),
@@ -1764,7 +1962,9 @@ module.exports = {
   ensureUv,
   configureReflexioSetup,
   patchCodexHooksForNode,
+  patchOpenCodePluginConfig,
   platformSupportError,
   prunePublishHooksForReadOnly,
   restorePublishHooksFromSource,
+  stripJsonc,
 };

@@ -6,7 +6,7 @@
   claude-smart
 </h1>
 
-<h4 align="center">A self-improvement plugin for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> and Codex that turns interactions into durable skills they follow in future sessions.</h4>
+<h4 align="center">A self-improvement plugin for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>, Codex, and OpenCode that turns interactions into durable skills they follow in future sessions.</h4>
 
 <p align="center">
   <a href="LICENSE">
@@ -22,7 +22,7 @@
     <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg" alt="Node">
   </a>
   <a href="#quick-start">
-    <img src="https://img.shields.io/badge/hosts-Claude%20Code%20%2B%20Codex-purple.svg" alt="Hosts">
+    <img src="https://img.shields.io/badge/hosts-Claude%20Code%20%2B%20Codex%20%2B%20OpenCode-purple.svg" alt="Hosts">
   </a>
   <a href="https://discord.gg/7fnCxahase">
     <img src="https://img.shields.io/badge/Discord-Join%20community-5865F2?logo=discord&logoColor=white" alt="Discord">
@@ -97,6 +97,24 @@ npx claude-smart uninstall --host codex
 ```
 
 Restart Codex after uninstalling. The uninstaller stops local claude-smart services and removes plugin/cache/config state; learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved and shared with Claude Code, so you can switch between hosts without losing skills or preferences.
+
+### OpenCode
+
+```bash
+npx claude-smart install --host opencode
+```
+
+Then restart OpenCode in your project so it loads the plugin from `.opencode/opencode.json`, the local plugin config file used by `opencode plugin`.
+
+OpenCode support uses OpenCode's npm plugin loader and injects relevant learned context before each model request. Learning extraction needs either Reflexio configured by `npx claude-smart setup` or a local Claude Code/Codex CLI available for claude-smart's extractor.
+
+To uninstall:
+
+```bash
+npx claude-smart uninstall --host opencode
+```
+
+Restart OpenCode after uninstalling. The uninstaller removes only the `claude-smart` entry from OpenCode's singular `plugin` array; learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved and shared across hosts.
 
 Developing the plugin itself? See [DEVELOPER.md](./DEVELOPER.md#developing-locally) for what the installer does, manual toggles via `/plugins`, and clone-based development.
 
@@ -216,6 +234,7 @@ Advanced users can tune claude-smart via environment variables — see [DEVELOPE
 | `.claude/settings.local.json` or `~/.claude/settings.json` | Claude Code hook environment, such as `CLAUDE_SMART_ENABLE_OPTIMIZER`; use project-local settings for one repo or user settings for all projects. |
 | `~/.codex/config.toml` | Codex plugin state, hook feature flags, and per-hook trust entries after `claude-smart install --host codex`. |
 | `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/` | Codex's cached install of the `claude-smart` plugin from the `ReflexioAI` marketplace. |
+| `.opencode/opencode.json` or `.opencode/opencode.jsonc` | OpenCode local plugin config patched by `claude-smart install --host opencode`; uses the singular `plugin` array. |
 | `~/.reflexio/plugin-root` | Self-healed symlink to the active plugin dir (managed by `ensure-plugin-root.sh` — written on install, refreshed each `SessionStart`). Claude Code slash commands and Codex shell-command helpers resolve through it, so don't delete it; if you do, the next session will recreate it. |
 | `~/.claude-smart/sessions/{session_id}.jsonl` | Per-session buffer. User turns, assistant turns, tool invocations, `{"published_up_to": N}` watermarks. Safe to inspect and safe to delete — everything past the latest watermark has already been written to reflexio's DB. |
 | `~/.claude-smart/node/current/` | Private Node.js/npm runtime used by hooks and the dashboard after install. |
@@ -228,8 +247,6 @@ For troubleshooting, see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
 ## Powered by Reflexio
 
 claude-smart is powered by [**Reflexio**](https://reflexio.ai) — the self-improving engine that turns interactions into durable, reusable skills.
-
-> **Building your own agent?** Want the same self-improvement loop — learning from corrections, optimizing proven paths, and growing a skill library — inside *your* product or agent? Get in touch at [**reflexio.ai**](https://reflexio.ai).
 
 ---
 
@@ -248,4 +265,4 @@ See the [LICENSE](LICENSE) file for details.
 
 ---
 
-**Powered by** [Reflexio](https://reflexio.ai) · **Runs on** [Claude Code](https://claude.com/claude-code) and Codex · **Written in** Python 3.12+
+**Powered by** [Reflexio](https://reflexio.ai) · **Runs on** [Claude Code](https://claude.com/claude-code), Codex, and OpenCode · **Written in** Python 3.12+

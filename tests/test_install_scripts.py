@@ -1955,6 +1955,7 @@ def test_hook_entry_failure_marker_uses_resolved_python_on_windows(
     (marker_dir / "install-failed").write_text(
         f"cached env is broken\nfingerprint={fingerprint}\n"
     )
+    (tmp_path / "python3-called").unlink(missing_ok=True)
 
     result = subprocess.run(
         [str(scripts / "hook_entry.sh"), "claude-code", "session-start"],

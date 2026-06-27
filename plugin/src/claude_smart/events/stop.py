@@ -377,7 +377,7 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
     last_assistant_message = payload.get("last_assistant_message")
     assistant_text = (
         last_assistant_message
-        if runtime.is_codex()
+        if (runtime.is_codex() or runtime.is_opencode())
         and isinstance(last_assistant_message, str)
         and last_assistant_message
         else _scan_transcript_for_assistant_text(entries)

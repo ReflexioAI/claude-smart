@@ -116,6 +116,7 @@ bump: check-version unskip-worktree ## Rewrite version in all release manifests
 
 publish-npm: check-vendor-reflexio check-locked-project-version ## Publish the current version to npm
 	@echo "→ npm publish"
+	npm run build:opencode
 	npm publish --access public
 
 publish-pypi: check-pypi-compatible-reflexio unskip-worktree ## Build and publish the current version to PyPI
@@ -126,6 +127,7 @@ publish-pypi: check-pypi-compatible-reflexio unskip-worktree ## Build and publis
 
 publish-dry: unskip-worktree check-vendor-reflexio check-locked-project-version ## Show what would be published without uploading
 	@echo "→ npm publish --dry-run"
+	@npm run build:opencode
 	@npm publish --dry-run
 	@echo ""
 	@echo "→ uv build (dry: inspect plugin/dist/ manually)"
@@ -135,6 +137,7 @@ publish-dry: unskip-worktree check-vendor-reflexio check-locked-project-version 
 
 package: check-vendor-reflexio check-locked-project-version ## Build the npm tarball locally without publishing
 	@echo "→ npm pack"
+	@npm run build:opencode
 	@tarball=$$(npm pack 2>/dev/null | tail -1); \
 	  abs=$$(cd "$$(dirname "$$tarball")" && pwd)/$$(basename "$$tarball"); \
 	  echo ""; \
@@ -143,8 +146,10 @@ package: check-vendor-reflexio check-locked-project-version ## Build the npm tar
 	  echo "Install locally with one of:"; \
 	  echo "  npm install -g $$abs && claude-smart install"; \
 	  echo "  npm install -g $$abs && claude-smart install --host codex"; \
+	  echo "  npm install -g $$abs && claude-smart install --host opencode"; \
 	  echo "  npx --package=$$abs -- claude-smart install"; \
-	  echo "  npx --package=$$abs -- claude-smart install --host codex"
+	  echo "  npx --package=$$abs -- claude-smart install --host codex"; \
+	  echo "  npx --package=$$abs -- claude-smart install --host opencode"
 
 publish: check-pypi-compatible-reflexio publish-npm publish-pypi ## Publish to both npm and PyPI
 

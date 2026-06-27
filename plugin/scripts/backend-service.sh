@@ -50,10 +50,11 @@ PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "backend-service.sh" "$@"
 
 if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
-  if [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ]; then
+  if [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ] || { [ "${CLAUDE_SMART_HOST:-claude-code}" = "opencode" ] && command -v codex >/dev/null 2>&1; }; then
     # Reflexio's provider still calls CLAUDE_SMART_CLI_PATH with Claude CLI
     # flags. Use a small compatibility executable that translates that narrow
-    # contract to `codex exec`.
+    # contract to `codex exec`. OpenCode can reuse this path when Codex is
+    # installed; otherwise fall through to a real Claude CLI or managed setup.
     claude_smart_prepend_node_bins
     export CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"
   elif _cs_cli_path=$(command -v claude 2>/dev/null) && [ -n "$_cs_cli_path" ]; then
@@ -286,7 +287,7 @@ case "$CMD" in
     # Keep plugin runtime data in ~/.reflexio even when the backend imports
     # Reflexio from an editable checkout inside a larger repo with its own
     # .env. python-dotenv respects pre-existing env vars, so this prevents a
-    # parent REFLEXIO_LOG_DIR from sending claude-smart to enterprise configs.
+    # parent REFLEXIO_LOG_DIR from sending claude-smart to unrelated configs.
     export REFLEXIO_LOG_DIR="${REFLEXIO_LOG_DIR:-$HOME}"
 
     # Force sqlite: the plugin venv ships only the open-source reflexio
