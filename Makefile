@@ -23,7 +23,7 @@
 VERSION_FILES := package.json plugin/pyproject.toml \
                  plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
                  .claude-plugin/marketplace.json README.md
-LOCK_FILES    := plugin/uv.lock reflexio.lock.json
+LOCK_FILES    := package-lock.json plugin/uv.lock reflexio.lock.json
 PYPROJECT     := plugin/pyproject.toml
 
 help:
@@ -93,6 +93,7 @@ bump: check-version unskip-worktree ## Rewrite version in all release manifests
 	    package.json plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
 	    .claude-plugin/marketplace.json
 	@sed -i.bak -E 's/^version = "[^"]+"/version = "$(VERSION)"/' plugin/pyproject.toml
+	@python3 -c 'import json, pathlib; p=pathlib.Path("package-lock.json"); data=json.loads(p.read_text()); data["version"]="$(VERSION)"; data["packages"][""]["version"]="$(VERSION)"; p.write_text(json.dumps(data, indent=2) + "\n")'
 	@sed -i.bak -E 's|badge/version-[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?-green\.svg|badge/version-$(VERSION)-green.svg|' README.md
 	@rm -f package.json.bak plugin/pyproject.toml.bak \
 	       plugin/.claude-plugin/plugin.json.bak plugin/.codex-plugin/plugin.json.bak \

@@ -1085,27 +1085,31 @@ def _patch_opencode_plugin_config(
             raise ValueError(
                 f'OpenCode config {config_path} field "{field}" must be a JSON array'
             )
-    field = "plugins" if "plugins" in data else "plugin"
-    current = data.get(field)
-    plugins = list(current) if isinstance(current, list) else []
+    current_plugin = data.get("plugin")
+    plugins: list[object] = []
+    if isinstance(current_plugin, list):
+        plugins.extend(current_plugin)
+    legacy_plugins = data.get("plugins")
+    if isinstance(legacy_plugins, list):
+        plugins.extend(legacy_plugins)
     kept = [
         item
         for item in plugins
         if _opencode_plugin_spec(item) != _OPENCODE_PLUGIN_SPEC
     ]
     next_plugins = [*kept, _OPENCODE_PLUGIN_SPEC] if install else kept
-    changed = (
-        next_plugins != plugins
-        if isinstance(current, list)
-        else install and bool(next_plugins)
-    )
+    if isinstance(current_plugin, list):
+        changed = ("plugins" in data) or next_plugins != current_plugin
+    else:
+        changed = ("plugins" in data) or (install and bool(next_plugins))
     if not changed:
         return False, config_path
     if config_path.exists():
         original = config_path.read_text()
         if original.strip() and original != _strip_jsonc(original):
             config_path.with_suffix(config_path.suffix + ".bak").write_text(original)
-    data[field] = next_plugins
+    data["plugin"] = next_plugins
+    data.pop("plugins", None)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(data, indent=2) + "\n")
     return True, config_path

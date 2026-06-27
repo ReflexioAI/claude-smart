@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import textwrap
 from collections.abc import Generator
@@ -280,7 +281,7 @@ def test_opencode_config_patch_fresh_config_uses_current_plugin_field(
     assert json.loads(config.read_text()) == {"plugin": ["claude-smart"]}
 
 
-def test_opencode_config_patch_preserves_existing_plugins_field(
+def test_opencode_config_patch_migrates_existing_plugins_field(
     tmp_path: Path,
 ) -> None:
     config = tmp_path / "opencode.json"
@@ -290,12 +291,12 @@ def test_opencode_config_patch_preserves_existing_plugins_field(
 
     parsed = json.loads(config.read_text())
     assert changed is True
-    assert parsed["plugins"] == ["other-plugin", "claude-smart"]
-    assert "plugin" not in parsed
+    assert parsed["plugin"] == ["other-plugin", "claude-smart"]
+    assert "plugins" not in parsed
     assert parsed["theme"] == "system"
 
 
-def test_opencode_config_patch_uninstalls_from_existing_plugins_field(
+def test_opencode_config_patch_uninstall_migrates_existing_plugins_field(
     tmp_path: Path,
 ) -> None:
     config = tmp_path / "opencode.json"
@@ -306,7 +307,7 @@ def test_opencode_config_patch_uninstalls_from_existing_plugins_field(
     changed, _ = cli._patch_opencode_plugin_config(config, install=False)
 
     assert changed is True
-    assert json.loads(config.read_text()) == {"plugins": ["other-plugin"]}
+    assert json.loads(config.read_text()) == {"plugin": ["other-plugin"]}
 
 
 def test_opencode_jsonc_parser_preserves_comma_brace_inside_strings() -> None:
@@ -608,6 +609,89 @@ def test_node_installer_accepts_opencode_only_extraction_provider(tmp_path: Path
     assert result.stdout == "true"
 
 
+def _fake_opencode_path(tmp_path: Path) -> Path:
+    fake_opencode = tmp_path / "opencode"
+    fake_opencode.write_text("#!/bin/sh\nexit 0\n")
+    fake_opencode.chmod(0o755)
+    return fake_opencode
+
+
+def _isolated_installer_env(tmp_path: Path) -> dict[str, str]:
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _fake_opencode_path(fake_bin)
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(tmp_path / "home"),
+            "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
+            "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
+        }
+    )
+    env.pop("REFLEXIO_API_KEY", None)
+    env.pop("CLAUDE_SMART_CLI_PATH", None)
+    return env
+
+
+def test_node_opencode_install_from_npx_root_patches_config_without_bootstrap(
+    tmp_path: Path,
+) -> None:
+    node = shutil_which_node()
+    if node is None:
+        return
+    package_root = tmp_path / "_npx" / "abc" / "node_modules" / "claude-smart"
+    bin_dir = package_root / "bin"
+    bin_dir.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "bin" / "claude-smart.js", bin_dir / "claude-smart.js")
+    project = tmp_path / "project"
+    project.mkdir()
+
+    result = subprocess.run(
+        [node, str(bin_dir / "claude-smart.js"), "install", "--host", "opencode"],
+        cwd=project,
+        env=_isolated_installer_env(tmp_path),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "npx's temporary package cache" in result.stdout
+    assert json.loads((project / "opencode.json").read_text()) == {
+        "plugin": ["claude-smart"]
+    }
+
+
+def test_node_opencode_install_stable_root_bootstrap_failure_leaves_config_unchanged(
+    tmp_path: Path,
+) -> None:
+    node = shutil_which_node()
+    if node is None:
+        return
+    package_root = tmp_path / "global" / "node_modules" / "claude-smart"
+    bin_dir = package_root / "bin"
+    bin_dir.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "bin" / "claude-smart.js", bin_dir / "claude-smart.js")
+    project = tmp_path / "project"
+    project.mkdir()
+    config = project / "opencode.json"
+    original = json.dumps({"theme": "system"}) + "\n"
+    config.write_text(original)
+
+    result = subprocess.run(
+        [node, str(bin_dir / "claude-smart.js"), "install", "--host", "opencode"],
+        cwd=project,
+        env=_isolated_installer_env(tmp_path),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "dependency bootstrap" in result.stderr
+    assert config.read_text() == original
+
+
 def test_opencode_install_patches_project_config_after_bootstrap(
     monkeypatch, tmp_path, capsys
 ) -> None:
@@ -649,7 +733,7 @@ def test_opencode_install_patches_existing_dot_opencode_config(
     ]
 
 
-def test_opencode_install_patches_existing_plugins_field(
+def test_opencode_install_migrates_existing_plugins_field(
     monkeypatch, tmp_path
 ) -> None:
     config = tmp_path / "opencode.json"
@@ -665,8 +749,8 @@ def test_opencode_install_patches_existing_plugins_field(
 
     parsed = json.loads(config.read_text())
     assert rc == 0
-    assert parsed["plugins"] == ["other-plugin", "claude-smart"]
-    assert "plugin" not in parsed
+    assert parsed["plugin"] == ["other-plugin", "claude-smart"]
+    assert "plugins" not in parsed
 
 
 def test_node_installer_patches_opencode_jsonc(tmp_path: Path) -> None:
@@ -723,7 +807,7 @@ def test_node_installer_uninstalls_and_preserves_other_plugin_shapes(
     assert parsed["theme"] == "system"
 
 
-def test_node_installer_preserves_existing_plugins_field(tmp_path: Path) -> None:
+def test_node_installer_migrates_existing_plugins_field(tmp_path: Path) -> None:
     if shutil_which_node() is None:
         return
     config = tmp_path / "opencode.json"
@@ -739,12 +823,12 @@ def test_node_installer_preserves_existing_plugins_field(tmp_path: Path) -> None
 
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
-    assert parsed["plugins"] == ["other", "claude-smart"]
-    assert "plugin" not in parsed
+    assert parsed["plugin"] == ["other", "claude-smart"]
+    assert "plugins" not in parsed
     assert parsed["theme"] == "system"
 
 
-def test_node_installer_uninstalls_from_existing_plugins_field(tmp_path: Path) -> None:
+def test_node_installer_uninstall_migrates_existing_plugins_field(tmp_path: Path) -> None:
     if shutil_which_node() is None:
         return
     config = tmp_path / "opencode.json"
@@ -759,7 +843,7 @@ def test_node_installer_uninstalls_from_existing_plugins_field(tmp_path: Path) -
     assert result is not None
 
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"plugins": ["other"]}
+    assert json.loads(result.stdout) == {"plugin": ["other"]}
 
 
 def test_node_installer_uninstall_noops_without_plugin_array(tmp_path: Path) -> None:
@@ -857,6 +941,25 @@ def test_node_installer_project_config_path_uses_root_by_default_and_legacy_if_p
         "root": str(tmp_path / "opencode.json"),
         "legacy": str(tmp_path / ".opencode" / "opencode.json"),
     }
+
+
+def test_node_installer_detects_npx_package_root() -> None:
+    if shutil_which_node() is None:
+        return
+    script = (
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        "process.stdout.write(JSON.stringify({"
+        "unix: installer.isNpxPackageRoot('/home/me/.npm/_npx/abc/node_modules/claude-smart'),"
+        "win: installer.isNpxPackageRoot('C:\\\\Users\\\\me\\\\AppData\\\\Local\\\\npm-cache\\\\_npx\\\\abc\\\\node_modules\\\\claude-smart'),"
+        "global: installer.isNpxPackageRoot('/opt/homebrew/lib/node_modules/claude-smart')"
+        "}));"
+    )
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"unix": True, "win": True, "global": False}
 
 
 def test_node_installer_skips_backup_for_plain_json(tmp_path: Path) -> None:

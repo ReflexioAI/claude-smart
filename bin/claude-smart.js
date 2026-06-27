@@ -457,13 +457,17 @@ function patchOpenCodePluginConfig(configPath, { install }) {
       throw new Error(`OpenCode config ${configPath} field "${field}" must be a JSON array`);
     }
   }
-  const field = data.plugins !== undefined ? "plugins" : "plugin";
-  const current = Array.isArray(data[field]) ? data[field] : [];
+  const current = [
+    ...(Array.isArray(data.plugin) ? data.plugin : []),
+    ...(Array.isArray(data.plugins) ? data.plugins : []),
+  ];
   const kept = current.filter((entry) => opencodePluginSpec(entry) !== OPENCODE_PLUGIN_SPEC);
   const next = install ? [...kept, OPENCODE_PLUGIN_SPEC] : kept;
-  const changed = Array.isArray(data[field])
-    ? next.length !== current.length || next.some((entry, index) => entry !== current[index])
-    : install && next.length > 0;
+  const changed =
+    data.plugins !== undefined ||
+    (Array.isArray(data.plugin)
+      ? next.length !== data.plugin.length || next.some((entry, index) => entry !== data.plugin[index])
+      : install && next.length > 0);
   if (!changed) return { changed: false, configPath };
   let backupPath = null;
   if (existsSync(configPath)) {
@@ -473,10 +477,15 @@ function patchOpenCodePluginConfig(configPath, { install }) {
       writeFileSync(backupPath, original);
     }
   }
-  data[field] = next;
+  data.plugin = next;
+  delete data.plugins;
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify(data, null, 2) + "\n");
   return { changed: true, configPath, backupPath };
+}
+
+function isNpxPackageRoot(path) {
+  return path.split(/[\\/]+/).includes("_npx");
 }
 
 function hasExtractionProvider() {
@@ -1160,8 +1169,8 @@ function printHelp() {
       "  7. Restart Codex.",
       "",
       "OpenCode install:",
-      "  1. Prepares the shared claude-smart runtime",
-      "  2. Adds \"claude-smart\" to OpenCode's plugins list in opencode.json",
+      "  1. Adds \"claude-smart\" to OpenCode's plugin list in opencode.json",
+      "  2. Prepares local services now for stable installs; npx prepares on next OpenCode launch",
       "  3. Restart OpenCode.",
       "",
       "Update:",
@@ -1886,30 +1895,42 @@ async function runInstallOpenCode(args) {
   }
 
   const pluginRoot = join(PACKAGE_ROOT, "plugin");
-  try {
-    await bootstrapPluginRuntime(pluginRoot, { readOnly, patchCodexHooks: false });
-  } catch (err) {
-    process.stderr.write(
-      `error: claude-smart OpenCode setup failed during dependency bootstrap: ${err && err.message ? err.message : err}\n`,
-    );
-    process.exit(1);
-  }
-
   let result;
-  try {
-    result = patchOpenCodePluginConfig(opencodeConfigPath(args), { install: true });
-  } catch (err) {
-    process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
-    process.exit(1);
-  }
-  if (readOnly) {
-    process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
-  }
-  if (startBackendService(pluginRoot, "opencode")) {
-    process.stdout.write("Started claude-smart backend service.\n");
-  }
-  if (refreshDashboardService(pluginRoot)) {
-    process.stdout.write("Refreshed claude-smart dashboard service.\n");
+  if (isNpxPackageRoot(PACKAGE_ROOT)) {
+    try {
+      result = patchOpenCodePluginConfig(opencodeConfigPath(args), { install: true });
+    } catch (err) {
+      process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
+      process.exit(1);
+    }
+    process.stdout.write(
+      "Skipped starting claude-smart services from npx's temporary package cache; OpenCode will prepare the runtime from its installed plugin package on next launch.\n",
+    );
+  } else {
+    try {
+      await bootstrapPluginRuntime(pluginRoot, { readOnly, patchCodexHooks: false });
+    } catch (err) {
+      process.stderr.write(
+        `error: claude-smart OpenCode setup failed during dependency bootstrap: ${err && err.message ? err.message : err}\n`,
+      );
+      process.exit(1);
+    }
+    try {
+      result = patchOpenCodePluginConfig(opencodeConfigPath(args), { install: true });
+    } catch (err) {
+      process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
+      stopClaudeSmartServices(pluginRoot);
+      process.exit(1);
+    }
+    if (readOnly) {
+      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
+    }
+    if (startBackendService(pluginRoot, "opencode")) {
+      process.stdout.write("Started claude-smart backend service.\n");
+    }
+    if (refreshDashboardService(pluginRoot)) {
+      process.stdout.write("Refreshed claude-smart dashboard service.\n");
+    }
   }
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
@@ -2029,6 +2050,7 @@ module.exports = {
   configureReflexioSetup,
   patchCodexHooksForNode,
   opencodeConfigPath,
+  isNpxPackageRoot,
   patchOpenCodePluginConfig,
   hasExtractionProvider,
   platformSupportError,
