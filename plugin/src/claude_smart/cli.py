@@ -1039,17 +1039,29 @@ def _read_jsonc_object(path: Path) -> dict[str, object]:
     return parsed
 
 
+def _opencode_global_config_dir() -> Path:
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "opencode"
+
+
 def _opencode_config_path(*, global_config: bool = False, cwd: Path | None = None) -> Path:
-    config_dir = (
-        Path.home() / ".config" / "opencode"
-        if global_config
-        else (cwd or Path.cwd()) / ".opencode"
-    )
-    for name in _OPENCODE_CONFIG_NAMES:
-        candidate = config_dir / name
+    if global_config:
+        config_dir = _opencode_global_config_dir()
+        for name in _OPENCODE_CONFIG_NAMES:
+            candidate = config_dir / name
+            if candidate.exists():
+                return candidate
+        return config_dir / "opencode.json"
+    base = cwd or Path.cwd()
+    candidates = [
+        *(base / name for name in _OPENCODE_CONFIG_NAMES),
+        *(base / ".opencode" / name for name in _OPENCODE_CONFIG_NAMES),
+    ]
+    for candidate in candidates:
         if candidate.exists():
             return candidate
-    return config_dir / "opencode.json"
+    return base / "opencode.json"
 
 
 def _opencode_plugin_spec(entry: object) -> str | None:
@@ -1083,6 +1095,10 @@ def _patch_opencode_plugin_config(
     )
     if not changed:
         return False, config_path
+    if config_path.exists():
+        original = config_path.read_text()
+        if original.strip() and original != _strip_jsonc(original):
+            config_path.with_suffix(config_path.suffix + ".bak").write_text(original)
     data["plugin"] = next_plugins
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(data, indent=2) + "\n")

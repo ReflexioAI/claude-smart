@@ -1,13 +1,15 @@
 [project]
 name = "claude-smart"
 version = "0.2.45"
-description = "Self-improving Claude Code and Codex plugin that turns corrections into Preferences, Project-specific skills, and Shared skills"
+description = "Self-improving Claude Code, Codex, and OpenCode plugin that turns corrections into Preferences, Project-specific skills, and Shared skills"
 keywords = [
     "claude",
     "claude-code",
     "claude-code-plugin",
     "codex",
     "codex-plugin",
+    "opencode",
+    "opencode-plugin",
     "memory",
     "agent-memory",
     "plugin",

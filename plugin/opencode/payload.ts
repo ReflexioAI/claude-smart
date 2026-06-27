@@ -79,16 +79,6 @@ export function normalizeToolInput(tool: string, args: unknown): Record<string, 
   return out
 }
 
-export function toolBeforePayload(input: Record<string, unknown>, output: Record<string, unknown>, cwd: string): PythonPayload {
-  const tool = typeof input.tool === "string" ? input.tool : ""
-  return {
-    session_id: sessionIDFrom(input),
-    cwd,
-    tool_name: normalizeToolName(tool),
-    tool_input: normalizeToolInput(tool, output.args),
-  }
-}
-
 export function toolAfterPayload(input: Record<string, unknown>, output: Record<string, unknown>, cwd: string): PythonPayload {
   const tool = typeof input.tool === "string" ? input.tool : ""
   const text = typeof output.output === "string" ? output.output : ""

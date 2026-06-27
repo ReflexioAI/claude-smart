@@ -85,8 +85,19 @@ function cacheContext(cache, sessionID, result) {
 }
 async function server(input) {
     const pendingContext = new Map();
+    const activeSessions = new Set();
+    const completedAssistantText = new Map();
     const assistant = new AssistantBuffer();
     const cwd = input.directory;
+    async function flushStop(sessionID) {
+        if (!sessionID || !activeSessions.has(sessionID))
+            return;
+        activeSessions.delete(sessionID);
+        const text = completedAssistantText.get(sessionID) || assistant.text(sessionID);
+        completedAssistantText.delete(sessionID);
+        await runScript(HOOK_ENTRY, ["opencode", "stop"], stopPayload({ properties: { sessionID, info: { directory: cwd } } }, cwd, text));
+        assistant.clear(sessionID);
+    }
     return {
         event: async ({ event }) => {
             const type = event.type;
@@ -96,6 +107,7 @@ async function server(input) {
                 const sessionID = String(payload.session_id || "");
                 if (!sessionID)
                     return;
+                activeSessions.add(sessionID);
                 await runService(BACKEND_SERVICE, "start");
                 await runService(DASHBOARD_SERVICE, "start");
                 const result = await runScript(HOOK_ENTRY, ["opencode", "session-start"], payload);
@@ -107,14 +119,14 @@ async function server(input) {
                 const sessionID = String(payload.session_id || "");
                 if (!sessionID)
                     return;
-                await runScript(HOOK_ENTRY, ["opencode", "stop"], stopPayload(event, cwd, assistant.text(sessionID)));
-                assistant.clear(sessionID);
+                await flushStop(sessionID);
             }
         },
         "chat.message": async (hookInput, output) => {
             const payload = chatMessagePayload(hookInput, output, cwd);
             if (!payload.session_id || !payload.prompt)
                 return;
+            activeSessions.add(String(payload.session_id || ""));
             const result = await runScript(HOOK_ENTRY, ["opencode", "user-prompt"], payload);
             cacheContext(pendingContext, String(payload.session_id || ""), result);
         },
@@ -132,7 +144,17 @@ async function server(input) {
                 return;
             await runScript(HOOK_ENTRY, ["opencode", "post-tool"], payload);
         },
+        "experimental.text.complete": async (hookInput, output) => {
+            const sessionID = typeof hookInput.sessionID === "string" ? hookInput.sessionID : "";
+            if (!sessionID)
+                return;
+            activeSessions.add(sessionID);
+            if (typeof output.text === "string")
+                completedAssistantText.set(sessionID, output.text);
+            await flushStop(sessionID);
+        },
         dispose: async () => {
+            await Promise.all([...activeSessions].map((sessionID) => flushStop(sessionID)));
             await runService(DASHBOARD_SERVICE, "session-end");
             await runService(BACKEND_SERVICE, "session-end");
         },

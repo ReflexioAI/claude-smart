@@ -65,15 +65,6 @@ export function normalizeToolInput(tool, args) {
     }
     return out;
 }
-export function toolBeforePayload(input, output, cwd) {
-    const tool = typeof input.tool === "string" ? input.tool : "";
-    return {
-        session_id: sessionIDFrom(input),
-        cwd,
-        tool_name: normalizeToolName(tool),
-        tool_input: normalizeToolInput(tool, output.args),
-    };
-}
 export function toolAfterPayload(input, output, cwd) {
     const tool = typeof input.tool === "string" ? input.tool : "";
     const text = typeof output.output === "string" ? output.output : "";

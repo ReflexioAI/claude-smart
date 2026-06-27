@@ -99,8 +99,23 @@ function cacheContext(cache: Map<string, string[]>, sessionID: string, result: H
 
 async function server(input: PluginInput) {
   const pendingContext = new Map<string, string[]>()
+  const activeSessions = new Set<string>()
+  const completedAssistantText = new Map<string, string>()
   const assistant = new AssistantBuffer()
   const cwd = input.directory
+
+  async function flushStop(sessionID: string): Promise<void> {
+    if (!sessionID || !activeSessions.has(sessionID)) return
+    activeSessions.delete(sessionID)
+    const text = completedAssistantText.get(sessionID) || assistant.text(sessionID)
+    completedAssistantText.delete(sessionID)
+    await runScript(
+      HOOK_ENTRY,
+      ["opencode", "stop"],
+      stopPayload({ properties: { sessionID, info: { directory: cwd } } }, cwd, text),
+    )
+    assistant.clear(sessionID)
+  }
 
   return {
     event: async ({ event }: EventInput) => {
@@ -110,6 +125,7 @@ async function server(input: PluginInput) {
         const payload = eventPayload(event, cwd)
         const sessionID = String(payload.session_id || "")
         if (!sessionID) return
+        activeSessions.add(sessionID)
         await runService(BACKEND_SERVICE, "start")
         await runService(DASHBOARD_SERVICE, "start")
         const result = await runScript(HOOK_ENTRY, ["opencode", "session-start"], payload)
@@ -120,13 +136,13 @@ async function server(input: PluginInput) {
         const payload = eventPayload(event, cwd)
         const sessionID = String(payload.session_id || "")
         if (!sessionID) return
-        await runScript(HOOK_ENTRY, ["opencode", "stop"], stopPayload(event, cwd, assistant.text(sessionID)))
-        assistant.clear(sessionID)
+        await flushStop(sessionID)
       }
     },
     "chat.message": async (hookInput: Record<string, unknown>, output: Record<string, unknown>) => {
       const payload = chatMessagePayload(hookInput, output, cwd)
       if (!payload.session_id || !payload.prompt) return
+      activeSessions.add(String(payload.session_id || ""))
       const result = await runScript(HOOK_ENTRY, ["opencode", "user-prompt"], payload)
       cacheContext(pendingContext, String(payload.session_id || ""), result)
     },
@@ -142,7 +158,18 @@ async function server(input: PluginInput) {
       if (!payload.session_id || !payload.tool_name) return
       await runScript(HOOK_ENTRY, ["opencode", "post-tool"], payload)
     },
+    "experimental.text.complete": async (
+      hookInput: { sessionID?: string },
+      output: { text?: string },
+    ) => {
+      const sessionID = typeof hookInput.sessionID === "string" ? hookInput.sessionID : ""
+      if (!sessionID) return
+      activeSessions.add(sessionID)
+      if (typeof output.text === "string") completedAssistantText.set(sessionID, output.text)
+      await flushStop(sessionID)
+    },
     dispose: async () => {
+      await Promise.all([...activeSessions].map((sessionID) => flushStop(sessionID)))
       await runService(DASHBOARD_SERVICE, "session-end")
       await runService(BACKEND_SERVICE, "session-end")
     },

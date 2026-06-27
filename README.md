@@ -104,7 +104,7 @@ Restart Codex after uninstalling. The uninstaller stops local claude-smart servi
 npx claude-smart install --host opencode
 ```
 
-Then restart OpenCode in your project so it loads the plugin from `.opencode/opencode.json`, the local plugin config file used by `opencode plugin`.
+Then restart OpenCode in your project so it loads the plugin from `opencode.json`, the documented project config file. If your project already has `.opencode/opencode.json` or `.opencode/opencode.jsonc`, the installer updates that existing file instead of creating a second config.
 
 OpenCode support uses OpenCode's npm plugin loader and injects relevant learned context before each model request. Learning extraction needs either Reflexio configured by `npx claude-smart setup` or a local Claude Code/Codex CLI available for claude-smart's extractor.
 
@@ -234,7 +234,7 @@ Advanced users can tune claude-smart via environment variables — see [DEVELOPE
 | `.claude/settings.local.json` or `~/.claude/settings.json` | Claude Code hook environment, such as `CLAUDE_SMART_ENABLE_OPTIMIZER`; use project-local settings for one repo or user settings for all projects. |
 | `~/.codex/config.toml` | Codex plugin state, hook feature flags, and per-hook trust entries after `claude-smart install --host codex`. |
 | `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/` | Codex's cached install of the `claude-smart` plugin from the `ReflexioAI` marketplace. |
-| `.opencode/opencode.json` or `.opencode/opencode.jsonc` | OpenCode local plugin config patched by `claude-smart install --host opencode`; uses the singular `plugin` array. |
+| `opencode.json` / `opencode.jsonc`, or existing `.opencode/opencode.json*` | OpenCode local plugin config patched by `claude-smart install --host opencode`; uses the singular `plugin` array. |
 | `~/.reflexio/plugin-root` | Self-healed symlink to the active plugin dir (managed by `ensure-plugin-root.sh` — written on install, refreshed each `SessionStart`). Claude Code slash commands and Codex shell-command helpers resolve through it, so don't delete it; if you do, the next session will recreate it. |
 | `~/.claude-smart/sessions/{session_id}.jsonl` | Per-session buffer. User turns, assistant turns, tool invocations, `{"published_up_to": N}` watermarks. Safe to inspect and safe to delete — everything past the latest watermark has already been written to reflexio's DB. |
 | `~/.claude-smart/node/current/` | Private Node.js/npm runtime used by hooks and the dashboard after install. |

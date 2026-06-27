@@ -23,7 +23,7 @@ def restore_runtime_host() -> Generator[None, None, None]:
     previous_host = getattr(runtime, "_current_host", None)
     previous_env = os.environ.get(runtime.HOST_ENV)
     yield
-    setattr(runtime, "_current_host", previous_host)
+    runtime._current_host = previous_host
     if previous_env is None:
         os.environ.pop(runtime.HOST_ENV, None)
     else:
@@ -54,6 +54,8 @@ def test_package_exposes_opencode_server_entrypoint() -> None:
     assert "opencode" in package["keywords"]
     assert "opencode-plugin" in package["keywords"]
     assert package["engines"]["opencode"] == ">=1.17.0"
+    assert package["description"].startswith("Self-improving Claude Code, Codex, and OpenCode")
+    assert package["oc-plugin"] == ["server"]
 
 
 def test_opencode_bridge_does_not_call_pre_tool() -> None:
@@ -302,6 +304,86 @@ def test_opencode_config_patch_uninstall_noops_without_plugin_array(
     assert json.loads(config.read_text()) == {"theme": "system"}
 
 
+def test_opencode_config_patch_backs_up_jsonc_config(tmp_path: Path) -> None:
+    config = tmp_path / ".opencode" / "opencode.jsonc"
+    config.parent.mkdir()
+    original = (
+        '{\n'
+        '  // keep my notes\n'
+        '  "theme": "system",\n'
+        '  "plugin": ["other-plugin"]\n'
+        '}\n'
+    )
+    config.write_text(original)
+
+    changed, _ = cli._patch_opencode_plugin_config(config, install=True)
+
+    assert changed is True
+    assert config.with_suffix(config.suffix + ".bak").read_text() == original
+    assert json.loads(config.read_text())["plugin"] == ["other-plugin", "claude-smart"]
+
+
+def test_opencode_config_patch_skips_backup_for_plain_json(tmp_path: Path) -> None:
+    config = tmp_path / ".opencode" / "opencode.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({"plugin": ["other-plugin"]}))
+
+    changed, _ = cli._patch_opencode_plugin_config(config, install=True)
+
+    assert changed is True
+    assert not config.with_suffix(config.suffix + ".bak").exists()
+
+
+def test_opencode_global_config_path_honors_xdg_config_home(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    path = cli._opencode_config_path(global_config=True)
+
+    assert path == tmp_path / "xdg" / "opencode" / "opencode.json"
+
+
+def test_opencode_global_config_path_defaults_without_xdg(monkeypatch) -> None:
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    path = cli._opencode_config_path(global_config=True)
+
+    assert path == Path.home() / ".config" / "opencode" / "opencode.json"
+
+
+def test_opencode_project_config_path_defaults_to_root(tmp_path: Path) -> None:
+    path = cli._opencode_config_path(cwd=tmp_path)
+
+    assert path == tmp_path / "opencode.json"
+
+
+def test_opencode_project_config_path_prefers_existing_root_config(
+    tmp_path: Path,
+) -> None:
+    root_config = tmp_path / "opencode.jsonc"
+    legacy_config = tmp_path / ".opencode" / "opencode.json"
+    legacy_config.parent.mkdir()
+    root_config.write_text('{"plugin": []}\n')
+    legacy_config.write_text('{"plugin": ["legacy"]}\n')
+
+    path = cli._opencode_config_path(cwd=tmp_path)
+
+    assert path == root_config
+
+
+def test_opencode_project_config_path_honors_existing_dot_opencode_config(
+    tmp_path: Path,
+) -> None:
+    legacy_config = tmp_path / ".opencode" / "opencode.json"
+    legacy_config.parent.mkdir()
+    legacy_config.write_text('{"plugin": []}\n')
+
+    path = cli._opencode_config_path(cwd=tmp_path)
+
+    assert path == legacy_config
+
+
 def test_opencode_install_from_python_wheel_path_points_to_npm(
     monkeypatch, tmp_path, capsys
 ) -> None:
@@ -364,9 +446,32 @@ def test_opencode_install_patches_project_config_after_bootstrap(
     rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
 
     assert rc == 0
-    parsed = json.loads((tmp_path / ".opencode" / "opencode.json").read_text())
+    parsed = json.loads((tmp_path / "opencode.json").read_text())
     assert parsed["plugin"] == ["claude-smart"]
     assert "Restart OpenCode" in capsys.readouterr().out
+
+
+def test_opencode_install_patches_existing_dot_opencode_config(
+    monkeypatch, tmp_path
+) -> None:
+    legacy_config = tmp_path / ".opencode" / "opencode.json"
+    legacy_config.parent.mkdir()
+    legacy_config.write_text(json.dumps({"plugin": ["other-plugin"]}))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: f"/bin/{name}" if name == "codex" else None
+    )
+    monkeypatch.setattr(cli, "_bootstrap_opencode_install", lambda _read_only: (True, "/plugin"))
+
+    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
+
+    assert rc == 0
+    assert not (tmp_path / "opencode.json").exists()
+    assert json.loads(legacy_config.read_text())["plugin"] == [
+        "other-plugin",
+        "claude-smart",
+    ]
 
 
 def test_node_installer_patches_opencode_jsonc(tmp_path: Path) -> None:
@@ -457,6 +562,8 @@ def test_node_jsonc_parser_preserves_comma_brace_inside_strings() -> None:
 
 
 def test_node_jsonc_parser_skips_comments_after_trailing_commas() -> None:
+    if shutil_which_node() is None:
+        return
     script = (
         f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
         "process.stdout.write(installer.stripJsonc('{\"plugin\":[\"other\", // note\\n], /* end */}\\n'));"
@@ -467,6 +574,75 @@ def test_node_jsonc_parser_skips_comments_after_trailing_commas() -> None:
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"plugin": ["other"]}
+
+
+def test_node_installer_backs_up_jsonc_config(tmp_path: Path) -> None:
+    if shutil_which_node() is None:
+        return
+    config = tmp_path / "opencode.jsonc"
+    original = '{\n  // keep my notes\n  "plugin": ["other"]\n}\n'
+    config.write_text(original)
+    script = (
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        f"const result = installer.patchOpenCodePluginConfig({json.dumps(str(config))}, {{install: true}});"
+        "process.stdout.write(JSON.stringify({ result, text: require('fs').readFileSync(process.argv[1], 'utf8'), backup: require('fs').readFileSync(`${process.argv[1]}.bak`, 'utf8') }));"
+    )
+
+    result = _run_node_script(script, str(config))
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["result"]["backupPath"] == f"{config}.bak"
+    assert parsed["backup"] == original
+    assert json.loads(parsed["text"])["plugin"] == ["other", "claude-smart"]
+
+
+def test_node_installer_project_config_path_uses_root_by_default_and_legacy_if_present(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        return
+    script = (
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        "const fs = require('fs');"
+        "const path = require('path');"
+        "const root = installer.opencodeConfigPath([], process.argv[1]);"
+        "fs.mkdirSync(path.join(process.argv[1], '.opencode'));"
+        "fs.writeFileSync(path.join(process.argv[1], '.opencode', 'opencode.json'), '{\"plugin\":[]}\\n');"
+        "const legacy = installer.opencodeConfigPath([], process.argv[1]);"
+        "process.stdout.write(JSON.stringify({ root, legacy }));"
+    )
+
+    result = _run_node_script(script, str(tmp_path))
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed == {
+        "root": str(tmp_path / "opencode.json"),
+        "legacy": str(tmp_path / ".opencode" / "opencode.json"),
+    }
+
+
+def test_node_installer_skips_backup_for_plain_json(tmp_path: Path) -> None:
+    if shutil_which_node() is None:
+        return
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({"plugin": ["other"]}))
+    script = (
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        f"const result = installer.patchOpenCodePluginConfig({json.dumps(str(config))}, {{install: true}});"
+        "process.stdout.write(JSON.stringify({ result, backupExists: require('fs').existsSync(`${process.argv[1]}.bak`) }));"
+    )
+
+    result = _run_node_script(script, str(config))
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["result"]["backupPath"] is None
+    assert parsed["backupExists"] is False
 
 
 def test_node_installer_rejects_non_array_plugin_without_rewrite(
@@ -500,14 +676,14 @@ def test_node_installer_rejects_non_array_plugin_without_rewrite(
 def test_node_opencode_payload_normalizes_tool_contracts() -> None:
     script = f"""
       import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "payload.js"))}).then((payload) => {{
-        const edit = payload.toolBeforePayload(
-          {{ sessionID: "s1", tool: "edit" }},
-          {{ args: {{ filePath: "README.md", oldString: "old", newString: "new" }} }},
+        const edit = payload.toolAfterPayload(
+          {{ sessionID: "s1", tool: "edit", args: {{ filePath: "README.md", oldString: "old", newString: "new" }} }},
+          {{ output: "edited" }},
           "/repo"
         );
-        const patch = payload.toolBeforePayload(
-          {{ sessionID: "s1", tool: "apply_patch" }},
-          {{ args: {{ patchText: "*** Begin Patch" }} }},
+        const patch = payload.toolAfterPayload(
+          {{ sessionID: "s1", tool: "apply_patch", args: {{ patchText: "*** Begin Patch" }} }},
+          {{ output: "patched" }},
           "/repo"
         );
         const shell = payload.toolAfterPayload(
@@ -536,8 +712,10 @@ def test_node_opencode_payload_normalizes_tool_contracts() -> None:
         "old_string": "old",
         "new_string": "new",
     }
+    assert parsed["edit"]["tool_response"] == {"output": "edited", "stdout": "edited"}
     assert parsed["patch"]["tool_name"] == "apply_patch"
     assert parsed["patch"]["tool_input"]["command"] == "*** Begin Patch"
+    assert parsed["patch"]["tool_response"] == {"output": "patched", "stdout": "patched"}
     assert parsed["shell"]["tool_name"] == "Bash"
     assert parsed["shell"]["tool_input"]["command"] == "npm test"
     assert parsed["shell"]["tool_response"] == {
@@ -649,11 +827,199 @@ def test_node_opencode_server_tolerates_closed_child_stdin(tmp_path: Path) -> No
     assert result.stdout == "ok"
 
 
+def test_node_opencode_server_dispatches_lifecycle_tool_idle_and_dispose(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        return
+    fake_bash = tmp_path / "bash"
+    log_path = tmp_path / "calls.jsonl"
+    fake_bash.write_text(
+        "#!/bin/sh\n"
+        "script=\"$1\"\n"
+        "shift\n"
+        "payload=$(cat || true)\n"
+        "PAYLOAD=\"$payload\" node -e 'require(\"fs\").appendFileSync(process.env.CALL_LOG, JSON.stringify({ script: process.argv[1], args: process.argv.slice(2), payload: process.env.PAYLOAD }) + \"\\n\")' \"$script\" \"$@\"\n"
+        "if [ \"${2:-}\" = \"user-prompt\" ]; then\n"
+        "  printf '%s\\n' '{\"hookSpecificOutput\":{\"additionalContext\":\"learned context\"}}'\n"
+        "else\n"
+        "  printf '%s\\n' '{}'\n"
+        "fi\n",
+    )
+    fake_bash.chmod(0o755)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        const plugin = await mod.default.server({{ directory: "/repo" }});
+        await plugin.event({{ event: {{ type: "session.created", properties: {{ sessionID: "s-life", info: {{ directory: "/repo" }} }} }} }});
+        await plugin["chat.message"]({{ sessionID: "s-life" }}, {{ message: {{ content: "Use remembered rules" }} }});
+        const systemOutput = {{ system: [] }};
+        await plugin["experimental.chat.system.transform"]({{ sessionID: "s-life" }}, systemOutput);
+        await plugin.event({{ event: {{ type: "message.updated", properties: {{ sessionID: "s-life", info: {{ id: "m1", role: "assistant" }} }} }} }});
+        await plugin.event({{ event: {{ type: "message.part.updated", properties: {{ sessionID: "s-life", part: {{ id: "p1", messageID: "m1", type: "text", text: "final" }} }} }} }});
+        await plugin.event({{ event: {{ type: "message.part.delta", properties: {{ sessionID: "s-life", partID: "p1", delta: " answer" }} }} }});
+        await plugin["tool.execute.after"]({{ sessionID: "s-life", tool: "shell", args: {{ cmd: "echo ok" }} }}, {{ output: "ok" }});
+        await plugin.event({{ event: {{ type: "session.idle", properties: {{ sessionID: "s-life" }} }} }});
+        await plugin.dispose();
+        process.stdout.write(JSON.stringify({{ systemOutput, calls: require("fs").readFileSync(process.env.CALL_LOG, "utf8").trim().split("\\n").map(JSON.parse) }}));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["systemOutput"] == {"system": ["learned context"]}
+    command_pairs = [(Path(call["script"]).name, call["args"]) for call in parsed["calls"]]
+    assert ("backend-service.sh", ["start"]) in command_pairs
+    assert ("dashboard-service.sh", ["start"]) in command_pairs
+    assert ("hook_entry.sh", ["opencode", "session-start"]) in command_pairs
+    assert ("hook_entry.sh", ["opencode", "user-prompt"]) in command_pairs
+    assert ("hook_entry.sh", ["opencode", "post-tool"]) in command_pairs
+    assert ("hook_entry.sh", ["opencode", "stop"]) in command_pairs
+    assert ("dashboard-service.sh", ["session-end"]) in command_pairs
+    assert ("backend-service.sh", ["session-end"]) in command_pairs
+    stop_calls = [
+        json.loads(call["payload"])
+        for call in parsed["calls"]
+        if Path(call["script"]).name == "hook_entry.sh" and call["args"] == ["opencode", "stop"]
+    ]
+    assert stop_calls == [
+        {"session_id": "s-life", "cwd": "/repo", "last_assistant_message": "final answer"}
+    ]
+
+
+def test_node_opencode_server_dispose_flushes_active_session_without_idle(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        return
+    fake_bash = tmp_path / "bash"
+    log_path = tmp_path / "calls.jsonl"
+    fake_bash.write_text(
+        "#!/bin/sh\n"
+        "script=\"$1\"\n"
+        "shift\n"
+        "payload=$(cat || true)\n"
+        "PAYLOAD=\"$payload\" node -e 'require(\"fs\").appendFileSync(process.env.CALL_LOG, JSON.stringify({ script: process.argv[1], args: process.argv.slice(2), payload: process.env.PAYLOAD }) + \"\\n\")' \"$script\" \"$@\"\n"
+        "printf '%s\\n' '{}'\n",
+    )
+    fake_bash.chmod(0o755)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        const plugin = await mod.default.server({{ directory: "/repo" }});
+        await plugin["chat.message"]({{ sessionID: "s-dispose" }}, {{ message: {{ content: "remember this" }} }});
+        await plugin.event({{ event: {{ type: "message.updated", properties: {{ sessionID: "s-dispose", info: {{ id: "m1", role: "assistant" }} }} }} }});
+        await plugin.event({{ event: {{ type: "message.part.updated", properties: {{ sessionID: "s-dispose", part: {{ id: "p1", messageID: "m1", type: "text", text: "remembered" }} }} }} }});
+        await Promise.all([plugin.dispose(), plugin.dispose()]);
+        process.stdout.write(require("fs").readFileSync(process.env.CALL_LOG, "utf8"));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in result.stdout.strip().split("\n")]
+    stop_calls = [
+        json.loads(call["payload"])
+        for call in calls
+        if Path(call["script"]).name == "hook_entry.sh" and call["args"] == ["opencode", "stop"]
+    ]
+    assert stop_calls == [
+        {"session_id": "s-dispose", "cwd": "/repo", "last_assistant_message": "remembered"}
+    ]
+
+
+def test_node_opencode_server_text_complete_flushes_once(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        return
+    fake_bash = tmp_path / "bash"
+    log_path = tmp_path / "calls.jsonl"
+    fake_bash.write_text(
+        "#!/bin/sh\n"
+        "script=\"$1\"\n"
+        "shift\n"
+        "payload=$(cat || true)\n"
+        "PAYLOAD=\"$payload\" node -e 'require(\"fs\").appendFileSync(process.env.CALL_LOG, JSON.stringify({ script: process.argv[1], args: process.argv.slice(2), payload: process.env.PAYLOAD }) + \"\\n\")' \"$script\" \"$@\"\n"
+        "printf '%s\\n' '{}'\n",
+    )
+    fake_bash.chmod(0o755)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        const plugin = await mod.default.server({{ directory: "/repo" }});
+        await plugin["chat.message"]({{ sessionID: "s-complete" }}, {{ message: {{ content: "remember this" }} }});
+        await plugin["experimental.text.complete"]({{ sessionID: "s-complete" }}, {{ text: "done" }});
+        await plugin.event({{ event: {{ type: "session.idle", properties: {{ sessionID: "s-complete" }} }} }});
+        await plugin.dispose();
+        process.stdout.write(require("fs").readFileSync(process.env.CALL_LOG, "utf8"));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in result.stdout.strip().split("\n")]
+    stop_calls = [
+        json.loads(call["payload"])
+        for call in calls
+        if Path(call["script"]).name == "hook_entry.sh" and call["args"] == ["opencode", "stop"]
+    ]
+    assert stop_calls == [
+        {"session_id": "s-complete", "cwd": "/repo", "last_assistant_message": "done"}
+    ]
+
+
 def test_opencode_dist_files_are_packaged() -> None:
     package = _read_json("package.json")
 
     assert "plugin" in package["files"]
     assert package["exports"]["./server"]["import"] == "./plugin/opencode/dist/server.mjs"
+
+
+def test_opencode_dist_matches_typescript_sources(tmp_path: Path) -> None:
+    import filecmp
+    import shutil
+
+    if shutil.which("npx") is None:
+        return
+    out_dir = tmp_path / "dist"
+    result = subprocess.run(
+        [
+            "npx",
+            "tsc",
+            "-p",
+            str(REPO_ROOT / "plugin" / "opencode" / "tsconfig.json"),
+            "--outDir",
+            str(out_dir),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    for filename in ("assistant-buffer.js", "payload.js", "server.mjs"):
+        expected = REPO_ROOT / "plugin" / "opencode" / "dist" / filename
+        generated = out_dir / filename
+        assert filecmp.cmp(expected, generated, shallow=False), filename
 
 
 def test_node_parse_host_accepts_opencode() -> None:

@@ -416,15 +416,29 @@ function parseGlobalFlag(args) {
   return args.includes("--global");
 }
 
+function opencodeGlobalConfigDir() {
+  const xdg = (process.env.XDG_CONFIG_HOME || "").trim();
+  const base = xdg ? xdg : join(homedir(), ".config");
+  return join(base, "opencode");
+}
+
 function opencodeConfigPath(args = [], cwd = process.cwd()) {
-  const configDir = parseGlobalFlag(args)
-    ? join(homedir(), ".config", "opencode")
-    : join(cwd, ".opencode");
-  for (const name of OPENCODE_CONFIG_NAMES) {
-    const candidate = join(configDir, name);
+  if (parseGlobalFlag(args)) {
+    const configDir = opencodeGlobalConfigDir();
+    for (const name of OPENCODE_CONFIG_NAMES) {
+      const candidate = join(configDir, name);
+      if (existsSync(candidate)) return candidate;
+    }
+    return join(configDir, "opencode.json");
+  }
+  const candidates = [
+    ...OPENCODE_CONFIG_NAMES.map((name) => join(cwd, name)),
+    ...OPENCODE_CONFIG_NAMES.map((name) => join(cwd, ".opencode", name)),
+  ];
+  for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
   }
-  return join(configDir, "opencode.json");
+  return join(cwd, "opencode.json");
 }
 
 function opencodePluginSpec(entry) {
@@ -445,10 +459,18 @@ function patchOpenCodePluginConfig(configPath, { install }) {
     ? next.length !== current.length || next.some((entry, index) => entry !== current[index])
     : install && next.length > 0;
   if (!changed) return { changed: false, configPath };
+  let backupPath = null;
+  if (existsSync(configPath)) {
+    const original = readFileSync(configPath, "utf8");
+    if (original.trim() && original !== stripJsonc(original)) {
+      backupPath = `${configPath}.bak`;
+      writeFileSync(backupPath, original);
+    }
+  }
   data.plugin = next;
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify(data, null, 2) + "\n");
-  return { changed: true, configPath };
+  return { changed: true, configPath, backupPath };
 }
 
 function hasExtractionProvider() {
@@ -1133,7 +1155,7 @@ function printHelp() {
       "",
       "OpenCode install:",
       "  1. Prepares the shared claude-smart runtime",
-      "  2. Adds \"claude-smart\" to the singular plugin array in .opencode/opencode.json",
+      "  2. Adds \"claude-smart\" to the singular plugin array in opencode.json",
       "  3. Restart OpenCode.",
       "",
       "Update:",
@@ -1883,6 +1905,9 @@ async function runInstallOpenCode(args) {
   if (refreshDashboardService(pluginRoot)) {
     process.stdout.write("Refreshed claude-smart dashboard service.\n");
   }
+  if (result.backupPath) {
+    process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
+  }
   process.stdout.write(
     [
       "",
@@ -1929,6 +1954,9 @@ async function runUninstallOpenCode(args) {
   } catch (err) {
     process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
     process.exit(1);
+  }
+  if (result.backupPath) {
+    process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
   }
   process.stdout.write(
     [
@@ -1994,6 +2022,7 @@ module.exports = {
   ensureUv,
   configureReflexioSetup,
   patchCodexHooksForNode,
+  opencodeConfigPath,
   patchOpenCodePluginConfig,
   platformSupportError,
   prunePublishHooksForReadOnly,
