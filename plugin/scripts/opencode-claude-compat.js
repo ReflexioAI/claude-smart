@@ -104,7 +104,9 @@ function prepareWorkDir() {
       },
     },
   };
-  fs.writeFileSync(path.join(dir, "opencode.json"), `${JSON.stringify(config, null, 2)}\n`);
+  const opencodeDir = path.join(dir, ".opencode");
+  fs.mkdirSync(opencodeDir, { recursive: true });
+  fs.writeFileSync(path.join(opencodeDir, "opencode.json"), `${JSON.stringify(config, null, 2)}\n`);
   return dir;
 }
 
