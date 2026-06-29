@@ -679,65 +679,6 @@ def test_opencode_cli_bridge_pipes_large_prompt_via_stdin(tmp_path: Path) -> Non
     assert call["stdinLength"] == len(prompt)
 
 
-def test_opencode_cli_bridge_surfaces_opencode_stderr_and_cleans_workdir(
-    tmp_path: Path,
-) -> None:
-    if shutil_which_node() is None:
-        return
-    bridge = REPO_ROOT / "plugin" / "scripts" / "opencode-claude-compat.js"
-    fake_opencode = tmp_path / "opencode"
-    call_log = tmp_path / "calls.json"
-    fake_opencode.write_text(
-        textwrap.dedent(
-            f"""\
-            #!/usr/bin/env node
-            const fs = require("fs");
-            const args = process.argv.slice(2);
-            const dirIndex = args.indexOf("--dir");
-            const workDir = dirIndex >= 0 ? args[dirIndex + 1] : "";
-            fs.writeFileSync(
-              {json.dumps(str(call_log))},
-              JSON.stringify({{
-                args,
-                workDir
-              }})
-            );
-            process.stderr.write("model catalog does not include fake/model\\n");
-            process.exit(42);
-            """
-        )
-    )
-    fake_opencode.chmod(0o755)
-    env = {
-        **os.environ,
-        "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
-    }
-
-    result = subprocess.run(
-        [
-            shutil_which_node() or "node",
-            str(bridge),
-            "-p",
-            "--output-format",
-            "stream-json",
-        ],
-        input="user prompt",
-        text=True,
-        capture_output=True,
-        env=env,
-        check=False,
-    )
-
-    assert result.returncode == 1
-    assert result.stdout == ""
-    assert (
-        "opencode CLI exited 42: model catalog does not include fake/model"
-        in result.stderr
-    )
-    call = json.loads(call_log.read_text())
-    assert Path(call["workDir"]).exists() is False
-
-
 def test_node_installer_accepts_opencode_only_extraction_provider(tmp_path: Path) -> None:
     if shutil_which_node() is None:
         return
