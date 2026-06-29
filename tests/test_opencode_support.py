@@ -564,8 +564,7 @@ fs.writeFileSync(
     stdin: fs.readFileSync(0, "utf8"),
     env: {{
       CLAUDE_SMART_HOST: process.env.CLAUDE_SMART_HOST,
-      CLAUDE_SMART_INTERNAL: process.env.CLAUDE_SMART_INTERNAL,
-      CLAUDE_CODE_ENTRYPOINT: process.env.CLAUDE_CODE_ENTRYPOINT
+      CLAUDE_SMART_INTERNAL: process.env.CLAUDE_SMART_INTERNAL
     }}
   }})
 );
@@ -612,7 +611,6 @@ process.stdout.write(JSON.stringify({{
     assert call["env"] == {
         "CLAUDE_SMART_HOST": "opencode",
         "CLAUDE_SMART_INTERNAL": "1",
-        "CLAUDE_CODE_ENTRYPOINT": "optimizer",
     }
     assert call["args"][:4] == ["run", "--pure", "--format", "json"]
     assert "--agent" in call["args"]
