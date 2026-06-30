@@ -12,6 +12,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lockfile:
+    name: standalone lockfile
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Check standalone plugin lock
+        run: |
+          make check-locked-project-version
+          make check-standalone-lock
+
   dependency-platforms:
     name: dependency platforms (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

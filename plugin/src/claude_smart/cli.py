@@ -1613,6 +1613,10 @@ def cmd_uninstall_opencode(args: argparse.Namespace) -> int:
         sys.stderr.write(f"error: {exc}\n")
         return 1
     shutil.rmtree(_OPENCODE_LOCAL_PACKAGE_DIR, ignore_errors=True)
+    try:
+        _OPENCODE_LOCAL_PACKAGE_DIR.parent.rmdir()
+    except OSError:
+        pass
     if changed:
         sys.stdout.write(f"Removed claude-smart OpenCode plugin entries from {config_path}.\n")
     else:

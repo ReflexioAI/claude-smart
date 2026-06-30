@@ -2562,6 +2562,66 @@ def _npm_install_global_tarball(tarball: Path, *, prefix: Path, env: dict[str, s
     assert result.returncode == 0, result.stderr
 
 
+def _install_opencode_tarball_fixture(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, Path, dict[str, str], subprocess.CompletedProcess[str]]:
+    if os.name == "nt":
+        pytest.skip("tarball smoke uses POSIX npm bin paths")
+    node = shutil.which("node")
+    if not node or not shutil.which("npm"):
+        pytest.skip("node and npm are required for package install smoke tests")
+
+    tarball = _pack_claude_smart_tarball(tmp_path)
+    home = tmp_path / "home"
+    prefix = tmp_path / "npm-prefix"
+    fake_bin = tmp_path / "fake-bin"
+    private_node = home / ".claude-smart" / "node" / "current" / "bin"
+    uv_bin = home / ".local" / "bin"
+    project = tmp_path / "project"
+    xdg = tmp_path / "xdg"
+    for path in [home, prefix, fake_bin, private_node, uv_bin, project, xdg]:
+        path.mkdir(parents=True, exist_ok=True)
+    _write_executable(fake_bin / "opencode", "#!/bin/sh\nexit 0\n")
+    _write_executable(private_node / "node", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        private_node / "npm",
+        '#!/bin/sh\nprintf "npm %s\\n" "$*" >> "$HOME/npm.log"\nexit 0\n',
+    )
+    _write_bootstrap_uv(uv_bin / "uv", mode="fresh")
+
+    env = os.environ.copy()
+    test_path = f"{prefix / 'bin'}{os.pathsep}{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    env.update(
+        {
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(xdg),
+            "PATH": test_path,
+            "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
+            "CLAUDE_SMART_DASHBOARD_AUTOSTART": "0",
+            "CLAUDE_SMART_TEST_PLATFORM": "linux",
+            "CLAUDE_SMART_TEST_ARCH": "x64",
+        }
+    )
+    _npm_install_global_tarball(tarball, prefix=prefix, env=env)
+
+    result = subprocess.run(
+        [
+            str(prefix / "bin" / "claude-smart"),
+            "install",
+            "--host",
+            "opencode",
+            "--global",
+        ],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    return home, prefix, project, xdg, env, result
+
+
 def _assert_matching_smart_install_hash(
     host_plugin_root: Path, installed_package: Path
 ) -> None:
@@ -2826,59 +2886,8 @@ def test_package_tarball_ships_fresh_uv_lock(tmp_path: Path) -> None:
 def test_opencode_fresh_tarball_install_uses_local_file_plugin(
     tmp_path: Path,
 ) -> None:
-    if os.name == "nt":
-        pytest.skip("tarball smoke uses POSIX npm bin paths")
-    node = shutil.which("node")
-    if not node or not shutil.which("npm"):
-        pytest.skip("node and npm are required for package install smoke tests")
-
-    tarball = _pack_claude_smart_tarball(tmp_path)
-    home = tmp_path / "home"
-    prefix = tmp_path / "npm-prefix"
-    fake_bin = tmp_path / "fake-bin"
-    private_node = home / ".claude-smart" / "node" / "current" / "bin"
-    uv_bin = home / ".local" / "bin"
-    project = tmp_path / "project"
-    xdg = tmp_path / "xdg"
-    for path in [home, prefix, fake_bin, private_node, uv_bin, project, xdg]:
-        path.mkdir(parents=True, exist_ok=True)
-    _write_executable(fake_bin / "opencode", "#!/bin/sh\nexit 0\n")
-    _write_executable(private_node / "node", "#!/bin/sh\nexit 0\n")
-    _write_executable(
-        private_node / "npm",
-        '#!/bin/sh\nprintf "npm %s\\n" "$*" >> "$HOME/npm.log"\nexit 0\n',
-    )
-    _write_bootstrap_uv(uv_bin / "uv", mode="fresh")
-
-    env = os.environ.copy()
-    test_path = f"{prefix / 'bin'}{os.pathsep}{fake_bin}{os.pathsep}{env.get('PATH', '')}"
-    env.update(
-        {
-            "HOME": str(home),
-            "XDG_CONFIG_HOME": str(xdg),
-            "PATH": test_path,
-            "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
-            "CLAUDE_SMART_DASHBOARD_AUTOSTART": "0",
-            "CLAUDE_SMART_TEST_PLATFORM": "linux",
-            "CLAUDE_SMART_TEST_ARCH": "x64",
-        }
-    )
-    _npm_install_global_tarball(tarball, prefix=prefix, env=env)
-
-    result = subprocess.run(
-        [
-            str(prefix / "bin" / "claude-smart"),
-            "install",
-            "--host",
-            "opencode",
-            "--global",
-        ],
-        cwd=project,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=120,
+    home, prefix, _project, xdg, _env, result = _install_opencode_tarball_fixture(
+        tmp_path
     )
 
     assert result.returncode == 0, result.stderr
@@ -2903,6 +2912,66 @@ def test_opencode_fresh_tarball_install_uses_local_file_plugin(
     )
     assert not (home / ".claude-smart" / "install-failed").exists()
     assert "uv sync --locked --python 3.12 --quiet" in (home / "uv.log").read_text()
+
+
+def test_opencode_fresh_tarball_uninstall_removes_plugin_and_keeps_data(
+    tmp_path: Path,
+) -> None:
+    home, prefix, project, xdg, env, install_result = (
+        _install_opencode_tarball_fixture(tmp_path)
+    )
+    assert install_result.returncode == 0, install_result.stderr
+
+    config_path = xdg / "opencode" / "opencode.json"
+    plugin_spec = json.loads(config_path.read_text())["plugin"][0]
+    local_package = Path(plugin_spec.removeprefix("file://"))
+    assert local_package.exists()
+
+    session_file = home / ".claude-smart" / "sessions" / "keep.jsonl"
+    reflexio_data = home / ".reflexio" / "data" / "keep.sqlite"
+    session_file.parent.mkdir(parents=True)
+    reflexio_data.parent.mkdir(parents=True)
+    session_file.write_text("{}\n")
+    reflexio_data.write_text("keep\n")
+    config_path.write_text(
+        json.dumps(
+            {
+                "plugin": [
+                    "other-plugin",
+                    "claude-smart",
+                    plugin_spec,
+                ],
+                "theme": "system",
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            str(prefix / "bin" / "claude-smart"),
+            "uninstall",
+            "--host",
+            "opencode",
+            "--global",
+        ],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Removed claude-smart OpenCode plugin entries" in result.stdout
+    assert json.loads(config_path.read_text()) == {
+        "plugin": ["other-plugin"],
+        "theme": "system",
+    }
+    assert not local_package.exists()
+    assert not (home / ".claude-smart" / "opencode").exists()
+    assert session_file.exists()
+    assert reflexio_data.exists()
 
 
 def test_node_installer_bootstraps_runtime_with_private_node_and_uv(

@@ -27,6 +27,7 @@ const {
   readdirSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -2110,6 +2111,11 @@ async function runUninstallOpenCode(args) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
   }
   rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
+  try {
+    rmdirSync(dirname(OPENCODE_LOCAL_PACKAGE_DIR));
+  } catch {
+    // Keep the parent when it still contains future OpenCode state.
+  }
   process.stdout.write(
     [
       "",
