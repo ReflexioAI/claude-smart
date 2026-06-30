@@ -7,7 +7,6 @@ import argparse
 import json
 import re
 import sys
-import tomllib
 from pathlib import Path
 
 DEPENDENCY_RE = re.compile(r'"reflexio-ai[^"]*"')
@@ -58,6 +57,8 @@ def read_vendor_version(vendor: Path) -> str:
             f"reflexio.lock.json requires vendored Reflexio but {vendor} is missing; "
             "run bash scripts/release-with-reflexio.sh before npm publish"
         )
+    import tomllib
+
     with pyproject.open("rb") as handle:
         data = tomllib.load(handle)
     project = data.get("project", {})

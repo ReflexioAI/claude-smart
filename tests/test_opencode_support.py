@@ -36,7 +36,9 @@ def _read_json(path: str) -> dict[str, Any]:
     return json.loads((REPO_ROOT / path).read_text())
 
 
-def _run_node_script(script: str, *args: str) -> subprocess.CompletedProcess[str] | None:
+def _run_node_script(
+    script: str, *args: str, timeout: float | None = 120
+) -> subprocess.CompletedProcess[str] | None:
     node = shutil_which_node()
     if node is None:
         return None
@@ -45,6 +47,7 @@ def _run_node_script(script: str, *args: str) -> subprocess.CompletedProcess[str
         text=True,
         capture_output=True,
         check=False,
+        timeout=timeout,
     )
 
 
@@ -71,6 +74,54 @@ def _write_fake_bash_recorder(tmp_path: Path, *, user_prompt_context: str = "") 
     return fake_bash
 
 
+def _write_minimal_plugin_root(root: Path, *, name: str = "claude-smart") -> None:
+    (root / "scripts").mkdir(parents=True)
+    (root / "pyproject.toml").write_text(f"[project]\nname = \"{name}\"\n")
+    (root / "uv.lock").write_text("")
+    (root / "scripts" / "hook_entry.sh").write_text("#!/bin/sh\n")
+
+
+def _copy_opencode_dist(root: Path) -> Path:
+    dist = root / "opencode" / "dist"
+    shutil.copytree(REPO_ROOT / "plugin" / "opencode" / "dist", dist)
+    return dist / "server.mjs"
+
+
+def _run_opencode_server_and_read_calls(
+    *,
+    tmp_path: Path,
+    import_path: Path,
+    home: Path,
+    extra_env: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    log_path = tmp_path / "calls.jsonl"
+    _write_fake_bash_recorder(tmp_path)
+    env_lines = ""
+    for key, value in (extra_env or {}).items():
+        env_lines += f"process.env[{json.dumps(key)}] = {json.dumps(value)};\n"
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      process.env.HOME = {json.dumps(str(home))};
+      delete process.env.CLAUDE_SMART_PLUGIN_ROOT;
+      {env_lines}
+      import({json.dumps(str(import_path))}).then(async (mod) => {{
+        const plugin = await mod.default.server({{ directory: "/repo" }});
+        await plugin["chat.message"]({{ sessionID: "s1" }}, {{ message: {{ content: "remember" }} }});
+        process.stdout.write(require("fs").readFileSync(process.env.CALL_LOG, "utf8"));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    return [json.loads(line) for line in result.stdout.strip().split("\n")]
+
+
 def test_package_exposes_opencode_server_entrypoint() -> None:
     package = _read_json("package.json")
 
@@ -90,6 +141,39 @@ def test_opencode_package_includes_local_cli_bridge() -> None:
         "opencode-claude-compat.js",
     ):
         assert (REPO_ROOT / "plugin" / "scripts" / name).is_file()
+
+
+def test_opencode_hook_bootstrap_lockfile_matches_pyproject() -> None:
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not installed")
+    assert uv is not None
+
+    result = subprocess.run(
+        [
+            uv,
+            "lock",
+            "--check",
+            "--python",
+            "3.12",
+            "--project",
+            str(REPO_ROOT / "plugin"),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_package_target_checks_uv_lock_freshness() -> None:
+    makefile = (REPO_ROOT / "Makefile").read_text()
+
+    assert "check-uv-lock:" in makefile
+    assert "uv lock --check --python 3.12 --project plugin" in makefile
+    assert "package: check-vendor-reflexio check-locked-project-version check-uv-lock" in makefile
 
 
 def test_opencode_bridge_does_not_call_pre_tool() -> None:
@@ -252,6 +336,9 @@ def test_opencode_config_patch_preserves_legacy_plugin_field_and_unrelated(
 def test_opencode_config_patch_uninstall_removes_only_claude_smart(
     tmp_path: Path,
 ) -> None:
+    package_root = tmp_path / "local-package"
+    package_root.mkdir()
+    (package_root / "package.json").write_text('{"name":"claude-smart"}\n')
     config = tmp_path / ".opencode" / "opencode.json"
     config.parent.mkdir()
     config.write_text(
@@ -260,6 +347,7 @@ def test_opencode_config_patch_uninstall_removes_only_claude_smart(
                 "plugin": [
                     "other-plugin",
                     "claude-smart",
+                    package_root.as_uri(),
                     ["another-plugin", {"enabled": True}],
                 ],
                 "model": "anthropic/claude-sonnet-4",
@@ -291,6 +379,37 @@ def test_opencode_config_patch_install_dedupes_existing_entries(
 
     assert changed is True
     assert json.loads(config.read_text())["plugin"] == ["other-plugin", "claude-smart"]
+
+
+def test_opencode_config_patch_installs_local_file_spec_and_removes_bare_name(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "local-package"
+    package_root.mkdir()
+    config = tmp_path / "opencode.json"
+    config.write_text(
+        json.dumps(
+            {
+                "plugin": [
+                    "other-plugin",
+                    "claude-smart",
+                    "file:///old/cache/node_modules/claude-smart",
+                ]
+            }
+        )
+    )
+
+    changed, _ = cli._patch_opencode_plugin_config(
+        config,
+        install=True,
+        plugin_spec=package_root.as_uri(),
+    )
+
+    assert changed is True
+    assert json.loads(config.read_text())["plugin"] == [
+        "other-plugin",
+        package_root.as_uri(),
+    ]
 
 
 def test_opencode_config_patch_fresh_config_uses_current_plugin_field(
@@ -541,7 +660,7 @@ def test_opencode_backend_service_prefers_opencode_bridge() -> None:
 
 def test_opencode_cli_bridge_translates_claude_contract(tmp_path: Path) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     bridge = REPO_ROOT / "plugin" / "scripts" / "opencode-claude-compat.js"
     fake_opencode = tmp_path / "opencode"
     call_log = tmp_path / "calls.json"
@@ -624,7 +743,7 @@ process.stdout.write(JSON.stringify({{
 
 def test_opencode_cli_bridge_pipes_large_prompt_via_stdin(tmp_path: Path) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     bridge = REPO_ROOT / "plugin" / "scripts" / "opencode-claude-compat.js"
     fake_opencode = tmp_path / "opencode"
     call_log = tmp_path / "calls.json"
@@ -679,7 +798,7 @@ def test_opencode_cli_bridge_pipes_large_prompt_via_stdin(tmp_path: Path) -> Non
 
 def test_node_installer_accepts_opencode_only_extraction_provider(tmp_path: Path) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     fake_opencode = tmp_path / "opencode"
     fake_opencode.write_text("#!/bin/sh\nexit 0\n")
     fake_opencode.chmod(0o755)
@@ -720,33 +839,81 @@ def _isolated_installer_env(tmp_path: Path) -> dict[str, str]:
     return env
 
 
-def test_node_opencode_install_from_npx_root_patches_config_without_bootstrap(
+def _write_minimal_node_package_root(package_root: Path) -> None:
+    bin_dir = package_root / "bin"
+    scripts = package_root / "plugin" / "scripts"
+    bin_dir.mkdir(parents=True)
+    scripts.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "bin" / "claude-smart.js", bin_dir / "claude-smart.js")
+    (package_root / "package.json").write_text(
+        json.dumps({"name": "claude-smart", "version": "0.0.0"}) + "\n"
+    )
+    (package_root / "plugin" / "pyproject.toml").write_text(
+        "[project]\nname='claude-smart'\n"
+    )
+    (package_root / "plugin" / "uv.lock").write_text("version = 1\n")
+    smart_install = scripts / "smart-install.sh"
+    smart_install.write_text("#!/bin/sh\nexit 0\n")
+    smart_install.chmod(0o755)
+
+
+def _seed_private_node_and_uv(env: dict[str, str]) -> None:
+    home = Path(env["HOME"])
+    private_node = home / ".claude-smart" / "node" / "current" / "bin"
+    uv_bin = home / ".local" / "bin"
+    private_node.mkdir(parents=True, exist_ok=True)
+    uv_bin.mkdir(parents=True, exist_ok=True)
+    for path in [private_node / "node", private_node / "npm"]:
+        path.write_text("#!/bin/sh\nexit 0\n")
+        path.chmod(0o755)
+    uv = uv_bin / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        'printf "uv %s\\n" "$*" >> "$HOME/uv.log"\n'
+        'mkdir -p "$PWD/.venv/bin"\n'
+        'printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
+        'chmod +x "$PWD/.venv/bin/python"\n'
+        "exit 0\n"
+    )
+    uv.chmod(0o755)
+
+
+def test_node_opencode_install_from_npx_root_patches_config_to_local_file_package(
     tmp_path: Path,
 ) -> None:
     node = shutil_which_node()
     if node is None:
         return
     package_root = tmp_path / "_npx" / "abc" / "node_modules" / "claude-smart"
-    bin_dir = package_root / "bin"
-    bin_dir.mkdir(parents=True)
-    shutil.copy2(REPO_ROOT / "bin" / "claude-smart.js", bin_dir / "claude-smart.js")
+    _write_minimal_node_package_root(package_root)
     project = tmp_path / "project"
     project.mkdir()
+    env = _isolated_installer_env(tmp_path)
+    _seed_private_node_and_uv(env)
 
     result = subprocess.run(
-        [node, str(bin_dir / "claude-smart.js"), "install", "--host", "opencode"],
+        [
+            node,
+            str(package_root / "bin" / "claude-smart.js"),
+            "install",
+            "--host",
+            "opencode",
+        ],
         cwd=project,
-        env=_isolated_installer_env(tmp_path),
+        env=env,
         text=True,
         capture_output=True,
         check=False,
     )
 
     assert result.returncode == 0, result.stderr
-    assert "npx's temporary package cache" in result.stdout
-    assert json.loads((project / "opencode.json").read_text()) == {
-        "plugin": ["claude-smart"]
-    }
+    parsed = json.loads((project / "opencode.json").read_text())
+    plugin_spec = parsed["plugin"][0]
+    assert plugin_spec.startswith("file://")
+    assert plugin_spec != "claude-smart"
+    local_package = Path(plugin_spec.removeprefix("file://"))
+    assert local_package == Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
+    assert (local_package / "plugin" / "scripts" / "smart-install.sh").exists()
 
 
 def test_node_opencode_install_stable_root_bootstrap_failure_leaves_config_unchanged(
@@ -759,6 +926,9 @@ def test_node_opencode_install_stable_root_bootstrap_failure_leaves_config_uncha
     bin_dir = package_root / "bin"
     bin_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "bin" / "claude-smart.js", bin_dir / "claude-smart.js")
+    (package_root / "package.json").write_text(
+        json.dumps({"name": "claude-smart", "version": "0.0.0"}) + "\n"
+    )
     project = tmp_path / "project"
     project.mkdir()
     config = project / "opencode.json"
@@ -775,7 +945,7 @@ def test_node_opencode_install_stable_root_bootstrap_failure_leaves_config_uncha
     )
 
     assert result.returncode != 0
-    assert "dependency bootstrap" in result.stderr
+    assert "could not prepare claude-smart OpenCode package" in result.stderr
     assert config.read_text() == original
 
 
@@ -793,7 +963,7 @@ def test_opencode_install_patches_project_config_after_bootstrap(
 
     assert rc == 0
     parsed = json.loads((tmp_path / "opencode.json").read_text())
-    assert parsed["plugin"] == ["claude-smart"]
+    assert parsed["plugin"] == ["file:///plugin"]
     assert "Restart OpenCode" in capsys.readouterr().out
 
 
@@ -816,7 +986,7 @@ def test_opencode_install_patches_existing_dot_opencode_config(
     assert not (tmp_path / "opencode.json").exists()
     assert json.loads(legacy_config.read_text())["plugin"] == [
         "other-plugin",
-        "claude-smart",
+        "file:///plugin",
     ]
 
 
@@ -836,13 +1006,13 @@ def test_opencode_install_migrates_existing_plugins_field(
 
     parsed = json.loads(config.read_text())
     assert rc == 0
-    assert parsed["plugin"] == ["other-plugin", "claude-smart"]
+    assert parsed["plugin"] == ["other-plugin", "file:///plugin"]
     assert "plugins" not in parsed
 
 
 def test_node_installer_patches_opencode_jsonc(tmp_path: Path) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     config = tmp_path / "opencode.jsonc"
     config.write_text('{"plugin": ["other",], // keep parseable\n"theme": "system"}\n')
     script = (
@@ -860,11 +1030,48 @@ def test_node_installer_patches_opencode_jsonc(tmp_path: Path) -> None:
     assert parsed["theme"] == "system"
 
 
+def test_node_installer_patches_opencode_to_local_file_spec(tmp_path: Path) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    config = tmp_path / "opencode.json"
+    local_package = tmp_path / "local-package"
+    local_package.mkdir()
+    config.write_text(
+        json.dumps(
+            {
+                "plugin": [
+                    "other",
+                    "claude-smart",
+                    "file:///old/cache/node_modules/claude-smart",
+                ]
+            }
+        )
+    )
+    script = (
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        f"const spec = installer.opencodeLocalPluginSpec({json.dumps(str(local_package))});"
+        f"installer.patchOpenCodePluginConfig({json.dumps(str(config))}, {{ install: true, pluginSpec: spec }});"
+        "process.stdout.write(require('fs').readFileSync(process.argv[1], 'utf8'));"
+    )
+
+    result = _run_node_script(script, str(config))
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["plugin"] == [
+        "other",
+        local_package.as_uri(),
+    ]
+
+
 def test_node_installer_uninstalls_and_preserves_other_plugin_shapes(
     tmp_path: Path,
 ) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
+    local_package = tmp_path / "local-package"
+    local_package.mkdir()
+    (local_package / "package.json").write_text('{"name":"claude-smart"}\n')
     config = tmp_path / "opencode.json"
     config.write_text(
         json.dumps(
@@ -873,6 +1080,7 @@ def test_node_installer_uninstalls_and_preserves_other_plugin_shapes(
                     "claude-smart",
                     "other",
                     ["tuple-plugin", {"enabled": True}],
+                    local_package.as_uri(),
                     "claude-smart",
                 ],
                 "theme": "system",
@@ -896,7 +1104,7 @@ def test_node_installer_uninstalls_and_preserves_other_plugin_shapes(
 
 def test_node_installer_migrates_existing_plugins_field(tmp_path: Path) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     config = tmp_path / "opencode.json"
     config.write_text(json.dumps({"plugins": ["other"], "theme": "system"}))
     script = (
@@ -917,7 +1125,7 @@ def test_node_installer_migrates_existing_plugins_field(tmp_path: Path) -> None:
 
 def test_node_installer_uninstall_migrates_existing_plugins_field(tmp_path: Path) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     config = tmp_path / "opencode.json"
     config.write_text(json.dumps({"plugins": ["claude-smart", "other", "claude-smart"]}))
     script = (
@@ -935,7 +1143,7 @@ def test_node_installer_uninstall_migrates_existing_plugins_field(tmp_path: Path
 
 def test_node_installer_uninstall_noops_without_plugin_array(tmp_path: Path) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     config = tmp_path / "opencode.json"
     config.write_text(json.dumps({"theme": "system"}))
     script = (
@@ -968,7 +1176,7 @@ def test_node_jsonc_parser_preserves_comma_brace_inside_strings() -> None:
 
 def test_node_jsonc_parser_skips_comments_after_trailing_commas() -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     script = (
         f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
         "process.stdout.write(installer.stripJsonc('{\"plugin\":[\"other\", // note\\n], /* end */}\\n'));"
@@ -983,7 +1191,7 @@ def test_node_jsonc_parser_skips_comments_after_trailing_commas() -> None:
 
 def test_node_installer_backs_up_jsonc_config(tmp_path: Path) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     config = tmp_path / "opencode.jsonc"
     original = '{\n  // keep my notes\n  "plugin": ["other"]\n}\n'
     config.write_text(original)
@@ -1007,7 +1215,7 @@ def test_node_installer_project_config_path_uses_root_by_default_and_legacy_if_p
     tmp_path: Path,
 ) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     script = (
         f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
         "const fs = require('fs');"
@@ -1030,28 +1238,9 @@ def test_node_installer_project_config_path_uses_root_by_default_and_legacy_if_p
     }
 
 
-def test_node_installer_detects_npx_package_root() -> None:
-    if shutil_which_node() is None:
-        return
-    script = (
-        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
-        "process.stdout.write(JSON.stringify({"
-        "unix: installer.isNpxPackageRoot('/home/me/.npm/_npx/abc/node_modules/claude-smart'),"
-        "win: installer.isNpxPackageRoot('C:\\\\Users\\\\me\\\\AppData\\\\Local\\\\npm-cache\\\\_npx\\\\abc\\\\node_modules\\\\claude-smart'),"
-        "global: installer.isNpxPackageRoot('/opt/homebrew/lib/node_modules/claude-smart')"
-        "}));"
-    )
-
-    result = _run_node_script(script)
-    assert result is not None
-
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"unix": True, "win": True, "global": False}
-
-
 def test_node_installer_skips_backup_for_plain_json(tmp_path: Path) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     config = tmp_path / "opencode.json"
     config.write_text(json.dumps({"plugin": ["other"]}))
     script = (
@@ -1073,7 +1262,7 @@ def test_node_installer_rejects_non_array_plugin_without_rewrite(
     tmp_path: Path,
 ) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     config = tmp_path / "opencode.json"
     original = json.dumps({"plugin": "other", "theme": "system"})
     config.write_text(original)
@@ -1099,7 +1288,7 @@ def test_node_installer_rejects_non_array_plugin_without_rewrite(
 
 def test_node_opencode_payload_normalizes_tool_contracts() -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     script = f"""
       import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "payload.js"))}).then((payload) => {{
         const edit = payload.toolAfterPayload(
@@ -1188,7 +1377,7 @@ def test_node_opencode_server_injects_cached_context_for_session_ids(
     tmp_path: Path,
 ) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     fake_bash = tmp_path / "bash"
     fake_bash.write_text(
         "#!/bin/sh\n"
@@ -1229,7 +1418,7 @@ def test_node_opencode_server_injects_cached_context_for_session_ids(
 
 def test_node_opencode_server_tolerates_closed_child_stdin(tmp_path: Path) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     fake_bash = tmp_path / "bash"
     fake_bash.write_text("#!/bin/sh\nexit 0\n")
     fake_bash.chmod(0o755)
@@ -1253,11 +1442,143 @@ def test_node_opencode_server_tolerates_closed_child_stdin(tmp_path: Path) -> No
     assert result.stdout == "ok"
 
 
+def test_node_opencode_server_prefers_current_plugin_root_when_valid(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    stale_root = tmp_path / "stale-plugin"
+    _write_minimal_plugin_root(stale_root, name="stale")
+    home = tmp_path / "home"
+    (home / ".reflexio").mkdir(parents=True)
+    (home / ".reflexio" / "plugin-root").symlink_to(stale_root)
+
+    calls = _run_opencode_server_and_read_calls(
+        tmp_path=tmp_path,
+        import_path=REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs",
+        home=home,
+    )
+
+    assert Path(calls[0]["script"]) == (
+        REPO_ROOT / "plugin" / "scripts" / "hook_entry.sh"
+    )
+
+
+def test_node_opencode_server_uses_stable_root_when_current_is_dist_only(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    stable_root = tmp_path / "stable-plugin"
+    _write_minimal_plugin_root(stable_root)
+    dist_only_root = tmp_path / "dist-only-plugin"
+    import_path = _copy_opencode_dist(dist_only_root)
+    home = tmp_path / "home"
+    (home / ".reflexio").mkdir(parents=True)
+    (home / ".reflexio" / "plugin-root").symlink_to(stable_root)
+
+    calls = _run_opencode_server_and_read_calls(
+        tmp_path=tmp_path,
+        import_path=import_path,
+        home=home,
+    )
+
+    assert Path(calls[0]["script"]) == stable_root / "scripts" / "hook_entry.sh"
+
+
+def test_node_opencode_server_explicit_plugin_root_overrides_current_and_stable(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    explicit_root = tmp_path / "explicit-plugin"
+    stable_root = tmp_path / "stable-plugin"
+    _write_minimal_plugin_root(explicit_root, name="explicit")
+    _write_minimal_plugin_root(stable_root, name="stable")
+    home = tmp_path / "home"
+    (home / ".reflexio").mkdir(parents=True)
+    (home / ".reflexio" / "plugin-root").symlink_to(stable_root)
+
+    calls = _run_opencode_server_and_read_calls(
+        tmp_path=tmp_path,
+        import_path=REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs",
+        home=home,
+        extra_env={"CLAUDE_SMART_PLUGIN_ROOT": str(explicit_root)},
+    )
+
+    assert Path(calls[0]["script"]) == explicit_root / "scripts" / "hook_entry.sh"
+
+
+def test_node_opencode_server_uses_text_root_when_symlink_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    stable_root = tmp_path / "stable-plugin"
+    _write_minimal_plugin_root(stable_root)
+    dist_only_root = tmp_path / "dist-only-plugin"
+    import_path = _copy_opencode_dist(dist_only_root)
+    home = tmp_path / "home"
+    (home / ".reflexio").mkdir(parents=True)
+    (home / ".reflexio" / "plugin-root.txt").write_text(f"{stable_root}\n")
+
+    calls = _run_opencode_server_and_read_calls(
+        tmp_path=tmp_path,
+        import_path=import_path,
+        home=home,
+    )
+
+    assert Path(calls[0]["script"]) == stable_root / "scripts" / "hook_entry.sh"
+
+
+def test_node_opencode_server_treats_npx_current_root_as_transient(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    stable_root = tmp_path / "stable-plugin"
+    _write_minimal_plugin_root(stable_root)
+    npx_root = tmp_path / "_npx" / "12345" / "node_modules" / "claude-smart" / "plugin"
+    _write_minimal_plugin_root(npx_root, name="npx")
+    import_path = _copy_opencode_dist(npx_root)
+    home = tmp_path / "home"
+    (home / ".reflexio").mkdir(parents=True)
+    (home / ".reflexio" / "plugin-root").symlink_to(stable_root)
+
+    calls = _run_opencode_server_and_read_calls(
+        tmp_path=tmp_path,
+        import_path=import_path,
+        home=home,
+    )
+
+    assert Path(calls[0]["script"]) == stable_root / "scripts" / "hook_entry.sh"
+
+
+def test_node_opencode_server_falls_back_to_transient_root_without_stable_candidate(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    npx_root = tmp_path / "_npx" / "12345" / "node_modules" / "claude-smart" / "plugin"
+    _write_minimal_plugin_root(npx_root, name="npx")
+    import_path = _copy_opencode_dist(npx_root)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    calls = _run_opencode_server_and_read_calls(
+        tmp_path=tmp_path,
+        import_path=import_path,
+        home=home,
+    )
+
+    assert Path(calls[0]["script"]) == npx_root / "scripts" / "hook_entry.sh"
+
+
 def test_node_opencode_server_dispatches_lifecycle_tool_idle_and_dispose(
     tmp_path: Path,
 ) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     log_path = tmp_path / "calls.jsonl"
     _write_fake_bash_recorder(tmp_path, user_prompt_context="learned context")
     script = f"""
@@ -1311,7 +1632,7 @@ def test_node_opencode_server_dispose_flushes_active_session_without_idle(
     tmp_path: Path,
 ) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     log_path = tmp_path / "calls.jsonl"
     _write_fake_bash_recorder(tmp_path)
     script = f"""
@@ -1349,7 +1670,7 @@ def test_node_opencode_server_text_complete_flushes_once(
     tmp_path: Path,
 ) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     log_path = tmp_path / "calls.jsonl"
     _write_fake_bash_recorder(tmp_path)
     script = f"""
@@ -1387,7 +1708,7 @@ def test_node_opencode_server_keeps_multi_segment_assistant_text(
     tmp_path: Path,
 ) -> None:
     if shutil_which_node() is None:
-        return
+        pytest.skip("node is not installed")
     log_path = tmp_path / "calls.jsonl"
     _write_fake_bash_recorder(tmp_path)
     script = f"""

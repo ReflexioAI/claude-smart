@@ -465,7 +465,13 @@ if [ -d "$PLUGIN_ROOT/.venv" ]; then
 fi
 echo "[claude-smart] running uv sync..." >&2
 if ! uv sync --locked --python 3.12 --quiet >&2; then
-  write_failure "uv sync failed in $PLUGIN_ROOT — run 'uv sync --locked --python 3.12' there to diagnose"
+  if uv lock --check --python 3.12 >/dev/null 2>&1; then
+    write_failure "uv sync failed in $PLUGIN_ROOT — run 'uv sync --locked --python 3.12' there to diagnose"
+  fi
+  echo "[claude-smart] plugin/uv.lock is out of sync; refreshing local lockfile and retrying uv sync" >&2
+  if ! uv lock --python 3.12 >&2 || ! uv sync --python 3.12 --quiet >&2; then
+    write_failure "uv sync failed in $PLUGIN_ROOT after refreshing plugin/uv.lock — run 'uv lock --python 3.12 && uv sync --python 3.12' there to diagnose"
+  fi
 fi
 # Defend against a stale lockfile silently dropping the project install.
 # When plugin/uv.lock pins a different claude-smart version than pyproject.toml,

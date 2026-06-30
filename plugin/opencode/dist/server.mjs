@@ -1,11 +1,85 @@
 import { spawn } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AssistantBuffer } from "./assistant-buffer.js";
 import { sessionIDFrom } from "./internal.js";
 import { chatMessagePayload, eventPayload, stopPayload, toolAfterPayload } from "./payload.js";
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
-const PLUGIN_ROOT = resolve(MODULE_DIR, "../..");
+function homeDir() {
+    return process.env.HOME || homedir();
+}
+function textFilePluginRoot() {
+    try {
+        return readFileSync(join(homeDir(), ".reflexio", "plugin-root.txt"), "utf8").trim() || undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+function isPluginRoot(candidate) {
+    return !!candidate
+        && existsSync(join(candidate, "pyproject.toml"))
+        && existsSync(join(candidate, "uv.lock"))
+        && existsSync(join(candidate, "scripts", "hook_entry.sh"));
+}
+function canonicalPluginRoot(candidate) {
+    if (!isPluginRoot(candidate))
+        return undefined;
+    try {
+        return realpathSync(candidate);
+    }
+    catch {
+        return undefined;
+    }
+}
+function pathParts(candidate) {
+    return candidate.split(/[\\/]+/).filter(Boolean);
+}
+function isDescendantOrSame(child, parent) {
+    const path = relative(parent, child);
+    return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+}
+function isReflexioSessionCopy(candidate) {
+    try {
+        const reflexioRoot = realpathSync(join(homeDir(), ".reflexio"));
+        return isDescendantOrSame(candidate, reflexioRoot);
+    }
+    catch {
+        return false;
+    }
+}
+function isTransientPackageRoot(candidate) {
+    return pathParts(candidate).includes("_npx") || isReflexioSessionCopy(candidate);
+}
+function resolvePluginRoot() {
+    const current = resolve(MODULE_DIR, "../..");
+    const explicit = canonicalPluginRoot(process.env.CLAUDE_SMART_PLUGIN_ROOT);
+    if (explicit)
+        return explicit;
+    const currentRoot = canonicalPluginRoot(current);
+    if (currentRoot && !isTransientPackageRoot(currentRoot))
+        return currentRoot;
+    const candidates = [
+        join(homeDir(), ".reflexio", "plugin-root"),
+        textFilePluginRoot(),
+    ];
+    for (const candidate of candidates) {
+        const root = canonicalPluginRoot(candidate);
+        if (root)
+            return root;
+    }
+    if (currentRoot)
+        return currentRoot;
+    try {
+        return realpathSync(current);
+    }
+    catch {
+        return current;
+    }
+}
+const PLUGIN_ROOT = resolvePluginRoot();
 const SCRIPTS_DIR = resolve(PLUGIN_ROOT, "scripts");
 const HOOK_ENTRY = resolve(SCRIPTS_DIR, "hook_entry.sh");
 const BACKEND_SERVICE = resolve(SCRIPTS_DIR, "backend-service.sh");

@@ -54,6 +54,60 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
     return env
 
 
+def _write_executable(path: Path, body: str) -> None:
+    path.write_text(body)
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
+    """Fake uv for bootstrap matrix tests.
+
+    Modes:
+    - fresh: locked sync succeeds and no lock refresh is expected.
+    - stale: locked sync fails, lock check fails, lock refresh + unlocked sync succeeds.
+    - non_lock_failure: locked sync fails, lock check passes, full locked retry fails.
+    """
+    assert mode in {"fresh", "stale", "non_lock_failure"}
+    _write_executable(
+        path,
+        "#!/bin/sh\n"
+        f"mode={mode!r}\n"
+        'printf "uv %s\\n" "$*" >> "$HOME/uv.log"\n'
+        "create_python() {\n"
+        '  mkdir -p "$PWD/.venv/bin"\n'
+        '  printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
+        '  chmod +x "$PWD/.venv/bin/python"\n'
+        "}\n"
+        'case "$*" in\n'
+        '  "sync --locked --python 3.12 --quiet")\n'
+        '    if [ "$mode" = "fresh" ]; then create_python; exit 0; fi\n'
+        "    exit 1\n"
+        "    ;;\n"
+        '  "lock --check --python 3.12")\n'
+        '    if [ "$mode" = "stale" ]; then exit 1; fi\n'
+        "    exit 0\n"
+        "    ;;\n"
+        '  "lock --python 3.12")\n'
+        '    if [ "$mode" = "stale" ]; then printf "fresh\\n" > "$PWD/uv.lock"; exit 0; fi\n'
+        '    printf "unexpected lock refresh\\n" >&2\n'
+        "    exit 22\n"
+        "    ;;\n"
+        '  "sync --python 3.12 --quiet")\n'
+        '    if [ "$mode" = "stale" ]; then create_python; exit 0; fi\n'
+        '    printf "unexpected unlocked sync\\n" >&2\n'
+        "    exit 23\n"
+        "    ;;\n"
+        '  "sync --locked --python 3.12")\n'
+        '    if [ "$mode" = "non_lock_failure" ]; then exit 1; fi\n'
+        "    create_python\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "esac\n"
+        'if [ "$1" = "pip" ]; then exit 0; fi\n'
+        "exit 0\n",
+    )
+
+
 def _claude_plugin_cache_version_dir(tmp_path: Path) -> Path:
     """Return the cache dir that real `claude plugin install` would populate.
 
@@ -1452,6 +1506,146 @@ def test_smart_install_installs_vendored_reflexio(tmp_path: Path) -> None:
     assert f"--reinstall --no-deps {vendor}" in uv_log
 
 
+def _prepare_smart_install_sync_fixture(
+    tmp_path: Path, *, mode: str
+) -> tuple[Path, Path, dict[str, str]]:
+    plugin_root = tmp_path / "plugin"
+    scripts = plugin_root / "scripts"
+    fake_bin = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    fake_bin.mkdir()
+    shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(
+        REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
+        scripts / "ensure-plugin-root.sh",
+    )
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    (plugin_root / "uv.lock").write_text("locked\n")
+    _write_bootstrap_uv(fake_bin / "uv", mode=mode)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    return plugin_root, scripts / "smart-install.sh", env
+
+
+def test_smart_install_refreshes_stale_lock_before_retrying_sync(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "plugin"
+    scripts = plugin_root / "scripts"
+    fake_bin = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    fake_bin.mkdir()
+    shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(
+        REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
+        scripts / "ensure-plugin-root.sh",
+    )
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    (plugin_root / "uv.lock").write_text("stale\n")
+
+    uv = fake_bin / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$HOME/uv.log"\n'
+        'if [ "$1 $2 $3" = "sync --locked --python" ]; then\n'
+        "  exit 1\n"
+        "fi\n"
+        'if [ "$1 $2 $3" = "lock --check --python" ]; then\n'
+        "  exit 1\n"
+        "fi\n"
+        'if [ "$1" = "lock" ]; then\n'
+        '  printf "fresh\\n" > "$PWD/uv.lock"\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$1" = "sync" ]; then\n'
+        '  mkdir -p "$PWD/.venv/bin"\n'
+        '  printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
+        '  chmod +x "$PWD/.venv/bin/python"\n'
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(scripts / "smart-install.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "plugin/uv.lock is out of sync; refreshing local lockfile" in result.stderr
+    assert not (tmp_path / ".claude-smart" / "install-failed").exists()
+    assert (tmp_path / ".claude-smart" / "install-complete").exists()
+    assert (plugin_root / "uv.lock").read_text() == "fresh\n"
+    assert (tmp_path / "uv.log").read_text().splitlines()[:4] == [
+        "sync --locked --python 3.12 --quiet",
+        "lock --check --python 3.12",
+        "lock --python 3.12",
+        "sync --python 3.12 --quiet",
+    ]
+
+
+def test_smart_install_locked_sync_success_does_not_refresh_lock(
+    tmp_path: Path,
+) -> None:
+    plugin_root, smart_install, env = _prepare_smart_install_sync_fixture(
+        tmp_path, mode="fresh"
+    )
+
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(smart_install)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "plugin/uv.lock is out of sync" not in result.stderr
+    assert not (tmp_path / ".claude-smart" / "install-failed").exists()
+    assert (tmp_path / ".claude-smart" / "install-complete").exists()
+    assert (plugin_root / "uv.lock").read_text() == "locked\n"
+    assert (tmp_path / "uv.log").read_text().splitlines()[:1] == [
+        "uv sync --locked --python 3.12 --quiet",
+    ]
+
+
+def test_smart_install_non_lock_sync_failure_stays_strict(tmp_path: Path) -> None:
+    plugin_root, smart_install, env = _prepare_smart_install_sync_fixture(
+        tmp_path, mode="non_lock_failure"
+    )
+
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(smart_install)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    marker = tmp_path / ".claude-smart" / "install-failed"
+    assert result.returncode == 0
+    assert marker.exists()
+    assert "uv sync failed" in marker.read_text()
+    assert "plugin/uv.lock is out of sync" not in result.stderr
+    assert (plugin_root / "uv.lock").read_text() == "locked\n"
+    uv_lines = (tmp_path / "uv.log").read_text().splitlines()
+    assert uv_lines[:2] == [
+        "uv sync --locked --python 3.12 --quiet",
+        "uv lock --check --python 3.12",
+    ]
+    assert "uv lock --python 3.12" not in uv_lines
+    assert "uv sync --python 3.12 --quiet" not in uv_lines
+
+
 @pytest.mark.parametrize(
     "copy_dirname",
     [
@@ -2182,6 +2376,364 @@ def test_node_installer_does_not_treat_global_node_as_private_runtime(
     assert "Intel Mac is not supported" in result.stdout
 
 
+def _prepare_node_bootstrap_sync_fixture(
+    tmp_path: Path, *, mode: str
+) -> tuple[Path, Path, dict[str, str]]:
+    home = tmp_path / "home"
+    plugin_root = tmp_path / "plugin"
+    private_node = home / ".claude-smart" / "node" / "current" / "bin"
+    uv_bin = home / ".local" / "bin"
+    plugin_root.mkdir(parents=True)
+    private_node.mkdir(parents=True)
+    uv_bin.mkdir(parents=True)
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    (plugin_root / "uv.lock").write_text("locked\n")
+    _write_executable(private_node / "node", "#!/bin/sh\nexit 0\n")
+    _write_executable(private_node / "npm", "#!/bin/sh\nexit 0\n")
+    _write_bootstrap_uv(uv_bin / "uv", mode=mode)
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "CLAUDE_SMART_TEST_PLATFORM": "darwin",
+            "CLAUDE_SMART_TEST_ARCH": "arm64",
+            "CLAUDE_SMART_TEST_RELEASE": "23.0.0",
+        }
+    )
+    return home, plugin_root, env
+
+
+def _run_node_bootstrap(
+    tmp_path: Path, *, mode: str
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for installer wrapper tests")
+    home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(tmp_path, mode=mode)
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
+        "{ patchCodexHooks: false })"
+        ".then(() => console.log('done'))"
+        ".catch((err) => { console.error(err.message); process.exit(1); });"
+    )
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    return result, home, plugin_root
+
+
+def _pack_claude_smart_tarball(tmp_path: Path) -> Path:
+    npm = shutil.which("npm")
+    if not npm:
+        pytest.skip("npm is required for package install smoke tests")
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    result = subprocess.run(
+        [
+            npm,
+            "pack",
+            "--ignore-scripts",
+            "--pack-destination",
+            str(pack_dir),
+            str(REPO_ROOT),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    tarballs = sorted(pack_dir.glob("claude-smart-*.tgz"))
+    assert len(tarballs) == 1, result.stdout
+    return tarballs[0]
+
+
+def _write_fake_codex(path: Path) -> None:
+    _write_executable(
+        path,
+        """#!/usr/bin/env node
+const fs = require("fs");
+const home = process.env.HOME || ".";
+const args = process.argv.slice(2);
+fs.appendFileSync(`${home}/codex.log`, `codex ${args.join(" ")}\\n`);
+
+if (args[0] === "features" && args[1] === "enable") {
+  process.exit(1);
+}
+
+if (args[0] !== "app-server") {
+  process.exit(0);
+}
+
+process.stdin.setEncoding("utf8");
+let buffer = "";
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\\n")) >= 0) {
+    const line = buffer.slice(0, newline);
+    buffer = buffer.slice(newline + 1);
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    if (!message.id) continue;
+    if (message.method === "hooks/list") {
+      process.stdout.write(JSON.stringify({
+        id: message.id,
+        result: {
+          data: [{
+            hooks: [{
+              pluginId: "claude-smart@reflexioai",
+              key: "claude-smart@reflexioai:SessionStart:0",
+              currentHash: "hash-session-start"
+            }]
+          }]
+        }
+      }) + "\\n");
+    } else {
+      process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + "\\n");
+    }
+  }
+});
+""",
+    )
+
+
+def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
+    tmp_path: Path,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("tarball smoke uses POSIX npm bin paths")
+    node = shutil.which("node")
+    npm = shutil.which("npm")
+    if not node or not npm:
+        pytest.skip("node and npm are required for package install smoke tests")
+
+    tarball = _pack_claude_smart_tarball(tmp_path)
+    home = tmp_path / "home"
+    prefix = tmp_path / "npm-prefix"
+    fake_bin = tmp_path / "fake-bin"
+    private_node = home / ".claude-smart" / "node" / "current" / "bin"
+    uv_bin = home / ".local" / "bin"
+    project = tmp_path / "project"
+    for path in [home, prefix, fake_bin, private_node, uv_bin, project]:
+        path.mkdir(parents=True, exist_ok=True)
+    _write_fake_codex(fake_bin / "codex")
+    _write_executable(private_node / "node", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        private_node / "npm",
+        '#!/bin/sh\nprintf "npm %s\\n" "$*" >> "$HOME/npm.log"\nexit 0\n',
+    )
+    _write_bootstrap_uv(uv_bin / "uv", mode="fresh")
+
+    env = os.environ.copy()
+    test_path = f"{prefix / 'bin'}{os.pathsep}{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    env.update(
+        {
+            "HOME": str(home),
+            "PATH": test_path,
+            "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
+            "CLAUDE_SMART_DASHBOARD_AUTOSTART": "0",
+            "CLAUDE_SMART_TEST_PLATFORM": "linux",
+            "CLAUDE_SMART_TEST_ARCH": "x64",
+        }
+    )
+    install_result = subprocess.run(
+        [
+            npm,
+            "install",
+            "-g",
+            "--prefix",
+            str(prefix),
+            "--ignore-scripts",
+            "--audit=false",
+            "--fund=false",
+            str(tarball),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    assert install_result.returncode == 0, install_result.stderr
+
+    env["PATH"] = test_path
+    result = subprocess.run(
+        [str(prefix / "bin" / "claude-smart"), "install", "--host", "codex"],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "claude-smart Codex support is installed." in result.stdout
+    assert not (home / ".claude-smart" / "install-failed").exists()
+
+    version = json.loads(
+        (REPO_ROOT / "plugin" / ".codex-plugin" / "plugin.json").read_text()
+    )["version"]
+    marketplace_plugin = (
+        home / ".claude" / "plugins" / "marketplaces" / "reflexioai" / "plugin"
+    )
+    cache_plugin = (
+        home
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / version
+    )
+    for root in [marketplace_plugin, cache_plugin]:
+        assert (root / "pyproject.toml").exists()
+        assert (root / "uv.lock").exists()
+        assert (root / "scripts" / "hook_entry.sh").exists()
+        assert (root / "opencode" / "dist" / "server.mjs").exists()
+    assert (cache_plugin / ".venv" / "bin" / "python").exists()
+
+    codex_config = (home / ".codex" / "config.toml").read_text()
+    assert "hooks = true" in codex_config
+    assert "plugin_hooks = true" in codex_config
+    assert '[plugins."claude-smart@reflexioai"]' in codex_config
+    assert '[hooks.state."claude-smart@reflexioai:SessionStart:0"]' in codex_config
+    assert 'trusted_hash = "hash-session-start"' in codex_config
+    assert "uv sync --locked --python 3.12 --quiet" in (home / "uv.log").read_text()
+    codex_log = (home / "codex.log").read_text()
+    assert "codex plugin marketplace add" in codex_log
+    assert "codex features enable hooks" in codex_log
+    assert "codex features enable plugin_hooks" in codex_log
+
+
+def test_package_tarball_ships_fresh_uv_lock(tmp_path: Path) -> None:
+    uv = shutil.which("uv")
+    if not uv:
+        pytest.skip("uv is required for package lock smoke tests")
+
+    tarball = _pack_claude_smart_tarball(tmp_path)
+    extract_dir = tmp_path / "extract"
+    extract_dir.mkdir()
+    with tarfile.open(tarball) as archive:
+        archive.extractall(extract_dir)
+
+    result = subprocess.run(
+        [uv, "lock", "--check", "--python", "3.12", "--project", "plugin"],
+        cwd=extract_dir / "package",
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_opencode_fresh_tarball_install_uses_local_file_plugin(
+    tmp_path: Path,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("tarball smoke uses POSIX npm bin paths")
+    node = shutil.which("node")
+    npm = shutil.which("npm")
+    if not node or not npm:
+        pytest.skip("node and npm are required for package install smoke tests")
+
+    tarball = _pack_claude_smart_tarball(tmp_path)
+    home = tmp_path / "home"
+    prefix = tmp_path / "npm-prefix"
+    fake_bin = tmp_path / "fake-bin"
+    private_node = home / ".claude-smart" / "node" / "current" / "bin"
+    uv_bin = home / ".local" / "bin"
+    project = tmp_path / "project"
+    xdg = tmp_path / "xdg"
+    for path in [home, prefix, fake_bin, private_node, uv_bin, project, xdg]:
+        path.mkdir(parents=True, exist_ok=True)
+    _write_executable(fake_bin / "opencode", "#!/bin/sh\nexit 0\n")
+    _write_executable(private_node / "node", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        private_node / "npm",
+        '#!/bin/sh\nprintf "npm %s\\n" "$*" >> "$HOME/npm.log"\nexit 0\n',
+    )
+    _write_bootstrap_uv(uv_bin / "uv", mode="fresh")
+
+    env = os.environ.copy()
+    test_path = f"{prefix / 'bin'}{os.pathsep}{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    env.update(
+        {
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(xdg),
+            "PATH": test_path,
+            "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
+            "CLAUDE_SMART_DASHBOARD_AUTOSTART": "0",
+            "CLAUDE_SMART_TEST_PLATFORM": "linux",
+            "CLAUDE_SMART_TEST_ARCH": "x64",
+        }
+    )
+    install_result = subprocess.run(
+        [
+            npm,
+            "install",
+            "-g",
+            "--prefix",
+            str(prefix),
+            "--ignore-scripts",
+            "--audit=false",
+            "--fund=false",
+            str(tarball),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    assert install_result.returncode == 0, install_result.stderr
+
+    result = subprocess.run(
+        [
+            str(prefix / "bin" / "claude-smart"),
+            "install",
+            "--host",
+            "opencode",
+            "--global",
+        ],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "claude-smart OpenCode support is installed." in result.stdout
+    config = json.loads((xdg / "opencode" / "opencode.json").read_text())
+    assert len(config["plugin"]) == 1
+    plugin_spec = config["plugin"][0]
+    assert plugin_spec.startswith("file://")
+    assert plugin_spec != "claude-smart"
+
+    local_package = Path(plugin_spec.removeprefix("file://"))
+    installed_package = prefix / "lib" / "node_modules" / "claude-smart"
+    local_script = local_package / "plugin" / "scripts" / "smart-install.sh"
+    installed_script = installed_package / "plugin" / "scripts" / "smart-install.sh"
+    assert local_script.exists()
+    assert hashlib.sha256(local_script.read_bytes()).hexdigest() == hashlib.sha256(
+        installed_script.read_bytes()
+    ).hexdigest()
+    assert (local_package / "plugin" / ".venv" / "bin" / "python").exists()
+    assert not (home / ".claude-smart" / "install-failed").exists()
+    assert "uv sync --locked --python 3.12 --quiet" in (home / "uv.log").read_text()
+
+
 def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
     tmp_path: Path,
 ) -> None:
@@ -2332,6 +2884,114 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
             assert f'"{token}"' in cmd, f"index {idx} expected token {token!r}: {cmd}"
     user_prompt_cmd = parsed["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
     assert '"hook"' in user_prompt_cmd and '"user-prompt"' in user_prompt_cmd
+
+
+def test_node_installer_refreshes_stale_lock_before_retrying_sync(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for installer wrapper tests")
+
+    home = tmp_path / "home"
+    plugin_root = tmp_path / "plugin"
+    private_node = home / ".claude-smart" / "node" / "current" / "bin"
+    uv_bin = home / ".local" / "bin"
+    plugin_root.mkdir(parents=True)
+    private_node.mkdir(parents=True)
+    uv_bin.mkdir(parents=True)
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    (plugin_root / "uv.lock").write_text("stale\n")
+    (private_node / "node").write_text("#!/bin/sh\nexit 0\n")
+    (private_node / "npm").write_text("#!/bin/sh\nexit 0\n")
+    (uv_bin / "uv").write_text(
+        "#!/bin/sh\n"
+        'printf "uv %s\\n" "$*" >> "$HOME/uv.log"\n'
+        'if [ "$1 $2 $3" = "sync --locked --python" ]; then\n'
+        "  exit 1\n"
+        "fi\n"
+        'if [ "$1 $2 $3" = "lock --check --python" ]; then\n'
+        "  exit 1\n"
+        "fi\n"
+        'if [ "$1" = "lock" ]; then\n'
+        '  printf "fresh\\n" > "$PWD/uv.lock"\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$1" = "sync" ]; then\n'
+        '  mkdir -p "$PWD/.venv/bin"\n'
+        '  printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
+        '  chmod +x "$PWD/.venv/bin/python"\n'
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    for executable in [private_node / "node", private_node / "npm", uv_bin / "uv"]:
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
+        "{ patchCodexHooks: false })"
+        ".then(() => console.log('done'))"
+        ".catch((err) => { console.error(err.message); process.exit(1); });"
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "CLAUDE_SMART_TEST_PLATFORM": "darwin",
+            "CLAUDE_SMART_TEST_ARCH": "arm64",
+            "CLAUDE_SMART_TEST_RELEASE": "23.0.0",
+        }
+    )
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "plugin/uv.lock is out of sync; refreshing local lockfile" in result.stderr
+    assert "done" in result.stdout
+    assert (plugin_root / "uv.lock").read_text() == "fresh\n"
+    assert (home / "uv.log").read_text().splitlines()[:4] == [
+        "uv sync --locked --python 3.12 --quiet",
+        "uv lock --check --python 3.12",
+        "uv lock --python 3.12",
+        "uv sync --python 3.12 --quiet",
+    ]
+
+
+def test_node_installer_locked_sync_success_does_not_refresh_lock(
+    tmp_path: Path,
+) -> None:
+    result, home, plugin_root = _run_node_bootstrap(tmp_path, mode="fresh")
+
+    assert result.returncode == 0, result.stderr
+    assert "plugin/uv.lock is out of sync" not in result.stderr
+    assert "done" in result.stdout
+    assert (plugin_root / "uv.lock").read_text() == "locked\n"
+    assert (home / "uv.log").read_text().splitlines()[:1] == [
+        "uv sync --locked --python 3.12 --quiet",
+    ]
+
+
+def test_node_installer_non_lock_sync_failure_stays_strict(tmp_path: Path) -> None:
+    result, home, plugin_root = _run_node_bootstrap(
+        tmp_path, mode="non_lock_failure"
+    )
+
+    assert result.returncode == 1
+    assert "uv sync failed" in result.stderr
+    assert "plugin/uv.lock is out of sync" not in result.stderr
+    assert (plugin_root / "uv.lock").read_text() == "locked\n"
+    assert (home / "uv.log").read_text().splitlines()[:3] == [
+        "uv sync --locked --python 3.12 --quiet",
+        "uv lock --check --python 3.12",
+        "uv sync --locked --python 3.12",
+    ]
 
 
 def test_node_installer_read_only_prunes_publish_hooks(tmp_path: Path) -> None:
