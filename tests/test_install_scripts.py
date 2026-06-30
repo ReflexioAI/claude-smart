@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -75,7 +76,7 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         'printf "uv %s\\n" "$*" >> "$HOME/uv.log"\n'
         "create_python() {\n"
         '  mkdir -p "$PWD/.venv/bin"\n'
-        '  printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
+        f'  printf "#!/bin/sh\\nexec {shlex.quote(sys.executable)} \\"\\$@\\"\\n" > "$PWD/.venv/bin/python"\n'
         '  chmod +x "$PWD/.venv/bin/python"\n'
         "}\n"
         'case "$*" in\n'
@@ -2504,14 +2505,210 @@ process.stdin.on("data", (chunk) => {
     )
 
 
+def _write_fake_claude_installer(path: Path) -> None:
+    _write_executable(
+        path,
+        """#!/bin/sh
+set -eu
+printf 'claude %s\\n' "$*" >> "$HOME/claude.log"
+cmd="${1-} ${2-} ${3-}"
+
+if [ "$cmd" = "plugin marketplace add" ]; then
+  printf '%s\\n' "$4" > "$HOME/claude-marketplace-source"
+  exit 0
+fi
+
+if [ "$cmd" = "plugin install claude-smart@reflexioai" ]; then
+  source="$(cat "$HOME/claude-marketplace-source")"
+  version="$(awk -F'"' '/^version =/{print $2; exit}' "$source/plugin/pyproject.toml")"
+  dest="$HOME/.claude/plugins/cache/reflexioai/claude-smart/$version"
+  rm -rf "$dest"
+  mkdir -p "$(dirname "$dest")"
+  cp -R "$source/plugin" "$dest"
+  exit 0
+fi
+
+exit 0
+""",
+    )
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _npm_install_global_tarball(tarball: Path, *, prefix: Path, env: dict[str, str]) -> None:
+    npm = shutil.which("npm")
+    if not npm:
+        pytest.skip("npm is required for package install smoke tests")
+    result = subprocess.run(
+        [
+            npm,
+            "install",
+            "-g",
+            "--prefix",
+            str(prefix),
+            "--ignore-scripts",
+            "--audit=false",
+            "--fund=false",
+            str(tarball),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _assert_matching_smart_install_hash(
+    host_plugin_root: Path, installed_package: Path
+) -> None:
+    assert _sha256(host_plugin_root / "scripts" / "smart-install.sh") == _sha256(
+        installed_package / "plugin" / "scripts" / "smart-install.sh"
+    )
+
+
+def _assert_installed_host_learning_e2e(
+    host_plugin_root: Path,
+    *,
+    host: str,
+    home: Path,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / f"{host}-installed-learning-e2e.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "from tests.host_learning_harness import run_host_learning_happy_path\n"
+        "result = run_host_learning_happy_path(\n"
+        "    sys.argv[2],\n"
+        "    work_root=Path(os.environ['HOME']),\n"
+        "    expected_plugin_root=Path(sys.argv[1]),\n"
+        "    expected_state_dir=Path(os.environ['CLAUDE_SMART_STATE_DIR']),\n"
+        ")\n"
+        "print(json.dumps(result))\n"
+    )
+
+    env = os.environ.copy()
+    pythonpath_entries = [str(host_plugin_root / "src"), str(REPO_ROOT)]
+    if env.get("PYTHONPATH"):
+        pythonpath_entries.append(env["PYTHONPATH"])
+    env.update(
+        {
+            "HOME": str(home),
+            "PYTHONPATH": os.pathsep.join(pythonpath_entries),
+            "CLAUDE_SMART_STATE_DIR": str(home / ".claude-smart" / f"{host}-sessions"),
+            "CLAUDE_SMART_HOOK_LOG": str(
+                home / ".claude-smart" / f"{host}-hook.log"
+            ),
+            "CLAUDE_SMART_ENABLE_OPTIMIZER": "0",
+            "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
+            "CLAUDE_SMART_DASHBOARD_AUTOSTART": "0",
+        }
+    )
+    for key in ["REFLEXIO_URL", "REFLEXIO_API_KEY", "REFLEXIO_USER_ID"]:
+        env.pop(key, None)
+    venv_python = host_plugin_root / ".venv" / "bin" / "python"
+    assert venv_python.exists()
+    result = subprocess.run(
+        [str(venv_python), str(script), str(host_plugin_root), host],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_claude_code_fresh_tarball_install_prepares_matching_cache(
+    tmp_path: Path,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("tarball smoke uses POSIX npm bin paths")
+    node = shutil.which("node")
+    if not node or not shutil.which("npm"):
+        pytest.skip("node and npm are required for package install smoke tests")
+
+    tarball = _pack_claude_smart_tarball(tmp_path)
+    home = tmp_path / "home"
+    prefix = tmp_path / "npm-prefix"
+    fake_bin = tmp_path / "fake-bin"
+    private_node = home / ".claude-smart" / "node" / "current" / "bin"
+    uv_bin = home / ".local" / "bin"
+    project = tmp_path / "project"
+    for path in [home, prefix, fake_bin, private_node, uv_bin, project]:
+        path.mkdir(parents=True, exist_ok=True)
+    _write_fake_claude_installer(fake_bin / "claude")
+    _write_executable(private_node / "node", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        private_node / "npm",
+        '#!/bin/sh\nprintf "npm %s\\n" "$*" >> "$HOME/npm.log"\nexit 0\n',
+    )
+    _write_bootstrap_uv(uv_bin / "uv", mode="fresh")
+
+    env = os.environ.copy()
+    test_path = f"{prefix / 'bin'}{os.pathsep}{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    env.update(
+        {
+            "HOME": str(home),
+            "PATH": test_path,
+            "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
+            "CLAUDE_SMART_DASHBOARD_AUTOSTART": "0",
+            "CLAUDE_SMART_TEST_PLATFORM": "linux",
+            "CLAUDE_SMART_TEST_ARCH": "x64",
+        }
+    )
+    _npm_install_global_tarball(tarball, prefix=prefix, env=env)
+
+    result = subprocess.run(
+        [str(prefix / "bin" / "claude-smart"), "install"],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "claude-smart installed and dependencies are prepared." in result.stdout
+    assert not (home / ".claude-smart" / "install-failed").exists()
+
+    installed_package = prefix / "lib" / "node_modules" / "claude-smart"
+    version = next(
+        line.split("=", 1)[1].strip().strip('"')
+        for line in (installed_package / "plugin" / "pyproject.toml").read_text().splitlines()
+        if line.strip().startswith("version =")
+    )
+    cache_plugin = (
+        home / ".claude" / "plugins" / "cache" / "reflexioai" / "claude-smart" / version
+    )
+    assert (cache_plugin / "pyproject.toml").exists()
+    assert (cache_plugin / "scripts" / "hook_entry.sh").exists()
+    assert (cache_plugin / ".venv" / "bin" / "python").exists()
+    _assert_matching_smart_install_hash(cache_plugin, installed_package)
+    _assert_installed_host_learning_e2e(
+        cache_plugin,
+        host="claude-code",
+        home=home,
+        tmp_path=tmp_path,
+    )
+    assert (home / ".reflexio" / "plugin-root").resolve() == cache_plugin.resolve()
+    claude_log = (home / "claude.log").read_text()
+    assert f"claude plugin marketplace add {installed_package}" in claude_log
+    assert "claude plugin install claude-smart@reflexioai" in claude_log
+
+
 def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
     tmp_path: Path,
 ) -> None:
     if os.name == "nt":
         pytest.skip("tarball smoke uses POSIX npm bin paths")
     node = shutil.which("node")
-    npm = shutil.which("npm")
-    if not node or not npm:
+    if not node or not shutil.which("npm"):
         pytest.skip("node and npm are required for package install smoke tests")
 
     tarball = _pack_claude_smart_tarball(tmp_path)
@@ -2543,25 +2740,7 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
             "CLAUDE_SMART_TEST_ARCH": "x64",
         }
     )
-    install_result = subprocess.run(
-        [
-            npm,
-            "install",
-            "-g",
-            "--prefix",
-            str(prefix),
-            "--ignore-scripts",
-            "--audit=false",
-            "--fund=false",
-            str(tarball),
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=120,
-    )
-    assert install_result.returncode == 0, install_result.stderr
+    _npm_install_global_tarball(tarball, prefix=prefix, env=env)
 
     env["PATH"] = test_path
     result = subprocess.run(
@@ -2578,6 +2757,7 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
     assert "claude-smart Codex support is installed." in result.stdout
     assert not (home / ".claude-smart" / "install-failed").exists()
 
+    installed_package = prefix / "lib" / "node_modules" / "claude-smart"
     version = json.loads(
         (REPO_ROOT / "plugin" / ".codex-plugin" / "plugin.json").read_text()
     )["version"]
@@ -2598,7 +2778,14 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
         assert (root / "uv.lock").exists()
         assert (root / "scripts" / "hook_entry.sh").exists()
         assert (root / "opencode" / "dist" / "server.mjs").exists()
+        _assert_matching_smart_install_hash(root, installed_package)
     assert (cache_plugin / ".venv" / "bin" / "python").exists()
+    _assert_installed_host_learning_e2e(
+        cache_plugin,
+        host="codex",
+        home=home,
+        tmp_path=tmp_path,
+    )
 
     codex_config = (home / ".codex" / "config.toml").read_text()
     assert "hooks = true" in codex_config
@@ -2642,8 +2829,7 @@ def test_opencode_fresh_tarball_install_uses_local_file_plugin(
     if os.name == "nt":
         pytest.skip("tarball smoke uses POSIX npm bin paths")
     node = shutil.which("node")
-    npm = shutil.which("npm")
-    if not node or not npm:
+    if not node or not shutil.which("npm"):
         pytest.skip("node and npm are required for package install smoke tests")
 
     tarball = _pack_claude_smart_tarball(tmp_path)
@@ -2677,25 +2863,7 @@ def test_opencode_fresh_tarball_install_uses_local_file_plugin(
             "CLAUDE_SMART_TEST_ARCH": "x64",
         }
     )
-    install_result = subprocess.run(
-        [
-            npm,
-            "install",
-            "-g",
-            "--prefix",
-            str(prefix),
-            "--ignore-scripts",
-            "--audit=false",
-            "--fund=false",
-            str(tarball),
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=120,
-    )
-    assert install_result.returncode == 0, install_result.stderr
+    _npm_install_global_tarball(tarball, prefix=prefix, env=env)
 
     result = subprocess.run(
         [
@@ -2724,12 +2892,15 @@ def test_opencode_fresh_tarball_install_uses_local_file_plugin(
     local_package = Path(plugin_spec.removeprefix("file://"))
     installed_package = prefix / "lib" / "node_modules" / "claude-smart"
     local_script = local_package / "plugin" / "scripts" / "smart-install.sh"
-    installed_script = installed_package / "plugin" / "scripts" / "smart-install.sh"
     assert local_script.exists()
-    assert hashlib.sha256(local_script.read_bytes()).hexdigest() == hashlib.sha256(
-        installed_script.read_bytes()
-    ).hexdigest()
+    _assert_matching_smart_install_hash(local_package / "plugin", installed_package)
     assert (local_package / "plugin" / ".venv" / "bin" / "python").exists()
+    _assert_installed_host_learning_e2e(
+        local_package / "plugin",
+        host="opencode",
+        home=home,
+        tmp_path=tmp_path,
+    )
     assert not (home / ".claude-smart" / "install-failed").exists()
     assert "uv sync --locked --python 3.12 --quiet" in (home / "uv.log").read_text()
 

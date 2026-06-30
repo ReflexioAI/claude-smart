@@ -168,12 +168,15 @@ def test_opencode_hook_bootstrap_lockfile_matches_pyproject() -> None:
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-def test_package_target_checks_uv_lock_freshness() -> None:
+def test_package_target_checks_standalone_lock_freshness() -> None:
     makefile = (REPO_ROOT / "Makefile").read_text()
 
-    assert "check-uv-lock:" in makefile
-    assert "uv lock --check --python 3.12 --project plugin" in makefile
-    assert "package: check-vendor-reflexio check-locked-project-version check-uv-lock" in makefile
+    assert "check-standalone-lock:" in makefile
+    assert "bash scripts/standalone-lock.sh --check" in makefile
+    assert (
+        "package: check-vendor-reflexio check-locked-project-version "
+        "check-standalone-lock"
+    ) in makefile
 
 
 def test_opencode_bridge_does_not_call_pre_tool() -> None:
