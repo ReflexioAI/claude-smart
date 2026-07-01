@@ -62,13 +62,13 @@ rsync -a \
 unset VIRTUAL_ENV
 
 if [ "$mode" = "--write" ]; then
-  (cd "$tmp" && uv lock --refresh-package reflexio-ai >&2)
+  (cd "$tmp" && uv lock --python 3.12 --refresh-package reflexio-ai >&2)
   cp "$tmp/uv.lock" "$plugin_dir/uv.lock"
   echo "→ wrote standalone plugin/uv.lock"
 else
   # --check: verify the committed lock would not change when resolved
   # standalone. uv lock --check (alias --locked) is non-mutating.
-  if (cd "$tmp" && uv lock --check >&2); then
+  if (cd "$tmp" && uv lock --check --python 3.12 >&2); then
     echo "→ ok: plugin/uv.lock is standalone-consistent"
   else
     echo "error: plugin/uv.lock is STALE when resolved standalone (outside the" >&2

@@ -480,7 +480,8 @@ function isOpenCodeClaudeSmartSpec(spec) {
   return /(^|[\\/])claude-smart[\\/]?$/.test(packagePath);
 }
 
-function patchOpenCodePluginConfig(configPath, { install, pluginSpec = OPENCODE_BARE_PLUGIN_SPEC }) {
+function patchOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
+  const resolvedPluginSpec = install ? (pluginSpec || opencodeLocalPluginSpec()) : pluginSpec;
   const data = readJsoncObject(configPath);
   for (const field of ["plugins", "plugin"]) {
     if (data[field] !== undefined && !Array.isArray(data[field])) {
@@ -492,7 +493,7 @@ function patchOpenCodePluginConfig(configPath, { install, pluginSpec = OPENCODE_
     ...(Array.isArray(data.plugins) ? data.plugins : []),
   ];
   const kept = current.filter((entry) => !isOpenCodeClaudeSmartSpec(opencodePluginSpec(entry)));
-  const next = install ? [...kept, pluginSpec] : kept;
+  const next = install ? [...kept, resolvedPluginSpec] : kept;
   const changed =
     data.plugins !== undefined ||
     (Array.isArray(data.plugin)

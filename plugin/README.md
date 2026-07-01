@@ -43,9 +43,10 @@ npx claude-smart install --host opencode
 ```
 
 Then restart OpenCode in your project so it loads the plugin from `opencode.json`
-or your existing `.opencode/opencode.json*` config. OpenCode installs reuse the
-same local Preferences, Project-specific skills, and Shared skills as Claude Code
-and Codex.
+or your existing `.opencode/opencode.json*` config. The installer copies the
+active npm package to `~/.claude-smart/opencode/claude-smart` and registers that
+stable local package with `file://`. OpenCode installs reuse the same local
+Preferences, Project-specific skills, and Shared skills as Claude Code and Codex.
 
 ## Uninstall
 
@@ -76,8 +77,9 @@ Restart Codex after uninstalling. Local data under `~/.reflexio/` and
 npx claude-smart uninstall --host opencode
 ```
 
-Restart OpenCode after uninstalling. Local data under `~/.reflexio/` and
-`~/.claude-smart/` is preserved and shared across supported hosts.
+Restart OpenCode after uninstalling. The copied OpenCode package is removed, but
+local learning data under `~/.reflexio/` and `~/.claude-smart/` is preserved and
+shared across supported hosts.
 
 ## License
 

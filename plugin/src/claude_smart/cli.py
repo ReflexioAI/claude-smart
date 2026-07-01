@@ -1114,8 +1114,8 @@ def _is_opencode_claude_smart_spec(spec: str | None) -> bool:
 def _patch_opencode_plugin_config(
     config_path: Path, *, install: bool, plugin_spec: str | None = None
 ) -> tuple[bool, Path]:
-    if plugin_spec is None:
-        plugin_spec = _OPENCODE_BARE_PLUGIN_SPEC
+    if install and plugin_spec is None:
+        plugin_spec = _opencode_local_plugin_spec()
     data = _read_jsonc_object(config_path)
     for field in ("plugins", "plugin"):
         value = data.get(field)
@@ -1135,7 +1135,11 @@ def _patch_opencode_plugin_config(
         for item in plugins
         if not _is_opencode_claude_smart_spec(_opencode_plugin_spec(item))
     ]
-    next_plugins = [*kept, plugin_spec] if install else kept
+    if install:
+        assert plugin_spec is not None
+        next_plugins = [*kept, plugin_spec]
+    else:
+        next_plugins = kept
     if isinstance(current_plugin, list):
         changed = ("plugins" in data) or next_plugins != current_plugin
     else:

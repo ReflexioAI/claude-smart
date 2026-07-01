@@ -317,6 +317,7 @@ def test_opencode_learning_loop_buffers_injects_tools_and_publishes(
 def test_opencode_config_patch_preserves_legacy_plugin_field_and_unrelated(
     tmp_path: Path,
 ) -> None:
+    plugin_spec = cli._opencode_local_plugin_spec()
     config = tmp_path / ".opencode" / "opencode.jsonc"
     config.parent.mkdir()
     config.write_text(
@@ -333,7 +334,7 @@ def test_opencode_config_patch_preserves_legacy_plugin_field_and_unrelated(
     assert path == config
     parsed = json.loads(config.read_text())
     assert parsed["theme"] == "system"
-    assert parsed["plugin"] == ["other-plugin", "claude-smart"]
+    assert parsed["plugin"] == ["other-plugin", plugin_spec]
 
 
 def test_opencode_config_patch_uninstall_removes_only_claude_smart(
@@ -372,6 +373,7 @@ def test_opencode_config_patch_uninstall_removes_only_claude_smart(
 def test_opencode_config_patch_install_dedupes_existing_entries(
     tmp_path: Path,
 ) -> None:
+    plugin_spec = cli._opencode_local_plugin_spec()
     config = tmp_path / ".opencode" / "opencode.json"
     config.parent.mkdir()
     config.write_text(
@@ -381,7 +383,7 @@ def test_opencode_config_patch_install_dedupes_existing_entries(
     changed, _ = cli._patch_opencode_plugin_config(config, install=True)
 
     assert changed is True
-    assert json.loads(config.read_text())["plugin"] == ["other-plugin", "claude-smart"]
+    assert json.loads(config.read_text())["plugin"] == ["other-plugin", plugin_spec]
 
 
 def test_opencode_config_patch_installs_local_file_spec_and_removes_bare_name(
@@ -418,17 +420,19 @@ def test_opencode_config_patch_installs_local_file_spec_and_removes_bare_name(
 def test_opencode_config_patch_fresh_config_uses_current_plugin_field(
     tmp_path: Path,
 ) -> None:
+    plugin_spec = cli._opencode_local_plugin_spec()
     config = tmp_path / "opencode.json"
 
     changed, _ = cli._patch_opencode_plugin_config(config, install=True)
 
     assert changed is True
-    assert json.loads(config.read_text()) == {"plugin": ["claude-smart"]}
+    assert json.loads(config.read_text()) == {"plugin": [plugin_spec]}
 
 
 def test_opencode_config_patch_migrates_existing_plugins_field(
     tmp_path: Path,
 ) -> None:
+    plugin_spec = cli._opencode_local_plugin_spec()
     config = tmp_path / "opencode.json"
     config.write_text(json.dumps({"plugins": ["other-plugin"], "theme": "system"}))
 
@@ -436,7 +440,7 @@ def test_opencode_config_patch_migrates_existing_plugins_field(
 
     parsed = json.loads(config.read_text())
     assert changed is True
-    assert parsed["plugin"] == ["other-plugin", "claude-smart"]
+    assert parsed["plugin"] == ["other-plugin", plugin_spec]
     assert "plugins" not in parsed
     assert parsed["theme"] == "system"
 
@@ -514,6 +518,7 @@ def test_opencode_config_patch_uninstall_noops_without_plugin_array(
 
 
 def test_opencode_config_patch_backs_up_jsonc_config(tmp_path: Path) -> None:
+    plugin_spec = cli._opencode_local_plugin_spec()
     config = tmp_path / ".opencode" / "opencode.jsonc"
     config.parent.mkdir()
     original = (
@@ -529,7 +534,7 @@ def test_opencode_config_patch_backs_up_jsonc_config(tmp_path: Path) -> None:
 
     assert changed is True
     assert config.with_suffix(config.suffix + ".bak").read_text() == original
-    assert json.loads(config.read_text())["plugin"] == ["other-plugin", "claude-smart"]
+    assert json.loads(config.read_text())["plugin"] == ["other-plugin", plugin_spec]
 
 
 def test_opencode_config_patch_skips_backup_for_plain_json(tmp_path: Path) -> None:
@@ -886,7 +891,7 @@ def test_node_opencode_install_from_npx_root_patches_config_to_local_file_packag
 ) -> None:
     node = shutil_which_node()
     if node is None:
-        return
+        pytest.skip("node is not installed")
     package_root = tmp_path / "_npx" / "abc" / "node_modules" / "claude-smart"
     _write_minimal_node_package_root(package_root)
     project = tmp_path / "project"
@@ -924,7 +929,7 @@ def test_node_opencode_install_stable_root_bootstrap_failure_leaves_config_uncha
 ) -> None:
     node = shutil_which_node()
     if node is None:
-        return
+        pytest.skip("node is not installed")
     package_root = tmp_path / "global" / "node_modules" / "claude-smart"
     bin_dir = package_root / "bin"
     bin_dir.mkdir(parents=True)
@@ -1029,7 +1034,9 @@ def test_node_installer_patches_opencode_jsonc(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
-    assert parsed["plugin"] == ["other", "claude-smart"]
+    assert parsed["plugin"][0] == "other"
+    assert parsed["plugin"][1].startswith("file://")
+    assert parsed["plugin"][1] != "claude-smart"
     assert parsed["theme"] == "system"
 
 
@@ -1109,10 +1116,13 @@ def test_node_installer_migrates_existing_plugins_field(tmp_path: Path) -> None:
     if shutil_which_node() is None:
         pytest.skip("node is not installed")
     config = tmp_path / "opencode.json"
+    local_package = tmp_path / "local-package"
+    local_package.mkdir()
     config.write_text(json.dumps({"plugins": ["other"], "theme": "system"}))
     script = (
         f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
-        f"installer.patchOpenCodePluginConfig({json.dumps(str(config))}, {{install: true}});"
+        f"const spec = installer.opencodeLocalPluginSpec({json.dumps(str(local_package))});"
+        f"installer.patchOpenCodePluginConfig({json.dumps(str(config))}, {{ install: true, pluginSpec: spec }});"
         "process.stdout.write(require('fs').readFileSync(process.argv[1], 'utf8'));"
     )
 
@@ -1121,7 +1131,7 @@ def test_node_installer_migrates_existing_plugins_field(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
-    assert parsed["plugin"] == ["other", "claude-smart"]
+    assert parsed["plugin"] == ["other", local_package.as_uri()]
     assert "plugins" not in parsed
     assert parsed["theme"] == "system"
 
@@ -1196,11 +1206,14 @@ def test_node_installer_backs_up_jsonc_config(tmp_path: Path) -> None:
     if shutil_which_node() is None:
         pytest.skip("node is not installed")
     config = tmp_path / "opencode.jsonc"
+    local_package = tmp_path / "local-package"
+    local_package.mkdir()
     original = '{\n  // keep my notes\n  "plugin": ["other"]\n}\n'
     config.write_text(original)
     script = (
         f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
-        f"const result = installer.patchOpenCodePluginConfig({json.dumps(str(config))}, {{install: true}});"
+        f"const spec = installer.opencodeLocalPluginSpec({json.dumps(str(local_package))});"
+        f"const result = installer.patchOpenCodePluginConfig({json.dumps(str(config))}, {{ install: true, pluginSpec: spec }});"
         "process.stdout.write(JSON.stringify({ result, text: require('fs').readFileSync(process.argv[1], 'utf8'), backup: require('fs').readFileSync(`${process.argv[1]}.bak`, 'utf8') }));"
     )
 
@@ -1211,7 +1224,7 @@ def test_node_installer_backs_up_jsonc_config(tmp_path: Path) -> None:
     parsed = json.loads(result.stdout)
     assert parsed["result"]["backupPath"] == f"{config}.bak"
     assert parsed["backup"] == original
-    assert json.loads(parsed["text"])["plugin"] == ["other", "claude-smart"]
+    assert json.loads(parsed["text"])["plugin"] == ["other", local_package.as_uri()]
 
 
 def test_node_installer_project_config_path_uses_root_by_default_and_legacy_if_present(

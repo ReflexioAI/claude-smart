@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 DEPENDENCY_RE = re.compile(r'"reflexio-ai[^"]*"')
+PROJECT_STRING_RE = re.compile(r'^([A-Za-z0-9_-]+)\s*=\s*"([^"]*)"\s*(?:#.*)?$')
 PACKAGE_NAME = "reflexio-ai"
 REPO_URL = "https://github.com/ReflexioAI/reflexio.git"
 VALID_SOURCES = {"pypi", "vendor"}
@@ -57,11 +58,21 @@ def read_vendor_version(vendor: Path) -> str:
             f"reflexio.lock.json requires vendored Reflexio but {vendor} is missing; "
             "run bash scripts/release-with-reflexio.sh before npm publish"
         )
-    import tomllib
+    project: dict[str, str] = {}
+    in_project = False
+    for raw_line in pyproject.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            in_project = line == "[project]"
+            continue
+        if not in_project:
+            continue
+        match = PROJECT_STRING_RE.match(line)
+        if match:
+            project[match.group(1)] = match.group(2)
 
-    with pyproject.open("rb") as handle:
-        data = tomllib.load(handle)
-    project = data.get("project", {})
     name = project.get("name")
     version = project.get("version")
     if name != PACKAGE_NAME:

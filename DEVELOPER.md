@@ -390,11 +390,12 @@ Install the tarball globally and run the host installer:
 npm install -g /abs/path/claude-smart-<version>.tgz   # path or ./prefix, not a bare name
 claude-smart install                   # Claude Code
 claude-smart install --host codex      # Codex
+claude-smart install --host opencode   # OpenCode
 ```
 
 npm decides the source from the *shape* of the argument: a filesystem path (absolute, or relative with a `./` prefix) is installed as a local tarball, while a bare `claude-smart-<version>.tgz` is treated as a registry package name and fails. Always pass a path.
 
-Restart the host. `claude-smart install` (Claude Code) registers the bundled package root as a local marketplace and runs `claude plugin install claude-smart@reflexioai`; the Codex variant copies the bundled plugin into Codex's marketplace cache. Either way, your local plugin changes are what gets loaded.
+Restart the host. `claude-smart install` (Claude Code) registers the bundled package root as a local marketplace and runs `claude plugin install claude-smart@reflexioai`; the Codex variant copies the bundled plugin into Codex's marketplace cache; the OpenCode variant copies the active npm package to `~/.claude-smart/opencode/claude-smart` and registers that package with a `file://` plugin entry. In all three hosts, your local plugin changes are what gets loaded after rerunning the host installer.
 
 To iterate: edit plugin code, rerun `make package`, reinstall the tarball, rerun `claude-smart install`, restart the host.
 
@@ -413,6 +414,8 @@ Reinstalling the npm package only refreshes the `claude-smart` CLI wrapper — t
 ```bash
 claude plugin uninstall claude-smart@reflexioai   # Claude Code
 claude-smart install
+claude-smart install --host codex                  # Codex
+claude-smart install --host opencode               # OpenCode
 ```
 
 Do **not** use `claude-smart update` for this loop — it wraps `claude plugin update claude-smart@reflexioai`, the end-user path for pulling a newer *published* release from the marketplace. It is version-driven (a same-version rebuild has nothing to update to) and updates from the registered source rather than re-ingesting a tarball you just built. Bumping the patch version with `make bump` sidesteps all version-dedup ambiguity if you'd rather not use `--force`.
