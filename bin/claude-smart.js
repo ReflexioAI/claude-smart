@@ -35,7 +35,7 @@ const {
 } = require("fs");
 const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
-const { dirname, join } = require("path");
+const { dirname, join, resolve } = require("path");
 const { fileURLToPath, pathToFileURL } = require("url");
 
 const PLUGIN_SPEC = "claude-smart@reflexioai";
@@ -54,6 +54,8 @@ const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const OPENCODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "opencode", "claude-smart");
+const OPENCODE_PACKAGE_LOCK_TIMEOUT_MS = 120_000;
+const OPENCODE_PACKAGE_LOCK_STALE_MS = 10 * 60_000;
 const CODEX_CONFIG_PATH = join(homedir(), ".codex", "config.toml");
 const PACKAGE_ROOT = dirname(dirname(__filename));
 const CODEX_MARKETPLACE_DIR = join(
@@ -459,6 +461,13 @@ function opencodeLocalPluginSpec(packageRoot = OPENCODE_LOCAL_PACKAGE_DIR) {
   return pathToFileURL(packageRoot).href;
 }
 
+function isOpenCodeLocalPackagePath(packagePath) {
+  return (
+    sameRealPath(packagePath, OPENCODE_LOCAL_PACKAGE_DIR) ||
+    resolve(packagePath) === resolve(OPENCODE_LOCAL_PACKAGE_DIR)
+  );
+}
+
 function isOpenCodeClaudeSmartSpec(spec) {
   if (!spec) return false;
   if (spec === OPENCODE_BARE_PLUGIN_SPEC || spec.startsWith(`${OPENCODE_BARE_PLUGIN_SPEC}@`)) {
@@ -471,13 +480,14 @@ function isOpenCodeClaudeSmartSpec(spec) {
   } catch {
     return false;
   }
+  if (isOpenCodeLocalPackagePath(packagePath)) return true;
   try {
     const manifest = JSON.parse(readFileSync(join(packagePath, "package.json"), "utf8"));
     if (manifest && manifest.name === OPENCODE_BARE_PLUGIN_SPEC) return true;
   } catch {
-    // Fall through to path-name compatibility for stale local specs.
+    // Missing or malformed manifests are not enough to identify arbitrary file specs.
   }
-  return /(^|[\\/])claude-smart[\\/]?$/.test(packagePath);
+  return false;
 }
 
 function patchOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
@@ -654,22 +664,92 @@ function verifyOpenCodePluginPackage(packageRoot) {
   }
 }
 
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function withOpenCodePackageInstallLock(fn) {
+  const lockDir = join(dirname(OPENCODE_LOCAL_PACKAGE_DIR), ".install.lock");
+  mkdirSync(dirname(OPENCODE_LOCAL_PACKAGE_DIR), { recursive: true });
+  const deadline = Date.now() + OPENCODE_PACKAGE_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      mkdirSync(lockDir);
+      break;
+    } catch (err) {
+      if (!err || err.code !== "EEXIST") throw err;
+      try {
+        if (Date.now() - statSync(lockDir).mtimeMs > OPENCODE_PACKAGE_LOCK_STALE_MS) {
+          rmSync(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch (statErr) {
+        if (statErr && statErr.code !== "ENOENT") throw statErr;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`timed out waiting for OpenCode package install lock at ${lockDir}`);
+      }
+      sleepSync(100);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    rmSync(lockDir, { recursive: true, force: true });
+  }
+}
+
+function uniqueOpenCodePackagePath(prefix) {
+  return join(
+    dirname(OPENCODE_LOCAL_PACKAGE_DIR),
+    `${prefix}-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`,
+  );
+}
+
+function replaceOpenCodePluginPackage(stagedPackage, packageRoot) {
+  const backupPackage = uniqueOpenCodePackagePath(".claude-smart-previous");
+  let backupCreated = false;
+  try {
+    if (existsSync(packageRoot)) {
+      renameSync(packageRoot, backupPackage);
+      backupCreated = true;
+    }
+    renameSync(stagedPackage, packageRoot);
+    if (backupCreated) {
+      rmSync(backupPackage, { recursive: true, force: true });
+    }
+  } catch (err) {
+    if (backupCreated && !existsSync(packageRoot) && existsSync(backupPackage)) {
+      renameSync(backupPackage, packageRoot);
+    }
+    throw err;
+  }
+}
+
 function installOpenCodePluginPackage() {
   const packageRoot = OPENCODE_LOCAL_PACKAGE_DIR;
   if (sameRealPath(PACKAGE_ROOT, packageRoot)) {
     verifyOpenCodePluginPackage(packageRoot);
     return packageRoot;
   }
-  rmSync(packageRoot, { recursive: true, force: true });
-  mkdirSync(dirname(packageRoot), { recursive: true });
-  cpSync(PACKAGE_ROOT, packageRoot, {
-    recursive: true,
-    force: true,
-    verbatimSymlinks: false,
-    filter: shouldCopyPath,
+  return withOpenCodePackageInstallLock(() => {
+    const stagedPackage = uniqueOpenCodePackagePath(".claude-smart-copy");
+    rmSync(stagedPackage, { recursive: true, force: true });
+    try {
+      cpSync(PACKAGE_ROOT, stagedPackage, {
+        recursive: true,
+        force: true,
+        verbatimSymlinks: false,
+        filter: shouldCopyPath,
+      });
+      verifyOpenCodePluginPackage(stagedPackage);
+      replaceOpenCodePluginPackage(stagedPackage, packageRoot);
+      verifyOpenCodePluginPackage(packageRoot);
+      return packageRoot;
+    } finally {
+      rmSync(stagedPackage, { recursive: true, force: true });
+    }
   });
-  verifyOpenCodePluginPackage(packageRoot);
-  return packageRoot;
 }
 
 async function bootstrapClaudeCodeInstall() {

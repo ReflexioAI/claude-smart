@@ -391,6 +391,9 @@ def test_opencode_config_patch_installs_local_file_spec_and_removes_bare_name(
 ) -> None:
     package_root = tmp_path / "local-package"
     package_root.mkdir()
+    old_package = tmp_path / "old-cache" / "node_modules" / "claude-smart"
+    old_package.mkdir(parents=True)
+    (old_package / "package.json").write_text('{"name":"claude-smart"}\n')
     config = tmp_path / "opencode.json"
     config.write_text(
         json.dumps(
@@ -398,7 +401,7 @@ def test_opencode_config_patch_installs_local_file_spec_and_removes_bare_name(
                 "plugin": [
                     "other-plugin",
                     "claude-smart",
-                    "file:///old/cache/node_modules/claude-smart",
+                    old_package.as_uri(),
                 ]
             }
         )
@@ -414,6 +417,42 @@ def test_opencode_config_patch_installs_local_file_spec_and_removes_bare_name(
     assert json.loads(config.read_text())["plugin"] == [
         "other-plugin",
         package_root.as_uri(),
+    ]
+
+
+def test_opencode_config_patch_preserves_unrelated_file_specs_named_claude_smart(
+    tmp_path: Path,
+) -> None:
+    missing_manifest = tmp_path / "vendor" / "claude-smart"
+    wrong_manifest = tmp_path / "other" / "claude-smart"
+    real_package = tmp_path / "real-package"
+    missing_manifest.mkdir(parents=True)
+    wrong_manifest.mkdir(parents=True)
+    real_package.mkdir()
+    (wrong_manifest / "package.json").write_text('{"name":"not-claude-smart"}\n')
+    (real_package / "package.json").write_text('{"name":"claude-smart"}\n')
+    config = tmp_path / "opencode.json"
+    config.write_text(
+        json.dumps(
+            {
+                "plugin": [
+                    "other-plugin",
+                    missing_manifest.as_uri(),
+                    wrong_manifest.as_uri(),
+                    real_package.as_uri(),
+                    "claude-smart@0.2.46",
+                ]
+            }
+        )
+    )
+
+    changed, _ = cli._patch_opencode_plugin_config(config, install=False)
+
+    assert changed is True
+    assert json.loads(config.read_text())["plugin"] == [
+        "other-plugin",
+        missing_manifest.as_uri(),
+        wrong_manifest.as_uri(),
     ]
 
 
@@ -892,6 +931,7 @@ def test_node_opencode_install_from_npx_root_patches_config_to_local_file_packag
     node = shutil_which_node()
     if node is None:
         pytest.skip("node is not installed")
+    assert node is not None
     package_root = tmp_path / "_npx" / "abc" / "node_modules" / "claude-smart"
     _write_minimal_node_package_root(package_root)
     project = tmp_path / "project"
@@ -930,6 +970,7 @@ def test_node_opencode_install_stable_root_bootstrap_failure_leaves_config_uncha
     node = shutil_which_node()
     if node is None:
         pytest.skip("node is not installed")
+    assert node is not None
     package_root = tmp_path / "global" / "node_modules" / "claude-smart"
     bin_dir = package_root / "bin"
     bin_dir.mkdir(parents=True)
@@ -955,6 +996,39 @@ def test_node_opencode_install_stable_root_bootstrap_failure_leaves_config_uncha
     assert result.returncode != 0
     assert "could not prepare claude-smart OpenCode package" in result.stderr
     assert config.read_text() == original
+
+
+def test_opencode_install_copy_failure_preserves_existing_local_package(
+    monkeypatch, tmp_path: Path
+) -> None:
+    repo_root = tmp_path / "repo"
+    plugin_scripts = repo_root / "plugin" / "scripts"
+    plugin_scripts.mkdir(parents=True)
+    (repo_root / "package.json").write_text('{"name":"claude-smart"}\n')
+    (plugin_scripts / "smart-install.sh").write_text("#!/bin/sh\nexit 0\n")
+    local_package = tmp_path / "home" / ".claude-smart" / "opencode" / "claude-smart"
+    local_package.mkdir(parents=True)
+    marker = local_package / "marker.txt"
+    marker.write_text("keep\n")
+
+    def failing_copytree(src: Path, dst: Path, **_kwargs: object) -> Path:
+        assert src == repo_root
+        dst.mkdir(parents=True, exist_ok=True)
+        (dst / "partial.txt").write_text("partial\n")
+        raise OSError("copy failed")
+
+    monkeypatch.setattr(cli, "_REPO_ROOT", repo_root)
+    monkeypatch.setattr(cli, "_PLUGIN_ROOT", repo_root / "plugin")
+    monkeypatch.setattr(cli, "_OPENCODE_LOCAL_PACKAGE_DIR", local_package)
+    monkeypatch.setattr(cli.shutil, "copytree", failing_copytree)
+
+    with pytest.raises(OSError, match="copy failed"):
+        cli._install_opencode_plugin_package()
+
+    assert marker.read_text() == "keep\n"
+    assert not (local_package / "partial.txt").exists()
+    assert not (local_package.parent / ".install.lock").exists()
+    assert list(local_package.parent.iterdir()) == [local_package]
 
 
 def test_opencode_install_patches_project_config_after_bootstrap(
@@ -1046,13 +1120,16 @@ def test_node_installer_patches_opencode_to_local_file_spec(tmp_path: Path) -> N
     config = tmp_path / "opencode.json"
     local_package = tmp_path / "local-package"
     local_package.mkdir()
+    old_package = tmp_path / "old-cache" / "node_modules" / "claude-smart"
+    old_package.mkdir(parents=True)
+    (old_package / "package.json").write_text('{"name":"claude-smart"}\n')
     config.write_text(
         json.dumps(
             {
                 "plugin": [
                     "other",
                     "claude-smart",
-                    "file:///old/cache/node_modules/claude-smart",
+                    old_package.as_uri(),
                 ]
             }
         )
@@ -1071,6 +1148,50 @@ def test_node_installer_patches_opencode_to_local_file_spec(tmp_path: Path) -> N
     assert json.loads(result.stdout)["plugin"] == [
         "other",
         local_package.as_uri(),
+    ]
+
+
+def test_node_installer_preserves_unrelated_file_specs_named_claude_smart(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    missing_manifest = tmp_path / "vendor" / "claude-smart"
+    wrong_manifest = tmp_path / "other" / "claude-smart"
+    real_package = tmp_path / "real-package"
+    missing_manifest.mkdir(parents=True)
+    wrong_manifest.mkdir(parents=True)
+    real_package.mkdir()
+    (wrong_manifest / "package.json").write_text('{"name":"not-claude-smart"}\n')
+    (real_package / "package.json").write_text('{"name":"claude-smart"}\n')
+    config = tmp_path / "opencode.json"
+    config.write_text(
+        json.dumps(
+            {
+                "plugin": [
+                    "other",
+                    missing_manifest.as_uri(),
+                    wrong_manifest.as_uri(),
+                    real_package.as_uri(),
+                    "claude-smart@0.2.46",
+                ]
+            }
+        )
+    )
+    script = (
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        f"installer.patchOpenCodePluginConfig({json.dumps(str(config))}, {{install: false}});"
+        "process.stdout.write(require('fs').readFileSync(process.argv[1], 'utf8'));"
+    )
+
+    result = _run_node_script(script, str(config))
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["plugin"] == [
+        "other",
+        missing_manifest.as_uri(),
+        wrong_manifest.as_uri(),
     ]
 
 
@@ -1110,6 +1231,62 @@ def test_node_installer_uninstalls_and_preserves_other_plugin_shapes(
     parsed = json.loads(result.stdout)
     assert parsed["plugin"] == ["other", ["tuple-plugin", {"enabled": True}]]
     assert parsed["theme"] == "system"
+
+
+def test_node_opencode_install_copy_failure_preserves_existing_local_package(
+    tmp_path: Path,
+) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    package_root = tmp_path / "global" / "node_modules" / "claude-smart"
+    _write_minimal_node_package_root(package_root)
+    env = _isolated_installer_env(tmp_path)
+    local_package = (
+        Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
+    )
+    local_package.mkdir(parents=True)
+    (local_package / "marker.txt").write_text("keep\n")
+    script = (
+        "const fs = require('fs');"
+        "const path = require('path');"
+        "fs.cpSync = function(_src, dst) {"
+        "  fs.mkdirSync(dst, { recursive: true });"
+        "  fs.writeFileSync(path.join(dst, 'partial.txt'), 'partial\\n');"
+        "  throw new Error('copy failed');"
+        "};"
+        f"const installer = require({json.dumps(str(package_root / 'bin' / 'claude-smart.js'))});"
+        "try {"
+        "  installer.installOpenCodePluginPackage();"
+        "  process.stdout.write('unexpected success');"
+        "  process.exit(2);"
+        "} catch (err) {"
+        "  const target = path.join(process.env.HOME, '.claude-smart', 'opencode', 'claude-smart');"
+        "  const parent = path.dirname(target);"
+        "  process.stdout.write(JSON.stringify({"
+        "    message: err.message,"
+        "    marker: fs.existsSync(path.join(target, 'marker.txt')) ? fs.readFileSync(path.join(target, 'marker.txt'), 'utf8') : null,"
+        "    partialAtTarget: fs.existsSync(path.join(target, 'partial.txt')),"
+        "    entries: fs.readdirSync(parent).sort()"
+        "  }));"
+        "}"
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["message"] == "copy failed"
+    assert parsed["marker"] == "keep\n"
+    assert parsed["partialAtTarget"] is False
+    assert parsed["entries"] == ["claude-smart"]
 
 
 def test_node_installer_migrates_existing_plugins_field(tmp_path: Path) -> None:

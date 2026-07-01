@@ -21,7 +21,8 @@ Exposes the following subcommands:
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -76,6 +77,8 @@ _DASHBOARD_SCRIPT = _SCRIPTS_DIR / "dashboard-service.sh"
 _REFLEXIO_DIR = Path.home() / ".reflexio"
 _STATE_DIR = Path.home() / ".claude-smart"
 _OPENCODE_LOCAL_PACKAGE_DIR = _STATE_DIR / "opencode" / "claude-smart"
+_OPENCODE_PACKAGE_LOCK_TIMEOUT_SECONDS = 120.0
+_OPENCODE_PACKAGE_LOCK_STALE_SECONDS = 10 * 60.0
 _LOCAL_DATA_NOTICE = (
     "Local data was kept so reinstalling claude-smart can reuse your learned "
     "rules, sessions, logs, and local Reflexio data.\n"
@@ -1091,6 +1094,17 @@ def _opencode_local_plugin_spec(
     return package_root.resolve(strict=False).as_uri()
 
 
+def _is_default_opencode_package_path(package_path: Path) -> bool:
+    if _same_real_path(package_path, _OPENCODE_LOCAL_PACKAGE_DIR):
+        return True
+    try:
+        return package_path.resolve(strict=False) == _OPENCODE_LOCAL_PACKAGE_DIR.resolve(
+            strict=False
+        )
+    except OSError:
+        return False
+
+
 def _is_opencode_claude_smart_spec(spec: str | None) -> bool:
     if not spec:
         return False
@@ -1102,13 +1116,15 @@ def _is_opencode_claude_smart_spec(spec: str | None) -> bool:
     if parsed.scheme != "file":
         return False
     package_path = Path(url2pathname(parsed.path))
+    if _is_default_opencode_package_path(package_path):
+        return True
     try:
         manifest = json.loads((package_path / "package.json").read_text())
         if manifest.get("name") == _OPENCODE_BARE_PLUGIN_SPEC:
             return True
     except (OSError, json.JSONDecodeError):
         pass
-    return package_path.name == _OPENCODE_BARE_PLUGIN_SPEC
+    return False
 
 
 def _patch_opencode_plugin_config(
@@ -1204,15 +1220,76 @@ def _verify_opencode_plugin_package(package_root: Path) -> None:
         )
 
 
+@contextmanager
+def _opencode_package_install_lock(package_root: Path) -> Iterator[None]:
+    lock_dir = package_root.parent / ".install.lock"
+    package_root.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + _OPENCODE_PACKAGE_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            lock_dir.mkdir()
+            break
+        except FileExistsError:
+            try:
+                stale = (
+                    time.time() - lock_dir.stat().st_mtime
+                    > _OPENCODE_PACKAGE_LOCK_STALE_SECONDS
+                )
+            except OSError:
+                stale = False
+            if stale:
+                shutil.rmtree(lock_dir, ignore_errors=True)
+                continue
+            if time.monotonic() >= deadline:
+                raise OSError(
+                    f"timed out waiting for OpenCode package install lock at {lock_dir}"
+                )
+            time.sleep(0.1)
+    try:
+        yield
+    finally:
+        shutil.rmtree(lock_dir, ignore_errors=True)
+
+
+def _unique_opencode_package_path(parent: Path, prefix: str) -> Path:
+    return parent / f"{prefix}-{os.getpid()}-{time.monotonic_ns()}"
+
+
+def _replace_opencode_plugin_package(staged_package: Path, package_root: Path) -> None:
+    backup_package = _unique_opencode_package_path(
+        package_root.parent, ".claude-smart-previous"
+    )
+    backup_created = False
+    try:
+        if package_root.exists() or package_root.is_symlink():
+            package_root.rename(backup_package)
+            backup_created = True
+        staged_package.rename(package_root)
+        if backup_created:
+            shutil.rmtree(backup_package, ignore_errors=True)
+    except OSError:
+        if backup_created and not package_root.exists() and backup_package.exists():
+            backup_package.rename(package_root)
+        raise
+
+
 def _install_opencode_plugin_package() -> Path:
     package_root = _OPENCODE_LOCAL_PACKAGE_DIR
     if _same_real_path(_REPO_ROOT, package_root):
         _verify_opencode_plugin_package(package_root)
         return package_root
-    shutil.rmtree(package_root, ignore_errors=True)
-    package_root.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(_REPO_ROOT, package_root, ignore=_COPYTREE_IGNORE)
-    _verify_opencode_plugin_package(package_root)
+    with _opencode_package_install_lock(package_root):
+        staged_package = _unique_opencode_package_path(
+            package_root.parent, ".claude-smart-copy"
+        )
+        shutil.rmtree(staged_package, ignore_errors=True)
+        try:
+            shutil.copytree(_REPO_ROOT, staged_package, ignore=_COPYTREE_IGNORE)
+            _verify_opencode_plugin_package(staged_package)
+            _replace_opencode_plugin_package(staged_package, package_root)
+            _verify_opencode_plugin_package(package_root)
+        finally:
+            shutil.rmtree(staged_package, ignore_errors=True)
     return package_root
 
 
