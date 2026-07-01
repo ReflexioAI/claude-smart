@@ -31,7 +31,7 @@ jobs:
           make check-standalone-lock
 
   pytest:
-    name: pytest host regressions
+    name: pytest suite
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -53,13 +53,8 @@ jobs:
       - name: Install test dependencies
         run: uv sync --project plugin --group dev --python 3.12 --locked
 
-      - name: Run host regression tests
-        run: >
-          uv --project plugin run pytest
-          tests/test_host_integration_e2e.py
-          tests/test_opencode_support.py
-          tests/test_reflexio_lock_script.py
-          -q
+      - name: Run pytest suite
+        run: uv --project plugin run pytest tests -q
 
   dependency-platforms:
     name: dependency platforms (${{ matrix.os }})

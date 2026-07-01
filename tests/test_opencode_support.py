@@ -1289,6 +1289,62 @@ def test_node_opencode_install_copy_failure_preserves_existing_local_package(
     assert parsed["entries"] == ["claude-smart"]
 
 
+def test_node_opencode_install_replaces_broken_local_package_symlink(
+    tmp_path: Path,
+) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    package_root = tmp_path / "global" / "node_modules" / "claude-smart"
+    _write_minimal_node_package_root(package_root)
+    env = _isolated_installer_env(tmp_path)
+    local_package = (
+        Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
+    )
+    local_package.parent.mkdir(parents=True)
+    local_package.symlink_to(tmp_path / "missing-package")
+    script = (
+        "const fs = require('fs');"
+        "const path = require('path');"
+        "const target = path.join(process.env.HOME, '.claude-smart', 'opencode', 'claude-smart');"
+        "const realRenameSync = fs.renameSync;"
+        "fs.renameSync = function(src, dst) {"
+        "  let targetIsSymlink = false;"
+        "  try { targetIsSymlink = fs.lstatSync(target).isSymbolicLink(); } catch {}"
+        "  if (dst === target && targetIsSymlink) {"
+        "    const err = new Error('cannot replace broken symlink');"
+        "    err.code = 'ENOTDIR';"
+        "    throw err;"
+        "  }"
+        "  return realRenameSync(src, dst);"
+        "};"
+        f"const installer = require({json.dumps(str(package_root / 'bin' / 'claude-smart.js'))});"
+        "const packageRoot = installer.installOpenCodePluginPackage();"
+        "process.stdout.write(JSON.stringify({"
+        "  packageRoot,"
+        "  isSymlink: fs.lstatSync(target).isSymbolicLink(),"
+        "  hasManifest: fs.existsSync(path.join(target, 'package.json'))"
+        "}));"
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed == {
+        "packageRoot": str(local_package),
+        "isSymlink": False,
+        "hasManifest": True,
+    }
+
+
 def test_node_installer_migrates_existing_plugins_field(tmp_path: Path) -> None:
     if shutil_which_node() is None:
         pytest.skip("node is not installed")

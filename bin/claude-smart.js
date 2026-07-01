@@ -645,6 +645,15 @@ function sameRealPath(left, right) {
   }
 }
 
+function pathEntryExists(path) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function fileSha256(path) {
   return crypto.createHash("sha256").update(readFileSync(path)).digest("hex");
 }
@@ -710,7 +719,7 @@ function replaceOpenCodePluginPackage(stagedPackage, packageRoot) {
   const backupPackage = uniqueOpenCodePackagePath(".claude-smart-previous");
   let backupCreated = false;
   try {
-    if (existsSync(packageRoot)) {
+    if (pathEntryExists(packageRoot)) {
       renameSync(packageRoot, backupPackage);
       backupCreated = true;
     }
