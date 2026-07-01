@@ -225,6 +225,7 @@ def _run_private_node_install(
     env = _isolated_env(tmp_path)
     env["CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY"] = "1"
     env["CLAUDE_SMART_NODE_BASE_URL"] = base_url
+    env["CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS"] = "0"
     env["PATH"] = _minimal_path(
         tmp_path,
         "dirname",
@@ -235,13 +236,18 @@ def _run_private_node_install(
         "awk",
         "sed",
         "tar",
+        "gzip",
         "ln",
         "mv",
         "cp",
+        "sleep",
         "sha256sum",
         "shasum",
         "openssl",
     )
+    bin_dir = tmp_path / "bin"
+    _write_executable(bin_dir / "node", "#!/bin/sh\nprintf '%s\\n' 'v0.0.0'\n")
+    _write_executable(bin_dir / "npm", "#!/bin/sh\nexit 1\n")
     return subprocess.run(
         ["/bin/bash", str(SMART_INSTALL)],
         env=env,
@@ -3354,6 +3360,7 @@ def test_codex_claude_compat_accepts_stream_json_flags(tmp_path: Path) -> None:
         "  fi\n"
         "  shift || exit 1\n"
         "done\n"
+        "while IFS= read -r _line; do :; done\n"
         "printf 'stream reply' > \"$out\"\n"
     )
     codex.chmod(codex.stat().st_mode | stat.S_IXUSR)
@@ -3538,7 +3545,7 @@ def test_codex_hook_reflexio_env_file_overrides_stale_managed_process_env(
     uv.write_text(
         "#!/bin/sh\n"
         'printf \'{"hookSpecificOutput":{"hookEventName":"PostToolUse",'
-        '\\"additionalContext\\":\\"%s|%s|%s|%s\\"}}\\n\' '
+        '"additionalContext":"%s|%s|%s|%s"}}\\n\' '
         '"$REFLEXIO_URL" "$REFLEXIO_API_KEY" '
         '"$CLAUDE_SMART_USE_LOCAL_CLI" "$CLAUDE_SMART_READ_ONLY"\n'
     )
