@@ -1522,7 +1522,8 @@ def _prepare_smart_install_sync_fixture(
         scripts / "ensure-plugin-root.sh",
     )
     (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
-    (plugin_root / "uv.lock").write_text("locked\n")
+    lock_contents = "stale\n" if mode == "stale" else "locked\n"
+    (plugin_root / "uv.lock").write_text(lock_contents)
     _write_bootstrap_uv(fake_bin / "uv", mode=mode)
 
     env = _isolated_env(tmp_path)
@@ -1533,48 +1534,11 @@ def _prepare_smart_install_sync_fixture(
 def test_smart_install_refreshes_stale_lock_before_retrying_sync(
     tmp_path: Path,
 ) -> None:
-    plugin_root = tmp_path / "plugin"
-    scripts = plugin_root / "scripts"
-    fake_bin = tmp_path / "bin"
-    scripts.mkdir(parents=True)
-    fake_bin.mkdir()
-    shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
-    shutil.copy2(LIB, scripts / "_lib.sh")
-    shutil.copy2(
-        REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
-        scripts / "ensure-plugin-root.sh",
+    plugin_root, smart_install, env = _prepare_smart_install_sync_fixture(
+        tmp_path, mode="stale"
     )
-    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
-    (plugin_root / "uv.lock").write_text("stale\n")
-
-    uv = fake_bin / "uv"
-    uv.write_text(
-        "#!/bin/sh\n"
-        'printf "%s\\n" "$*" >> "$HOME/uv.log"\n'
-        'if [ "$1 $2 $3" = "sync --locked --python" ]; then\n'
-        "  exit 1\n"
-        "fi\n"
-        'if [ "$1 $2 $3" = "lock --check --python" ]; then\n'
-        "  exit 1\n"
-        "fi\n"
-        'if [ "$1" = "lock" ]; then\n'
-        '  printf "fresh\\n" > "$PWD/uv.lock"\n'
-        "  exit 0\n"
-        "fi\n"
-        'if [ "$1" = "sync" ]; then\n'
-        '  mkdir -p "$PWD/.venv/bin"\n'
-        '  printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
-        '  chmod +x "$PWD/.venv/bin/python"\n'
-        "  exit 0\n"
-        "fi\n"
-        "exit 0\n"
-    )
-    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
-
-    env = _isolated_env(tmp_path)
-    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     result = subprocess.run(
-        ["/bin/bash", "--noprofile", "--norc", str(scripts / "smart-install.sh")],
+        ["/bin/bash", "--noprofile", "--norc", str(smart_install)],
         env=env,
         text=True,
         capture_output=True,
@@ -1587,10 +1551,10 @@ def test_smart_install_refreshes_stale_lock_before_retrying_sync(
     assert (tmp_path / ".claude-smart" / "install-complete").exists()
     assert (plugin_root / "uv.lock").read_text() == "fresh\n"
     assert (tmp_path / "uv.log").read_text().splitlines()[:4] == [
-        "sync --locked --python 3.12 --quiet",
-        "lock --check --python 3.12",
-        "lock --python 3.12",
-        "sync --python 3.12 --quiet",
+        "uv sync --locked --python 3.12 --quiet",
+        "uv lock --check --python 3.12",
+        "uv lock --python 3.12",
+        "uv sync --python 3.12 --quiet",
     ]
 
 
@@ -2388,7 +2352,8 @@ def _prepare_node_bootstrap_sync_fixture(
     private_node.mkdir(parents=True)
     uv_bin.mkdir(parents=True)
     (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
-    (plugin_root / "uv.lock").write_text("locked\n")
+    lock_contents = "stale\n" if mode == "stale" else "locked\n"
+    (plugin_root / "uv.lock").write_text(lock_contents)
     _write_executable(private_node / "node", "#!/bin/sh\nexit 0\n")
     _write_executable(private_node / "npm", "#!/bin/sh\nexit 0\n")
     _write_bootstrap_uv(uv_bin / "uv", mode=mode)
@@ -3129,68 +3094,7 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
 def test_node_installer_refreshes_stale_lock_before_retrying_sync(
     tmp_path: Path,
 ) -> None:
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node is required for installer wrapper tests")
-
-    home = tmp_path / "home"
-    plugin_root = tmp_path / "plugin"
-    private_node = home / ".claude-smart" / "node" / "current" / "bin"
-    uv_bin = home / ".local" / "bin"
-    plugin_root.mkdir(parents=True)
-    private_node.mkdir(parents=True)
-    uv_bin.mkdir(parents=True)
-    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
-    (plugin_root / "uv.lock").write_text("stale\n")
-    (private_node / "node").write_text("#!/bin/sh\nexit 0\n")
-    (private_node / "npm").write_text("#!/bin/sh\nexit 0\n")
-    (uv_bin / "uv").write_text(
-        "#!/bin/sh\n"
-        'printf "uv %s\\n" "$*" >> "$HOME/uv.log"\n'
-        'if [ "$1 $2 $3" = "sync --locked --python" ]; then\n'
-        "  exit 1\n"
-        "fi\n"
-        'if [ "$1 $2 $3" = "lock --check --python" ]; then\n'
-        "  exit 1\n"
-        "fi\n"
-        'if [ "$1" = "lock" ]; then\n'
-        '  printf "fresh\\n" > "$PWD/uv.lock"\n'
-        "  exit 0\n"
-        "fi\n"
-        'if [ "$1" = "sync" ]; then\n'
-        '  mkdir -p "$PWD/.venv/bin"\n'
-        '  printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
-        '  chmod +x "$PWD/.venv/bin/python"\n'
-        "  exit 0\n"
-        "fi\n"
-        "exit 0\n"
-    )
-    for executable in [private_node / "node", private_node / "npm", uv_bin / "uv"]:
-        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
-
-    script = (
-        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
-        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
-        "{ patchCodexHooks: false })"
-        ".then(() => console.log('done'))"
-        ".catch((err) => { console.error(err.message); process.exit(1); });"
-    )
-    env = os.environ.copy()
-    env.update(
-        {
-            "HOME": str(home),
-            "CLAUDE_SMART_TEST_PLATFORM": "darwin",
-            "CLAUDE_SMART_TEST_ARCH": "arm64",
-            "CLAUDE_SMART_TEST_RELEASE": "23.0.0",
-        }
-    )
-    result = subprocess.run(
-        [node, "-e", script],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    result, home, plugin_root = _run_node_bootstrap(tmp_path, mode="stale")
 
     assert result.returncode == 0, result.stderr
     assert "plugin/uv.lock is out of sync; refreshing local lockfile" in result.stderr

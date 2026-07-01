@@ -1343,6 +1343,7 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
         )
         return 1
     package_root = Path(package_root_text)
+    plugin_root = package_root / "plugin"
     plugin_spec = _opencode_local_plugin_spec(package_root)
     config_path = _opencode_config_path(
         global_config=bool(getattr(args, "global_config", False))
@@ -1359,7 +1360,7 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
     action = "Updated" if changed else "OpenCode config already includes"
     sys.stdout.write(
         f"{action} `{plugin_spec}` in {config_path}.\n"
-        f"Prepared claude-smart runtime at {package_root / 'plugin'}.\n"
+        f"Prepared claude-smart runtime at {plugin_root}.\n"
         "Restart OpenCode in your project so it loads the plugin.\n"
     )
     return 0
