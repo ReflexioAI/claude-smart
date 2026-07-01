@@ -201,10 +201,10 @@ Under the hood: hooks watch your turns, tool calls, and assistant replies, auto-
 **Citations.** At the end of a reply, the assistant may append a short marker:
 
 ```
-✨ 2 claude-smart learnings applied [cs:s1-252,p1-5aed]
+✨ claude-smart rule applied: [git safety](http://localhost:3001/rules/s1-123) | [brief answer preference](http://localhost:3001/rules/p1-pref) · [⚡Reflexio](https://github.com/ReflexioAI/reflexio)
 ```
 
-That signals a preference (`p…`) or skill (`s…`) materially shaped the reply.
+That signals a preference or skill materially shaped the reply.
 Open the session's detail page in the [dashboard](http://localhost:3001) to see the exact cited item.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for hooks, data flow, and reflexio details.
