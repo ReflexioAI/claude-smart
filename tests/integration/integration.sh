@@ -3,8 +3,8 @@
 #
 # Simulates a fresh user environment: sandboxed HOME, no prior reflexio
 # state, no prior claude-smart state. Exercises the two hook-driven
-# long-lived services (backend on :8071, dashboard on :3001) and asserts
-# they come up healthy.
+# long-lived services (backend on :8071, embedding service on :8072, dashboard
+# on :3001) and asserts they come up healthy.
 #
 # Assumes a working install environment: uv, node, npm, python3 already
 # on PATH. The GitHub Actions matrix controls the node version; uv is
@@ -29,6 +29,7 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 PLUGIN_ROOT="$REPO_ROOT/plugin"
 
 BACKEND_PORT=8071
+EMBEDDING_PORT="${EMBEDDING_PORT:-8072}"
 DASHBOARD_PORT=3001
 
 # Sandbox HOME so real ~/.reflexio, ~/.claude-smart, ~/.claude stay
@@ -178,6 +179,12 @@ stage_backend() {
   log "backend: polling http://127.0.0.1:$BACKEND_PORT/health (20s)"
   if ! poll_200 "http://127.0.0.1:$BACKEND_PORT/health" 20; then
     fail "backend /health did not return 200 within 20s"
+  fi
+  if [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}" = "1" ]; then
+    log "backend: polling http://127.0.0.1:$EMBEDDING_PORT/health (120s)"
+    if ! poll_200 "http://127.0.0.1:$EMBEDDING_PORT/health" 120; then
+      fail "embedding service /health did not return 200 within 120s"
+    fi
   fi
   log "backend: ok"
 }

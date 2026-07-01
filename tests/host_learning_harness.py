@@ -151,7 +151,7 @@ def run_host_learning_happy_path(
     expected_state_dir: Path | None = None,
 ) -> dict[str, Any]:
     import claude_smart
-    from claude_smart import context_inject, publish, runtime, state
+    from claude_smart import context_inject, cs_cite, publish, runtime, state
     from claude_smart.events import session_start
 
     loaded_from = Path(claude_smart.__file__).resolve()
@@ -177,11 +177,11 @@ def run_host_learning_happy_path(
         project.mkdir(parents=True, exist_ok=True)
         session_id = f"learning-session-{host}"
         prompt = f"Use learned context for {host}"
-        assistant_text = (
-            f"{host} final answer\n\n"
-            f"✨ claude-smart rule applied: [{host} project skill]"
-            "(http://localhost:3001/rules/s2-user)"
+        citation_marker = cs_cite.build_marker(
+            f"[{host} project skill](http://localhost:3001/rules/s2-user)",
+            "markdown",
         )
+        assistant_text = f"{host} final answer\n\n{citation_marker}"
 
         session_start_output = _run_hook(
             host,
@@ -201,7 +201,9 @@ def run_host_learning_happy_path(
         assert f"{host} project skill" in additional_context
         assert f"{host} shared skill" in additional_context
         assert f"{host} preference" in additional_context
-        assert "claude-smart rule applied" in additional_context
+        assert cs_cite.MARKER_PREFIX in additional_context
+        assert cs_cite.marker_attribution("markdown") in additional_context
+        assert "✨ N claude-smart learnings applied" not in additional_context
 
         post_tool_output = _run_hook(
             host,
