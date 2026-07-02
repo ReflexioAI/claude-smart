@@ -3405,7 +3405,91 @@ def test_windows_plugin_root_diagnoses_occupied_junction_path() -> None:
     assert "mklink //J" in ensure_root
     assert "plugin-root.txt" in ensure_root
     assert "blocks Windows junction" in ensure_root
+    assert "preserving occupied path" in ensure_root
+    assert 'cmd.exe //C rmdir //S //Q "$link_win"' not in ensure_root
     assert 'cmd.exe //C rmdir "$link_win" >/dev/null 2>&1 || true' not in ensure_root
+
+
+def test_windows_plugin_root_tracks_cache_junction_metadata(tmp_path: Path) -> None:
+    scripts = tmp_path / "plugin" / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(
+        REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
+        scripts / "ensure-plugin-root.sh",
+    )
+    shutil.copy2(REPO_ROOT / "plugin" / "scripts" / "_lib.sh", scripts / "_lib.sh")
+    old_cache = (
+        tmp_path
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.47"
+    )
+    new_cache = (
+        tmp_path
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.48"
+    )
+    for root, name in ((old_cache, "old"), (new_cache, "new")):
+        root.mkdir(parents=True)
+        (root / "pyproject.toml").write_text(f"[project]\nname='{name}'\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "uname", "#!/bin/sh\nprintf 'MINGW64_NT-10.0\\n'\n")
+    _write_executable(fake_bin / "cygpath", "#!/bin/sh\nprintf '%s\\n' \"$2\"\n")
+    _write_executable(
+        fake_bin / "cmd.exe",
+        "#!/bin/sh\n"
+        "[ \"$1\" = \"//C\" ] || exit 2\n"
+        "shift\n"
+        "case \"$1\" in\n"
+        "  rmdir)\n"
+        "    rm -rf \"$2\"\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "  mklink)\n"
+        "    [ \"$2\" = \"//J\" ] || exit 3\n"
+        "    link=\"$3\"\n"
+        "    target=\"$4\"\n"
+        "    rm -rf \"$link\"\n"
+        "    mkdir -p \"$link\"\n"
+        "    cp \"$target/pyproject.toml\" \"$link/pyproject.toml\"\n"
+        "    printf '%s\\n' \"$target\" > \"$link/target.txt\"\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "esac\n"
+        "exit 4\n",
+    )
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    first = subprocess.run(
+        ["/bin/bash", str(scripts / "ensure-plugin-root.sh"), str(old_cache), "--force"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    second = subprocess.run(
+        ["/bin/bash", str(scripts / "ensure-plugin-root.sh"), str(new_cache)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    link = tmp_path / ".reflexio" / "plugin-root"
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert (tmp_path / ".reflexio" / "plugin-root.txt").read_text().strip() == str(new_cache)
+    assert (link / "target.txt").read_text().strip() == str(new_cache)
+    assert "cache-tracking, was" in second.stderr
 
 
 def test_windows_private_node_current_uses_backup_restore() -> None:
@@ -3415,7 +3499,8 @@ def test_windows_private_node_current_uses_backup_restore() -> None:
     assert 'old_current="$node_root/current.old.$$"' in smart_install
     assert 'mv "$node_root/current" "$old_current"' in smart_install
     assert 'mv "$install_dir" "$node_root/current"' in smart_install
-    assert 'mv "$old_current" "$node_root/current"' in smart_install
+    assert 'if ! mv "$old_current" "$node_root/current"; then' in smart_install
+    assert "could not restore previous private Node.js install" in smart_install
 
 
 def test_dashboard_build_writes_marker_when_npm_missing(tmp_path: Path) -> None:

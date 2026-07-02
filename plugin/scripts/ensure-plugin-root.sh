@@ -80,6 +80,10 @@ TARGET="$(cd "$TARGET" && pwd -P)"
 LINK="$HOME/.reflexio/plugin-root"
 mkdir -p "$(dirname "$LINK")"
 
+write_plugin_root_metadata() {
+    printf '%s\n' "$TARGET" >"$HOME/.reflexio/plugin-root.txt"
+}
+
 write_plugin_root_link() {
     reason="$1"
     if claude_smart_is_windows; then
@@ -88,15 +92,19 @@ write_plugin_root_link() {
         if [ -L "$LINK" ] || [ -f "$LINK" ]; then
             rm -f "$LINK"
         elif [ -e "$LINK" ]; then
+            # Intentionally avoid rmdir //S //Q here: if this is a real
+            # directory rather than a junction, preserve it and use metadata
+            # fallback instead of recursively deleting user-owned contents.
             cmd.exe //C rmdir "$link_win" >/dev/null 2>&1 || :
         fi
         if [ ! -e "$LINK" ] && cmd.exe //C mklink //J "$link_win" "$target_win" >/dev/null 2>&1; then
+            write_plugin_root_metadata
             echo "[claude-smart] plugin-root → $TARGET${reason:+ ($reason)}" >&2
             return 0
         fi
-        printf '%s\n' "$TARGET" >"$HOME/.reflexio/plugin-root.txt"
+        write_plugin_root_metadata
         if [ -e "$LINK" ]; then
-            echo "[claude-smart] ensure-plugin-root: $LINK blocks Windows junction; wrote plugin-root.txt fallback" >&2
+            echo "[claude-smart] ensure-plugin-root: $LINK blocks Windows junction; preserving occupied path and wrote plugin-root.txt fallback" >&2
         else
             echo "[claude-smart] ensure-plugin-root: mklink //J failed; wrote plugin-root.txt fallback" >&2
         fi
@@ -134,9 +142,16 @@ fi
 # always retarget it to $TARGET. Plugin updates leave old version
 # directories behind, so a valid pyproject.toml at the stale target is
 # not proof the link is fresh.
+CURRENT=""
 if [ -L "$LINK" ]; then
     # Literal target string, not realpath: we compare against what was written by ln -s.
     CURRENT="$(readlink "$LINK" 2>/dev/null || true)"
+elif claude_smart_is_windows && [ -e "$LINK" ] && [ -f "$HOME/.reflexio/plugin-root.txt" ]; then
+    # Windows junctions are not reported as symlinks by Git Bash, so use the
+    # metadata written alongside successful junction creation.
+    CURRENT="$(cat "$HOME/.reflexio/plugin-root.txt" 2>/dev/null || true)"
+fi
+if [ -n "$CURRENT" ]; then
     case "$CURRENT" in
         "$HOME/.claude/plugins/cache/"*|"$HOME/.codex/plugins/cache/"*)
             CURRENT_NORM="${CURRENT%/}"
