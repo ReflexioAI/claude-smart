@@ -113,6 +113,8 @@ npx claude-smart install --host opencode
 
 Then restart OpenCode in your project so it loads the plugin from `opencode.json`, the documented project config file. If that project does not already have a root config but does have `.opencode/opencode.json` or `.opencode/opencode.jsonc`, the installer updates that existing file instead of creating a second config. If both locations exist, the root config wins. Use `--global` to install into `~/.config/opencode/opencode.json` for all OpenCode projects on this machine. The installer copies the active package to `~/.claude-smart/opencode/claude-smart`, prepares that runtime immediately, and writes a `file://` plugin entry so OpenCode reloads the same prepared package after restart.
 
+The installer prepares claude-smart's runtime dependencies, but expects the OpenCode CLI to already be installed and available as `opencode` on `PATH`; set `CLAUDE_SMART_OPENCODE_PATH` if it lives elsewhere.
+
 OpenCode support is new and uses OpenCode's plugin loader to inject relevant learned context before each model request. Learning extraction runs `opencode run --pure` from an isolated temp project, so it uses OpenCode's default model unless you set `CLAUDE_SMART_OPENCODE_MODEL=provider/model`. Set that env var if your normal project config pins a different provider or model.
 
 On native Windows, install Git for Windows and make `bash.exe` available on `PATH` before starting OpenCode, or run OpenCode from WSL. OpenCode loads the plugin directly, but claude-smart still uses bundled Bash scripts to start the local backend/dashboard and process hook events.

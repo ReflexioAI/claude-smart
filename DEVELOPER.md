@@ -54,8 +54,8 @@ If you still want to use a cloud embedding provider (OpenAI, Gemini, etc.), omit
 
 ## Install dependency policy
 
-Vanilla install support means the user has installed the host (`claude` or
-`codex`) and the installer runner (`npx`, which needs Node), but
+Vanilla install support means the user has installed the host (`claude`,
+`codex`, or `opencode`) and the installer runner (`npx`, which needs Node), but
 does not need global Python, uv, Node/npm for plugin runtime, npm packages, or
 embedding model files. The plugin bootstraps runtime dependencies into user
 state:
@@ -75,7 +75,9 @@ with a visible unsupported-platform message because the current ML dependency
 stack does not publish a complete native wheel set for those targets.
 
 On native Windows, Claude Code and OpenCode hooks still need a Git
-Bash-compatible `bash` for the bundled shell scripts.
+Bash-compatible `bash` for the bundled shell scripts. The installers bootstrap
+claude-smart-owned runtime dependencies, but do not install host CLIs (`claude`,
+`codex`, `opencode`) or Git Bash.
 
 When changing dependencies, verify:
 

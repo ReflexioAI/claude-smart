@@ -550,6 +550,28 @@ function extractionProviderError() {
   );
 }
 
+function hasOpenCodeCli() {
+  const opencodePath = (process.env.CLAUDE_SMART_OPENCODE_PATH || "").trim();
+  if (opencodePath && isExecutableFile(opencodePath)) return true;
+  return hasCli("opencode");
+}
+
+function opencodePrerequisiteError() {
+  if (!hasOpenCodeCli()) {
+    return (
+      "error: OpenCode CLI not found on PATH. Install OpenCode first, " +
+      "or set CLAUDE_SMART_OPENCODE_PATH to the OpenCode executable.\n"
+    );
+  }
+  if (isWindows() && !resolveCommand(["bash.exe", "bash"])) {
+    return (
+      "error: Git Bash is required for claude-smart OpenCode support on Windows. " +
+      "Install Git for Windows and ensure bash.exe is on PATH, or run OpenCode from WSL.\n"
+    );
+  }
+  return null;
+}
+
 function findClaudeCodePluginRoot() {
   const cacheRoot = join(homedir(), ".claude", "plugins", "cache", CODEX_MARKETPLACE_NAME, "claude-smart");
   const candidates = [];
@@ -2099,6 +2121,11 @@ async function runInstallCodex(args) {
 }
 
 async function runInstallOpenCode(args) {
+  const prerequisiteError = opencodePrerequisiteError();
+  if (prerequisiteError) {
+    process.stderr.write(prerequisiteError);
+    process.exit(1);
+  }
   const setup = configureReflexioSetup();
   const readOnly = setup.readOnly;
   if (!hasExtractionProvider()) {
@@ -2275,6 +2302,8 @@ module.exports = {
   installOpenCodePluginPackage,
   patchOpenCodePluginConfig,
   hasExtractionProvider,
+  hasOpenCodeCli,
+  opencodePrerequisiteError,
   platformSupportError,
   prunePublishHooksForReadOnly,
   restorePublishHooksFromSource,

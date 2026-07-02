@@ -666,6 +666,20 @@ def test_opencode_install_fails_without_extraction_provider(monkeypatch, tmp_pat
     assert rc == 1
 
 
+def test_opencode_install_requires_opencode_cli_even_with_other_provider(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    env_path = tmp_path / ".reflexio" / ".env"
+    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
+    monkeypatch.setenv(cli.env_config.REFLEXIO_API_KEY_ENV, "rk-test")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/bin/claude" if name == "claude" else None)
+
+    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
+
+    assert rc == 1
+    assert "OpenCode CLI not found on PATH" in capsys.readouterr().err
+
+
 def test_opencode_extraction_provider_requires_executable_cli_path(
     monkeypatch, tmp_path
 ) -> None:
@@ -970,6 +984,86 @@ def test_node_opencode_install_from_npx_root_patches_config_to_local_file_packag
     assert (local_package / "plugin" / "scripts" / "smart-install.sh").exists()
 
 
+def test_node_opencode_install_requires_opencode_cli_even_with_api_key(
+    tmp_path: Path,
+) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    package_root = tmp_path / "_npx" / "abc" / "node_modules" / "claude-smart"
+    _write_minimal_node_package_root(package_root)
+    project = tmp_path / "project"
+    project.mkdir()
+    env = _isolated_installer_env(tmp_path)
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    env["PATH"] = f"{empty_bin}{os.pathsep}/bin{os.pathsep}/usr/bin"
+    env["REFLEXIO_API_KEY"] = "rk-test"
+    _seed_private_node_and_uv(env)
+
+    result = subprocess.run(
+        [
+            node,
+            str(package_root / "bin" / "claude-smart.js"),
+            "install",
+            "--host",
+            "opencode",
+        ],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "OpenCode CLI not found on PATH" in result.stderr
+    assert not (project / "opencode.json").exists()
+
+
+def test_node_opencode_install_requires_bash_on_windows(
+    tmp_path: Path,
+) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    package_root = tmp_path / "_npx" / "abc" / "node_modules" / "claude-smart"
+    _write_minimal_node_package_root(package_root)
+    project = tmp_path / "project"
+    project.mkdir()
+    env = _isolated_installer_env(tmp_path)
+    fake_bin = tmp_path / "fake-bin"
+    env.update(
+        {
+            "CLAUDE_SMART_TEST_PLATFORM": "win32",
+            "CLAUDE_SMART_TEST_ARCH": "x64",
+            "PATH": str(fake_bin),
+        }
+    )
+    _seed_private_node_and_uv(env)
+
+    result = subprocess.run(
+        [
+            node,
+            str(package_root / "bin" / "claude-smart.js"),
+            "install",
+            "--host",
+            "opencode",
+        ],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Git Bash is required for claude-smart OpenCode support on Windows" in result.stderr
+    assert not (project / "opencode.json").exists()
+
+
 def test_node_opencode_install_stable_root_bootstrap_failure_leaves_config_unchanged(
     tmp_path: Path,
 ) -> None:
@@ -1043,7 +1137,9 @@ def test_opencode_install_patches_project_config_after_bootstrap(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
     monkeypatch.setattr(
-        cli.shutil, "which", lambda name: f"/bin/{name}" if name == "codex" else None
+        cli.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in {"codex", "opencode"} else None,
     )
     monkeypatch.setattr(cli, "_bootstrap_opencode_install", lambda _read_only: (True, "/plugin"))
 
@@ -1064,7 +1160,9 @@ def test_opencode_install_patches_existing_dot_opencode_config(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
     monkeypatch.setattr(
-        cli.shutil, "which", lambda name: f"/bin/{name}" if name == "codex" else None
+        cli.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in {"codex", "opencode"} else None,
     )
     monkeypatch.setattr(cli, "_bootstrap_opencode_install", lambda _read_only: (True, "/plugin"))
 
@@ -1086,7 +1184,9 @@ def test_opencode_install_migrates_existing_plugins_field(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
     monkeypatch.setattr(
-        cli.shutil, "which", lambda name: f"/bin/{name}" if name == "codex" else None
+        cli.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in {"codex", "opencode"} else None,
     )
     monkeypatch.setattr(cli, "_bootstrap_opencode_install", lambda _read_only: (True, "/plugin"))
 

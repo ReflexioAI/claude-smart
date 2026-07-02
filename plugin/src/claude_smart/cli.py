@@ -1193,6 +1193,29 @@ def _extraction_provider_error() -> str:
     )
 
 
+def _has_opencode_cli() -> bool:
+    opencode_path = os.environ.get("CLAUDE_SMART_OPENCODE_PATH", "").strip()
+    if opencode_path:
+        resolved = Path(opencode_path).expanduser()
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return True
+    return bool(shutil.which("opencode"))
+
+
+def _opencode_prerequisite_error() -> str | None:
+    if not _has_opencode_cli():
+        return (
+            "error: OpenCode CLI not found on PATH. Install OpenCode first, "
+            "or set CLAUDE_SMART_OPENCODE_PATH to the OpenCode executable.\n"
+        )
+    if os.name == "nt" and not _resolve_bash():
+        return (
+            "error: Git Bash is required for claude-smart OpenCode support on Windows. "
+            "Install Git for Windows and ensure bash.exe is on PATH, or run OpenCode from WSL.\n"
+        )
+    return None
+
+
 def _opencode_install_supported_from_this_package() -> bool:
     return (_SCRIPTS_DIR / "smart-install.sh").is_file()
 
@@ -1331,6 +1354,10 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
             "error: OpenCode install is supported from the npm package. "
             "Run `npx claude-smart install --host opencode`.\n"
         )
+        return 1
+    prerequisite_error = _opencode_prerequisite_error()
+    if prerequisite_error:
+        sys.stderr.write(prerequisite_error)
         return 1
     read_only = _configure_reflexio_setup()
     if not _has_extraction_provider():
