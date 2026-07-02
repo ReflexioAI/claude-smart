@@ -192,6 +192,20 @@ def test_render_inline_with_registry_uses_inline_headers() -> None:
     assert len(registry) == 2
 
 
+def test_render_inline_with_registry_puts_citation_instruction_before_memory() -> None:
+    md, _ = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "use pathlib"}],
+        agent_playbooks=[],
+        profiles=[{"content": "prefers concise answers"}],
+    )
+
+    assert 0 <= md.find("When to cite:") < md.find(
+        "### Relevant project-specific skills"
+    )
+    assert md.find("When to cite:") < md.find("### Relevant project preferences")
+
+
 def test_render_inline_with_registry_auto_mode_injects_compact_instruction(
     monkeypatch,
 ) -> None:
@@ -294,6 +308,21 @@ def test_render_inline_compact_with_registry_is_one_logical_line(
     assert {entry["id"] for entry in registry} == {"s1-17", "p1-pref"}
 
 
+def test_render_inline_compact_keeps_memory_summary_before_citation_gate(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
+    md, _ = context_format.render_inline_compact_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "Run uv sync after pyproject edits."}],
+        agent_playbooks=[],
+        profiles=[{"content": "prefers concise answers"}],
+    )
+
+    assert md.startswith("claude-smart: using relevant memory.")
+    assert 0 < md.find("Cite if a listed memory informed your reasoning")
+
+
 def test_render_inline_compact_with_registry_can_emit_osc8_when_requested(
     monkeypatch,
 ) -> None:
@@ -331,7 +360,7 @@ def test_render_inline_with_registry_marker_only_is_enabled_alias(
         profiles=[],
     )
     assert cs_cite.CITATION_INSTRUCTION in md
-    assert "materially and meaningfully changed your response" in md
+    assert "informed your reasoning" in md
     assert "citation block is up to two lines" not in md
 
 

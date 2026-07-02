@@ -245,6 +245,31 @@ def test_dispatcher_logs_nothing_publish_status(
     assert rec["publish_count"] == 0
 
 
+def test_dispatcher_logs_handler_extra_fields(
+    hook_log_path, stdin_payload, monkeypatch
+) -> None:
+    def stop_with_extra(_payload: dict[str, Any]) -> tuple[str, int, dict[str, int]]:
+        return (
+            "nothing",
+            0,
+            {
+                "citation_emitted_items": 2,
+                "citation_resolved_items": 1,
+                "citation_injected_items": 6,
+                "citation_injected_unique_items": 3,
+            },
+        )
+
+    monkeypatch.setattr(hook, "_load_handlers", lambda: {"stop": stop_with_extra})
+    stdin_payload({"session_id": "s-citations", "cwd": "/tmp"})
+    hook.main(["claude-code", "stop"])
+    rec = _read_lines(hook_log_path)[0]
+    assert rec["citation_emitted_items"] == 2
+    assert rec["citation_resolved_items"] == 1
+    assert rec["citation_injected_items"] == 6
+    assert rec["citation_injected_unique_items"] == 3
+
+
 def test_dispatcher_emits_continue_on_handler_success(
     hook_log_path, stdin_payload, monkeypatch, capsys
 ) -> None:

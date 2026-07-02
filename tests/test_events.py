@@ -815,7 +815,16 @@ def test_stop_read_only_marks_buffer_without_publishing(
         {"session_id": "s_read_only", "transcript_path": str(transcript)}
     )
 
-    assert result == ("nothing", 0)
+    assert result == (
+        "nothing",
+        0,
+        {
+            "citation_emitted_items": 0,
+            "citation_resolved_items": 0,
+            "citation_injected_items": 0,
+            "citation_injected_unique_items": 0,
+        },
+    )
     records = state.read_all("s_read_only")
     assert records[-1]["published_up_to"] == len(records) - 1
     _, unpublished = state.unpublished_slice(records)
@@ -1187,6 +1196,76 @@ def test_stop_records_text_marker_ids_as_cited_items(
             "real_id": "uuid-anyio",
         },
     ]
+
+
+def test_stop_returns_structured_citation_metrics(
+    session_dir, tmp_path, monkeypatch
+) -> None:
+    state.append_injected(
+        "s1",
+        [
+            {
+                "id": "s1-42",
+                "kind": "playbook",
+                "title": "use pathlib",
+                "content": "use pathlib",
+                "real_id": "42",
+                "ts": 0,
+            },
+            {
+                "id": "s1-42",
+                "kind": "playbook",
+                "title": "use pathlib",
+                "content": "use pathlib",
+                "real_id": "42",
+                "ts": 1,
+            },
+            {
+                "id": "p1-uuid",
+                "kind": "profile",
+                "title": "prefers anyio",
+                "content": "prefers anyio",
+                "real_id": "uuid-anyio",
+                "ts": 2,
+            },
+        ],
+    )
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            {"type": "user", "message": {"content": "do the thing"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Done.\n\n"
+                                "✨ 2 claude-smart learnings applied [cs:s1-42,s9-dead]"
+                            ),
+                        }
+                    ]
+                },
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
+    )
+
+    result = stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
+
+    assert result == (
+        "nothing",
+        0,
+        {
+            "citation_emitted_items": 2,
+            "citation_resolved_items": 1,
+            "citation_injected_items": 3,
+            "citation_injected_unique_items": 2,
+        },
+    )
 
 
 def test_stop_preserves_cited_item_source_kind(

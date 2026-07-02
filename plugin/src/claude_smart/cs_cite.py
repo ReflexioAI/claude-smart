@@ -64,23 +64,22 @@ _RAW_DASHBOARD_URL_RE = re.compile(
 )
 
 # The single "when to cite" decision, shared across every render path so the
-# bar can't drift between markdown / OSC8 / compact-Codex variants. The
-# counterfactual is the deciding test; relatedness alone is not enough.
+# bar can't drift between markdown / OSC8 / compact-Codex variants.
 WHEN_TO_CITE = (
-    "When to cite: add a marker only when a listed `[cs:…]` item materially "
-    "and meaningfully changed your response — it must be clearly related to "
-    "what you actually did, and your answer would be substantively different "
-    "if the item had not been shown. The counterfactual is the deciding test: "
-    "if your response would be essentially the same without the item, omit the "
-    "marker."
+    "When to cite: end your reply with the citation marker if any listed "
+    "`[cs:…]` rule informed your reasoning — your wording, your structure, "
+    "your decisions, or your next action. Skip only when the rule was clearly "
+    "unrelated to your reply or redundantly reinforced something you'd have "
+    "done anyway. When in doubt, cite — better to over-attribute than to hide "
+    "that learning shaped the response."
 )
 
 # One-line form of WHEN_TO_CITE for the compact Codex path, which renders the
 # whole context block as a single logical line.
 WHEN_TO_CITE_COMPACT = (
-    "Cite only if a listed memory materially and meaningfully changed your "
-    "response — counterfactual: the answer would be substantively different "
-    "without it; otherwise omit."
+    "Cite if a listed memory informed your reasoning (wording, structure, "
+    "decisions, or actions). Skip only when the memory was clearly unrelated "
+    "or redundantly reinforced what you'd do anyway. When in doubt, cite."
 )
 
 _COMPACT_INTRO = f"_{WHEN_TO_CITE}"

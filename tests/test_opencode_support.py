@@ -282,7 +282,16 @@ def test_opencode_learning_loop_buffers_injects_tools_and_publishes(
     )
 
     records = state.read_all("s-loop")
-    assert result == ("ok", 3)
+    assert result == (
+        "ok",
+        3,
+        {
+            "citation_emitted_items": 0,
+            "citation_resolved_items": 0,
+            "citation_injected_items": 0,
+            "citation_injected_unique_items": 0,
+        },
+    )
     assert injected == [
         {
             "session_id": "s-loop",

@@ -39,6 +39,9 @@ _PLAN_REJECTION_COMMENT_MARKER = "the user said:"
 
 _EXIT_PLAN_MODE_TOOL = "ExitPlanMode"
 
+CitationLogExtra = dict[str, int]
+StopResult = tuple[publish.PublishStatus, int, CitationLogExtra]
+
 
 def _read_transcript_entries(path: Path) -> list[dict[str, Any]]:
     """Parse the transcript JSONL once into a list of entries.
@@ -338,7 +341,27 @@ def _registry_entry_for_citation(
     return None
 
 
-def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
+def _citation_log_extra(
+    session_id: str, *, emitted_ids: list[str], cited_items: list[dict[str, Any]]
+) -> CitationLogExtra:
+    injected_total, injected_unique = state.injected_counts(session_id)
+    return {
+        "citation_emitted_items": len(emitted_ids),
+        "citation_resolved_items": len(cited_items),
+        "citation_injected_items": injected_total,
+        "citation_injected_unique_items": injected_unique,
+    }
+
+
+def _with_citation_log_extra(
+    result: tuple[publish.PublishStatus, int] | None, extra: CitationLogExtra
+) -> StopResult | None:
+    if result is None:
+        return None
+    return result[0], result[1], extra
+
+
+def handle(payload: dict[str, Any]) -> StopResult | None:
     """Drain the buffered assistant turn to reflexio.
 
     Args:
@@ -396,6 +419,9 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
         assistant_text = cs_cite.strip_marker_lines(assistant_text)
     text_cited_ids = cs_cite.parse_text_citations(assistant_text)
     cited_items = _resolve_cited_items(session_id, text_cited_ids)
+    citation_extra = _citation_log_extra(
+        session_id, emitted_ids=text_cited_ids, cited_items=cited_items
+    )
     plan_decisions = _scan_transcript_for_plan_decisions(entries)
 
     now = int(time.time())
@@ -432,10 +458,13 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
     state.append(session_id, record)
     if env_config.env_truthy(env_config.CLAUDE_SMART_READ_ONLY_ENV):
         state.mark_all_published(session_id)
-        return ("nothing", 0)
-    return publish.publish_unpublished(
-        session_id=session_id,
-        project_id=project_id,
-        force_extraction=False,
-        skip_aggregation=False,
+        return _with_citation_log_extra(("nothing", 0), citation_extra)
+    return _with_citation_log_extra(
+        publish.publish_unpublished(
+            session_id=session_id,
+            project_id=project_id,
+            force_extraction=False,
+            skip_aggregation=False,
+        ),
+        citation_extra,
     )

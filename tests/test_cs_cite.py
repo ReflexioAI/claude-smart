@@ -201,9 +201,9 @@ def test_citation_instruction_on_returns_compact_string() -> None:
     text = cs_cite.citation_instruction("on")
     assert text == cs_cite.CITATION_INSTRUCTION
     assert "When to cite:" in text
-    assert "materially and meaningfully changed your response" in text
+    assert "informed your reasoning" in text
     assert "citation block is up to two lines" not in text
-    assert "counterfactual" in text.lower()
+    assert "When in doubt, cite" in text
     assert "✨ claude-smart rule applied:" in text
     assert "⚡Reflexio" in text
     assert cs_cite.REFLEXIO_REPO_URL in text
@@ -225,7 +225,7 @@ def test_citation_instruction_osc8_uses_terminal_hyperlink_examples() -> None:
     assert "✨ claude-smart rules applied:" not in text
     assert " | \x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\" in text
     assert "visible ` | ` separator" in text
-    assert "materially and meaningfully changed your response" in text
+    assert "informed your reasoning" in text
     assert "markdown links" in text
     assert "⚡Reflexio" in text
     assert cs_cite.REFLEXIO_REPO_URL in text

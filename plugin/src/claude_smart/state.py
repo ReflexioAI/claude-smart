@@ -131,6 +131,30 @@ def read_injected(session_id: str) -> dict[str, dict[str, Any]]:
     return registry
 
 
+def injected_counts(session_id: str) -> tuple[int, int]:
+    """Return ``(total_exposures, unique_items)`` for injected citation entries."""
+    path = injected_path(session_id)
+    if not path.exists():
+        return 0, 0
+    total = 0
+    unique: set[str] = set()
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as exc:
+                _LOGGER.warning("Skipping malformed injected line in %s: %s", path, exc)
+                continue
+            item_id = entry.get("id")
+            if isinstance(item_id, str) and item_id:
+                total += 1
+                unique.add(item_id)
+    return total, len(unique)
+
+
 def append(session_id: str, record: dict[str, Any]) -> None:
     """Append one JSON record to the session buffer. Creates the dir if needed.
 

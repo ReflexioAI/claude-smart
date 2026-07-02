@@ -239,7 +239,7 @@ def test_codex_citation_instruction_uses_text_marker_not_tool_call() -> None:
 
     instruction = cs_cite.CITATION_INSTRUCTION
 
-    assert "materially and meaningfully changed your response" in instruction
+    assert "informed your reasoning" in instruction
     assert "✨ claude-smart rule applied:" in instruction
     assert "tool call" not in instruction
 

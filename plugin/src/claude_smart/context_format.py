@@ -177,12 +177,6 @@ def render_inline_with_registry(
     if not playbook_lines and not profile_lines:
         return "", []
     sections: list[str] = []
-    if playbook_lines:
-        sections.append("### Relevant project-specific skills")
-        sections.extend(playbook_lines)
-    if profile_lines:
-        sections.append("### Relevant project preferences")
-        sections.extend(profile_lines)
     instruction = _citation_instruction(
         os.environ.get("CLAUDE_SMART_CITATIONS", "on"),
         os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
@@ -194,6 +188,12 @@ def render_inline_with_registry(
     )
     if exact_osc8_marker:
         sections.append(exact_osc8_marker)
+    if playbook_lines:
+        sections.append("### Relevant project-specific skills")
+        sections.extend(playbook_lines)
+    if profile_lines:
+        sections.append("### Relevant project preferences")
+        sections.extend(profile_lines)
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
 
 

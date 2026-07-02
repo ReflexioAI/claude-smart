@@ -31,7 +31,8 @@ _LOGGER = logging.getLogger(__name__)
 
 
 # Stop and SessionEnd return ``(PublishStatus, int)`` so the dispatcher can
-# log the publish outcome; the other handlers return ``None`` (or nothing).
+# log the publish outcome; handlers may include a third ``extra`` dict for
+# structured metrics. The other handlers return ``None`` (or nothing).
 # Use ``Any`` here rather than two specialised typedefs — the dispatcher
 # narrows at the call site via ``isinstance(result, tuple)``.
 def _load_handlers() -> dict[str, Callable[[dict[str, Any]], Any]]:
@@ -156,12 +157,17 @@ def main(argv: list[str] | None = None) -> int:
     handler_status = "ok"
     publish_status: str | None = None
     publish_count: int | None = None
+    log_extra: dict[str, Any] | None = None
     handler_stdout = StringIO()
     try:
         with redirect_stdout(handler_stdout):
             result = handler(payload)
         if isinstance(result, tuple) and len(result) == 2:
             publish_status, publish_count = result
+        elif isinstance(result, tuple) and len(result) == 3:
+            publish_status, publish_count, maybe_extra = result
+            if isinstance(maybe_extra, dict):
+                log_extra = maybe_extra
     except Exception as exc:  # noqa: BLE001 — hooks must never crash the session.
         _LOGGER.exception("hook handler %s raised: %s", event, exc)
         handler_status = f"raised:{type(exc).__name__}: {exc}"
@@ -184,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         handler_status=handler_status,
         publish_status=publish_status,
         publish_count=publish_count,
+        extra=log_extra,
     )
     return 0
 
