@@ -98,6 +98,7 @@ function commandPath(names) {
 function bashPath() {
     return commandPath(process.platform === "win32" ? ["bash.exe", "bash"] : ["bash"]);
 }
+const RESOLVED_BASH = bashPath();
 function contextFrom(result) {
     const hookOutput = result.hookSpecificOutput;
     if (!hookOutput || typeof hookOutput !== "object")
@@ -123,7 +124,7 @@ function parseFirstJsonObject(text) {
 }
 function runScript(script, args, payload) {
     return new Promise((resolvePromise) => {
-        const child = spawn(bashPath() || "bash", [script, ...args], {
+        const child = spawn(RESOLVED_BASH || "bash", [script, ...args], {
             cwd: PLUGIN_ROOT,
             env: {
                 ...process.env,

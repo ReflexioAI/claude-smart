@@ -118,6 +118,8 @@ function bashPath(): string | undefined {
   return commandPath(process.platform === "win32" ? ["bash.exe", "bash"] : ["bash"])
 }
 
+const RESOLVED_BASH = bashPath()
+
 function contextFrom(result: HookResult): string {
   const hookOutput = result.hookSpecificOutput
   if (!hookOutput || typeof hookOutput !== "object") return ""
@@ -141,7 +143,7 @@ function parseFirstJsonObject(text: string): HookResult {
 
 function runScript(script: string, args: string[], payload?: Record<string, unknown>): Promise<HookResult> {
   return new Promise((resolvePromise) => {
-    const child = spawn(bashPath() || "bash", [script, ...args], {
+    const child = spawn(RESOLVED_BASH || "bash", [script, ...args], {
       cwd: PLUGIN_ROOT,
       env: {
         ...process.env,

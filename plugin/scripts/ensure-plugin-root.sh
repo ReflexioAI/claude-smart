@@ -14,6 +14,8 @@ if [ -f "$HERE/_lib.sh" ]; then
     . "$HERE/_lib.sh"
 fi
 
+# This script can be invoked without sourcing _lib.sh; keep these fallbacks in sync
+# with the shared helpers above.
 if ! command -v claude_smart_is_windows >/dev/null 2>&1; then
     claude_smart_is_windows() {
         case "$(uname -s 2>/dev/null)" in
@@ -30,13 +32,33 @@ if ! command -v claude_smart_to_windows_path >/dev/null 2>&1; then
             cygpath -w "$path"
             return $?
         fi
-        printf '%s\n' "$path" | awk '{
-            gsub(/\//, "\\")
-            if ($0 ~ /^\\[A-Za-z]\\/) {
-                drive = toupper(substr($0, 2, 1))
-                sub(/^\\[A-Za-z]\\/, drive ":\\")
+        printf '%s\n' "$path" | awk '
+        function slash_to_backslash(value) {
+            gsub(/\//, "\\", value)
+            return value
+        }
+        function drive_path(drive, rest) {
+            drive = toupper(drive)
+            sub(/^\//, "", rest)
+            if (rest == "") {
+                return drive ":\\"
             }
-            print
+            return drive ":\\" slash_to_backslash(rest)
+        }
+        {
+            normalized = $0
+            gsub(/\\/, "/", normalized)
+            if (normalized ~ /^[A-Za-z]:($|\/)/) {
+                print drive_path(substr(normalized, 1, 1), substr(normalized, 3))
+            } else if (normalized ~ /^\/cygdrive\/[A-Za-z]($|\/)/) {
+                print drive_path(substr(normalized, 11, 1), substr(normalized, 12))
+            } else if (normalized ~ /^\/mnt\/[A-Za-z]($|\/)/) {
+                print drive_path(substr(normalized, 6, 1), substr(normalized, 7))
+            } else if (normalized ~ /^\/[A-Za-z]($|\/)/) {
+                print drive_path(substr(normalized, 2, 1), substr(normalized, 3))
+            } else {
+                print slash_to_backslash(normalized)
+            }
         }'
     }
 fi
@@ -66,13 +88,18 @@ write_plugin_root_link() {
         if [ -L "$LINK" ] || [ -f "$LINK" ]; then
             rm -f "$LINK"
         elif [ -e "$LINK" ]; then
-            cmd.exe //C rmdir "$link_win" >/dev/null 2>&1 || true
+            cmd.exe //C rmdir "$link_win" >/dev/null 2>&1 || :
         fi
         if [ ! -e "$LINK" ] && cmd.exe //C mklink //J "$link_win" "$target_win" >/dev/null 2>&1; then
             echo "[claude-smart] plugin-root → $TARGET${reason:+ ($reason)}" >&2
             return 0
         fi
         printf '%s\n' "$TARGET" >"$HOME/.reflexio/plugin-root.txt"
+        if [ -e "$LINK" ]; then
+            echo "[claude-smart] ensure-plugin-root: $LINK blocks Windows junction; wrote plugin-root.txt fallback" >&2
+        else
+            echo "[claude-smart] ensure-plugin-root: mklink //J failed; wrote plugin-root.txt fallback" >&2
+        fi
         echo "[claude-smart] plugin-root.txt → $TARGET${reason:+ ($reason; junction unavailable)}" >&2
         return 0
     fi

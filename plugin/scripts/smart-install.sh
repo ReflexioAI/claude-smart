@@ -196,7 +196,7 @@ install_private_node() {
   local NODE_MIN_MAJOR NODE_MIN_MINOR NODE_LTS_MAJOR
   local node_os archive_ext reason node_arch node_platform base_url node_root
   local tmp_dir shasums_path archive_name ext_re install_dir archive_path
-  local expected_hash actual_hash archive_win dest_win candidate_path next_link
+  local expected_hash actual_hash archive_win dest_win candidate_path next_link old_current
 
   NODE_MIN_MAJOR=20
   NODE_MIN_MINOR=9
@@ -362,8 +362,31 @@ install_private_node() {
   fi
 
   if claude_smart_is_windows; then
-    rm -rf "$node_root/current"
-    mv "$install_dir" "$node_root/current"
+    # Windows cannot rely on the POSIX symlink swap path; keep current recoverable.
+    old_current="$node_root/current.old.$$"
+    rm -rf "$old_current" 2>/dev/null || true
+    if [ -e "$node_root/current" ] || [ -L "$node_root/current" ]; then
+      if ! mv "$node_root/current" "$old_current"; then
+        rm -rf "$tmp_dir" "$install_dir"
+        reason="could not stage existing private Node.js install for replacement"
+        echo "[claude-smart] WARNING: $reason" >&2
+        claude_smart_write_dashboard_unavailable "$reason"
+        return 1
+      fi
+    fi
+    if mv "$install_dir" "$node_root/current"; then
+      rm -rf "$old_current" 2>/dev/null || true
+    else
+      reason="could not activate private Node.js install at $node_root/current"
+      rm -rf "$node_root/current" 2>/dev/null || true
+      if [ -e "$old_current" ] || [ -L "$old_current" ]; then
+        mv "$old_current" "$node_root/current" 2>/dev/null || true
+      fi
+      rm -rf "$tmp_dir" "$install_dir"
+      echo "[claude-smart] WARNING: $reason" >&2
+      claude_smart_write_dashboard_unavailable "$reason"
+      return 1
+    fi
   else
     next_link="$node_root/current.next.$$"
     if ln -s "$install_dir" "$next_link" 2>/dev/null; then

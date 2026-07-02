@@ -221,13 +221,33 @@ claude_smart_to_windows_path() {
     cygpath -w "$path"
     return $?
   fi
-  printf '%s\n' "$path" | awk '{
-    gsub(/\//, "\\")
-    if ($0 ~ /^\\[A-Za-z]\\/) {
-      drive = toupper(substr($0, 2, 1))
-      sub(/^\\[A-Za-z]\\/, drive ":\\")
+  printf '%s\n' "$path" | awk '
+  function slash_to_backslash(value) {
+    gsub(/\//, "\\", value)
+    return value
+  }
+  function drive_path(drive, rest) {
+    drive = toupper(drive)
+    sub(/^\//, "", rest)
+    if (rest == "") {
+      return drive ":\\"
     }
-    print
+    return drive ":\\" slash_to_backslash(rest)
+  }
+  {
+    normalized = $0
+    gsub(/\\/, "/", normalized)
+    if (normalized ~ /^[A-Za-z]:($|\/)/) {
+      print drive_path(substr(normalized, 1, 1), substr(normalized, 3))
+    } else if (normalized ~ /^\/cygdrive\/[A-Za-z]($|\/)/) {
+      print drive_path(substr(normalized, 11, 1), substr(normalized, 12))
+    } else if (normalized ~ /^\/mnt\/[A-Za-z]($|\/)/) {
+      print drive_path(substr(normalized, 6, 1), substr(normalized, 7))
+    } else if (normalized ~ /^\/[A-Za-z]($|\/)/) {
+      print drive_path(substr(normalized, 2, 1), substr(normalized, 3))
+    } else {
+      print slash_to_backslash(normalized)
+    }
   }'
 }
 

@@ -707,7 +707,8 @@ def test_opencode_server_resolves_windows_bash_before_spawning() -> None:
 
     assert "function commandPath(names: string[]): string | undefined" in server
     assert 'process.platform === "win32" ? ["bash.exe", "bash"] : ["bash"]' in server
-    assert 'spawn(bashPath() || "bash"' in server
+    assert "const RESOLVED_BASH = bashPath()" in server
+    assert 'spawn(RESOLVED_BASH || "bash"' in server
 
 
 def test_opencode_cli_bridge_translates_claude_contract(tmp_path: Path) -> None:

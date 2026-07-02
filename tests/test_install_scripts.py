@@ -3364,39 +3364,58 @@ def test_windows_private_node_path_skips_posix_bin_probe(tmp_path: Path) -> None
 def test_windows_path_conversion_falls_back_without_cygpath(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path)
     env["PATH"] = _minimal_path(tmp_path, "awk")
-    result = subprocess.run(
-        [
-            "/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            f'. "{LIB}"; claude_smart_to_windows_path "/c/Users/demo/plugin/vendor/reflexio"',
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == r"C:\Users\demo\plugin\vendor\reflexio"
+    cases = {
+        "/c/Users/demo/plugin/vendor/reflexio": r"C:\Users\demo\plugin\vendor\reflexio",
+        "/cygdrive/c/Users/demo/plugin/vendor/reflexio": r"C:\Users\demo\plugin\vendor\reflexio",
+        "/mnt/c/Users/demo/plugin/vendor/reflexio": r"C:\Users\demo\plugin\vendor\reflexio",
+    }
+
+    for source, expected in cases.items():
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "--noprofile",
+                "--norc",
+                "-c",
+                f'. "{LIB}"; claude_smart_to_windows_path "$1"',
+                "bash",
+                source,
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
 
 
-def test_backend_service_windows_paths_and_port_probe_are_bash_safe() -> None:
+def test_backend_service_documents_windows_path_and_port_probe_patterns() -> None:
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
     assert 'CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"' in backend
     assert 'vendor_pythonpath="$(claude_smart_to_windows_path "$vendor_pythonpath")"' in backend
-    assert 'curl -sf -o /dev/null "http://127.0.0.1:$PORT"' in backend
+    assert "Best-effort port probe" in backend
+    assert 'curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$PORT"' in backend
 
 
-def test_windows_plugin_root_and_private_node_current_avoid_posix_symlink() -> None:
+def test_windows_plugin_root_diagnoses_occupied_junction_path() -> None:
     ensure_root = (REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh").read_text()
-    smart_install = SMART_INSTALL.read_text()
 
     assert "mklink //J" in ensure_root
     assert "plugin-root.txt" in ensure_root
+    assert "blocks Windows junction" in ensure_root
+    assert 'cmd.exe //C rmdir "$link_win" >/dev/null 2>&1 || true' not in ensure_root
+
+
+def test_windows_private_node_current_uses_backup_restore() -> None:
+    smart_install = SMART_INSTALL.read_text()
+
     assert "if claude_smart_is_windows; then" in smart_install
+    assert 'old_current="$node_root/current.old.$$"' in smart_install
+    assert 'mv "$node_root/current" "$old_current"' in smart_install
     assert 'mv "$install_dir" "$node_root/current"' in smart_install
+    assert 'mv "$old_current" "$node_root/current"' in smart_install
 
 
 def test_dashboard_build_writes_marker_when_npm_missing(tmp_path: Path) -> None:

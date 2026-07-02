@@ -155,11 +155,12 @@ is_our_backend_running() {
   return 1
 }
 
-# True if *anything* is listening on the port (even non-HTTP). Used to
-# avoid stomping on a foreign listener with a failed-to-start uvicorn.
+# Best-effort port probe. curl catches responsive HTTP listeners; /dev/tcp
+# catches other listeners where bash supports it. Used to avoid stomping on
+# a foreign listener with a failed-to-start uvicorn.
 port_occupied() {
   if command -v curl >/dev/null 2>&1; then
-    curl -sf -o /dev/null "http://127.0.0.1:$PORT" 2>/dev/null && return 0
+    curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$PORT" 2>/dev/null && return 0
   fi
   (echo >"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
 }
