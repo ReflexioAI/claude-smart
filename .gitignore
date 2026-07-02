@@ -34,6 +34,7 @@ Thumbs.db
 # Claude Code local settings
 .claude/settings.local.json
 /AGENTS.md
+/opencode.json
 
 # Makefile sed backups
 *.bak

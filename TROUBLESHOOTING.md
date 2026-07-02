@@ -15,6 +15,9 @@ Each hook is capped at 10–60s (see `plugin/hooks/hooks.json`). If you see long
 **Dashboard says npm or Node is missing.**
 The Setup hook should install a private Node.js/npm runtime under `~/.claude-smart/node/current` when no suitable global Node.js is available. If private Node setup or dashboard build fails, claude-smart writes the non-fatal marker `~/.claude-smart/dashboard-unavailable`; `/claude-smart:dashboard` prints that file before log tails. Restart Claude Code to retry Setup, or install Node.js 20.9+ manually and run `/claude-smart:restart`.
 
+**OpenCode on Windows injects nothing or never learns.**
+Native Windows OpenCode needs Git Bash available as `bash.exe` on `PATH`, because claude-smart starts its local services through bundled Bash scripts. Install Git for Windows and restart OpenCode from a shell that can resolve `bash.exe`, or use WSL. If learning still does not run, check `~/.claude-smart/backend.log` for the selected `opencode-claude-compat.cmd` bridge and confirm `opencode` itself is on `PATH`.
+
 **Install reports `install-failed`.**
 `~/.claude-smart/install-failed` is reserved for core setup failures such as `uv` installation or `uv sync --locked --python 3.12`. Fix the reported issue, delete the marker, then restart Claude Code so Setup can retry. Dashboard-only issues should appear in `~/.claude-smart/dashboard-unavailable` instead.
 

@@ -74,8 +74,8 @@ Intel Mac, macOS 13 or older, and Windows ARM should fail before dependency sync
 with a visible unsupported-platform message because the current ML dependency
 stack does not publish a complete native wheel set for those targets.
 
-On native Windows, Claude Code hooks still need a Git Bash-compatible `bash`
-until Claude Code exposes a single cross-platform hook command shape.
+On native Windows, Claude Code and OpenCode hooks still need a Git
+Bash-compatible `bash` for the bundled shell scripts.
 
 When changing dependencies, verify:
 

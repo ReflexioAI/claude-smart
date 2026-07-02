@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AssistantBuffer } from "./assistant-buffer.js";
 import { sessionIDFrom } from "./internal.js";
@@ -84,6 +84,20 @@ const SCRIPTS_DIR = resolve(PLUGIN_ROOT, "scripts");
 const HOOK_ENTRY = resolve(SCRIPTS_DIR, "hook_entry.sh");
 const BACKEND_SERVICE = resolve(SCRIPTS_DIR, "backend-service.sh");
 const DASHBOARD_SERVICE = resolve(SCRIPTS_DIR, "dashboard-service.sh");
+function commandPath(names) {
+    const pathParts = (process.env.PATH || "").split(delimiter).filter(Boolean);
+    for (const dir of pathParts) {
+        for (const name of names) {
+            const candidate = join(dir, name);
+            if (existsSync(candidate))
+                return candidate;
+        }
+    }
+    return undefined;
+}
+function bashPath() {
+    return commandPath(process.platform === "win32" ? ["bash.exe", "bash"] : ["bash"]);
+}
 function contextFrom(result) {
     const hookOutput = result.hookSpecificOutput;
     if (!hookOutput || typeof hookOutput !== "object")
@@ -109,7 +123,7 @@ function parseFirstJsonObject(text) {
 }
 function runScript(script, args, payload) {
     return new Promise((resolvePromise) => {
-        const child = spawn("bash", [script, ...args], {
+        const child = spawn(bashPath() || "bash", [script, ...args], {
             cwd: PLUGIN_ROOT,
             env: {
                 ...process.env,

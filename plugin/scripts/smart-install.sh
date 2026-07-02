@@ -361,19 +361,24 @@ install_private_node() {
     return 1
   fi
 
-  next_link="$node_root/current.next.$$"
-  if ln -s "$install_dir" "$next_link" 2>/dev/null; then
-    if mv -Tf "$next_link" "$node_root/current" 2>/dev/null; then
-      :
-    elif mv -hf "$next_link" "$node_root/current" 2>/dev/null; then
-      :
-    else
-      rm -rf "$node_root/current"
-      mv "$next_link" "$node_root/current"
-    fi
-  else
-    rm -rf "$next_link" "$node_root/current"
+  if claude_smart_is_windows; then
+    rm -rf "$node_root/current"
     mv "$install_dir" "$node_root/current"
+  else
+    next_link="$node_root/current.next.$$"
+    if ln -s "$install_dir" "$next_link" 2>/dev/null; then
+      if mv -Tf "$next_link" "$node_root/current" 2>/dev/null; then
+        :
+      elif mv -hf "$next_link" "$node_root/current" 2>/dev/null; then
+        :
+      else
+        rm -rf "$node_root/current"
+        mv "$next_link" "$node_root/current"
+      fi
+    else
+      rm -rf "$next_link" "$node_root/current"
+      mv "$install_dir" "$node_root/current"
+    fi
   fi
 
   rm -rf "$tmp_dir"

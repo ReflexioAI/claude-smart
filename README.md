@@ -115,6 +115,8 @@ Then restart OpenCode in your project so it loads the plugin from `opencode.json
 
 OpenCode support is new and uses OpenCode's plugin loader to inject relevant learned context before each model request. Learning extraction runs `opencode run --pure` from an isolated temp project, so it uses OpenCode's default model unless you set `CLAUDE_SMART_OPENCODE_MODEL=provider/model`. Set that env var if your normal project config pins a different provider or model.
 
+On native Windows, install Git for Windows and make `bash.exe` available on `PATH` before starting OpenCode, or run OpenCode from WSL. OpenCode loads the plugin directly, but claude-smart still uses bundled Bash scripts to start the local backend/dashboard and process hook events.
+
 To uninstall:
 
 ```bash

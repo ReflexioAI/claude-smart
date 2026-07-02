@@ -69,7 +69,7 @@ if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
     # Preserve Reflexio's Claude CLI provider contract while routing
     # generation through the user's authenticated OpenCode setup.
     claude_smart_prepend_node_bins
-    export CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/opencode-claude-compat"
+    export CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"
   elif [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ]; then
     # Reflexio's provider still calls CLAUDE_SMART_CLI_PATH with Claude CLI
     # flags. Use a small compatibility executable that translates that narrow
@@ -158,6 +158,9 @@ is_our_backend_running() {
 # True if *anything* is listening on the port (even non-HTTP). Used to
 # avoid stomping on a foreign listener with a failed-to-start uvicorn.
 port_occupied() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -sf -o /dev/null "http://127.0.0.1:$PORT" 2>/dev/null && return 0
+  fi
   (echo >"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
 }
 
@@ -328,6 +331,8 @@ case "$CMD" in
         pythonpath_sep=";"
         if command -v cygpath >/dev/null 2>&1; then
           vendor_pythonpath="$(cygpath -w "$vendor_pythonpath")"
+        else
+          vendor_pythonpath="$(claude_smart_to_windows_path "$vendor_pythonpath")"
         fi
       fi
       backend_pythonpath="$vendor_pythonpath${backend_pythonpath:+$pythonpath_sep$backend_pythonpath}"

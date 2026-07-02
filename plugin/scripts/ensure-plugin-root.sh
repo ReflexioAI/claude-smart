@@ -8,6 +8,39 @@
 #            invalid target
 set -eu
 
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$HERE/_lib.sh" ]; then
+    # shellcheck source=_lib.sh
+    . "$HERE/_lib.sh"
+fi
+
+if ! command -v claude_smart_is_windows >/dev/null 2>&1; then
+    claude_smart_is_windows() {
+        case "$(uname -s 2>/dev/null)" in
+            MINGW*|MSYS*|CYGWIN*) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+fi
+
+if ! command -v claude_smart_to_windows_path >/dev/null 2>&1; then
+    claude_smart_to_windows_path() {
+        path="$1"
+        if command -v cygpath >/dev/null 2>&1; then
+            cygpath -w "$path"
+            return $?
+        fi
+        printf '%s\n' "$path" | awk '{
+            gsub(/\//, "\\")
+            if ($0 ~ /^\\[A-Za-z]\\/) {
+                drive = toupper(substr($0, 2, 1))
+                sub(/^\\[A-Za-z]\\/, drive ":\\")
+            }
+            print
+        }'
+    }
+fi
+
 TARGET="${1:-}"
 FORCE="${2:-}"
 
@@ -25,9 +58,31 @@ TARGET="$(cd "$TARGET" && pwd -P)"
 LINK="$HOME/.reflexio/plugin-root"
 mkdir -p "$(dirname "$LINK")"
 
-if [ "$FORCE" = "--force" ]; then
+write_plugin_root_link() {
+    reason="$1"
+    if claude_smart_is_windows; then
+        link_win="$(claude_smart_to_windows_path "$LINK")"
+        target_win="$(claude_smart_to_windows_path "$TARGET")"
+        if [ -L "$LINK" ] || [ -f "$LINK" ]; then
+            rm -f "$LINK"
+        elif [ -e "$LINK" ]; then
+            cmd.exe //C rmdir "$link_win" >/dev/null 2>&1 || true
+        fi
+        if [ ! -e "$LINK" ] && cmd.exe //C mklink //J "$link_win" "$target_win" >/dev/null 2>&1; then
+            echo "[claude-smart] plugin-root → $TARGET${reason:+ ($reason)}" >&2
+            return 0
+        fi
+        printf '%s\n' "$TARGET" >"$HOME/.reflexio/plugin-root.txt"
+        echo "[claude-smart] plugin-root.txt → $TARGET${reason:+ ($reason; junction unavailable)}" >&2
+        return 0
+    fi
+
     ln -sfn "$TARGET" "$LINK"
-    echo "[claude-smart] plugin-root → $TARGET (forced)" >&2
+    echo "[claude-smart] plugin-root → $TARGET${reason:+ ($reason)}" >&2
+}
+
+if [ "$FORCE" = "--force" ]; then
+    write_plugin_root_link "forced"
     exit 0
 fi
 
@@ -43,8 +98,7 @@ if [ -z "$FOLLOW" ] && [ -f "$HOME/.claude-smart/.env" ]; then
     FOLLOW="${FOLLOW#\'}"; FOLLOW="${FOLLOW%\'}"
 fi
 if [ "$FOLLOW" = "1" ]; then
-    ln -sfn "$TARGET" "$LINK"
-    echo "[claude-smart] plugin-root → $TARGET (follow-session)" >&2
+    write_plugin_root_link "follow-session"
     exit 0
 fi
 
@@ -61,8 +115,7 @@ if [ -L "$LINK" ]; then
             CURRENT_NORM="${CURRENT%/}"
             TARGET_NORM="${TARGET%/}"
             if [ "$CURRENT_NORM" != "$TARGET_NORM" ]; then
-                ln -sfn "$TARGET" "$LINK"
-                echo "[claude-smart] plugin-root → $TARGET (cache-tracking, was $CURRENT)" >&2
+                write_plugin_root_link "cache-tracking, was $CURRENT"
             fi
             exit 0
             ;;
@@ -75,5 +128,4 @@ if [ -f "$LINK/pyproject.toml" ]; then
     exit 0
 fi
 
-ln -sfn "$TARGET" "$LINK"
-echo "[claude-smart] plugin-root → $TARGET" >&2
+write_plugin_root_link ""

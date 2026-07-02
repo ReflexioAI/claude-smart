@@ -698,8 +698,16 @@ def test_opencode_backend_service_prefers_opencode_bridge() -> None:
     service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
     assert 'CLAUDE_SMART_HOST:-claude-code}" = "opencode"' in service
-    assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/opencode-claude-compat"' in service
+    assert 'CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"' in service
     assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"' in service
+
+
+def test_opencode_server_resolves_windows_bash_before_spawning() -> None:
+    server = (REPO_ROOT / "plugin" / "opencode" / "server.mts").read_text()
+
+    assert "function commandPath(names: string[]): string | undefined" in server
+    assert 'process.platform === "win32" ? ["bash.exe", "bash"] : ["bash"]' in server
+    assert 'spawn(bashPath() || "bash"' in server
 
 
 def test_opencode_cli_bridge_translates_claude_contract(tmp_path: Path) -> None:

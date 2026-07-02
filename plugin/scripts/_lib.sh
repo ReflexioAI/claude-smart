@@ -71,7 +71,11 @@ claude_smart_prepend_astral_bins() {
 claude_smart_prepend_node_bins() {
   local _CS_NODE_ROOT
   _CS_NODE_ROOT="$HOME/.claude-smart/node/current"
-  export PATH="$_CS_NODE_ROOT/bin:$_CS_NODE_ROOT:$PATH"
+  if claude_smart_is_windows; then
+    export PATH="$_CS_NODE_ROOT:$PATH"
+  else
+    export PATH="$_CS_NODE_ROOT/bin:$_CS_NODE_ROOT:$PATH"
+  fi
 }
 
 claude_smart_env_unquote() {
@@ -210,6 +214,23 @@ claude_smart_is_windows() {
   esac
 }
 
+claude_smart_to_windows_path() {
+  local path
+  path="$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$path"
+    return $?
+  fi
+  printf '%s\n' "$path" | awk '{
+    gsub(/\//, "\\")
+    if ($0 ~ /^\\[A-Za-z]\\/) {
+      drive = toupper(substr($0, 2, 1))
+      sub(/^\\[A-Za-z]\\/, drive ":\\")
+    }
+    print
+  }'
+}
+
 # Print the absolute path of a working python interpreter, or nothing
 # (and return non-zero) if none is usable. On Windows, `python3` is
 # usually the Microsoft Store "App Execution Alias" stub at
@@ -219,7 +240,7 @@ claude_smart_is_windows() {
 # and prefer `python` (the real interpreter when one is installed).
 claude_smart_resolve_python() {
   if claude_smart_is_windows; then
-    for cand in python python3; do
+    for cand in py python python3; do
       if command -v "$cand" >/dev/null 2>&1 && "$cand" -V >/dev/null 2>&1; then
         command -v "$cand"
         return 0
@@ -508,13 +529,23 @@ claude_smart_node_satisfies() {
 
 claude_smart_resolve_npm() {
   local cand
-  for cand in npm npm.cmd; do
+  for cand in npm npm.cmd npm.exe; do
     if command -v "$cand" >/dev/null 2>&1; then
       command -v "$cand"
       return 0
     fi
   done
   return 1
+}
+
+claude_smart_opencode_compat_path() {
+  local plugin_root filename
+  plugin_root="$1"
+  filename="opencode-claude-compat"
+  if claude_smart_is_windows; then
+    filename="opencode-claude-compat.cmd"
+  fi
+  printf '%s\n' "$plugin_root/scripts/$filename"
 }
 
 claude_smart_npm_available() {
