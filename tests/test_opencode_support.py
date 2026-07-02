@@ -680,6 +680,26 @@ def test_opencode_install_requires_opencode_cli_even_with_other_provider(
     assert "OpenCode CLI not found on PATH" in capsys.readouterr().err
 
 
+def test_opencode_install_requires_git_bash_on_windows(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli, "_has_opencode_cli", lambda: True)
+    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "_resolve_bash", lambda: None)
+
+    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
+
+    assert rc == 1
+    assert "Git Bash is required for claude-smart OpenCode support on Windows" in capsys.readouterr().err
+
+
+def test_opencode_prerequisite_accepts_git_bash_on_windows(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_has_opencode_cli", lambda: True)
+    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "_resolve_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+
+    assert cli._opencode_prerequisite_error() is None
+
+
 def test_opencode_extraction_provider_requires_executable_cli_path(
     monkeypatch, tmp_path
 ) -> None:
@@ -1062,6 +1082,44 @@ def test_node_opencode_install_requires_bash_on_windows(
     assert result.returncode == 1
     assert "Git Bash is required for claude-smart OpenCode support on Windows" in result.stderr
     assert not (project / "opencode.json").exists()
+
+
+def test_node_opencode_prerequisite_rejects_windows_wsl_bash_stub(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    fake_bin = tmp_path / "fake-bin"
+    system_dir = tmp_path / "Windows" / "System32"
+    git_bash_dir = tmp_path / "Program Files" / "Git" / "bin"
+    fake_bin.mkdir()
+    system_dir.mkdir(parents=True)
+    git_bash_dir.mkdir(parents=True)
+    fake_opencode = _fake_opencode_path(fake_bin)
+    for bash in (system_dir / "bash.exe", git_bash_dir / "bash.exe"):
+        bash.write_text("#!/bin/sh\nexit 0\n")
+        bash.chmod(0o755)
+    script = (
+        "process.env.CLAUDE_SMART_TEST_PLATFORM = 'win32';"
+        f"process.env.CLAUDE_SMART_OPENCODE_PATH = {json.dumps(str(fake_opencode))};"
+        f"const systemDir = {json.dumps(str(system_dir))};"
+        f"const gitBashDir = {json.dumps(str(git_bash_dir))};"
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        "process.env.PATH = systemDir;"
+        "const withSystemBash = installer.opencodePrerequisiteError();"
+        "process.env.PATH = `${systemDir};${gitBashDir}`;"
+        "const withGitBash = installer.opencodePrerequisiteError();"
+        "process.stdout.write(JSON.stringify({ withSystemBash, withGitBash }));"
+    )
+
+    result = _run_node_script(script)
+    assert result is not None
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert "Git Bash is required for claude-smart OpenCode support on Windows" in parsed[
+        "withSystemBash"
+    ]
+    assert parsed["withGitBash"] is None
 
 
 def test_node_opencode_install_stable_root_bootstrap_failure_leaves_config_unchanged(

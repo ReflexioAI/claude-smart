@@ -556,6 +556,60 @@ function hasOpenCodeCli() {
   return hasCli("opencode");
 }
 
+const WINDOWS_SYSTEM_BASH_SUFFIXES = [
+  "\\windows\\system32\\bash.exe",
+  "\\windows\\sysnative\\bash.exe",
+  "\\windows\\syswow64\\bash.exe",
+];
+
+function windowsPathText(path) {
+  return path.replace(/\//g, "\\").toLowerCase();
+}
+
+function isWindowsSystemBash(path) {
+  const normalized = windowsPathText(path);
+  return WINDOWS_SYSTEM_BASH_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+}
+
+function pathCommandCandidates(names) {
+  const delimiter = isWindows() ? ";" : ":";
+  const pathParts = (process.env.PATH || "").split(delimiter).filter(Boolean);
+  const candidates = [];
+  for (const dir of pathParts) {
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (existsSync(candidate)) candidates.push(candidate);
+    }
+  }
+  return candidates;
+}
+
+function firstUsableBash(candidates) {
+  for (const candidate of candidates) {
+    const resolved = existsSync(candidate) ? candidate : resolveCommand([candidate]);
+    if (resolved && !isWindowsSystemBash(resolved)) return resolved;
+  }
+  return null;
+}
+
+function resolveUsableBash() {
+  if (!isWindows()) return resolveCommand(["bash"]);
+  const sources = [];
+  const bashEnv = (process.env.BASH || "").trim();
+  if (bashEnv) sources.push([bashEnv]);
+  sources.push([
+    "C:\\Program Files\\Git\\bin\\bash.exe",
+    "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+  ]);
+  sources.push(pathCommandCandidates(["bash.exe", "bash"]));
+  sources.push(["bash.exe", "bash"]);
+  for (const source of sources) {
+    const resolved = firstUsableBash(source);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
 function opencodePrerequisiteError() {
   if (!hasOpenCodeCli()) {
     return (
@@ -563,7 +617,7 @@ function opencodePrerequisiteError() {
       "or set CLAUDE_SMART_OPENCODE_PATH to the OpenCode executable.\n"
     );
   }
-  if (isWindows() && !resolveCommand(["bash.exe", "bash"])) {
+  if (isWindows() && !resolveUsableBash()) {
     return (
       "error: Git Bash is required for claude-smart OpenCode support on Windows. " +
       "Install Git for Windows and ensure bash.exe is on PATH, or run OpenCode from WSL.\n"
