@@ -286,10 +286,10 @@ def test_opencode_learning_loop_buffers_injects_tools_and_publishes(
         "ok",
         3,
         {
-            "citation_emitted_items": 0,
-            "citation_resolved_items": 0,
-            "citation_injected_items": 0,
-            "citation_injected_unique_items": 0,
+            "citation_turn_emitted_items": 0,
+            "citation_turn_resolved_items": 0,
+            "citation_session_injected_items": 0,
+            "citation_session_injected_unique_items": 0,
         },
     )
     assert injected == [

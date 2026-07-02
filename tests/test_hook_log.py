@@ -253,10 +253,10 @@ def test_dispatcher_logs_handler_extra_fields(
             "nothing",
             0,
             {
-                "citation_emitted_items": 2,
-                "citation_resolved_items": 1,
-                "citation_injected_items": 6,
-                "citation_injected_unique_items": 3,
+                "citation_turn_emitted_items": 2,
+                "citation_turn_resolved_items": 1,
+                "citation_session_injected_items": 6,
+                "citation_session_injected_unique_items": 3,
             },
         )
 
@@ -264,10 +264,10 @@ def test_dispatcher_logs_handler_extra_fields(
     stdin_payload({"session_id": "s-citations", "cwd": "/tmp"})
     hook.main(["claude-code", "stop"])
     rec = _read_lines(hook_log_path)[0]
-    assert rec["citation_emitted_items"] == 2
-    assert rec["citation_resolved_items"] == 1
-    assert rec["citation_injected_items"] == 6
-    assert rec["citation_injected_unique_items"] == 3
+    assert rec["citation_turn_emitted_items"] == 2
+    assert rec["citation_turn_resolved_items"] == 1
+    assert rec["citation_session_injected_items"] == 6
+    assert rec["citation_session_injected_unique_items"] == 3
 
 
 def test_dispatcher_emits_continue_on_handler_success(

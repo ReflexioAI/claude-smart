@@ -819,10 +819,10 @@ def test_stop_read_only_marks_buffer_without_publishing(
         "nothing",
         0,
         {
-            "citation_emitted_items": 0,
-            "citation_resolved_items": 0,
-            "citation_injected_items": 0,
-            "citation_injected_unique_items": 0,
+            "citation_turn_emitted_items": 0,
+            "citation_turn_resolved_items": 0,
+            "citation_session_injected_items": 0,
+            "citation_session_injected_unique_items": 0,
         },
     )
     records = state.read_all("s_read_only")
@@ -1198,7 +1198,7 @@ def test_stop_records_text_marker_ids_as_cited_items(
     ]
 
 
-def test_stop_returns_structured_citation_metrics(
+def test_stop_returns_structured_citation_metrics_with_explicit_scopes(
     session_dir, tmp_path, monkeypatch
 ) -> None:
     state.append_injected(
@@ -1260,10 +1260,10 @@ def test_stop_returns_structured_citation_metrics(
         "nothing",
         0,
         {
-            "citation_emitted_items": 2,
-            "citation_resolved_items": 1,
-            "citation_injected_items": 3,
-            "citation_injected_unique_items": 2,
+            "citation_turn_emitted_items": 2,
+            "citation_turn_resolved_items": 1,
+            "citation_session_injected_items": 3,
+            "citation_session_injected_unique_items": 2,
         },
     )
 

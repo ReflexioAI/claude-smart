@@ -131,8 +131,8 @@ def read_injected(session_id: str) -> dict[str, dict[str, Any]]:
     return registry
 
 
-def injected_counts(session_id: str) -> tuple[int, int]:
-    """Return ``(total_exposures, unique_items)`` for injected citation entries."""
+def session_injected_counts(session_id: str) -> tuple[int, int]:
+    """Return session-wide ``(total_exposures, unique_items)`` for citations."""
     path = injected_path(session_id)
     if not path.exists():
         return 0, 0

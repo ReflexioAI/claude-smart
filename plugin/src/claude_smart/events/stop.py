@@ -344,12 +344,12 @@ def _registry_entry_for_citation(
 def _citation_log_extra(
     session_id: str, *, emitted_ids: list[str], cited_items: list[dict[str, Any]]
 ) -> CitationLogExtra:
-    injected_total, injected_unique = state.injected_counts(session_id)
+    injected_total, injected_unique = state.session_injected_counts(session_id)
     return {
-        "citation_emitted_items": len(emitted_ids),
-        "citation_resolved_items": len(cited_items),
-        "citation_injected_items": injected_total,
-        "citation_injected_unique_items": injected_unique,
+        "citation_turn_emitted_items": len(emitted_ids),
+        "citation_turn_resolved_items": len(cited_items),
+        "citation_session_injected_items": injected_total,
+        "citation_session_injected_unique_items": injected_unique,
     }
 
 
@@ -368,12 +368,11 @@ def handle(payload: dict[str, Any]) -> StopResult | None:
         payload (dict[str, Any]): Claude Code hook payload.
 
     Returns:
-        tuple[PublishStatus, int] | None: The ``(status, count)`` tuple
-            from ``publish.publish_unpublished`` so the dispatcher can
-            include it in the forensic hook log. ``None`` is returned
-            only when the handler short-circuits before publishing (no
-            ``session_id`` in the payload, or Codex internal-prompt
-            detection skipped the fire).
+        StopResult | None: The ``(status, count, citation_metrics)`` tuple
+            so the dispatcher can include publish status and local citation
+            metrics in the forensic hook log. ``None`` is returned only when
+            the handler short-circuits before publishing (no ``session_id`` in
+            the payload, or Codex internal-prompt detection skipped the fire).
     """
     session_id = payload.get("session_id")
     if not session_id:
