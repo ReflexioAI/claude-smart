@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import textwrap
 from collections.abc import Generator
-from pathlib import Path
+from pathlib import Path, PosixPath
 from typing import Any
 
 import pytest  # type: ignore[reportMissingImports]
@@ -1194,6 +1194,9 @@ def test_opencode_install_patches_project_config_after_bootstrap(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "Path", PosixPath)
+    monkeypatch.setattr(cli, "_resolve_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
     monkeypatch.setattr(
         cli.shutil,
         "which",

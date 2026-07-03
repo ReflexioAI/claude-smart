@@ -3435,6 +3435,7 @@ def test_windows_plugin_root_diagnoses_occupied_junction_path() -> None:
 
     assert "mklink //J" in ensure_root
     assert "plugin-root.txt" in ensure_root
+    assert "could not remove existing Windows junction/path" in ensure_root
     assert "blocks Windows junction" in ensure_root
     assert "preserving occupied path" in ensure_root
     assert 'cmd.exe //C rmdir //S //Q "$link_win"' not in ensure_root
@@ -3532,6 +3533,8 @@ def test_windows_private_node_current_uses_backup_restore() -> None:
     assert 'mv "$install_dir" "$node_root/current"' in smart_install
     assert 'if ! mv "$old_current" "$node_root/current"; then' in smart_install
     assert "could not restore previous private Node.js install" in smart_install
+    assert "previous install remains at $old_current for manual recovery" in smart_install
+    assert 'rm -rf "$node_root/current" 2>/dev/null || true' not in smart_install
 
 
 def test_dashboard_build_writes_marker_when_npm_missing(tmp_path: Path) -> None:

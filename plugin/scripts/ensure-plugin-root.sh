@@ -95,7 +95,9 @@ write_plugin_root_link() {
             # Intentionally avoid rmdir //S //Q here: if this is a real
             # directory rather than a junction, preserve it and use metadata
             # fallback instead of recursively deleting user-owned contents.
-            cmd.exe //C rmdir "$link_win" >/dev/null 2>&1 || :
+            if ! cmd.exe //C rmdir "$link_win" >/dev/null 2>&1; then
+                echo "[claude-smart] ensure-plugin-root: could not remove existing Windows junction/path at $LINK" >&2
+            fi
         fi
         if [ ! -e "$LINK" ] && cmd.exe //C mklink //J "$link_win" "$target_win" >/dev/null 2>&1; then
             write_plugin_root_metadata

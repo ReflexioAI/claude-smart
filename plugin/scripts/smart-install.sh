@@ -378,10 +378,18 @@ install_private_node() {
       rm -rf "$old_current" 2>/dev/null || true
     else
       reason="could not activate private Node.js install at $node_root/current"
-      rm -rf "$node_root/current" 2>/dev/null || true
+      if [ -e "$node_root/current" ] || [ -L "$node_root/current" ]; then
+        if ! rm -rf "$node_root/current"; then
+          reason="could not remove failed private Node.js install at $node_root/current; previous install remains at $old_current for manual recovery"
+          rm -rf "$tmp_dir" "$install_dir"
+          echo "[claude-smart] WARNING: $reason" >&2
+          claude_smart_write_dashboard_unavailable "$reason"
+          return 1
+        fi
+      fi
       if [ -e "$old_current" ] || [ -L "$old_current" ]; then
         if ! mv "$old_current" "$node_root/current"; then
-          reason="could not restore previous private Node.js install from $old_current after activation failure"
+          reason="could not restore previous private Node.js install from $old_current after activation failure; previous install remains at $old_current for manual recovery"
         fi
       fi
       rm -rf "$tmp_dir" "$install_dir"
