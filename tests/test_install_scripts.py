@@ -386,11 +386,11 @@ def test_backend_service_forces_utf8_stdio_for_managed_backend() -> None:
     assert 'env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"' in service
 
 
-def test_backend_service_uses_prepared_venv_reflexio_cli() -> None:
+def test_backend_service_uses_prepared_venv_reflexio_backend_wrapper() -> None:
     service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
     assert 'backend_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"' in service
-    assert '"$backend_python" -m reflexio.cli services start' in service
+    assert '"$backend_python" -m claude_smart.reflexio_backend services start' in service
     assert 'uv run --project "$PLUGIN_ROOT" --no-sync --quiet' not in service
     assert "ensure_vendored_reflexio_active" in service
     assert 'plugin_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"' in service
