@@ -4,8 +4,9 @@
  * CLIs. Both Claude Code and Codex install from the bundled marketplace in
  * this npm package: Claude Code registers the package root as a local
  * marketplace, and Codex copies the bundled plugin into its own marketplace
- * wrapper. Both paths seed ~/.reflexio/.env with the two local-provider flags
- * so reflexio can route generation through local tools with no API key.
+ * wrapper. The npm path seeds both the user-facing ~/.reflexio/.env and the
+ * runtime ~/.claude-smart/.env with local-provider defaults so reflexio can
+ * route generation through local tools with no API key.
  * Managed/read-only/global setup is handled by `npx claude-smart setup`,
  * which writes ~/.reflexio/.env before running this installer.
  *
@@ -45,11 +46,13 @@ const CODEX_PLUGIN_ID = `claude-smart@${CODEX_MARKETPLACE_NAME}`;
 const OPENCODE_BARE_PLUGIN_SPEC = "claude-smart";
 const OPENCODE_CONFIG_NAMES = ["opencode.json", "opencode.jsonc"];
 const REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
+const CLAUDE_SMART_ENV_PATH = join(homedir(), ".claude-smart", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
 const MANAGED_SETUP_ENV = "CLAUDE_SMART_MANAGED_SETUP";
 const CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY";
 const CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI";
 const CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING";
+const CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST";
 const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
@@ -118,6 +121,7 @@ const LOCAL_DEFAULT_ENV_ENTRIES = [
     "1",
   ],
   [null, CLAUDE_SMART_READ_ONLY_ENV, "0"],
+  [null, CLAUDE_SMART_HOST_ENV, "claude-code"],
 ];
 const LOCAL_MODE_PRUNE_KEYS = new Set([
   "REFLEXIO_URL",
@@ -254,10 +258,10 @@ function escapeEnvValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function ensureLocalReflexioEnv() {
-  mkdirSync(dirname(REFLEXIO_ENV_PATH), { recursive: true });
-  const existing = existsSync(REFLEXIO_ENV_PATH)
-    ? readFileSync(REFLEXIO_ENV_PATH, "utf8")
+function ensureLocalEnvFile(path, host) {
+  mkdirSync(dirname(path), { recursive: true });
+  const existing = existsSync(path)
+    ? readFileSync(path, "utf8")
     : "";
   const present = new Set();
   const keptLines = [];
@@ -278,11 +282,12 @@ function ensureLocalReflexioEnv() {
   const added = [];
   for (const [comment, key, value] of LOCAL_DEFAULT_ENV_ENTRIES) {
     if (present.has(key)) continue;
+    const effectiveValue = key === CLAUDE_SMART_HOST_ENV ? host : value;
     if (comment) additions.push(comment);
     if (key === CLAUDE_SMART_READ_ONLY_ENV) {
-      additions.push(`${key}="${escapeEnvValue(value)}"`);
+      additions.push(`${key}="${escapeEnvValue(effectiveValue)}"`);
     } else {
-      additions.push(`${key}=${escapeEnvValue(value)}`);
+      additions.push(`${key}=${escapeEnvValue(effectiveValue)}`);
     }
     added.push(key);
   }
@@ -293,12 +298,18 @@ function ensureLocalReflexioEnv() {
       const prefix = content ? "\n" : "";
       content = content + prefix + additions.join("\n");
     }
-    writeFileSync(REFLEXIO_ENV_PATH, content ? `${content}\n` : "");
-  } else if (!existsSync(REFLEXIO_ENV_PATH)) {
-    writeFileSync(REFLEXIO_ENV_PATH, "");
+    writeFileSync(path, content ? `${content}\n` : "");
+  } else if (!existsSync(path)) {
+    writeFileSync(path, "");
   }
-  chmodSync(REFLEXIO_ENV_PATH, 0o600);
+  chmodSync(path, 0o600);
   return added;
+}
+
+function ensureLocalReflexioEnv(host = "claude-code") {
+  const added = ensureLocalEnvFile(REFLEXIO_ENV_PATH, host);
+  const runtimeAdded = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, host);
+  return Array.from(new Set([...added, ...runtimeAdded]));
 }
 
 function maskSecret(value) {
@@ -308,7 +319,7 @@ function maskSecret(value) {
   return `${prefix}****${value.slice(-4)}`;
 }
 
-function loadReflexioSetupEnv() {
+function loadReflexioSetupEnv(host = "claude-code") {
   let readOnlyValue = "";
   let fileApiKey = "";
   let fileUrl = "";
@@ -341,7 +352,7 @@ function loadReflexioSetupEnv() {
     delete process.env.REFLEXIO_API_KEY;
     delete process.env[REFLEXIO_USER_ID_ENV];
     delete process.env[MANAGED_SETUP_ENV];
-    const added = ensureLocalReflexioEnv();
+    const added = ensureLocalReflexioEnv(host);
     if (added.length > 0) {
       process.stdout.write(`Seeded ${REFLEXIO_ENV_PATH} with ${added.join(", ")}.\n`);
     }
@@ -352,8 +363,8 @@ function loadReflexioSetupEnv() {
   return { readOnly };
 }
 
-function configureReflexioSetup() {
-  return loadReflexioSetupEnv();
+function configureReflexioSetup(host = "claude-code") {
+  return loadReflexioSetupEnv(host);
 }
 
 function stripJsonc(text) {
@@ -946,7 +957,7 @@ function runSilentStatus(command, args, options = {}) {
 function runPluginService(pluginRoot, scriptName, subcommand, envOverrides = {}) {
   const script = join(pluginRoot, "scripts", scriptName);
   if (!existsSync(script)) return false;
-  const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
+  const bash = resolveUsableBash();
   if (!bash) return false;
   const result = spawnSync(bash, [script, subcommand], {
     cwd: pluginRoot,
@@ -2002,7 +2013,7 @@ async function runInstall(args, options = {}) {
   }
 
   const source = PACKAGE_ROOT;
-  const setup = configureReflexioSetup();
+  const setup = configureReflexioSetup("claude-code");
   const readOnly = setup.readOnly;
 
   const steps = [
@@ -2074,7 +2085,7 @@ async function runInstallCodex(args) {
     process.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n");
     process.exit(1);
   }
-  const setup = configureReflexioSetup();
+  const setup = configureReflexioSetup("codex");
   const readOnly = setup.readOnly;
 
   const marketplaceRoot = copyCodexMarketplace();
@@ -2180,7 +2191,7 @@ async function runInstallOpenCode(args) {
     process.stderr.write(prerequisiteError);
     process.exit(1);
   }
-  const setup = configureReflexioSetup();
+  const setup = configureReflexioSetup("opencode");
   const readOnly = setup.readOnly;
   if (!hasExtractionProvider()) {
     process.stderr.write(extractionProviderError());

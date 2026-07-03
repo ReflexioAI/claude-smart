@@ -121,7 +121,7 @@ claude_smart_source_reflexio_env() {
         ;;
       # CLAUDE_SMART_* flags: respect anything the caller already exported so
       # per-session overrides (e.g., a manual test) take precedence over the file.
-      CLAUDE_SMART_USE_LOCAL_CLI|CLAUDE_SMART_USE_LOCAL_EMBEDDING|CLAUDE_SMART_BACKEND_AUTOSTART|CLAUDE_SMART_DASHBOARD_AUTOSTART|CLAUDE_SMART_CLI_PATH|CLAUDE_SMART_CLI_TIMEOUT|CLAUDE_SMART_STATE_DIR|CLAUDE_SMART_ENABLE_OPTIMIZER)
+      CLAUDE_SMART_USE_LOCAL_CLI|CLAUDE_SMART_USE_LOCAL_EMBEDDING|CLAUDE_SMART_HOST|CLAUDE_SMART_BACKEND_AUTOSTART|CLAUDE_SMART_DASHBOARD_AUTOSTART|CLAUDE_SMART_CLI_PATH|CLAUDE_SMART_CLI_TIMEOUT|CLAUDE_SMART_STATE_DIR|CLAUDE_SMART_ENABLE_OPTIMIZER)
         if [ -z "$(eval "printf '%s' \"\${$key:-}\"")" ]; then
           value="$(claude_smart_env_unquote "$value")"
           export "$key=$value"

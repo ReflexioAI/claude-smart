@@ -1206,6 +1206,9 @@ def test_opencode_install_patches_project_config_after_bootstrap(
     assert rc == 0
     parsed = json.loads((tmp_path / "opencode.json").read_text())
     assert parsed["plugin"] == ["file:///plugin"]
+    assert "CLAUDE_SMART_HOST=opencode" in (
+        tmp_path / ".reflexio" / ".env"
+    ).read_text()
     assert "Restart OpenCode" in capsys.readouterr().out
 
 

@@ -927,8 +927,13 @@ def _register_codex_marketplace(root: Path) -> tuple[bool, str]:
     return False, output or "Codex CLI does not expose plugin marketplace commands"
 
 
-def _configure_reflexio_setup() -> bool:
+def _configure_reflexio_setup(host: str = "claude-code") -> bool:
     """Load setup state and ensure local defaults when unmanaged.
+
+    Args:
+        host: Host integration being installed. Persisted in local mode so
+            later backend restarts can wire the same extraction bridge even
+            when the host plugin server is not the process launcher.
 
     Returns:
         bool: Whether read-only mode is enabled.
@@ -975,7 +980,7 @@ def _configure_reflexio_setup() -> bool:
         os.environ.pop(env_config.REFLEXIO_API_KEY_ENV, None)
         os.environ.pop("REFLEXIO_USER_ID", None)
         os.environ.pop("CLAUDE_SMART_MANAGED_SETUP", None)
-        added = env_config.ensure_local_env_defaults(_REFLEXIO_ENV_PATH)
+        added = env_config.ensure_local_env_defaults(_REFLEXIO_ENV_PATH, host=host)
         if added:
             sys.stdout.write(f"Seeded {_REFLEXIO_ENV_PATH} with {', '.join(added)}.\n")
     return read_only
@@ -1359,7 +1364,7 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
     if prerequisite_error:
         sys.stderr.write(prerequisite_error)
         return 1
-    read_only = _configure_reflexio_setup()
+    read_only = _configure_reflexio_setup(host="opencode")
     if not _has_extraction_provider():
         sys.stderr.write(_extraction_provider_error())
         return 1
@@ -1414,7 +1419,7 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
             "error: 'uv' not found on PATH. Install uv or restart your shell.\n"
         )
         return 1
-    read_only = _configure_reflexio_setup()
+    read_only = _configure_reflexio_setup(host="codex")
 
     missing = _missing_codex_marketplace_files(_REPO_ROOT)
     if missing:
@@ -1523,7 +1528,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             "Install Claude Code first: https://claude.com/claude-code\n"
         )
         return 1
-    read_only = _configure_reflexio_setup()
+    read_only = _configure_reflexio_setup(host="claude-code")
 
     refresh_existing = bool(getattr(args, "refresh_existing", False))
     for cmd in (

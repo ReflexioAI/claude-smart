@@ -20,6 +20,7 @@ REFLEXIO_API_KEY_ENV = "REFLEXIO_API_KEY"
 CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY"
 CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
 CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
+CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST"
 
 _LOCAL_DEFAULT_ENTRIES = (
     (
@@ -33,6 +34,7 @@ _LOCAL_DEFAULT_ENTRIES = (
         "1",
     ),
     (None, CLAUDE_SMART_READ_ONLY_ENV, "0"),
+    (None, CLAUDE_SMART_HOST_ENV, "claude-code"),
 )
 _LOCAL_MODE_PRUNE_KEYS = {
     REFLEXIO_URL_ENV,
@@ -118,7 +120,10 @@ def set_env_vars(path: Path, values: dict[str, str]) -> list[str]:
     return added
 
 
-def ensure_local_env_defaults(path: Path | None = None) -> list[str]:
+def ensure_local_env_defaults(
+    path: Path | None = None,
+    host: str = "claude-code",
+) -> list[str]:
     """Create or augment ``~/.claude-smart/.env`` for claude-smart local mode.
 
     Existing active assignments win. This repairs first installs and deleted
@@ -150,12 +155,13 @@ def ensure_local_env_defaults(path: Path | None = None) -> list[str]:
     for comment, key, value in _LOCAL_DEFAULT_ENTRIES:
         if key in present:
             continue
+        effective_value = host if key == CLAUDE_SMART_HOST_ENV else value
         if comment:
             additions.append(comment)
         if key == CLAUDE_SMART_READ_ONLY_ENV:
-            additions.append(f'{key}="{_escape_env_value(value)}"')
+            additions.append(f'{key}="{_escape_env_value(effective_value)}"')
         else:
-            additions.append(f"{key}={_escape_env_value(value)}")
+            additions.append(f"{key}={_escape_env_value(effective_value)}")
         added_keys.append(key)
 
     if additions or pruned:

@@ -177,7 +177,7 @@ def test_cmd_install_refresh_existing_uninstalls_and_retries(
         return argparse.Namespace(returncode=0)
 
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
-    monkeypatch.setattr(cli, "_configure_reflexio_setup", lambda: False)
+    monkeypatch.setattr(cli, "_configure_reflexio_setup", lambda **_kwargs: False)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     monkeypatch.setattr(
         cli, "_bootstrap_claude_code_install", lambda: (True, str(tmp_path / "plugin"))

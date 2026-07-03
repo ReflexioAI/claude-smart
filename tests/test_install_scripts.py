@@ -581,6 +581,31 @@ def test_reflexio_env_loader_exports_read_only_flag(tmp_path: Path) -> None:
     assert result.stdout.strip() == "1"
 
 
+def test_reflexio_env_loader_exports_host_flag(tmp_path: Path) -> None:
+    env_path = tmp_path / ".claude-smart" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text('CLAUDE_SMART_HOST="opencode"\n')
+
+    script = (
+        f'. "{LIB}"; '
+        "claude_smart_source_reflexio_env; "
+        'printf "%s\\n" "${CLAUDE_SMART_HOST:-}"'
+    )
+    env = _isolated_env(tmp_path)
+    env.pop("CLAUDE_SMART_HOST", None)
+
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "opencode"
+
+
 def _run_setup_script(tmp_path: Path, stdin: str) -> subprocess.CompletedProcess[str]:
     env = _isolated_env(tmp_path)
     env["CLAUDE_SMART_SETUP_NO_INSTALL"] = "1"
@@ -780,13 +805,15 @@ def test_node_installer_ignores_stale_url_without_api_key(tmp_path: Path) -> Non
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for Node installer test")
+    assert node is not None
 
     env_path = tmp_path / ".reflexio" / ".env"
+    claude_smart_env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text('REFLEXIO_URL="https://managed.example/"\n')
     script = (
         f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
-        "installer.configureReflexioSetup();"
+        "installer.configureReflexioSetup('opencode');"
         "process.stdout.write(process.env.REFLEXIO_URL || '');"
     )
     env = _isolated_env(tmp_path)
@@ -803,13 +830,16 @@ def test_node_installer_ignores_stale_url_without_api_key(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stderr
     assert result.stdout.endswith(
         "CLAUDE_SMART_USE_LOCAL_CLI, "
-        "CLAUDE_SMART_USE_LOCAL_EMBEDDING, CLAUDE_SMART_READ_ONLY.\n"
+        "CLAUDE_SMART_USE_LOCAL_EMBEDDING, CLAUDE_SMART_READ_ONLY, "
+        "CLAUDE_SMART_HOST.\n"
     )
     env_text = env_path.read_text()
     assert "REFLEXIO_URL" not in env_text
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in env_text
     assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in env_text
     assert 'CLAUDE_SMART_READ_ONLY="0"' in env_text
+    assert "CLAUDE_SMART_HOST=opencode" in env_text
+    assert claude_smart_env_path.read_text() == env_text
 
 
 def test_node_installer_supports_managed_reflexio_setup() -> None:
@@ -822,7 +852,7 @@ def test_node_installer_supports_managed_reflexio_setup() -> None:
     assert '"--read-only"' not in installer
     assert "REFLEXIO_API_KEY" in installer
     assert "CLAUDE_SMART_MANAGED_SETUP" in installer
-    assert "configureReflexioSetup()" in installer
+    assert "configureReflexioSetup(" in installer
     assert "maskSecret(apiKey)" in installer
     script = SMART_INSTALL.read_text()
     assert "configured managed Reflexio" not in script
@@ -1137,6 +1167,7 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert "Backend started; dashboard auto-starts on session start." in smart_install
     assert "function startBackendService(pluginRoot, host)" in node_installer
     assert "CLAUDE_SMART_HOST: host" in node_installer
+    assert "const bash = resolveUsableBash();" in node_installer
     assert "function refreshDashboardService(pluginRoot)" in node_installer
     assert "const PLUGIN_SERVICE_TIMEOUT_MS = 15_000" in node_installer
     assert "timeout: PLUGIN_SERVICE_TIMEOUT_MS" in node_installer

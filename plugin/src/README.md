@@ -28,7 +28,7 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 
 | File | Purpose |
 |------|---------|
-| `env_config.py` | Parses `~/.claude-smart/.env` (`REFLEXIO_URL`, `REFLEXIO_API_KEY`, `CLAUDE_SMART_READ_ONLY`, local embedding/CLI flags). |
+| `env_config.py` | Parses `~/.claude-smart/.env` (`REFLEXIO_URL`, `REFLEXIO_API_KEY`, `CLAUDE_SMART_READ_ONLY`, `CLAUDE_SMART_HOST`, local embedding/CLI flags). |
 | `runtime.py` | Host detection (Claude Code vs Codex); shared agent version. |
 | `ids.py` | Session / project ID generation and resolution. |
 | `context_inject.py`, `context_format.py`, `query_compose.py`, `cs_cite.py` | Build search queries, format learned skills as markdown, inject into context, format citations. |
