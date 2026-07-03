@@ -842,6 +842,41 @@ def test_node_installer_ignores_stale_url_without_api_key(tmp_path: Path) -> Non
     assert claude_smart_env_path.read_text() == env_text
 
 
+def test_node_installer_updates_existing_host_in_env_files(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    assert node is not None
+
+    env_path = tmp_path / ".reflexio" / ".env"
+    runtime_env_path = tmp_path / ".claude-smart" / ".env"
+    env_path.parent.mkdir()
+    runtime_env_path.parent.mkdir()
+    stale = "# keep\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_READ_ONLY=\"1\"\n"
+    env_path.write_text(stale)
+    runtime_env_path.write_text(stale)
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        "installer.configureReflexioSetup('opencode');"
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        env=_isolated_env(tmp_path),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    for path in (env_path, runtime_env_path):
+        text = path.read_text()
+        assert "# keep" in text
+        assert "CLAUDE_SMART_HOST=opencode" in text
+        assert "CLAUDE_SMART_HOST=codex" not in text
+        assert 'CLAUDE_SMART_READ_ONLY="1"' in text
+
+
 def test_node_installer_supports_managed_reflexio_setup() -> None:
     installer = NODE_INSTALLER.read_text()
 
@@ -1168,6 +1203,8 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert "function startBackendService(pluginRoot, host)" in node_installer
     assert "CLAUDE_SMART_HOST: host" in node_installer
     assert "const bash = resolveUsableBash();" in node_installer
+    assert "Git Bash is required for claude-smart services on Windows" in node_installer
+    assert "bash is required but was not found on PATH" in node_installer
     assert "function refreshDashboardService(pluginRoot)" in node_installer
     assert "const PLUGIN_SERVICE_TIMEOUT_MS = 15_000" in node_installer
     assert "timeout: PLUGIN_SERVICE_TIMEOUT_MS" in node_installer
@@ -3522,6 +3559,41 @@ def test_windows_plugin_root_tracks_cache_junction_metadata(tmp_path: Path) -> N
     assert (tmp_path / ".reflexio" / "plugin-root.txt").read_text().strip() == str(new_cache)
     assert (link / "target.txt").read_text().strip() == str(new_cache)
     assert "cache-tracking, was" in second.stderr
+
+
+def test_windows_plugin_root_warns_when_junction_metadata_missing(tmp_path: Path) -> None:
+    scripts = tmp_path / "plugin" / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(
+        REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
+        scripts / "ensure-plugin-root.sh",
+    )
+    shutil.copy2(REPO_ROOT / "plugin" / "scripts" / "_lib.sh", scripts / "_lib.sh")
+    new_root = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.48"
+    new_root.mkdir(parents=True)
+    (new_root / "pyproject.toml").write_text("[project]\nname='new'\n")
+    link = tmp_path / ".reflexio" / "plugin-root"
+    link.mkdir(parents=True)
+    (link / "pyproject.toml").write_text("[project]\nname='stale'\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "uname", "#!/bin/sh\nprintf 'MINGW64_NT-10.0\\n'\n")
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    result = subprocess.run(
+        ["/bin/bash", str(scripts / "ensure-plugin-root.sh"), str(new_root)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "plugin-root.txt is missing" in result.stderr
+    assert "with --force or delete the occupied path" in result.stderr
+    assert not (tmp_path / ".reflexio" / "plugin-root.txt").exists()
+    assert (link / "pyproject.toml").read_text() == "[project]\nname='stale'\n"
 
 
 def test_windows_private_node_current_uses_backup_restore() -> None:

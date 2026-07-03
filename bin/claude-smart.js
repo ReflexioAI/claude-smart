@@ -266,11 +266,25 @@ function ensureLocalEnvFile(path, host) {
   const present = new Set();
   const keptLines = [];
   let pruned = false;
+  let changed = false;
+  let hostWritten = false;
   for (const line of existing.split(/\r?\n/)) {
     const parsed = parseEnvLine(line);
     if (parsed) {
       if (LOCAL_MODE_PRUNE_KEYS.has(parsed.key)) {
         pruned = true;
+        continue;
+      }
+      if (parsed.key === CLAUDE_SMART_HOST_ENV) {
+        present.add(parsed.key);
+        if (!hostWritten) {
+          const replacement = `${CLAUDE_SMART_HOST_ENV}=${escapeEnvValue(host)}`;
+          keptLines.push(replacement);
+          hostWritten = true;
+          if (line !== replacement || parsed.value !== host) changed = true;
+        } else {
+          changed = true;
+        }
         continue;
       }
       present.add(parsed.key);
@@ -292,7 +306,7 @@ function ensureLocalEnvFile(path, host) {
     added.push(key);
   }
 
-  if (additions.length > 0 || pruned) {
+  if (additions.length > 0 || pruned || changed) {
     let content = keptLines.join("\n").replace(/\n*$/, "");
     if (additions.length > 0) {
       const prefix = content ? "\n" : "";
@@ -958,7 +972,13 @@ function runPluginService(pluginRoot, scriptName, subcommand, envOverrides = {})
   const script = join(pluginRoot, "scripts", scriptName);
   if (!existsSync(script)) return false;
   const bash = resolveUsableBash();
-  if (!bash) return false;
+  if (!bash) {
+    const reason = isWindows()
+      ? "Git Bash is required for claude-smart services on Windows. Install Git for Windows and ensure bash.exe is on PATH, or run from WSL"
+      : "bash is required but was not found on PATH";
+    process.stderr.write(`warning: ${scriptName} ${subcommand} ${reason}; continuing.\n`);
+    return false;
+  }
   const result = spawnSync(bash, [script, subcommand], {
     cwd: pluginRoot,
     env: { ...runtimeEnv(), ...envOverrides },

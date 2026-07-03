@@ -152,6 +152,8 @@ elif claude_smart_is_windows && [ -e "$LINK" ] && [ -f "$HOME/.reflexio/plugin-r
     # Windows junctions are not reported as symlinks by Git Bash, so use the
     # metadata written alongside successful junction creation.
     CURRENT="$(cat "$HOME/.reflexio/plugin-root.txt" 2>/dev/null || true)"
+elif claude_smart_is_windows && [ -e "$LINK" ]; then
+    echo "[claude-smart] ensure-plugin-root: $LINK is not a symlink and plugin-root.txt is missing; cannot determine whether the Windows plugin-root tracks the active plugin. Run ensure-plugin-root.sh with --force or delete the occupied path to recreate it." >&2
 fi
 if [ -n "$CURRENT" ]; then
     case "$CURRENT" in

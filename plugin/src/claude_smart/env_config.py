@@ -126,9 +126,10 @@ def ensure_local_env_defaults(
 ) -> list[str]:
     """Create or augment ``~/.claude-smart/.env`` for claude-smart local mode.
 
-    Existing active assignments win. This repairs first installs and deleted
-    env files without clobbering explicit user overrides such as
-    ``CLAUDE_SMART_READ_ONLY=1``.
+    Existing active assignments win except ``CLAUDE_SMART_HOST``, which is
+    install-selected state and must follow the host currently being installed.
+    This repairs first installs and deleted env files without clobbering
+    explicit user overrides such as ``CLAUDE_SMART_READ_ONLY=1``.
     """
     path = path or REFLEXIO_ENV_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -140,12 +141,25 @@ def ensure_local_env_defaults(
     present: set[str] = set()
     kept_lines: list[str] = []
     pruned = False
+    changed = False
+    host_written = False
     for line in existing.splitlines():
         parsed = parse_env_line(line)
         if parsed is not None:
             key, _value = parsed
             if key in _LOCAL_MODE_PRUNE_KEYS:
                 pruned = True
+                continue
+            if key == CLAUDE_SMART_HOST_ENV:
+                present.add(key)
+                if not host_written:
+                    replacement = f"{CLAUDE_SMART_HOST_ENV}={_escape_env_value(host)}"
+                    kept_lines.append(replacement)
+                    host_written = True
+                    if line != replacement or _value != host:
+                        changed = True
+                else:
+                    changed = True
                 continue
             present.add(key)
         kept_lines.append(line)
@@ -164,7 +178,7 @@ def ensure_local_env_defaults(
             additions.append(f"{key}={_escape_env_value(effective_value)}")
         added_keys.append(key)
 
-    if additions or pruned:
+    if additions or pruned or changed:
         content = "\n".join(kept_lines)
         if additions:
             prefix = "" if not content or content.endswith("\n") else "\n"
