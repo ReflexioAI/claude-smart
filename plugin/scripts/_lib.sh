@@ -301,6 +301,18 @@ importlib.import_module(sys.argv[1])
 PY
 }
 
+claude_smart_local_embedding_runtime_available() {
+  local plugin_root python_bin
+  plugin_root="$1"
+  python_bin="$(claude_smart_plugin_python "$plugin_root")"
+  [ -x "$python_bin" ] || return 1
+  "$python_bin" - <<'PY' >/dev/null 2>&1
+import importlib
+
+importlib.import_module("onnxruntime")
+PY
+}
+
 claude_smart_canonical_dir() {
   local dir
   dir="$1"

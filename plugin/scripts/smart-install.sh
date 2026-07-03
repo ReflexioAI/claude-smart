@@ -623,7 +623,17 @@ claude_smart_ensure_local_env_defaults() {
   chmod 600 "$REFLEXIO_ENV"
 }
 
+verify_windows_local_embedding_runtime() {
+  claude_smart_is_windows || return 0
+  [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}" = "1" ] || return 0
+  if claude_smart_local_embedding_runtime_available "$PLUGIN_ROOT"; then
+    return 0
+  fi
+  write_failure "Windows local embedding requires Microsoft Visual C++ Redistributable for onnxruntime; install the x64 redistributable from https://aka.ms/vs/17/release/vc_redist.x64.exe and rerun claude-smart install, or set CLAUDE_SMART_USE_LOCAL_EMBEDDING=0 before install to use a configured cloud embedder."
+}
+
 claude_smart_ensure_local_env_defaults
+verify_windows_local_embedding_runtime
 
 # Migrate stale REFLEXIO_URL from reflexio's library default (8081) to the
 # plugin backend port (8071). Matches the quoted and unquoted forms but

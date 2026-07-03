@@ -193,7 +193,12 @@ function parseOpenCodeJson(stdout) {
       chunks.push(event.result);
     }
   }
-  return chunks.join("").trim();
+  return stripOuterMarkdownFence(chunks.join("").trim());
+}
+
+function stripOuterMarkdownFence(content) {
+  const match = String(content || "").match(/^```[^\r\n]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/);
+  return match ? match[1].trim() : content;
 }
 
 function timeoutMs() {

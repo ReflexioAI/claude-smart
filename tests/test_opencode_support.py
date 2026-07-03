@@ -831,6 +831,49 @@ process.stdout.write(JSON.stringify({{
     assert call["stdin"] == "system text\n\n## Task\nuser prompt"
 
 
+def test_opencode_cli_bridge_strips_outer_json_markdown_fence(tmp_path: Path) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    bridge = REPO_ROOT / "plugin" / "scripts" / "opencode-claude-compat.js"
+    fake_opencode = tmp_path / "opencode"
+    fake_opencode.write_text(
+        """#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  type: "text",
+  part: { type: "text", text: "```json\\n{\\\"playbooks\\\":[]}\\n```" }
+}) + "\\n");
+"""
+    )
+    fake_opencode.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
+    env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
+
+    result = subprocess.run(
+        [
+            shutil_which_node() or "node",
+            str(bridge),
+            "-p",
+            "--output-format",
+            "stream-json",
+        ],
+        input="return json",
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "type": "result",
+        "subtype": "success",
+        "result": '{"playbooks":[]}',
+    }
+
+
 def test_opencode_cli_bridge_pipes_large_prompt_via_stdin(tmp_path: Path) -> None:
     if shutil_which_node() is None:
         pytest.skip("node is not installed")

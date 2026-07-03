@@ -526,6 +526,61 @@ def test_smart_install_repairs_local_env_defaults() -> None:
     assert "REFLEXIO_USER_ID" in lib
 
 
+def test_smart_install_checks_windows_local_embedding_runtime() -> None:
+    script = (REPO_ROOT / "plugin" / "scripts" / "smart-install.sh").read_text()
+
+    assert "verify_windows_local_embedding_runtime" in script
+    assert 'claude_smart_is_windows || return 0' in script
+    assert 'CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1' in script
+    assert 'claude_smart_local_embedding_runtime_available "$PLUGIN_ROOT"' in script
+    assert "Microsoft Visual C++ Redistributable" in script
+    assert "vc_redist.x64.exe" in script
+
+
+def test_local_embedding_runtime_probe_uses_plugin_python(tmp_path: Path) -> None:
+    python_path = tmp_path / ".venv" / "Scripts" / "python.exe"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text("#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n")
+    python_path.chmod(0o755)
+    script = (
+        f'. "{LIB}"; '
+        "claude_smart_is_windows() { return 0; }; "
+        f'claude_smart_local_embedding_runtime_available "{tmp_path}"'
+    )
+
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_local_embedding_runtime_probe_fails_when_onnxruntime_import_fails(
+    tmp_path: Path,
+) -> None:
+    python_path = tmp_path / ".venv" / "Scripts" / "python.exe"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text("#!/usr/bin/env bash\ncat >/dev/null\nexit 1\n")
+    python_path.chmod(0o755)
+    script = (
+        f'. "{LIB}"; '
+        "claude_smart_is_windows() { return 0; }; "
+        f'claude_smart_local_embedding_runtime_available "{tmp_path}"'
+    )
+
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+
+
 def test_reflexio_env_file_overrides_stale_managed_process_env(
     tmp_path: Path,
 ) -> None:
