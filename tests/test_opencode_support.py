@@ -1154,6 +1154,107 @@ def test_node_opencode_prerequisite_rejects_windows_wsl_bash_stub(
     assert parsed["withGitBash"] is None
 
 
+def test_node_opencode_install_preserves_existing_claude_and_codex_state_on_windows(
+    tmp_path: Path,
+) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    package_root = tmp_path / "_npx" / "abc" / "node_modules" / "claude-smart"
+    _write_minimal_node_package_root(package_root)
+    project = tmp_path / "project"
+    project.mkdir()
+    env = _isolated_installer_env(tmp_path)
+    home = Path(env["HOME"])
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir(exist_ok=True)
+    opencode_cmd = fake_bin / "opencode.cmd"
+    opencode_cmd.write_text("#!/bin/sh\nexit 0\n")
+    opencode_cmd.chmod(0o755)
+    bash_exe = fake_bin / "bash.exe"
+    bash_exe.write_text("#!/bin/sh\nexit 0\n")
+    bash_exe.chmod(0o755)
+    env.update(
+        {
+            "CLAUDE_SMART_TEST_PLATFORM": "win32",
+            "CLAUDE_SMART_TEST_ARCH": "x64",
+            "PATH": str(fake_bin),
+            "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
+            "CLAUDE_SMART_DASHBOARD_AUTOSTART": "0",
+        }
+    )
+    _seed_private_node_and_uv(env)
+    for env_path in [home / ".reflexio" / ".env", home / ".claude-smart" / ".env"]:
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text(
+            "# existing host state\n"
+            "CLAUDE_SMART_HOST=codex\n"
+            'CLAUDE_SMART_READ_ONLY="1"\n'
+        )
+    claude_cache = (
+        home / ".claude" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.46"
+    )
+    codex_cache = (
+        home / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.46"
+    )
+    for cache in [claude_cache, codex_cache]:
+        cache.mkdir(parents=True)
+        (cache / "keep.txt").write_text("keep\n")
+    codex_config = home / ".codex" / "config.toml"
+    codex_config.parent.mkdir(parents=True, exist_ok=True)
+    codex_config.write_text(
+        '[plugins."claude-smart@reflexioai"]\n'
+        'enabled = true\n'
+        'source = "reflexioai"\n'
+    )
+    reflexio_data = home / ".reflexio" / "data" / "reflexio.db"
+    reflexio_data.parent.mkdir(parents=True, exist_ok=True)
+    reflexio_data.write_text("learned data\n")
+    session_file = home / ".claude-smart" / "sessions" / "codex.jsonl"
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    session_file.write_text("{}\n")
+
+    result = subprocess.run(
+        [
+            node,
+            str(package_root / "bin" / "claude-smart.js"),
+            "install",
+            "--host",
+            "opencode",
+        ],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads((project / "opencode.json").read_text())
+    plugin_spec = parsed["plugin"][0]
+    assert plugin_spec.startswith("file://")
+    local_package = Path(plugin_spec.removeprefix("file://"))
+    assert local_package == home / ".claude-smart" / "opencode" / "claude-smart"
+    assert (local_package / "plugin" / "scripts" / "smart-install.sh").exists()
+    runtime_env = (home / ".claude-smart" / ".env").read_text()
+    setup_env = (home / ".reflexio" / ".env").read_text()
+    for text in [runtime_env, setup_env]:
+        assert "CLAUDE_SMART_HOST=opencode" in text
+        assert "CLAUDE_SMART_HOST=codex" not in text
+        assert 'CLAUDE_SMART_READ_ONLY="1"' in text
+    assert f'CLAUDE_SMART_OPENCODE_PATH="{opencode_cmd}"' in runtime_env
+    assert (claude_cache / "keep.txt").read_text() == "keep\n"
+    assert (codex_cache / "keep.txt").read_text() == "keep\n"
+    assert codex_config.read_text() == (
+        '[plugins."claude-smart@reflexioai"]\n'
+        'enabled = true\n'
+        'source = "reflexioai"\n'
+    )
+    assert reflexio_data.read_text() == "learned data\n"
+    assert session_file.read_text() == "{}\n"
+
+
 def test_node_opencode_install_stable_root_bootstrap_failure_leaves_config_unchanged(
     tmp_path: Path,
 ) -> None:
