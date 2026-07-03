@@ -733,6 +733,8 @@ def test_opencode_backend_service_prefers_opencode_bridge() -> None:
 
     assert 'CLAUDE_SMART_HOST:-claude-code}" = "opencode"' in service
     assert 'CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"' in service
+    assert "don't require" in service
+    assert "command -v opencode" not in service
     assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"' in service
 
 
@@ -785,6 +787,7 @@ process.stdout.write(JSON.stringify({{
         **os.environ,
         "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
     }
+    env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
 
     result = subprocess.run(
         [
@@ -859,6 +862,7 @@ def test_opencode_cli_bridge_pipes_large_prompt_via_stdin(tmp_path: Path) -> Non
         **os.environ,
         "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
     }
+    env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
     prompt = "x" * 200_000
 
     result = subprocess.run(
@@ -902,6 +906,33 @@ def test_node_installer_accepts_opencode_only_extraction_provider(tmp_path: Path
     assert result.stdout == "true"
 
 
+def test_node_installer_persists_resolved_opencode_path(tmp_path: Path) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    env = _isolated_installer_env(tmp_path)
+    env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
+    opencode = Path(env["PATH"].split(os.pathsep)[0]) / "opencode"
+    script = (
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        "installer.persistOpenCodePath();"
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    expected = f'CLAUDE_SMART_OPENCODE_PATH="{opencode}"'
+    assert expected in (Path(env["HOME"]) / ".claude-smart" / ".env").read_text()
+    assert not (Path(env["HOME"]) / ".reflexio" / ".env").exists()
+
+
 def _fake_opencode_path(tmp_path: Path) -> Path:
     fake_opencode = tmp_path / "opencode"
     fake_opencode.write_text("#!/bin/sh\nexit 0\n")
@@ -923,6 +954,7 @@ def _isolated_installer_env(tmp_path: Path) -> dict[str, str]:
     )
     env.pop("REFLEXIO_API_KEY", None)
     env.pop("CLAUDE_SMART_CLI_PATH", None)
+    env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
     return env
 
 

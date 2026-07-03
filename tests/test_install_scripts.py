@@ -1206,7 +1206,7 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert "Git Bash is required for claude-smart services on Windows" in node_installer
     assert "bash is required but was not found on PATH" in node_installer
     assert "function refreshDashboardService(pluginRoot)" in node_installer
-    assert "const PLUGIN_SERVICE_TIMEOUT_MS = 15_000" in node_installer
+    assert "const PLUGIN_SERVICE_TIMEOUT_MS = 45_000" in node_installer
     assert "timeout: PLUGIN_SERVICE_TIMEOUT_MS" in node_installer
     assert 'killSignal: "SIGTERM"' in node_installer
     assert 'result.error && result.error.code === "ETIMEDOUT"' in node_installer
@@ -3460,8 +3460,11 @@ def test_windows_path_conversion_falls_back_without_cygpath(tmp_path: Path) -> N
 
 def test_backend_service_documents_windows_path_and_port_probe_patterns() -> None:
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+    lib = (REPO_ROOT / "plugin" / "scripts" / "_lib.sh").read_text()
 
     assert 'CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"' in backend
+    assert "CLAUDE_SMART_OPENCODE_PATH or PATH" in backend
+    assert "CLAUDE_SMART_OPENCODE_PATH" in lib
     assert 'vendor_pythonpath="$(claude_smart_to_windows_path "$vendor_pythonpath")"' in backend
     assert "Best-effort port probe" in backend
     assert 'curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$PORT"' in backend

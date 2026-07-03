@@ -229,6 +229,24 @@ def test_install_setup_updates_existing_host(monkeypatch, tmp_path: Path) -> Non
     assert 'CLAUDE_SMART_READ_ONLY="1"' in text
 
 
+def test_opencode_install_persists_resolved_cli_path(monkeypatch, tmp_path: Path) -> None:
+    runtime_env_path = tmp_path / ".claude-smart" / ".env"
+    opencode = tmp_path / "bin" / "opencode"
+    opencode.parent.mkdir()
+    opencode.write_text("#!/bin/sh\nexit 0\n")
+    opencode.chmod(0o755)
+    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", runtime_env_path)
+    monkeypatch.setenv("PATH", str(opencode.parent))
+    monkeypatch.setenv("CLAUDE_SMART_OPENCODE_PATH", "")
+
+    added = cli._persist_opencode_path()
+
+    assert added == ["CLAUDE_SMART_OPENCODE_PATH"]
+    assert f'CLAUDE_SMART_OPENCODE_PATH="{opencode}"' in runtime_env_path.read_text()
+    assert not (tmp_path / ".reflexio" / ".env").exists()
+    assert os.environ["CLAUDE_SMART_OPENCODE_PATH"] == str(opencode)
+
+
 def test_install_setup_reads_managed_reflexio_from_env(
     monkeypatch,
     tmp_path: Path,

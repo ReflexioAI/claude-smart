@@ -99,6 +99,7 @@ _DEFAULT_STORAGE_ROOT = _REFLEXIO_DIR / "data"
 _REFLEXIO_ORG_ID = "claude-smart"
 _REFLEXIO_CONFIG_PATH = _REFLEXIO_DIR / "configs" / f"config_{_REFLEXIO_ORG_ID}.json"
 _LOCAL_STORAGE_ENV = "LOCAL_STORAGE_PATH"
+_OPENCODE_PATH_ENV = "CLAUDE_SMART_OPENCODE_PATH"
 _CODEX_REQUIRED_FILES = (
     Path(".agents/plugins/marketplace.json"),
     Path("plugin/.codex-plugin/plugin.json"),
@@ -1199,12 +1200,24 @@ def _extraction_provider_error() -> str:
 
 
 def _has_opencode_cli() -> bool:
-    opencode_path = os.environ.get("CLAUDE_SMART_OPENCODE_PATH", "").strip()
+    return _resolve_opencode_path() is not None
+
+
+def _resolve_opencode_path() -> str | None:
+    opencode_path = os.environ.get(_OPENCODE_PATH_ENV, "").strip()
     if opencode_path:
         resolved = Path(opencode_path).expanduser()
         if resolved.is_file() and os.access(resolved, os.X_OK):
-            return True
-    return bool(shutil.which("opencode"))
+            return str(resolved)
+    return shutil.which("opencode")
+
+
+def _persist_opencode_path() -> list[str]:
+    resolved = _resolve_opencode_path()
+    if not resolved:
+        return []
+    os.environ[_OPENCODE_PATH_ENV] = resolved
+    return env_config.set_env_vars(_REFLEXIO_ENV_PATH, {_OPENCODE_PATH_ENV: resolved})
 
 
 def _opencode_prerequisite_error() -> str | None:
@@ -1365,6 +1378,7 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
         sys.stderr.write(prerequisite_error)
         return 1
     read_only = _configure_reflexio_setup(host="opencode")
+    _persist_opencode_path()
     if not _has_extraction_provider():
         sys.stderr.write(_extraction_provider_error())
         return 1

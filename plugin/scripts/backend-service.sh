@@ -65,9 +65,11 @@ PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "backend-service.sh" "$@"
 
 if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
-  if [ "${CLAUDE_SMART_HOST:-claude-code}" = "opencode" ] && command -v opencode >/dev/null 2>&1; then
+  if [ "${CLAUDE_SMART_HOST:-claude-code}" = "opencode" ]; then
     # Preserve Reflexio's Claude CLI provider contract while routing
-    # generation through the user's authenticated OpenCode setup.
+    # generation through the user's authenticated OpenCode setup. The bridge
+    # resolves opencode from CLAUDE_SMART_OPENCODE_PATH or PATH; don't require
+    # Git Bash's PATH to match the installer shell's PATH here.
     claude_smart_prepend_node_bins
     export CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"
   elif [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ]; then
@@ -110,7 +112,8 @@ if reason:
     message += f">\n> Last startup error: `{reason}`\n"
 message += (
     ">\n> Make sure the local model provider is available: Claude Code needs "
-    "`claude`, Codex needs `codex`. Then run `/claude-smart:restart`."
+    "`claude`, Codex needs `codex`, and OpenCode needs `opencode`. "
+    "Then run `/claude-smart:restart`."
 )
 print(json.dumps({
     "hookSpecificOutput": {

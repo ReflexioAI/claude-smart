@@ -53,6 +53,7 @@ const CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY";
 const CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI";
 const CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING";
 const CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST";
+const CLAUDE_SMART_OPENCODE_PATH_ENV = "CLAUDE_SMART_OPENCODE_PATH";
 const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
@@ -99,7 +100,7 @@ const CODEX_REQUIRED_FILES = [
   "plugin/scripts/_codex_env.sh",
 ];
 const CODEX_CLI_TIMEOUT_MS = 30_000;
-const PLUGIN_SERVICE_TIMEOUT_MS = 15_000;
+const PLUGIN_SERVICE_TIMEOUT_MS = 45_000;
 const COPYTREE_IGNORE_NAMES = new Set([
   "__pycache__",
   ".venv",
@@ -316,6 +317,32 @@ function ensureLocalEnvFile(path, host) {
   } else if (!existsSync(path)) {
     writeFileSync(path, "");
   }
+  chmodSync(path, 0o600);
+  return added;
+}
+
+function setEnvVars(path, values) {
+  mkdirSync(dirname(path), { recursive: true });
+  const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const seen = new Set();
+  const out = [];
+  for (const line of existing ? existing.split(/\r?\n/) : []) {
+    const parsed = parseEnvLine(line);
+    if (!parsed || !(parsed.key in values)) {
+      out.push(line);
+      continue;
+    }
+    out.push(`${parsed.key}="${escapeEnvValue(values[parsed.key])}"`);
+    seen.add(parsed.key);
+  }
+  const added = [];
+  for (const [key, value] of Object.entries(values)) {
+    if (seen.has(key)) continue;
+    out.push(`${key}="${escapeEnvValue(value)}"`);
+    added.push(key);
+  }
+  const content = out.join("\n").replace(/\n*$/, "");
+  writeFileSync(path, content ? `${content}\n` : "");
   chmodSync(path, 0o600);
   return added;
 }
@@ -576,9 +603,20 @@ function extractionProviderError() {
 }
 
 function hasOpenCodeCli() {
-  const opencodePath = (process.env.CLAUDE_SMART_OPENCODE_PATH || "").trim();
-  if (opencodePath && isExecutableFile(opencodePath)) return true;
-  return hasCli("opencode");
+  return Boolean(resolveOpenCodePath());
+}
+
+function resolveOpenCodePath() {
+  const opencodePath = (process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "").trim();
+  if (opencodePath && isExecutableFile(opencodePath)) return opencodePath;
+  return resolveCommand(isWindows() ? ["opencode.cmd", "opencode.exe", "opencode"] : ["opencode"]);
+}
+
+function persistOpenCodePath() {
+  const resolved = resolveOpenCodePath();
+  if (!resolved) return [];
+  process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] = resolved;
+  return setEnvVars(CLAUDE_SMART_ENV_PATH, { [CLAUDE_SMART_OPENCODE_PATH_ENV]: resolved });
 }
 
 const WINDOWS_SYSTEM_BASH_SUFFIXES = [
@@ -2213,6 +2251,7 @@ async function runInstallOpenCode(args) {
   }
   const setup = configureReflexioSetup("opencode");
   const readOnly = setup.readOnly;
+  persistOpenCodePath();
   if (!hasExtractionProvider()) {
     process.stderr.write(extractionProviderError());
     process.exit(1);
@@ -2388,6 +2427,8 @@ module.exports = {
   patchOpenCodePluginConfig,
   hasExtractionProvider,
   hasOpenCodeCli,
+  persistOpenCodePath,
+  resolveOpenCodePath,
   opencodePrerequisiteError,
   platformSupportError,
   prunePublishHooksForReadOnly,
