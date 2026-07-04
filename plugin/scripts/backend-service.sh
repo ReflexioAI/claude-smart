@@ -333,11 +333,7 @@ case "$CMD" in
         # Native Windows Python expects ;-separated Windows-style paths in
         # PYTHONPATH; MSYS does not auto-convert arbitrary env vars.
         pythonpath_sep=";"
-        if command -v cygpath >/dev/null 2>&1; then
-          vendor_pythonpath="$(cygpath -w "$vendor_pythonpath")"
-        else
-          vendor_pythonpath="$(claude_smart_to_windows_path "$vendor_pythonpath")"
-        fi
+        vendor_pythonpath="$(claude_smart_to_windows_path "$vendor_pythonpath")"
       fi
       backend_pythonpath="$vendor_pythonpath${backend_pythonpath:+$pythonpath_sep$backend_pythonpath}"
     fi

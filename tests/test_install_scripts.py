@@ -532,12 +532,12 @@ def test_smart_install_checks_windows_local_embedding_runtime() -> None:
     assert "verify_windows_local_embedding_runtime" in script
     assert 'claude_smart_is_windows || return 0' in script
     assert 'CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1' in script
-    assert 'claude_smart_local_embedding_runtime_available "$PLUGIN_ROOT"' in script
+    assert 'claude_smart_python_imports "$PLUGIN_ROOT" onnxruntime' in script
     assert "Microsoft Visual C++ Redistributable" in script
     assert "vc_redist.x64.exe" in script
 
 
-def test_local_embedding_runtime_probe_uses_plugin_python(tmp_path: Path) -> None:
+def test_python_import_probe_uses_plugin_python(tmp_path: Path) -> None:
     python_path = tmp_path / ".venv" / "Scripts" / "python.exe"
     python_path.parent.mkdir(parents=True)
     python_path.write_text("#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n")
@@ -545,7 +545,7 @@ def test_local_embedding_runtime_probe_uses_plugin_python(tmp_path: Path) -> Non
     script = (
         f'. "{LIB}"; '
         "claude_smart_is_windows() { return 0; }; "
-        f'claude_smart_local_embedding_runtime_available "{tmp_path}"'
+        f'claude_smart_python_imports "{tmp_path}" onnxruntime'
     )
 
     result = subprocess.run(
@@ -558,7 +558,7 @@ def test_local_embedding_runtime_probe_uses_plugin_python(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stderr
 
 
-def test_local_embedding_runtime_probe_fails_when_onnxruntime_import_fails(
+def test_python_import_probe_fails_when_module_import_fails(
     tmp_path: Path,
 ) -> None:
     python_path = tmp_path / ".venv" / "Scripts" / "python.exe"
@@ -568,7 +568,7 @@ def test_local_embedding_runtime_probe_fails_when_onnxruntime_import_fails(
     script = (
         f'. "{LIB}"; '
         "claude_smart_is_windows() { return 0; }; "
-        f'claude_smart_local_embedding_runtime_available "{tmp_path}"'
+        f'claude_smart_python_imports "{tmp_path}" onnxruntime'
     )
 
     result = subprocess.run(
