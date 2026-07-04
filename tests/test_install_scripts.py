@@ -76,8 +76,17 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         'printf "uv %s\\n" "$*" >> "$HOME/uv.log"\n'
         "create_python() {\n"
         '  mkdir -p "$PWD/.venv/bin"\n'
-        f'  printf "#!/bin/sh\\nexec {shlex.quote(sys.executable)} \\"\\$@\\"\\n" > "$PWD/.venv/bin/python"\n'
+        '  mkdir -p "$PWD/.venv/Scripts"\n'
+        f"  cat > \"$PWD/.venv/bin/python\" <<'PYSH'\n"
+        "#!/bin/sh\n"
+        'if [ "$1" = "-" ] && [ "$2" = "onnxruntime" ] && [ -n "${CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS:-}" ]; then\n'
+        '  exit "$CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS"\n'
+        "fi\n"
+        f'exec {shlex.quote(sys.executable)} "$@"\n'
+        "PYSH\n"
+        '  cp "$PWD/.venv/bin/python" "$PWD/.venv/Scripts/python.exe"\n'
         '  chmod +x "$PWD/.venv/bin/python"\n'
+        '  chmod +x "$PWD/.venv/Scripts/python.exe"\n'
         "}\n"
         'case "$*" in\n'
         '  "sync --locked --python 3.12 --quiet")\n'
@@ -2496,8 +2505,11 @@ def _prepare_node_bootstrap_sync_fixture(
     lock_contents = "stale\n" if mode == "stale" else "locked\n"
     (plugin_root / "uv.lock").write_text(lock_contents)
     _write_executable(private_node / "node", "#!/bin/sh\nprintf 'v20.9.0\\n'\n")
+    _write_executable(private_node / "node.exe", "#!/bin/sh\nprintf 'v20.9.0\\n'\n")
     _write_executable(private_node / "npm", "#!/bin/sh\nexit 0\n")
+    _write_executable(private_node / "npm.cmd", "#!/bin/sh\nexit 0\n")
     _write_bootstrap_uv(uv_bin / "uv", mode=mode)
+    _write_bootstrap_uv(uv_bin / "uv.exe", mode=mode)
     env = os.environ.copy()
     env.update(
         {
@@ -3261,6 +3273,53 @@ def test_node_installer_locked_sync_success_does_not_refresh_lock(
     assert (home / "uv.log").read_text().splitlines()[:1] == [
         "uv sync --locked --python 3.12 --quiet",
     ]
+
+
+def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for installer wrapper tests")
+    home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(tmp_path, mode="fresh")
+    scripts = plugin_root / "scripts"
+    scripts.mkdir()
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
+    env.update(
+        {
+            "BASH": "/bin/bash",
+            "CLAUDE_SMART_TEST_PLATFORM": "win32",
+            "CLAUDE_SMART_TEST_ARCH": "x64",
+            "CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS": "1",
+        }
+    )
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
+        "{ patchCodexHooks: false })"
+        ".then(() => { console.error('unexpected success'); process.exit(1); })"
+        ".catch((err) => { console.error(err.message); process.exit(2); });"
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+
+    marker = home / ".claude-smart" / "install-failed"
+    assert result.returncode == 2
+    assert "Windows local embedding requires Microsoft Visual C++" in result.stderr
+    assert marker.exists()
+    marker_text = marker.read_text()
+    assert "Windows local embedding requires Microsoft Visual C++" in marker_text
+    assert "fingerprint=" in marker_text
+    npm_log = home / "npm.log"
+    assert not npm_log.exists() or "npm ci" not in npm_log.read_text()
 
 
 def test_node_installer_non_lock_sync_failure_stays_strict(tmp_path: Path) -> None:

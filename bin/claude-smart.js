@@ -57,6 +57,8 @@ const CLAUDE_SMART_OPENCODE_PATH_ENV = "CLAUDE_SMART_OPENCODE_PATH";
 const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
+const INSTALL_FAILURE_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-failed");
+const INSTALL_SUCCESS_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-complete");
 const OPENCODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "opencode", "claude-smart");
 const OPENCODE_PACKAGE_LOCK_TIMEOUT_MS = 120_000;
 const OPENCODE_PACKAGE_LOCK_STALE_MS = 10 * 60_000;
@@ -129,6 +131,11 @@ const LOCAL_MODE_PRUNE_KEYS = new Set([
   "REFLEXIO_API_KEY",
   REFLEXIO_USER_ID_ENV,
 ]);
+const WINDOWS_LOCAL_EMBEDDING_FAILURE =
+  "Windows local embedding requires Microsoft Visual C++ Redistributable for onnxruntime; " +
+  "install the x64 redistributable from https://aka.ms/vs/17/release/vc_redist.x64.exe " +
+  "and rerun claude-smart install, or set CLAUDE_SMART_USE_LOCAL_EMBEDDING=0 before install " +
+  "to use a configured cloud embedder.";
 
 function shouldCopyPath(src) {
   const base = src.split(/[\\/]/).pop() || "";
@@ -257,6 +264,24 @@ function parseEnvLine(line) {
 
 function escapeEnvValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function readEnvValue(path, key) {
+  if (!existsSync(path)) return null;
+  const text = readFileSync(path, "utf8");
+  for (const line of text.split(/\r?\n/)) {
+    const parsed = parseEnvLine(line);
+    if (parsed && parsed.key === key) return parsed.value;
+  }
+  return null;
+}
+
+function localEmbeddingEnabled() {
+  const envValue = process.env[CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV];
+  if (envValue) return envValue === "1";
+  const fileValue = readEnvValue(CLAUDE_SMART_ENV_PATH, CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV);
+  if (fileValue) return fileValue === "1";
+  return true;
 }
 
 function ensureLocalEnvFile(path, host) {
@@ -928,11 +953,7 @@ async function bootstrapClaudeCodeInstall() {
   if (code !== 0) {
     throw new Error(`smart-install.sh failed in ${pluginRoot}`);
   }
-  const failureMarker = join(CLAUDE_SMART_STATE_DIR, "install-failed");
-  if (existsSync(failureMarker)) {
-    const reason = readFileSync(failureMarker, "utf8").trim() || "unknown error";
-    throw new Error(reason);
-  }
+  throwIfInstallFailureMarker();
   return pluginRoot;
 }
 
@@ -1380,13 +1401,87 @@ function ensurePluginRoot(pluginRoot) {
   }
 }
 
+function pluginPythonPath(pluginRoot) {
+  return isWindows()
+    ? join(pluginRoot, ".venv", "Scripts", "python.exe")
+    : join(pluginRoot, ".venv", "bin", "python");
+}
+
+function installFingerprintHash(pluginRoot, env) {
+  const scriptsDir = join(pluginRoot, "scripts");
+  const lib = join(scriptsDir, "_lib.sh");
+  if (!existsSync(lib)) return "";
+  const bash = resolveUsableBash();
+  if (!bash) return "";
+  const result = spawnSync(
+    bash,
+    [
+      "--noprofile",
+      "--norc",
+      "-c",
+      '. "$1"; claude_smart_install_fingerprint_hash "$2" "$3"',
+      "claude-smart",
+      lib,
+      pluginRoot,
+      scriptsDir,
+    ],
+    {
+      cwd: pluginRoot,
+      env,
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
+  if (result.error || result.status !== 0) return "";
+  return (result.stdout || "").trim();
+}
+
+function writeInstallFailure(reason, pluginRoot, env) {
+  mkdirSync(CLAUDE_SMART_STATE_DIR, { recursive: true });
+  const fingerprint = installFingerprintHash(pluginRoot, env);
+  const lines = [reason];
+  if (fingerprint) lines.push(`fingerprint=${fingerprint}`);
+  writeFileSync(INSTALL_FAILURE_MARKER, `${lines.join("\n")}\n`);
+  rmSync(INSTALL_SUCCESS_MARKER, { force: true });
+}
+
+function installFailureReason() {
+  const text = readFileSync(INSTALL_FAILURE_MARKER, "utf8");
+  const first = text.split(/\r?\n/, 1)[0].trim();
+  return first || "unknown error";
+}
+
+function throwIfInstallFailureMarker() {
+  if (existsSync(INSTALL_FAILURE_MARKER)) throw new Error(installFailureReason());
+}
+
+function verifyWindowsLocalEmbeddingRuntime(pluginRoot, env) {
+  if (!isWindows() || !localEmbeddingEnabled()) return;
+  const pythonPath = pluginPythonPath(pluginRoot);
+  let importable = false;
+  if (existsSync(pythonPath)) {
+    const result = spawnSync(
+      pythonPath,
+      ["-", "onnxruntime"],
+      {
+        input: "import importlib, sys\nimportlib.import_module(sys.argv[1])\n",
+        encoding: "utf8",
+        env,
+        windowsHide: true,
+      },
+    );
+    importable = !result.error && result.status === 0;
+  }
+  if (importable) return;
+  writeInstallFailure(WINDOWS_LOCAL_EMBEDDING_FAILURE, pluginRoot, env);
+  throw new Error(WINDOWS_LOCAL_EMBEDDING_FAILURE);
+}
+
 async function installVendoredReflexio(pluginRoot, uv, env) {
   const vendorRoot = join(pluginRoot, "vendor", "reflexio");
   if (!existsSync(join(vendorRoot, "pyproject.toml"))) return;
 
-  const pythonPath = isWindows()
-    ? join(pluginRoot, ".venv", "Scripts", "python.exe")
-    : join(pluginRoot, ".venv", "bin", "python");
+  const pythonPath = pluginPythonPath(pluginRoot);
   if (!existsSync(pythonPath)) {
     throw new Error(`plugin Python was not created by uv sync: ${pythonPath}`);
   }
@@ -1466,6 +1561,7 @@ async function syncPluginPythonEnv(pluginRoot, uv, env) {
 async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   assertSupportedRuntimePlatform();
   process.stdout.write("Preparing claude-smart runtime for hooks...\n");
+  rmSync(INSTALL_FAILURE_MARKER, { force: true });
   const nodeRuntime = await ensurePrivateNode();
   if (options.patchCodexHooks !== false) {
     patchCodexHooksForNode(pluginRoot, nodeRuntime.node);
@@ -1486,6 +1582,8 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   }
   await syncPluginPythonEnv(pluginRoot, uv, env);
   await installVendoredReflexio(pluginRoot, uv, env);
+  verifyWindowsLocalEmbeddingRuntime(pluginRoot, env);
+  throwIfInstallFailureMarker();
 
   const dashboardDir = join(pluginRoot, "dashboard");
   if (existsSync(dashboardDir)) {

@@ -1032,9 +1032,10 @@ def _seed_private_node_and_uv(env: dict[str, str]) -> None:
     uv.write_text(
         "#!/bin/sh\n"
         'printf "uv %s\\n" "$*" >> "$HOME/uv.log"\n'
-        'mkdir -p "$PWD/.venv/bin"\n'
+        '/bin/mkdir -p "$PWD/.venv/bin" "$PWD/.venv/Scripts"\n'
         'printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
-        'chmod +x "$PWD/.venv/bin/python"\n'
+        'printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/Scripts/python.exe"\n'
+        '/bin/chmod +x "$PWD/.venv/bin/python" "$PWD/.venv/Scripts/python.exe"\n'
         "exit 0\n"
     )
     uv.chmod(0o755)
