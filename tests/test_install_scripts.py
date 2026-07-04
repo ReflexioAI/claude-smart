@@ -539,11 +539,22 @@ def test_smart_install_checks_windows_local_embedding_runtime() -> None:
     script = (REPO_ROOT / "plugin" / "scripts" / "smart-install.sh").read_text()
 
     assert "verify_windows_local_embedding_runtime" in script
+    assert "verify-windows-embedding" in script
     assert 'claude_smart_is_windows || return 0' in script
     assert 'CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1' in script
     assert 'claude_smart_python_imports "$PLUGIN_ROOT" onnxruntime' in script
     assert "Microsoft Visual C++ Redistributable" in script
     assert "vc_redist.x64.exe" in script
+
+
+def test_smart_install_cli_warning_is_host_aware() -> None:
+    script = (REPO_ROOT / "plugin" / "scripts" / "smart-install.sh").read_text()
+
+    assert 'case "${CLAUDE_SMART_HOST:-claude-code}" in' in script
+    assert "CLAUDE_SMART_OPENCODE_PATH is not set" in script
+    assert "command -v opencode" in script
+    assert "command -v codex" in script
+    assert "command -v claude" in script
 
 
 def test_python_import_probe_uses_plugin_python(tmp_path: Path) -> None:
@@ -3275,6 +3286,39 @@ def test_node_installer_locked_sync_success_does_not_refresh_lock(
     ]
 
 
+def test_node_installer_preserves_occupied_plugin_root(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for installer wrapper tests")
+    home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(tmp_path, mode="fresh")
+    occupied = home / ".reflexio" / "plugin-root"
+    occupied.mkdir(parents=True)
+    sentinel = occupied / "keep.txt"
+    sentinel.write_text("keep\n")
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
+        "{ patchCodexHooks: false })"
+        ".then(() => console.log('done'))"
+        ".catch((err) => { console.error(err.message); process.exit(1); });"
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sentinel.read_text() == "keep\n"
+    assert (home / ".reflexio" / "plugin-root.txt").read_text().strip() == str(
+        plugin_root
+    )
+
+
 def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
     tmp_path: Path,
 ) -> None:
@@ -3286,12 +3330,34 @@ def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
     scripts.mkdir()
     shutil.copy2(LIB, scripts / "_lib.sh")
     shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
+    fake_bin = tmp_path / "fake-win-bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "uname",
+        "#!/bin/sh\n"
+        'if [ "$1" = "-s" ]; then printf "MINGW64_NT-10.0\\n"; exit 0; fi\n'
+        'if [ "$1" = "-m" ]; then printf "x86_64\\n"; exit 0; fi\n'
+        'printf "MINGW64_NT-10.0\\n"\n',
+    )
+    fake_bash = tmp_path / "fake-bash"
+    real_bash = shutil.which("bash") or "/bin/bash"
+    _write_executable(
+        fake_bash,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$HOME/bash.log"\n'
+        'export PATH="$CLAUDE_SMART_TEST_BASH_PATH"\n'
+        f'exec {shlex.quote(real_bash)} "$@"\n',
+    )
     env.update(
         {
-            "BASH": "/bin/bash",
+            "BASH": str(fake_bash),
             "CLAUDE_SMART_TEST_PLATFORM": "win32",
             "CLAUDE_SMART_TEST_ARCH": "x64",
+            "CLAUDE_SMART_TEST_BASH_PATH": (
+                f"{fake_bin}:/bin:/usr/bin:{os.environ.get('PATH', '')}"
+            ),
             "CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS": "1",
+            "SHELL": "",
         }
     )
     script = (
@@ -3318,6 +3384,7 @@ def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
     marker_text = marker.read_text()
     assert "Windows local embedding requires Microsoft Visual C++" in marker_text
     assert "fingerprint=" in marker_text
+    assert "verify-windows-embedding" in (home / "bash.log").read_text()
     npm_log = home / "npm.log"
     assert not npm_log.exists() or "npm ci" not in npm_log.read_text()
 
@@ -3919,6 +3986,37 @@ def test_codex_hook_redirects_reflexio_stray_copy_to_stable_root(
     assert "redirecting stray plugin copy" in (
         tmp_path / ".claude-smart" / "backend.log"
     ).read_text()
+
+
+def test_codex_hook_preserves_occupied_plugin_root(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for codex hook wrapper tests")
+
+    plugin_root = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.47"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    occupied = tmp_path / ".reflexio" / "plugin-root"
+    occupied.mkdir(parents=True)
+    sentinel = occupied / "keep.txt"
+    sentinel.write_text("keep\n")
+
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
+    result = subprocess.run(
+        [node, str(CODEX_HOOK), "ensure-root"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"continue": True}
+    assert sentinel.read_text() == "keep\n"
+    assert (tmp_path / ".reflexio" / "plugin-root.txt").read_text().strip() == str(
+        plugin_root
+    )
 
 
 def test_codex_hook_caps_backend_log_appends(tmp_path: Path) -> None:

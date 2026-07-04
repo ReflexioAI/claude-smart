@@ -97,6 +97,20 @@ write_failure() {
   exit 0
 }
 
+verify_windows_local_embedding_runtime() {
+  claude_smart_is_windows || return 0
+  [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}" = "1" ] || return 0
+  if claude_smart_python_imports "$PLUGIN_ROOT" onnxruntime; then
+    return 0
+  fi
+  write_failure "Windows local embedding requires Microsoft Visual C++ Redistributable for onnxruntime; install the x64 redistributable from https://aka.ms/vs/17/release/vc_redist.x64.exe and rerun claude-smart install, or set CLAUDE_SMART_USE_LOCAL_EMBEDDING=0 before install to use a configured cloud embedder."
+}
+
+if [ "${1:-}" = "verify-windows-embedding" ]; then
+  verify_windows_local_embedding_runtime
+  exit 0
+fi
+
 install_fingerprint() {
   claude_smart_install_fingerprint "$PLUGIN_ROOT" "$HERE"
 }
@@ -623,15 +637,6 @@ claude_smart_ensure_local_env_defaults() {
   chmod 600 "$REFLEXIO_ENV"
 }
 
-verify_windows_local_embedding_runtime() {
-  claude_smart_is_windows || return 0
-  [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}" = "1" ] || return 0
-  if claude_smart_python_imports "$PLUGIN_ROOT" onnxruntime; then
-    return 0
-  fi
-  write_failure "Windows local embedding requires Microsoft Visual C++ Redistributable for onnxruntime; install the x64 redistributable from https://aka.ms/vs/17/release/vc_redist.x64.exe and rerun claude-smart install, or set CLAUDE_SMART_USE_LOCAL_EMBEDDING=0 before install to use a configured cloud embedder."
-}
-
 claude_smart_ensure_local_env_defaults
 verify_windows_local_embedding_runtime
 
@@ -647,9 +652,23 @@ if [ -f "$REFLEXIO_ENV" ] && grep -qE '^REFLEXIO_URL=("http://localhost:8081/?"|
   echo "[claude-smart] migrated REFLEXIO_URL 8081 → 8071 in $REFLEXIO_ENV (backup at $REFLEXIO_ENV.bak)" >&2
 fi
 
-if ! command -v claude >/dev/null 2>&1; then
-  echo "[claude-smart] WARNING: 'claude' CLI not on PATH — reflexio extractors will have no LLM until it's installed" >&2
-fi
+case "${CLAUDE_SMART_HOST:-claude-code}" in
+  opencode)
+    if [ -z "${CLAUDE_SMART_OPENCODE_PATH:-}" ] && ! command -v opencode >/dev/null 2>&1; then
+      echo "[claude-smart] WARNING: 'opencode' CLI not on PATH and CLAUDE_SMART_OPENCODE_PATH is not set — reflexio extractors will have no LLM until OpenCode is installed" >&2
+    fi
+    ;;
+  codex)
+    if ! command -v codex >/dev/null 2>&1; then
+      echo "[claude-smart] WARNING: 'codex' CLI not on PATH — reflexio extractors will have no LLM until Codex is installed" >&2
+    fi
+    ;;
+  *)
+    if ! command -v claude >/dev/null 2>&1; then
+      echo "[claude-smart] WARNING: 'claude' CLI not on PATH — reflexio extractors will have no LLM until Claude Code is installed" >&2
+    fi
+    ;;
+esac
 
 LEGACY_CS_CITE="$HOME/.claude-smart/bin/cs-cite"
 if [ -e "$LEGACY_CS_CITE" ]; then

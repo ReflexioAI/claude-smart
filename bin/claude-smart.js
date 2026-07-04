@@ -58,7 +58,6 @@ const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const INSTALL_FAILURE_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-failed");
-const INSTALL_SUCCESS_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-complete");
 const OPENCODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "opencode", "claude-smart");
 const OPENCODE_PACKAGE_LOCK_TIMEOUT_MS = 120_000;
 const OPENCODE_PACKAGE_LOCK_STALE_MS = 10 * 60_000;
@@ -131,12 +130,6 @@ const LOCAL_MODE_PRUNE_KEYS = new Set([
   "REFLEXIO_API_KEY",
   REFLEXIO_USER_ID_ENV,
 ]);
-const WINDOWS_LOCAL_EMBEDDING_FAILURE =
-  "Windows local embedding requires Microsoft Visual C++ Redistributable for onnxruntime; " +
-  "install the x64 redistributable from https://aka.ms/vs/17/release/vc_redist.x64.exe " +
-  "and rerun claude-smart install, or set CLAUDE_SMART_USE_LOCAL_EMBEDDING=0 before install " +
-  "to use a configured cloud embedder.";
-
 function shouldCopyPath(src) {
   const base = src.split(/[\\/]/).pop() || "";
   if (COPYTREE_IGNORE_NAMES.has(base)) return false;
@@ -264,24 +257,6 @@ function parseEnvLine(line) {
 
 function escapeEnvValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-function readEnvValue(path, key) {
-  if (!existsSync(path)) return null;
-  const text = readFileSync(path, "utf8");
-  for (const line of text.split(/\r?\n/)) {
-    const parsed = parseEnvLine(line);
-    if (parsed && parsed.key === key) return parsed.value;
-  }
-  return null;
-}
-
-function localEmbeddingEnabled() {
-  const envValue = process.env[CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV];
-  if (envValue) return envValue === "1";
-  const fileValue = readEnvValue(CLAUDE_SMART_ENV_PATH, CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV);
-  if (fileValue) return fileValue === "1";
-  return true;
 }
 
 function ensureLocalEnvFile(path, host) {
@@ -606,7 +581,7 @@ function hasExtractionProvider() {
   if ((process.env.REFLEXIO_API_KEY || "").trim()) return true;
   const cliPath = (process.env.CLAUDE_SMART_CLI_PATH || "").trim();
   if (cliPath && isExecutableFile(cliPath)) return true;
-  return hasCli("claude") || hasCli("codex") || hasCli("opencode");
+  return hasCli("claude") || hasCli("codex") || Boolean(resolveOpenCodePath());
 }
 
 function isExecutableFile(path) {
@@ -1393,9 +1368,24 @@ function ensurePluginRoot(pluginRoot) {
   const reflexioDir = dirname(REFLEXIO_ENV_PATH);
   const link = join(reflexioDir, "plugin-root");
   mkdirSync(reflexioDir, { recursive: true });
-  rmSync(link, { recursive: true, force: true });
+  let blocked = false;
+  try {
+    const existing = lstatSync(link);
+    if (existing.isSymbolicLink() || existing.isFile()) {
+      rmSync(link, { recursive: true, force: true });
+    } else {
+      blocked = true;
+    }
+  } catch (err) {
+    if (!err || err.code !== "ENOENT") blocked = true;
+  }
+  if (blocked) {
+    writeFileSync(join(reflexioDir, "plugin-root.txt"), `${pluginRoot}\n`);
+    return;
+  }
   try {
     require("fs").symlinkSync(pluginRoot, link, isWindows() ? "junction" : "dir");
+    writeFileSync(join(reflexioDir, "plugin-root.txt"), `${pluginRoot}\n`);
   } catch {
     writeFileSync(join(reflexioDir, "plugin-root.txt"), `${pluginRoot}\n`);
   }
@@ -1405,44 +1395,6 @@ function pluginPythonPath(pluginRoot) {
   return isWindows()
     ? join(pluginRoot, ".venv", "Scripts", "python.exe")
     : join(pluginRoot, ".venv", "bin", "python");
-}
-
-function installFingerprintHash(pluginRoot, env) {
-  const scriptsDir = join(pluginRoot, "scripts");
-  const lib = join(scriptsDir, "_lib.sh");
-  if (!existsSync(lib)) return "";
-  const bash = resolveUsableBash();
-  if (!bash) return "";
-  const result = spawnSync(
-    bash,
-    [
-      "--noprofile",
-      "--norc",
-      "-c",
-      '. "$1"; claude_smart_install_fingerprint_hash "$2" "$3"',
-      "claude-smart",
-      lib,
-      pluginRoot,
-      scriptsDir,
-    ],
-    {
-      cwd: pluginRoot,
-      env,
-      encoding: "utf8",
-      windowsHide: true,
-    },
-  );
-  if (result.error || result.status !== 0) return "";
-  return (result.stdout || "").trim();
-}
-
-function writeInstallFailure(reason, pluginRoot, env) {
-  mkdirSync(CLAUDE_SMART_STATE_DIR, { recursive: true });
-  const fingerprint = installFingerprintHash(pluginRoot, env);
-  const lines = [reason];
-  if (fingerprint) lines.push(`fingerprint=${fingerprint}`);
-  writeFileSync(INSTALL_FAILURE_MARKER, `${lines.join("\n")}\n`);
-  rmSync(INSTALL_SUCCESS_MARKER, { force: true });
 }
 
 function installFailureReason() {
@@ -1456,25 +1408,29 @@ function throwIfInstallFailureMarker() {
 }
 
 function verifyWindowsLocalEmbeddingRuntime(pluginRoot, env) {
-  if (!isWindows() || !localEmbeddingEnabled()) return;
-  const pythonPath = pluginPythonPath(pluginRoot);
-  let importable = false;
-  if (existsSync(pythonPath)) {
-    const result = spawnSync(
-      pythonPath,
-      ["-", "onnxruntime"],
-      {
-        input: "import importlib, sys\nimportlib.import_module(sys.argv[1])\n",
-        encoding: "utf8",
-        env,
-        windowsHide: true,
-      },
+  if (!isWindows()) return;
+  const script = join(pluginRoot, "scripts", "smart-install.sh");
+  const bash = resolveUsableBash();
+  if (!bash) {
+    throw new Error(
+      "Git Bash is required for claude-smart dependency checks on Windows. Install Git for Windows and ensure bash.exe is on PATH, or run from WSL.",
     );
-    importable = !result.error && result.status === 0;
   }
-  if (importable) return;
-  writeInstallFailure(WINDOWS_LOCAL_EMBEDDING_FAILURE, pluginRoot, env);
-  throw new Error(WINDOWS_LOCAL_EMBEDDING_FAILURE);
+  const result = spawnSync(bash, [script, "verify-windows-embedding"], {
+    cwd: pluginRoot,
+    env,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.error || result.signal || result.status !== 0) {
+    const detail = result.error
+      ? result.error.message
+      : result.signal
+        ? `terminated by ${result.signal}`
+        : (result.stderr || "").trim() || `exited with status ${result.status}`;
+    throw new Error(`Windows local embedding preflight failed: ${detail}`);
+  }
+  throwIfInstallFailureMarker();
 }
 
 async function installVendoredReflexio(pluginRoot, uv, env) {
@@ -1583,7 +1539,6 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   await syncPluginPythonEnv(pluginRoot, uv, env);
   await installVendoredReflexio(pluginRoot, uv, env);
   verifyWindowsLocalEmbeddingRuntime(pluginRoot, env);
-  throwIfInstallFailureMarker();
 
   const dashboardDir = join(pluginRoot, "dashboard");
   if (existsSync(dashboardDir)) {

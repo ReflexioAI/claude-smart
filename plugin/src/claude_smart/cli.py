@@ -1188,7 +1188,7 @@ def _has_extraction_provider() -> bool:
         resolved = Path(cli_path).expanduser()
         if resolved.is_file() and os.access(resolved, os.X_OK):
             return True
-    return bool(shutil.which("claude") or shutil.which("codex") or shutil.which("opencode"))
+    return bool(shutil.which("claude") or shutil.which("codex") or _resolve_opencode_path())
 
 
 def _extraction_provider_error() -> str:

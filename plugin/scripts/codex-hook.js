@@ -413,15 +413,27 @@ function writePid(file, pid) {
 function ensurePluginRoot(root) {
   ensureDir(REFLEXIO_DIR);
   const link = path.join(REFLEXIO_DIR, "plugin-root");
+  const metadata = path.join(REFLEXIO_DIR, "plugin-root.txt");
+  let blocked = false;
   try {
-    fs.rmSync(link, { recursive: true, force: true });
-  } catch {
-    // Ignore and try to recreate below.
+    const existing = fs.lstatSync(link);
+    if (existing.isSymbolicLink() || existing.isFile()) {
+      fs.rmSync(link, { recursive: true, force: true });
+    } else {
+      blocked = true;
+    }
+  } catch (err) {
+    if (!err || err.code !== "ENOENT") blocked = true;
+  }
+  if (blocked) {
+    fs.writeFileSync(metadata, `${root}\n`);
+    return;
   }
   try {
     fs.symlinkSync(root, link, process.platform === "win32" ? "junction" : "dir");
+    fs.writeFileSync(metadata, `${root}\n`);
   } catch {
-    fs.writeFileSync(path.join(REFLEXIO_DIR, "plugin-root.txt"), `${root}\n`);
+    fs.writeFileSync(metadata, `${root}\n`);
   }
 }
 

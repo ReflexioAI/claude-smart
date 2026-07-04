@@ -720,10 +720,26 @@ def test_opencode_extraction_provider_requires_executable_cli_path(
 def test_opencode_extraction_provider_accepts_opencode_only(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
     monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+    monkeypatch.delenv(cli._OPENCODE_PATH_ENV, raising=False)
     monkeypatch.delenv(cli.env_config.REFLEXIO_API_KEY_ENV, raising=False)
     monkeypatch.setattr(
         cli.shutil, "which", lambda name: f"/bin/{name}" if name == "opencode" else None
     )
+
+    assert cli._has_extraction_provider() is True
+
+
+def test_opencode_extraction_provider_accepts_explicit_opencode_path(
+    monkeypatch, tmp_path
+) -> None:
+    opencode = tmp_path / "opencode"
+    opencode.write_text("#!/bin/sh\nexit 0\n")
+    opencode.chmod(0o755)
+    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+    monkeypatch.delenv(cli.env_config.REFLEXIO_API_KEY_ENV, raising=False)
+    monkeypatch.setenv(cli._OPENCODE_PATH_ENV, str(opencode))
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
 
     assert cli._has_extraction_provider() is True
 
@@ -742,7 +758,10 @@ def test_opencode_server_resolves_windows_bash_before_spawning() -> None:
     server = (REPO_ROOT / "plugin" / "opencode" / "server.mts").read_text()
 
     assert "function commandPath(names: string[]): string | undefined" in server
-    assert 'process.platform === "win32" ? ["bash.exe", "bash"] : ["bash"]' in server
+    assert "WINDOWS_SYSTEM_BASH_SUFFIXES" in server
+    assert "isWindowsSystemBash" in server
+    assert '"C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe"' in server
+    assert 'pathCommandCandidates(["bash.exe", "bash"])' in server
     assert "const RESOLVED_BASH = bashPath()" in server
     assert 'spawn(RESOLVED_BASH || "bash"' in server
 
@@ -944,6 +963,36 @@ def test_node_installer_accepts_opencode_only_extraction_provider(tmp_path: Path
 
     result = _run_node_script(script)
     assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "true"
+
+
+def test_node_installer_accepts_explicit_opencode_extraction_provider(
+    tmp_path: Path,
+) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    fake_opencode = tmp_path / "opencode"
+    fake_opencode.write_text("#!/bin/sh\nexit 0\n")
+    fake_opencode.chmod(0o755)
+    script = (
+        f"process.env.PATH = {json.dumps(str(tmp_path / 'empty'))};"
+        "delete process.env.REFLEXIO_API_KEY;"
+        "delete process.env.CLAUDE_SMART_CLI_PATH;"
+        f"process.env.CLAUDE_SMART_OPENCODE_PATH = {json.dumps(str(fake_opencode))};"
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        "process.stdout.write(String(installer.hasExtractionProvider()));"
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "true"
