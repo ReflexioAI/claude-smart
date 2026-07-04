@@ -85,6 +85,8 @@ write_failure() {
   local reason fp_hash
   reason="$1"
   fp_hash="$(claude_smart_install_fingerprint_hash "$PLUGIN_ROOT" "$HERE" 2>/dev/null || true)"
+  # bin/claude-smart.js reads this marker too: first line is the user-facing
+  # failure reason, and fingerprint=... marks which install attempt produced it.
   {
     printf '%s\n' "$reason"
     if [ -n "$fp_hash" ]; then
@@ -107,6 +109,8 @@ verify_windows_local_embedding_runtime() {
 }
 
 if [ "${1:-}" = "verify-windows-embedding" ]; then
+  # Node bootstrap calls this subcommand after uv sync so the shell installer
+  # remains the single owner of Windows onnxruntime readiness and marker policy.
   verify_windows_local_embedding_runtime
   exit 0
 fi

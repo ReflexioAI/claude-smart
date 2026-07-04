@@ -494,7 +494,7 @@ dev = [
 requires-dist = [
     { name = "chromadb", specifier = ">=0.5" },
     { name = "einops", specifier = ">=0.8.0" },
-    { name = "reflexio-ai", specifier = ">=0.2.27" },
+    { name = "reflexio-ai", specifier = ">=0.2.28" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },
 ]
 
@@ -2760,7 +2760,7 @@ wheels = [
 
 [[package]]
 name = "reflexio-ai"
-version = "0.2.27"
+version = "0.2.28"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -2800,9 +2800,9 @@ dependencies = [
     { name = "websocket-client" },
     { name = "xlsxwriter" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/85/22/64429eb84ae74aaa6d36f0a2e0d91a27b35ee33ef17c18411d54f08706ba/reflexio_ai-0.2.27.tar.gz", hash = "sha256:e433209ca848245e957943c6476f2bba32581de8804d535d25ca0596b0da0afd", size = 1112139, upload-time = "2026-06-30T06:26:21.88Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2a/e6/a59fc40136b37ea3e9b6878b600ef1f405c1baf7d1431a07e55c8e49c14e/reflexio_ai-0.2.28.tar.gz", hash = "sha256:49a35abf714ae293392277b278b895cde21ca50c14f10c97cbcf27c307e49fae", size = 1155554, upload-time = "2026-07-04T07:01:02.207Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/22/d65332c75b9072e8838d51f68354d8d17c7636aa1cf73a20cfc1147b4364/reflexio_ai-0.2.27-py3-none-any.whl", hash = "sha256:4598f4aaa61e3c755a04573ab9711a7b5673ebf268029b2cef21cdcd5d4abfcf", size = 1461400, upload-time = "2026-06-30T06:26:19.965Z" },
+    { url = "https://files.pythonhosted.org/packages/96/a6/c842d5e525f0f561fcd11ecf6543c9c52b3f4b665dbc2a8fe94adce9be1b/reflexio_ai-0.2.28-py3-none-any.whl", hash = "sha256:177e3a740afa2acb5a2a14a1e648c32c2d9e71ef9ff79b8ab2caec7e24ff5d88", size = 1558983, upload-time = "2026-07-04T07:01:00.69Z" },
 ]
 
 [[package]]

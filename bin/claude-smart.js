@@ -1384,7 +1384,7 @@ function ensurePluginRoot(pluginRoot) {
     return;
   }
   try {
-    require("fs").symlinkSync(pluginRoot, link, isWindows() ? "junction" : "dir");
+    symlinkSync(pluginRoot, link, isWindows() ? "junction" : "dir");
     writeFileSync(join(reflexioDir, "plugin-root.txt"), `${pluginRoot}\n`);
   } catch {
     writeFileSync(join(reflexioDir, "plugin-root.txt"), `${pluginRoot}\n`);
@@ -1398,6 +1398,8 @@ function pluginPythonPath(pluginRoot) {
 }
 
 function installFailureReason() {
+  // smart-install.sh owns the install-failed marker format; Node surfaces the
+  // first line as the actionable reason and leaves fingerprint handling to shell.
   const text = readFileSync(INSTALL_FAILURE_MARKER, "utf8");
   const first = text.split(/\r?\n/, 1)[0].trim();
   return first || "unknown error";

@@ -197,6 +197,8 @@ function parseOpenCodeJson(stdout) {
 }
 
 function stripOuterMarkdownFence(content) {
+  // OpenCode can return one-shot JSON wrapped in a whole-response markdown fence.
+  // Strip only that outer wrapper so streamed and one-shot output normalize alike.
   const match = String(content || "").match(/^```[^\r\n]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/);
   return match ? match[1].trim() : content;
 }
