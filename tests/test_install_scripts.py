@@ -529,7 +529,7 @@ def test_smart_install_repairs_local_env_defaults() -> None:
     assert "CLAUDE_SMART_USE_LOCAL_CLI" in script
     assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" in script
     assert "CLAUDE_SMART_READ_ONLY=0" in script
-    assert 'claude_smart_env_upsert CLAUDE_SMART_HOST "claude-code"' in script
+    assert "CLAUDE_SMART_HOST=claude-code" in script
     assert "CLAUDE_SMART_USE_LOCAL_CLI=" in script.split("install_complete()", 1)[1]
     assert "claude_smart_source_reflexio_env" in script
     assert "CLAUDE_SMART_READ_ONLY" in lib
@@ -1751,6 +1751,45 @@ def test_smart_install_persists_local_embedding_override(tmp_path: Path) -> None
     text = (tmp_path / ".claude-smart" / ".env").read_text()
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
     assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" in text
+
+
+def test_smart_install_rerun_preserves_existing_host(tmp_path: Path) -> None:
+    _plugin_root, smart_install, env = _prepare_smart_install_sync_fixture(
+        tmp_path,
+        mode="fresh",
+    )
+    command = ["/bin/bash", "--noprofile", "--norc", str(smart_install)]
+
+    first = subprocess.run(
+        command,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert first.returncode == 0, first.stderr
+
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    text = runtime_env.read_text()
+    assert 'CLAUDE_SMART_HOST="claude-code"' in text
+    runtime_env.write_text(
+        text.replace('CLAUDE_SMART_HOST="claude-code"', "CLAUDE_SMART_HOST=opencode")
+    )
+
+    second = subprocess.run(
+        command,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert "CLAUDE_SMART_HOST=opencode" in runtime_env.read_text()
+    assert "claude-code" not in runtime_env.read_text()
+    assert (tmp_path / "uv.log").read_text().count(
+        "sync --locked --python 3.12 --quiet"
+    ) == 1
 
 
 def test_smart_install_non_lock_sync_failure_stays_strict(tmp_path: Path) -> None:
