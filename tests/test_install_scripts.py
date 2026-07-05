@@ -1771,7 +1771,9 @@ def test_smart_install_rerun_preserves_existing_host(tmp_path: Path) -> None:
 
     runtime_env = tmp_path / ".claude-smart" / ".env"
     text = runtime_env.read_text()
-    assert 'CLAUDE_SMART_HOST="claude-code"' in text
+    assert [
+        line for line in text.splitlines() if line.startswith("CLAUDE_SMART_HOST=")
+    ] == ['CLAUDE_SMART_HOST="claude-code"']
     runtime_env.write_text(
         text.replace('CLAUDE_SMART_HOST="claude-code"', "CLAUDE_SMART_HOST=opencode")
     )
@@ -1785,8 +1787,10 @@ def test_smart_install_rerun_preserves_existing_host(tmp_path: Path) -> None:
     )
 
     assert second.returncode == 0, second.stderr
-    assert "CLAUDE_SMART_HOST=opencode" in runtime_env.read_text()
-    assert "claude-code" not in runtime_env.read_text()
+    env_lines = runtime_env.read_text().splitlines()
+    assert [
+        line for line in env_lines if line.startswith("CLAUDE_SMART_HOST=")
+    ] == ["CLAUDE_SMART_HOST=opencode"]
     assert (tmp_path / "uv.log").read_text().count(
         "sync --locked --python 3.12 --quiet"
     ) == 1
