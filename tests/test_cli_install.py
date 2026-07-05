@@ -196,7 +196,7 @@ def test_cmd_install_refresh_existing_uninstalls_and_retries(
 
 
 def test_install_setup_default_creates_local_env(monkeypatch, tmp_path: Path) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
 
     read_only = cli._configure_reflexio_setup()
@@ -213,7 +213,7 @@ def test_install_setup_updates_existing_host_and_local_defaults(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text(
         "# keep\n"
@@ -258,7 +258,7 @@ def test_install_setup_reads_managed_reflexio_from_env(
     tmp_path: Path,
     capsys,
 ) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text(
         '# keep\nUNKNOWN=value\nREFLEXIO_URL="https://managed.example/"\n'
@@ -285,7 +285,7 @@ def test_install_setup_reads_read_only_from_env(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text(
         'REFLEXIO_API_KEY="rflx-test-secret"\nCLAUDE_SMART_READ_ONLY="1"\n'
@@ -301,7 +301,7 @@ def test_install_setup_ignores_stale_url_without_api_key(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text('REFLEXIO_URL="https://managed.example/"\n')
     monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
@@ -513,7 +513,7 @@ def test_cmd_update_reads_managed_reflexio_env(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text(
         'REFLEXIO_URL="https://managed.example/"\nREFLEXIO_API_KEY="rflx-test-secret"\n'

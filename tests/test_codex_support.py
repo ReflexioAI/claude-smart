@@ -484,7 +484,7 @@ def test_codex_post_tool_records_apply_patch_payload(session_dir) -> None:
 def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
     monkeypatch, tmp_path, capsys
 ) -> None:
-    env_path = tmp_path / "reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     config_path = tmp_path / ".codex" / "config.toml"
     marketplace_root = tmp_path / "marketplaces" / "reflexioai"
     plugin_cache = (
@@ -544,7 +544,7 @@ def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
 def test_codex_install_fails_when_marketplace_registration_fails(
     monkeypatch, tmp_path, capsys
 ) -> None:
-    env_path = tmp_path / "reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     config_path = tmp_path / ".codex" / "config.toml"
     marketplace_root = tmp_path / "marketplaces" / "reflexioai"
     monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
@@ -854,7 +854,7 @@ def test_trust_codex_plugin_hooks_returns_failure_when_app_server_subprocess_err
 def test_codex_install_exits_nonzero_when_only_trust_fails(
     monkeypatch, tmp_path, capsys
 ) -> None:
-    env_path = tmp_path / "reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     config_path = tmp_path / ".codex" / "config.toml"
     marketplace_root = tmp_path / "marketplaces" / "reflexioai"
     plugin_cache = (

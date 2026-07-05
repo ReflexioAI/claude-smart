@@ -547,7 +547,7 @@ fi
 # claude-smart's backend loads ~/.claude-smart/.env (backend-service.sh exports
 # REFLEXIO_ENV_FILE so reflexio's CLI reads it instead of ~/.reflexio/.env);
 # append our opt-in flags there so `reflexio services start` picks them up. Keep
-# this path in sync with env_config.REFLEXIO_ENV_PATH and backend-service.sh.
+# this path in sync with env_config.CLAUDE_SMART_ENV_PATH and backend-service.sh.
 REFLEXIO_ENV="$HOME/.claude-smart/.env"
 mkdir -p "$(dirname "$REFLEXIO_ENV")"
 claude_smart_env_quote() {
@@ -651,6 +651,7 @@ claude_smart_ensure_local_env_defaults() {
 }
 
 claude_smart_ensure_local_env_defaults
+# No-op outside Git Bash/MSYS/Cygwin; non-Windows installs must not depend on it.
 verify_windows_local_embedding_runtime
 
 # Migrate stale REFLEXIO_URL from reflexio's library default (8081) to the

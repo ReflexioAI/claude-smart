@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
+import pytest  # type: ignore[reportMissingImports]
 
 from claude_smart import cli
 
@@ -20,7 +20,7 @@ def _args(*, yes: bool) -> argparse.Namespace:
 def clear_all_harness(monkeypatch, tmp_path):
     """Isolate clear-all paths and service calls from the real user machine."""
     reflexio_dir = tmp_path / "reflexio"
-    env_path = reflexio_dir / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     config_path = reflexio_dir / "configs" / "config_claude-smart.json"
     plugin_root = tmp_path / "plugin"
     backend_script = plugin_root / "scripts" / "backend-service.sh"

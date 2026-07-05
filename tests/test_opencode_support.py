@@ -657,7 +657,7 @@ def test_opencode_bootstrap_guard_rejects_unsupported_package(
 
 
 def test_opencode_install_fails_without_extraction_provider(monkeypatch, tmp_path) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
     monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
 
@@ -669,7 +669,7 @@ def test_opencode_install_fails_without_extraction_provider(monkeypatch, tmp_pat
 def test_opencode_install_requires_opencode_cli_even_with_other_provider(
     monkeypatch, tmp_path, capsys
 ) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
     monkeypatch.setenv(cli.env_config.REFLEXIO_API_KEY_ENV, "rk-test")
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/bin/claude" if name == "claude" else None)
@@ -681,7 +681,7 @@ def test_opencode_install_requires_opencode_cli_even_with_other_provider(
 
 
 def test_opencode_install_requires_git_bash_on_windows(monkeypatch, tmp_path, capsys) -> None:
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
     monkeypatch.setattr(cli, "_has_opencode_cli", lambda: True)
     monkeypatch.setattr(cli.os, "name", "nt")
     monkeypatch.setattr(cli, "_resolve_bash", lambda: None)
@@ -706,7 +706,7 @@ def test_opencode_extraction_provider_requires_executable_cli_path(
     cli_path = tmp_path / "claude-smart-provider"
     cli_path.write_text("#!/bin/sh\nexit 0\n")
     cli_path.chmod(0o644)
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
     monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(cli_path))
     monkeypatch.delenv(cli.env_config.REFLEXIO_API_KEY_ENV, raising=False)
     monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
@@ -718,7 +718,7 @@ def test_opencode_extraction_provider_requires_executable_cli_path(
 
 
 def test_opencode_extraction_provider_accepts_opencode_only(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
     monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
     monkeypatch.delenv(cli._OPENCODE_PATH_ENV, raising=False)
     monkeypatch.delenv(cli.env_config.REFLEXIO_API_KEY_ENV, raising=False)
@@ -735,7 +735,7 @@ def test_opencode_extraction_provider_accepts_explicit_opencode_path(
     opencode = tmp_path / "opencode"
     opencode.write_text("#!/bin/sh\nexit 0\n")
     opencode.chmod(0o755)
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
     monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
     monkeypatch.delenv(cli.env_config.REFLEXIO_API_KEY_ENV, raising=False)
     monkeypatch.setenv(cli._OPENCODE_PATH_ENV, str(opencode))
@@ -1418,7 +1418,7 @@ def test_opencode_install_patches_project_config_after_bootstrap(
     monkeypatch, tmp_path, capsys
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
     monkeypatch.setattr(cli.os, "name", "nt")
     monkeypatch.setattr(cli, "Path", PosixPath)
     monkeypatch.setattr(cli, "_resolve_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
@@ -1435,7 +1435,7 @@ def test_opencode_install_patches_project_config_after_bootstrap(
     parsed = json.loads((tmp_path / "opencode.json").read_text())
     assert parsed["plugin"] == ["file:///plugin"]
     assert "CLAUDE_SMART_HOST=opencode" in (
-        tmp_path / ".reflexio" / ".env"
+        tmp_path / ".claude-smart" / ".env"
     ).read_text()
     assert "Restart OpenCode" in capsys.readouterr().out
 
@@ -1447,7 +1447,7 @@ def test_opencode_install_patches_existing_dot_opencode_config(
     legacy_config.parent.mkdir()
     legacy_config.write_text(json.dumps({"plugin": ["other-plugin"]}))
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
     monkeypatch.setattr(
         cli.shutil,
         "which",
@@ -1471,7 +1471,7 @@ def test_opencode_install_migrates_existing_plugins_field(
     config = tmp_path / "opencode.json"
     config.write_text(json.dumps({"plugins": ["other-plugin"], "theme": "system"}))
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".reflexio" / ".env")
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
     monkeypatch.setattr(
         cli.shutil,
         "which",
@@ -2424,12 +2424,35 @@ def test_opencode_dist_matches_typescript_sources(tmp_path: Path) -> None:
         assert filecmp.cmp(expected, generated, shallow=False), filename
 
 
-def test_node_parse_host_accepts_opencode() -> None:
-    installer = (REPO_ROOT / "bin" / "claude-smart.js").read_text()
+def test_node_parse_host_accepts_supported_hosts() -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    script = (
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        "const originalExit = process.exit;"
+        "process.exit = (code) => { throw new Error(`exit ${code}`); };"
+        "let rejectsInvalid = false;"
+        "try { installer.parseHost(['--host', 'bad-host']); }"
+        "catch (err) { rejectsInvalid = err.message === 'exit 1'; }"
+        "process.exit = originalExit;"
+        "process.stdout.write(JSON.stringify({"
+        "  defaults: installer.parseHost([]),"
+        "  codex: installer.parseHost(['--host', 'codex']),"
+        "  opencode: installer.parseHost(['--host', 'opencode']),"
+        "  rejectsInvalid,"
+        "}));"
+    )
 
-    assert 'value !== "claude-code" && value !== "codex" && value !== "opencode"' in installer
-    assert "runInstallOpenCode" in installer
-    assert "runUninstallOpenCode" in installer
+    result = _run_node_script(script)
+
+    assert result is not None
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "defaults": "claude-code",
+        "codex": "codex",
+        "opencode": "opencode",
+        "rejectsInvalid": True,
+    }
 
 
 def shutil_which_node() -> str | None:

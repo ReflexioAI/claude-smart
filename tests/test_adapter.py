@@ -51,12 +51,12 @@ def _adapter_with(client) -> reflexio_adapter.Adapter:
 def test_adapter_constructs_client_with_env_url_and_api_key(
     monkeypatch, tmp_path
 ) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text(
         'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-test-key"\n'
     )
-    monkeypatch.setattr(reflexio_adapter.env_config, "REFLEXIO_ENV_PATH", env_path)
+    monkeypatch.setattr(reflexio_adapter.env_config, "CLAUDE_SMART_ENV_PATH", env_path)
     monkeypatch.delenv("REFLEXIO_URL", raising=False)
     monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
     seen: dict[str, str] = {}
@@ -84,7 +84,7 @@ def test_adapter_constructs_client_with_env_url_and_api_key(
 def test_adapter_passes_short_http_timeout_to_client(monkeypatch, tmp_path) -> None:
     """Hooks must cap reflexio HTTP calls so an unhealthy backend can't stall a session."""
     monkeypatch.setattr(
-        reflexio_adapter.env_config, "REFLEXIO_ENV_PATH", tmp_path / "missing.env"
+        reflexio_adapter.env_config, "CLAUDE_SMART_ENV_PATH", tmp_path / "missing.env"
     )
     monkeypatch.setenv("REFLEXIO_URL", "https://x.example/")
     monkeypatch.setenv("REFLEXIO_API_KEY", "k")
@@ -111,7 +111,7 @@ def test_adapter_falls_back_when_client_rejects_timeout_kwarg(
 ) -> None:
     """Older reflexio releases lack ``timeout``; constructor must still succeed."""
     monkeypatch.setattr(
-        reflexio_adapter.env_config, "REFLEXIO_ENV_PATH", tmp_path / "missing.env"
+        reflexio_adapter.env_config, "CLAUDE_SMART_ENV_PATH", tmp_path / "missing.env"
     )
     monkeypatch.setenv("REFLEXIO_URL", "https://x.example/")
     monkeypatch.setenv("REFLEXIO_API_KEY", "k")
@@ -132,12 +132,12 @@ def test_adapter_falls_back_when_client_rejects_timeout_kwarg(
 
 
 def test_adapter_process_env_overrides_reflexio_env(monkeypatch, tmp_path) -> None:
-    env_path = tmp_path / ".reflexio" / ".env"
+    env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text(
         'REFLEXIO_URL="https://from-file.example/"\nREFLEXIO_API_KEY="file-key"\n'
     )
-    monkeypatch.setattr(reflexio_adapter.env_config, "REFLEXIO_ENV_PATH", env_path)
+    monkeypatch.setattr(reflexio_adapter.env_config, "CLAUDE_SMART_ENV_PATH", env_path)
     monkeypatch.setenv("REFLEXIO_URL", "https://from-env.example/")
     monkeypatch.setenv("REFLEXIO_API_KEY", "env-key")
     seen: dict[str, str] = {}

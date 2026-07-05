@@ -1278,8 +1278,10 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert (
         'runPluginService(pluginRoot, "backend-service.sh", "start"' in node_installer
     )
-    assert 'startBackendService(pluginRoot, "claude-code")' in node_installer
-    assert 'startBackendService(cacheDir, "codex")' in node_installer
+    assert 'const HOST_CLAUDE_CODE = "claude-code"' in node_installer
+    assert 'const HOST_CODEX = "codex"' in node_installer
+    assert "startBackendService(pluginRoot, HOST_CLAUDE_CODE)" in node_installer
+    assert "startBackendService(cacheDir, HOST_CODEX)" in node_installer
     assert (
         'runPluginService(pluginRoot, "dashboard-service.sh", "stop")' in node_installer
     )
@@ -1295,7 +1297,8 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
 def test_node_update_reinstalls_by_host() -> None:
     node_installer = NODE_INSTALLER.read_text()
 
-    assert 'if (parseHost(args) === "codex")' in node_installer
+    assert "if (parseHost(args) === HOST_CODEX)" in node_installer
+    assert "if (parseHost(args) === HOST_OPENCODE)" in node_installer
     assert "await runUpdateCodex(args)" in node_installer
     assert "async function runUpdateCodex(args)" in node_installer
     assert 'findCodexPluginRoot() || join(PACKAGE_ROOT, "plugin")' in node_installer

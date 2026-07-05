@@ -24,7 +24,7 @@ def clear_reflexio_connection_env(monkeypatch, tmp_path):
     from claude_smart import env_config
 
     monkeypatch.setattr(
-        env_config, "REFLEXIO_ENV_PATH", tmp_path / ".reflexio" / ".env"
+        env_config, "CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env"
     )
     monkeypatch.delenv("REFLEXIO_URL", raising=False)
     monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)

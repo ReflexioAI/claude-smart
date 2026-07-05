@@ -13,7 +13,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-REFLEXIO_ENV_PATH = Path.home() / ".claude-smart" / ".env"
+from claude_smart import runtime
+
+CLAUDE_SMART_ENV_PATH = Path.home() / ".claude-smart" / ".env"
+# Deprecated internal alias kept so older imports do not fail abruptly.
+REFLEXIO_ENV_PATH = CLAUDE_SMART_ENV_PATH
 MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/"
 REFLEXIO_URL_ENV = "REFLEXIO_URL"
 REFLEXIO_API_KEY_ENV = "REFLEXIO_API_KEY"
@@ -21,7 +25,7 @@ CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY"
 CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
 CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
 CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST"
-DEFAULT_CLAUDE_SMART_HOST = "claude-code"
+DEFAULT_CLAUDE_SMART_HOST = runtime.HOST_CLAUDE_CODE
 
 _LOCAL_DEFAULT_ENTRIES = (
     (
@@ -76,7 +80,7 @@ def parse_env_line(line: str) -> tuple[str, str] | None:
 
 def load_reflexio_env(path: Path | None = None) -> None:
     """Load ``~/.claude-smart/.env`` into ``os.environ`` without overriding values."""
-    path = path or REFLEXIO_ENV_PATH
+    path = path or CLAUDE_SMART_ENV_PATH
     try:
         text = path.read_text()
     except OSError:
@@ -137,7 +141,7 @@ def ensure_local_env_defaults(
     explicit user overrides such as ``CLAUDE_SMART_READ_ONLY=1``.
     """
     install_host = host
-    path = path or REFLEXIO_ENV_PATH
+    path = path or CLAUDE_SMART_ENV_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         existing = path.read_text()

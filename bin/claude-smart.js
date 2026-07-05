@@ -55,7 +55,11 @@ const CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING";
 const CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST";
 const CLAUDE_SMART_OPENCODE_PATH_ENV = "CLAUDE_SMART_OPENCODE_PATH";
 const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
-const DEFAULT_CLAUDE_SMART_HOST = "claude-code";
+const HOST_CLAUDE_CODE = "claude-code";
+const HOST_CODEX = "codex";
+const HOST_OPENCODE = "opencode";
+const SUPPORTED_HOSTS = [HOST_CLAUDE_CODE, HOST_CODEX, HOST_OPENCODE];
+const DEFAULT_CLAUDE_SMART_HOST = HOST_CLAUDE_CODE;
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const INSTALL_FAILURE_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-failed");
@@ -1407,6 +1411,7 @@ function ensurePluginRoot(pluginRoot) {
 }
 
 function pluginPythonPath(pluginRoot) {
+  // Python venvs created by uv use Scripts/python.exe on Windows across x64/arm64.
   return isWindows()
     ? join(pluginRoot, ".venv", "Scripts", "python.exe")
     : join(pluginRoot, ".venv", "bin", "python");
@@ -1426,6 +1431,8 @@ function throwIfInstallFailureMarker() {
 
 function verifyWindowsLocalEmbeddingRuntime(pluginRoot, env) {
   if (!isWindows()) return;
+  // Reflexio owns local embeddings, but this installer is the first place a
+  // user sees whether the prepared Reflexio runtime can import onnxruntime.
   const script = join(pluginRoot, "scripts", "smart-install.sh");
   const bash = resolveUsableBash();
   if (!bash) {
@@ -1615,14 +1622,14 @@ function printHelp() {
 
 function parseHost(args) {
   const idx = args.indexOf("--host");
-  if (idx === -1) return "claude-code";
+  if (idx === -1) return DEFAULT_CLAUDE_SMART_HOST;
   const value = args[idx + 1];
   if (!value) {
-    process.stderr.write("error: --host requires a value: claude-code, codex, or opencode\n");
+    process.stderr.write(`error: --host requires a value: ${SUPPORTED_HOSTS.join(", ")}\n`);
     process.exit(1);
   }
-  if (value !== "claude-code" && value !== "codex" && value !== "opencode") {
-    process.stderr.write("error: --host must be claude-code, codex, or opencode\n");
+  if (!SUPPORTED_HOSTS.includes(value)) {
+    process.stderr.write(`error: --host must be ${SUPPORTED_HOSTS.join(", ")}\n`);
     process.exit(1);
   }
   return value;
@@ -2037,11 +2044,11 @@ function findCodexPluginRoot() {
 }
 
 async function runUpdate(args) {
-  if (parseHost(args) === "codex") {
+  if (parseHost(args) === HOST_CODEX) {
     await runUpdateCodex(args);
     return;
   }
-  if (parseHost(args) === "opencode") {
+  if (parseHost(args) === HOST_OPENCODE) {
     await runUpdateOpenCode(args);
     return;
   }
@@ -2069,11 +2076,11 @@ async function runUpdateOpenCode(args) {
 }
 
 async function runUninstall(args) {
-  if (parseHost(args) === "codex") {
+  if (parseHost(args) === HOST_CODEX) {
     await runUninstallCodex();
     return;
   }
-  if (parseHost(args) === "opencode") {
+  if (parseHost(args) === HOST_OPENCODE) {
     await runUninstallOpenCode(args);
     return;
   }
@@ -2123,11 +2130,11 @@ async function runSetup(args) {
 }
 
 async function runInstall(args, options = {}) {
-  if (parseHost(args) === "codex") {
+  if (parseHost(args) === HOST_CODEX) {
     await runInstallCodex(args);
     return;
   }
-  if (parseHost(args) === "opencode") {
+  if (parseHost(args) === HOST_OPENCODE) {
     await runInstallOpenCode(args);
     return;
   }
@@ -2141,7 +2148,7 @@ async function runInstall(args, options = {}) {
   }
 
   const source = PACKAGE_ROOT;
-  const setup = configureReflexioSetup("claude-code");
+  const setup = configureReflexioSetup(HOST_CLAUDE_CODE);
   const readOnly = setup.readOnly;
 
   const steps = [
@@ -2181,7 +2188,7 @@ async function runInstall(args, options = {}) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
-    if (startBackendService(pluginRoot, "claude-code")) {
+    if (startBackendService(pluginRoot, HOST_CLAUDE_CODE)) {
       process.stdout.write("Started claude-smart backend service.\n");
     }
     if (refreshDashboardService(pluginRoot)) {
@@ -2213,7 +2220,7 @@ async function runInstallCodex(args) {
     process.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n");
     process.exit(1);
   }
-  const setup = configureReflexioSetup("codex");
+  const setup = configureReflexioSetup(HOST_CODEX);
   const readOnly = setup.readOnly;
 
   const marketplaceRoot = copyCodexMarketplace();
@@ -2264,7 +2271,7 @@ async function runInstallCodex(args) {
     if (readOnly) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
-    if (startBackendService(cacheDir, "codex")) {
+    if (startBackendService(cacheDir, HOST_CODEX)) {
       process.stdout.write("Started claude-smart backend service.\n");
     }
     if (refreshDashboardService(cacheDir)) {
@@ -2319,7 +2326,7 @@ async function runInstallOpenCode(args) {
     process.stderr.write(prerequisiteError);
     process.exit(1);
   }
-  const setup = configureReflexioSetup("opencode");
+  const setup = configureReflexioSetup(HOST_OPENCODE);
   const readOnly = setup.readOnly;
   persistOpenCodePath();
   if (!hasExtractionProvider()) {
@@ -2360,7 +2367,7 @@ async function runInstallOpenCode(args) {
   if (readOnly) {
     process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
   }
-  if (startBackendService(pluginRoot, "opencode")) {
+  if (startBackendService(pluginRoot, HOST_OPENCODE)) {
     process.stdout.write("Started claude-smart backend service.\n");
   }
   if (refreshDashboardService(pluginRoot)) {
@@ -2495,6 +2502,7 @@ module.exports = {
   opencodeLocalPluginSpec,
   installOpenCodePluginPackage,
   patchOpenCodePluginConfig,
+  parseHost,
   hasExtractionProvider,
   hasOpenCodeCli,
   persistOpenCodePath,

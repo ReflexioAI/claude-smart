@@ -37,10 +37,14 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from claude_smart import context_format, cs_cite, env_config, ids, publish, state
+from claude_smart import context_format, cs_cite, env_config, ids, publish, runtime, state
 from claude_smart.reflexio_adapter import Adapter
 
-_CLAUDE_SMART_ENV_PATH = env_config.REFLEXIO_ENV_PATH
+_HOST_CLAUDE_CODE = runtime.HOST_CLAUDE_CODE
+_HOST_CODEX = runtime.HOST_CODEX
+_HOST_OPENCODE = runtime.HOST_OPENCODE
+_HOST_CHOICES = (_HOST_CLAUDE_CODE, _HOST_CODEX, _HOST_OPENCODE)
+_CLAUDE_SMART_ENV_PATH = env_config.CLAUDE_SMART_ENV_PATH
 _MANAGED_REFLEXIO_URL = env_config.MANAGED_REFLEXIO_URL
 _PLUGIN_SPEC = "claude-smart@reflexioai"
 _CODEX_MARKETPLACE_NAME = "reflexioai"
@@ -928,7 +932,7 @@ def _register_codex_marketplace(root: Path) -> tuple[bool, str]:
     return False, output or "Codex CLI does not expose plugin marketplace commands"
 
 
-def _configure_reflexio_setup(host: str = "claude-code") -> bool:
+def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
     """Load setup state and ensure local defaults when unmanaged.
 
     Args:
@@ -1377,7 +1381,7 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
     if prerequisite_error:
         sys.stderr.write(prerequisite_error)
         return 1
-    read_only = _configure_reflexio_setup(host="opencode")
+    read_only = _configure_reflexio_setup(host=_HOST_OPENCODE)
     _persist_opencode_path()
     if not _has_extraction_provider():
         sys.stderr.write(_extraction_provider_error())
@@ -1433,7 +1437,7 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
             "error: 'uv' not found on PATH. Install uv or restart your shell.\n"
         )
         return 1
-    read_only = _configure_reflexio_setup(host="codex")
+    read_only = _configure_reflexio_setup(host=_HOST_CODEX)
 
     missing = _missing_codex_marketplace_files(_REPO_ROOT)
     if missing:
@@ -1531,9 +1535,9 @@ def cmd_install(args: argparse.Namespace) -> int:
     Returns:
         int: 0 on success, non-zero if the ``claude`` CLI is missing or fails.
     """
-    if getattr(args, "host", "claude-code") == "codex":
+    if getattr(args, "host", _HOST_CLAUDE_CODE) == _HOST_CODEX:
         return cmd_install_codex(args)
-    if getattr(args, "host", "claude-code") == "opencode":
+    if getattr(args, "host", _HOST_CLAUDE_CODE) == _HOST_OPENCODE:
         return cmd_install_opencode(args)
 
     if not shutil.which("claude"):
@@ -1542,7 +1546,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             "Install Claude Code first: https://claude.com/claude-code\n"
         )
         return 1
-    read_only = _configure_reflexio_setup(host="claude-code")
+    read_only = _configure_reflexio_setup(host=_HOST_CLAUDE_CODE)
 
     refresh_existing = bool(getattr(args, "refresh_existing", False))
     for cmd in (
@@ -1605,16 +1609,16 @@ def cmd_update(args: argparse.Namespace) -> int:
     Returns:
         int: 0 on success, non-zero if the host CLI is missing or install fails.
     """
-    if getattr(args, "host", "claude-code") == "codex":
+    if getattr(args, "host", _HOST_CLAUDE_CODE) == _HOST_CODEX:
         return cmd_update_codex(args)
-    if getattr(args, "host", "claude-code") == "opencode":
+    if getattr(args, "host", _HOST_CLAUDE_CODE) == _HOST_OPENCODE:
         return cmd_update_opencode(args)
 
     _run_service(_DASHBOARD_SCRIPT, "stop")
     _run_service(_BACKEND_SCRIPT, "stop")
     sys.stdout.write("Updating claude-smart by reinstalling from this package...\n")
     install_args = argparse.Namespace(**vars(args), refresh_existing=True)
-    install_args.host = "claude-code"
+    install_args.host = _HOST_CLAUDE_CODE
     return cmd_install(install_args)
 
 
@@ -1631,7 +1635,7 @@ def cmd_update_codex(_args: argparse.Namespace) -> int:
         "Updating claude-smart Codex support by reinstalling from this package...\n"
     )
     install_args = argparse.Namespace(**vars(_args))
-    install_args.host = "codex"
+    install_args.host = _HOST_CODEX
     return cmd_install_codex(install_args)
 
 
@@ -1642,7 +1646,7 @@ def cmd_update_opencode(args: argparse.Namespace) -> int:
         "Updating claude-smart OpenCode support by reinstalling from this package...\n"
     )
     install_args = argparse.Namespace(**vars(args))
-    install_args.host = "opencode"
+    install_args.host = _HOST_OPENCODE
     return cmd_install_opencode(install_args)
 
 
@@ -1658,9 +1662,9 @@ def cmd_uninstall(_args: argparse.Namespace) -> int:
     Returns:
         int: 0 on success, non-zero if the ``claude`` CLI is missing or fails.
     """
-    if getattr(_args, "host", "claude-code") == "codex":
+    if getattr(_args, "host", _HOST_CLAUDE_CODE) == _HOST_CODEX:
         return cmd_uninstall_codex(_args)
-    if getattr(_args, "host", "claude-code") == "opencode":
+    if getattr(_args, "host", _HOST_CLAUDE_CODE) == _HOST_OPENCODE:
         return cmd_uninstall_opencode(_args)
 
     if not shutil.which("claude"):
@@ -2495,8 +2499,8 @@ def _build_parser() -> argparse.ArgumentParser:
     inst = sub.add_parser("install", help="Install claude-smart")
     inst.add_argument(
         "--host",
-        choices=("claude-code", "codex", "opencode"),
-        default="claude-code",
+        choices=_HOST_CHOICES,
+        default=_HOST_CLAUDE_CODE,
         help="Install target host",
     )
     inst.add_argument(
@@ -2510,8 +2514,8 @@ def _build_parser() -> argparse.ArgumentParser:
     upd = sub.add_parser("update", help="Update claude-smart to the latest version")
     upd.add_argument(
         "--host",
-        choices=("claude-code", "codex", "opencode"),
-        default="claude-code",
+        choices=_HOST_CHOICES,
+        default=_HOST_CLAUDE_CODE,
         help="Update target host",
     )
     upd.add_argument(
@@ -2525,8 +2529,8 @@ def _build_parser() -> argparse.ArgumentParser:
     uni = sub.add_parser("uninstall", help="Remove claude-smart")
     uni.add_argument(
         "--host",
-        choices=("claude-code", "codex", "opencode"),
-        default="claude-code",
+        choices=_HOST_CHOICES,
+        default=_HOST_CLAUDE_CODE,
         help="Uninstall target host",
     )
     uni.add_argument(
