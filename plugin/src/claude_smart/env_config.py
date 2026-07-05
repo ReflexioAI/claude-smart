@@ -21,6 +21,7 @@ CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY"
 CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
 CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
 CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST"
+DEFAULT_CLAUDE_SMART_HOST = "claude-code"
 
 _LOCAL_DEFAULT_ENTRIES = (
     (
@@ -34,9 +35,9 @@ _LOCAL_DEFAULT_ENTRIES = (
         "1",
     ),
     (None, CLAUDE_SMART_READ_ONLY_ENV, "0"),
-    (None, CLAUDE_SMART_HOST_ENV, "claude-code"),
+    (None, CLAUDE_SMART_HOST_ENV, DEFAULT_CLAUDE_SMART_HOST),
 )
-_ENV_BACKED_LOCAL_DEFAULT_KEYS = {
+_ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS = {
     CLAUDE_SMART_USE_LOCAL_CLI_ENV,
     CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV,
 }
@@ -126,7 +127,7 @@ def set_env_vars(path: Path, values: dict[str, str]) -> list[str]:
 
 def ensure_local_env_defaults(
     path: Path | None = None,
-    host: str = "claude-code",
+    host: str = DEFAULT_CLAUDE_SMART_HOST,
 ) -> list[str]:
     """Create or augment ``~/.claude-smart/.env`` for claude-smart local mode.
 
@@ -135,6 +136,7 @@ def ensure_local_env_defaults(
     This repairs first installs and deleted env files without clobbering
     explicit user overrides such as ``CLAUDE_SMART_READ_ONLY=1``.
     """
+    install_host = host
     path = path or REFLEXIO_ENV_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -157,10 +159,12 @@ def ensure_local_env_defaults(
             if key == CLAUDE_SMART_HOST_ENV:
                 present.add(key)
                 if not host_written:
-                    replacement = f"{CLAUDE_SMART_HOST_ENV}={_escape_env_value(host)}"
+                    replacement = (
+                        f"{CLAUDE_SMART_HOST_ENV}={_escape_env_value(install_host)}"
+                    )
                     kept_lines.append(replacement)
                     host_written = True
-                    if line != replacement or _value != host:
+                    if line != replacement or _value != install_host:
                         changed = True
                 else:
                     changed = True
@@ -173,7 +177,7 @@ def ensure_local_env_defaults(
     for comment, key, value in _LOCAL_DEFAULT_ENTRIES:
         if key in present:
             continue
-        effective_value = _local_default_env_value(key, value, host)
+        effective_value = _resolve_local_env_default(key, value, install_host)
         if comment:
             additions.append(comment)
         if key == CLAUDE_SMART_READ_ONLY_ENV:
@@ -195,10 +199,10 @@ def ensure_local_env_defaults(
     return added_keys
 
 
-def _local_default_env_value(key: str, fallback: str, host: str) -> str:
+def _resolve_local_env_default(key: str, fallback: str, install_host: str) -> str:
     if key == CLAUDE_SMART_HOST_ENV:
-        return host
-    if key in _ENV_BACKED_LOCAL_DEFAULT_KEYS:
+        return install_host
+    if key in _ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS:
         explicit = os.environ.get(key, "").strip()
         if explicit:
             return explicit

@@ -55,6 +55,7 @@ const CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING";
 const CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST";
 const CLAUDE_SMART_OPENCODE_PATH_ENV = "CLAUDE_SMART_OPENCODE_PATH";
 const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
+const DEFAULT_CLAUDE_SMART_HOST = "claude-code";
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const INSTALL_FAILURE_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-failed");
@@ -123,9 +124,9 @@ const LOCAL_DEFAULT_ENV_ENTRIES = [
     "1",
   ],
   [null, CLAUDE_SMART_READ_ONLY_ENV, "0"],
-  [null, CLAUDE_SMART_HOST_ENV, "claude-code"],
+  [null, CLAUDE_SMART_HOST_ENV, DEFAULT_CLAUDE_SMART_HOST],
 ];
-const ENV_BACKED_LOCAL_DEFAULT_KEYS = new Set([
+const ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS = new Set([
   CLAUDE_SMART_USE_LOCAL_CLI_ENV,
   CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV,
 ]);
@@ -263,16 +264,16 @@ function escapeEnvValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function localDefaultEnvValue(key, fallback, host) {
-  if (key === CLAUDE_SMART_HOST_ENV) return host;
-  if (ENV_BACKED_LOCAL_DEFAULT_KEYS.has(key)) {
+function resolveLocalEnvDefault(key, fallback, installHost) {
+  if (key === CLAUDE_SMART_HOST_ENV) return installHost;
+  if (ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS.has(key)) {
     const explicit = (process.env[key] || "").trim();
     if (explicit) return explicit;
   }
   return fallback;
 }
 
-function ensureLocalEnvFile(path, host) {
+function ensureLocalEnvFile(path, installHost) {
   mkdirSync(dirname(path), { recursive: true });
   const existing = existsSync(path)
     ? readFileSync(path, "utf8")
@@ -292,10 +293,10 @@ function ensureLocalEnvFile(path, host) {
       if (parsed.key === CLAUDE_SMART_HOST_ENV) {
         present.add(parsed.key);
         if (!hostWritten) {
-          const replacement = `${CLAUDE_SMART_HOST_ENV}=${escapeEnvValue(host)}`;
+          const replacement = `${CLAUDE_SMART_HOST_ENV}=${escapeEnvValue(installHost)}`;
           keptLines.push(replacement);
           hostWritten = true;
-          if (line !== replacement || parsed.value !== host) changed = true;
+          if (line !== replacement || parsed.value !== installHost) changed = true;
         } else {
           changed = true;
         }
@@ -310,7 +311,7 @@ function ensureLocalEnvFile(path, host) {
   const added = [];
   for (const [comment, key, value] of LOCAL_DEFAULT_ENV_ENTRIES) {
     if (present.has(key)) continue;
-    const effectiveValue = localDefaultEnvValue(key, value, host);
+    const effectiveValue = resolveLocalEnvDefault(key, value, installHost);
     if (comment) additions.push(comment);
     if (key === CLAUDE_SMART_READ_ONLY_ENV) {
       additions.push(`${key}="${escapeEnvValue(effectiveValue)}"`);
@@ -360,9 +361,9 @@ function setEnvVars(path, values) {
   return added;
 }
 
-function ensureLocalReflexioEnv(host = "claude-code") {
-  const added = ensureLocalEnvFile(REFLEXIO_ENV_PATH, host);
-  const runtimeAdded = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, host);
+function ensureLocalReflexioEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
+  const added = ensureLocalEnvFile(REFLEXIO_ENV_PATH, installHost);
+  const runtimeAdded = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, installHost);
   return Array.from(new Set([...added, ...runtimeAdded]));
 }
 
@@ -373,7 +374,7 @@ function maskSecret(value) {
   return `${prefix}****${value.slice(-4)}`;
 }
 
-function loadReflexioSetupEnv(host = "claude-code") {
+function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
   let readOnlyValue = "";
   let fileApiKey = "";
   let fileUrl = "";
@@ -406,7 +407,7 @@ function loadReflexioSetupEnv(host = "claude-code") {
     delete process.env.REFLEXIO_API_KEY;
     delete process.env[REFLEXIO_USER_ID_ENV];
     delete process.env[MANAGED_SETUP_ENV];
-    const added = ensureLocalReflexioEnv(host);
+    const added = ensureLocalReflexioEnv(installHost);
     if (added.length > 0) {
       process.stdout.write(`Seeded ${REFLEXIO_ENV_PATH} with ${added.join(", ")}.\n`);
     }
@@ -417,8 +418,8 @@ function loadReflexioSetupEnv(host = "claude-code") {
   return { readOnly };
 }
 
-function configureReflexioSetup(host = "claude-code") {
-  return loadReflexioSetupEnv(host);
+function configureReflexioSetup(installHost = DEFAULT_CLAUDE_SMART_HOST) {
+  return loadReflexioSetupEnv(installHost);
 }
 
 function stripJsonc(text) {
@@ -1379,25 +1380,25 @@ function patchCodexHooksForNode(pluginRoot, nodePath) {
 
 function ensurePluginRoot(pluginRoot) {
   const reflexioDir = dirname(REFLEXIO_ENV_PATH);
-  const link = join(reflexioDir, "plugin-root");
+  const pluginRootLink = join(reflexioDir, "plugin-root");
   mkdirSync(reflexioDir, { recursive: true });
-  let blocked = false;
+  let pathNotReplaceable = false;
   try {
-    const existing = lstatSync(link);
+    const existing = lstatSync(pluginRootLink);
     if (existing.isSymbolicLink() || existing.isFile()) {
-      rmSync(link, { recursive: true, force: true });
+      rmSync(pluginRootLink, { recursive: true, force: true });
     } else {
-      blocked = true;
+      pathNotReplaceable = true;
     }
   } catch (err) {
-    if (!err || err.code !== "ENOENT") blocked = true;
+    if (!err || err.code !== "ENOENT") pathNotReplaceable = true;
   }
-  if (blocked) {
+  if (pathNotReplaceable) {
     writeFileSync(join(reflexioDir, "plugin-root.txt"), `${pluginRoot}\n`);
     return;
   }
   try {
-    symlinkSync(pluginRoot, link, isWindows() ? "junction" : "dir");
+    symlinkSync(pluginRoot, pluginRootLink, isWindows() ? "junction" : "dir");
     writeFileSync(join(reflexioDir, "plugin-root.txt"), `${pluginRoot}\n`);
   } catch {
     writeFileSync(join(reflexioDir, "plugin-root.txt"), `${pluginRoot}\n`);

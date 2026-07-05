@@ -917,7 +917,9 @@ def test_node_installer_ignores_stale_url_without_api_key(tmp_path: Path) -> Non
     assert claude_smart_env_path.read_text() == env_text
 
 
-def test_node_installer_persists_local_embedding_override(tmp_path: Path) -> None:
+def test_node_installer_updates_existing_host_and_local_defaults(
+    tmp_path: Path,
+) -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for Node installer test")
@@ -925,6 +927,11 @@ def test_node_installer_persists_local_embedding_override(tmp_path: Path) -> Non
 
     env_path = tmp_path / ".reflexio" / ".env"
     runtime_env_path = tmp_path / ".claude-smart" / ".env"
+    env_path.parent.mkdir()
+    runtime_env_path.parent.mkdir()
+    stale = "# keep\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_READ_ONLY=\"1\"\n"
+    env_path.write_text(stale)
+    runtime_env_path.write_text(stale)
     script = (
         f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
         "installer.configureReflexioSetup('opencode');"
@@ -943,43 +950,11 @@ def test_node_installer_persists_local_embedding_override(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stderr
     for path in (env_path, runtime_env_path):
         text = path.read_text()
-        assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
-        assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" in text
-        assert "CLAUDE_SMART_HOST=opencode" in text
-
-
-def test_node_installer_updates_existing_host_in_env_files(tmp_path: Path) -> None:
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node is required for Node installer test")
-    assert node is not None
-
-    env_path = tmp_path / ".reflexio" / ".env"
-    runtime_env_path = tmp_path / ".claude-smart" / ".env"
-    env_path.parent.mkdir()
-    runtime_env_path.parent.mkdir()
-    stale = "# keep\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_READ_ONLY=\"1\"\n"
-    env_path.write_text(stale)
-    runtime_env_path.write_text(stale)
-    script = (
-        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
-        "installer.configureReflexioSetup('opencode');"
-    )
-
-    result = subprocess.run(
-        [node, "-e", script],
-        env=_isolated_env(tmp_path),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    for path in (env_path, runtime_env_path):
-        text = path.read_text()
         assert "# keep" in text
         assert "CLAUDE_SMART_HOST=opencode" in text
         assert "CLAUDE_SMART_HOST=codex" not in text
+        assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+        assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" in text
         assert 'CLAUDE_SMART_READ_ONLY="1"' in text
 
 

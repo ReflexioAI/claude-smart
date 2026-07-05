@@ -109,8 +109,8 @@ verify_windows_local_embedding_runtime() {
 }
 
 if [ "${1:-}" = "verify-windows-embedding" ]; then
-  # Node bootstrap calls this subcommand after uv sync so the shell installer
-  # remains the single owner of Windows onnxruntime readiness and marker policy.
+  # Node bootstrap runs this after uv sync so install-failed markers stay
+  # consistent with the shell installer path.
   verify_windows_local_embedding_runtime
   exit 0
 fi
