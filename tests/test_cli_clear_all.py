@@ -29,7 +29,7 @@ def clear_all_harness(monkeypatch, tmp_path):
     plugin_root.mkdir(exist_ok=True)
 
     monkeypatch.setattr(cli, "_REFLEXIO_DIR", reflexio_dir)
-    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
     monkeypatch.setattr(cli, "_DEFAULT_STORAGE_ROOT", reflexio_dir / "data")
     monkeypatch.setattr(cli, "_REFLEXIO_CONFIG_PATH", config_path)
     monkeypatch.setattr(cli, "_PLUGIN_ROOT", plugin_root)

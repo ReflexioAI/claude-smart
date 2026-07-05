@@ -115,6 +115,10 @@ if [ "${1:-}" = "verify-windows-embedding" ]; then
   exit 0
 fi
 
+# Full smart-install.sh runs from the Claude Code Setup hook. Codex/OpenCode
+# installers call narrower Node/Python paths and set their own host there.
+export CLAUDE_SMART_HOST="claude-code"
+
 install_fingerprint() {
   claude_smart_install_fingerprint "$PLUGIN_ROOT" "$HERE"
 }
@@ -130,6 +134,7 @@ install_complete() {
     grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$HOME/.claude-smart/.env" || return 1
     grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$HOME/.claude-smart/.env" || return 1
     grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY=' "$HOME/.claude-smart/.env" || return 1
+    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_HOST=("claude-code"|claude-code)$' "$HOME/.claude-smart/.env" || return 1
   fi
   if [ -d "$PLUGIN_ROOT/dashboard" ]; then
     [ -d "$PLUGIN_ROOT/dashboard/.next" ] || [ -f "$MARKER_DIR/dashboard-build.pid" ] || [ -f "$(claude_smart_dashboard_unavailable_marker)" ] || return 1
@@ -455,6 +460,7 @@ fi
 preflight_supported_runtime_platform
 
 if install_complete; then
+  verify_windows_local_embedding_runtime
   start_backend_service
   claude_smart_emit_continue
   exit 0
@@ -641,6 +647,9 @@ claude_smart_ensure_local_env_defaults() {
     claude_smart_env_upsert CLAUDE_SMART_READ_ONLY "0"
     echo "[claude-smart] appended CLAUDE_SMART_READ_ONLY=0 to $REFLEXIO_ENV" >&2
   fi
+  # This script is the Claude Code installer path. Codex/OpenCode installers set
+  # their own host before starting services.
+  claude_smart_env_upsert CLAUDE_SMART_HOST "claude-code"
   chmod 600 "$REFLEXIO_ENV"
 }
 

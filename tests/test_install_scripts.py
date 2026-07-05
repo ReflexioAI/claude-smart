@@ -529,6 +529,7 @@ def test_smart_install_repairs_local_env_defaults() -> None:
     assert "CLAUDE_SMART_USE_LOCAL_CLI" in script
     assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" in script
     assert "CLAUDE_SMART_READ_ONLY=0" in script
+    assert 'claude_smart_env_upsert CLAUDE_SMART_HOST "claude-code"' in script
     assert "CLAUDE_SMART_USE_LOCAL_CLI=" in script.split("install_complete()", 1)[1]
     assert "claude_smart_source_reflexio_env" in script
     assert "CLAUDE_SMART_READ_ONLY" in lib
@@ -1241,6 +1242,7 @@ def test_dashboard_service_restarts_stale_claude_smart_dashboard() -> None:
     assert "dashboard_matches_current_root()" in dashboard
     assert "x-claude-smart-plugin-root" in dashboard
     assert "curl -sfI --connect-timeout 2 --max-time 5" in dashboard
+    assert 'curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$PORT"' in dashboard
     assert "normalize_identity_path()" in dashboard
     assert "cygpath -u" in dashboard
     assert 'expected_root="$(normalize_identity_path ' in dashboard
@@ -1257,7 +1259,11 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
 
     assert 'bash "$HERE/backend-service.sh" start' in smart_install
     assert "start_backend_service()" in smart_install
-    assert "if install_complete; then\n  start_backend_service" in smart_install
+    assert (
+        "if install_complete; then\n"
+        "  verify_windows_local_embedding_runtime\n"
+        "  start_backend_service"
+    ) in smart_install
     assert "Backend started; dashboard auto-starts on session start." in smart_install
     assert "function startBackendService(pluginRoot, host)" in node_installer
     assert "CLAUDE_SMART_HOST: host" in node_installer

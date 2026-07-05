@@ -40,7 +40,7 @@ from urllib.request import url2pathname
 from claude_smart import context_format, cs_cite, env_config, ids, publish, state
 from claude_smart.reflexio_adapter import Adapter
 
-_REFLEXIO_ENV_PATH = env_config.REFLEXIO_ENV_PATH
+_CLAUDE_SMART_ENV_PATH = env_config.REFLEXIO_ENV_PATH
 _MANAGED_REFLEXIO_URL = env_config.MANAGED_REFLEXIO_URL
 _PLUGIN_SPEC = "claude-smart@reflexioai"
 _CODEX_MARKETPLACE_NAME = "reflexioai"
@@ -939,9 +939,9 @@ def _configure_reflexio_setup(host: str = "claude-code") -> bool:
     Returns:
         bool: Whether read-only mode is enabled.
     """
-    env_config.load_reflexio_env(_REFLEXIO_ENV_PATH)
+    env_config.load_reflexio_env(_CLAUDE_SMART_ENV_PATH)
     try:
-        env_text = _REFLEXIO_ENV_PATH.read_text()
+        env_text = _CLAUDE_SMART_ENV_PATH.read_text()
     except OSError:
         env_text = ""
     read_only_value = ""
@@ -981,9 +981,9 @@ def _configure_reflexio_setup(host: str = "claude-code") -> bool:
         os.environ.pop(env_config.REFLEXIO_API_KEY_ENV, None)
         os.environ.pop("REFLEXIO_USER_ID", None)
         os.environ.pop("CLAUDE_SMART_MANAGED_SETUP", None)
-        added = env_config.ensure_local_env_defaults(_REFLEXIO_ENV_PATH, host=host)
+        added = env_config.ensure_local_env_defaults(_CLAUDE_SMART_ENV_PATH, host=host)
         if added:
-            sys.stdout.write(f"Seeded {_REFLEXIO_ENV_PATH} with {', '.join(added)}.\n")
+            sys.stdout.write(f"Seeded {_CLAUDE_SMART_ENV_PATH} with {', '.join(added)}.\n")
     return read_only
 
 
@@ -1180,7 +1180,7 @@ def _patch_opencode_plugin_config(
 
 
 def _has_extraction_provider() -> bool:
-    env_config.load_reflexio_env(_REFLEXIO_ENV_PATH)
+    env_config.load_reflexio_env(_CLAUDE_SMART_ENV_PATH)
     if os.environ.get(env_config.REFLEXIO_API_KEY_ENV, "").strip():
         return True
     cli_path = os.environ.get("CLAUDE_SMART_CLI_PATH", "").strip()
@@ -1217,7 +1217,7 @@ def _persist_opencode_path() -> list[str]:
     if not resolved:
         return []
     os.environ[_OPENCODE_PATH_ENV] = resolved
-    return env_config.set_env_vars(_REFLEXIO_ENV_PATH, {_OPENCODE_PATH_ENV: resolved})
+    return env_config.set_env_vars(_CLAUDE_SMART_ENV_PATH, {_OPENCODE_PATH_ENV: resolved})
 
 
 def _opencode_prerequisite_error() -> str | None:
@@ -1995,7 +1995,7 @@ def _resolve_absolute_path(raw_path: str | Path, *, source: str) -> Path:
 def _effective_storage_root() -> Path:
     raw = os.environ.get(_LOCAL_STORAGE_ENV, "").strip()
     if not raw:
-        raw = _read_dotenv_value(_REFLEXIO_ENV_PATH, _LOCAL_STORAGE_ENV) or ""
+        raw = _read_dotenv_value(_CLAUDE_SMART_ENV_PATH, _LOCAL_STORAGE_ENV) or ""
     return _resolve_absolute_path(
         raw or _DEFAULT_STORAGE_ROOT, source=_LOCAL_STORAGE_ENV
     )

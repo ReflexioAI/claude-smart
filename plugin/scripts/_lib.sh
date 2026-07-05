@@ -258,7 +258,7 @@ claude_smart_to_windows_path() {
 # %LocalAppData%\Microsoft\WindowsApps\python3.exe — `command -v python3`
 # returns truthy but invoking it just prints a "Python was not found"
 # message and exits non-zero. We probe with `-V` to filter the stub out
-# and prefer `python` (the real interpreter when one is installed).
+# and prefer the Windows `py` launcher before `python`/`python3`.
 claude_smart_resolve_python() {
   if claude_smart_is_windows; then
     for cand in py python python3; do

@@ -163,7 +163,7 @@ is_our_dashboard_running() {
 # True if *something* is listening on the port, regardless of marker.
 port_occupied() {
   if command -v curl >/dev/null 2>&1; then
-    curl -sf -o /dev/null "http://127.0.0.1:$PORT" 2>/dev/null && return 0
+    curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$PORT" 2>/dev/null && return 0
     # curl with -sfI against a 404/405 still indicates "something answered".
     # Use a connect-only probe as a secondary signal.
   fi

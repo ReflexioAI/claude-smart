@@ -4,9 +4,9 @@
  * CLIs. Both Claude Code and Codex install from the bundled marketplace in
  * this npm package: Claude Code registers the package root as a local
  * marketplace, and Codex copies the bundled plugin into its own marketplace
- * wrapper. The npm path seeds both the user-facing ~/.reflexio/.env and the
- * runtime ~/.claude-smart/.env with local-provider defaults so reflexio can
- * route generation through local tools with no API key.
+ * wrapper. The npm path reads setup/bootstrap config from ~/.reflexio/.env and
+ * seeds runtime ~/.claude-smart/.env with local-provider defaults so reflexio
+ * can route generation through local tools with no API key.
  * Managed/read-only/global setup is handled by `npx claude-smart setup`,
  * which writes ~/.reflexio/.env before running this installer.
  *
@@ -1583,7 +1583,7 @@ function printHelp() {
       "Claude Code install:",
       "  1. claude plugin marketplace add <this package>",
       `  2. claude plugin install ${PLUGIN_SPEC}`,
-      "  3. Reads ~/.reflexio/.env when managed/read-only setup was configured.",
+      "  3. Reads setup/bootstrap config when managed/read-only setup was configured.",
       "",
       "Codex install:",
       `  1. Copies the bundled marketplace to ${CODEX_MARKETPLACE_DIR}`,

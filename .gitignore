@@ -35,8 +35,8 @@ Thumbs.db
 .claude/settings.local.json
 /AGENTS.md
 
-# Makefile sed backups
-*.bak
+# Makefile/manual sed backups
+*.bak*
 
 # Experiment
 benchmarks/memory_comparison/results
