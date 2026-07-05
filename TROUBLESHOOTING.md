@@ -4,7 +4,7 @@
 Extraction is async by default. Run `/learn` to flag the previous turn as a correction and force extraction, wait ~20–30s, then run `/show` — no new session needed. `/show` shows whether the rule was actually extracted.
 
 **Reflexio refuses to boot with "no embedding-capable provider".**
-Check that `CLAUDE_SMART_USE_LOCAL_EMBEDDING=1` is in `~/.reflexio/.env`. With the default shared daemon, `reflexio services start --only backend` also starts `reflexio embeddings serve` on `127.0.0.1:8072`; check `~/.claude-smart/backend.log` for the `embedding` service if semantic search is unavailable. If you'd rather use a cloud embedder instead, drop the env flag and set `OPENAI_API_KEY` or `GEMINI_API_KEY` in the same file.
+Check that `CLAUDE_SMART_USE_LOCAL_EMBEDDING=1` is in `~/.claude-smart/.env`. With the default shared daemon, `reflexio services start --only backend` also starts `reflexio embeddings serve` on `127.0.0.1:8072`; check `~/.claude-smart/backend.log` for the `embedding` service if semantic search is unavailable. If you'd rather use a cloud embedder instead, set `CLAUDE_SMART_USE_LOCAL_EMBEDDING=0` and set `OPENAI_API_KEY` or `GEMINI_API_KEY` in the same file.
 
 **`claude-smart` doesn't see my interactions.**
 Check `~/.claude-smart/sessions/`. If your current session's JSONL has no `User`/`Assistant` rows, the plugin isn't receiving hook events — verify `.claude/settings.local.json` has the right path and that `enabledPlugins` is `true`.
@@ -19,7 +19,7 @@ The Setup hook should install a private Node.js/npm runtime under `~/.claude-sma
 `claude-smart install --host opencode` now fails early if `opencode` is not on `PATH` (or `CLAUDE_SMART_OPENCODE_PATH` does not point to an executable). On success, the installer records `CLAUDE_SMART_OPENCODE_PATH` in `~/.claude-smart/.env` for later backend restarts. Native Windows OpenCode also needs Git Bash available as `bash.exe` on `PATH`, because claude-smart starts its local services through bundled Bash scripts. Install Git for Windows and restart OpenCode from a shell that can resolve `bash.exe`, or use WSL. If learning still does not run, check `~/.claude-smart/backend.log` for bridge errors from `opencode-claude-compat.cmd`.
 
 **Windows install fails with an onnxruntime or Visual C++ Redistributable message.**
-The default local semantic search uses `onnxruntime`, which loads Microsoft native runtime DLLs on Windows. Install the x64 Microsoft Visual C++ Redistributable from `https://aka.ms/vs/17/release/vc_redist.x64.exe`, then rerun `claude-smart install`. If you intentionally use a cloud embedder instead, set `CLAUDE_SMART_USE_LOCAL_EMBEDDING=0` and configure the provider key before reinstalling.
+The default local semantic search uses `onnxruntime`, which loads Microsoft native runtime DLLs on Windows. Install the x64 Microsoft Visual C++ Redistributable from `https://aka.ms/vs/17/release/vc_redist.x64.exe`, then rerun `claude-smart install`. If you intentionally use a cloud embedder instead, set `CLAUDE_SMART_USE_LOCAL_EMBEDDING=0` before reinstalling and configure the provider key in `~/.claude-smart/.env`.
 
 **Install reports `install-failed`.**
 `~/.claude-smart/install-failed` is reserved for core setup failures such as `uv` installation or `uv sync --locked --python 3.12`. Fix the reported issue, delete the marker, then restart Claude Code so Setup can retry. Dashboard-only issues should appear in `~/.claude-smart/dashboard-unavailable` instead.

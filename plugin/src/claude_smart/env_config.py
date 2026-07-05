@@ -36,6 +36,10 @@ _LOCAL_DEFAULT_ENTRIES = (
     (None, CLAUDE_SMART_READ_ONLY_ENV, "0"),
     (None, CLAUDE_SMART_HOST_ENV, "claude-code"),
 )
+_ENV_BACKED_LOCAL_DEFAULT_KEYS = {
+    CLAUDE_SMART_USE_LOCAL_CLI_ENV,
+    CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV,
+}
 _LOCAL_MODE_PRUNE_KEYS = {
     REFLEXIO_URL_ENV,
     REFLEXIO_API_KEY_ENV,
@@ -169,7 +173,7 @@ def ensure_local_env_defaults(
     for comment, key, value in _LOCAL_DEFAULT_ENTRIES:
         if key in present:
             continue
-        effective_value = host if key == CLAUDE_SMART_HOST_ENV else value
+        effective_value = _local_default_env_value(key, value, host)
         if comment:
             additions.append(comment)
         if key == CLAUDE_SMART_READ_ONLY_ENV:
@@ -189,6 +193,16 @@ def ensure_local_env_defaults(
         path.touch()
     path.chmod(0o600)
     return added_keys
+
+
+def _local_default_env_value(key: str, fallback: str, host: str) -> str:
+    if key == CLAUDE_SMART_HOST_ENV:
+        return host
+    if key in _ENV_BACKED_LOCAL_DEFAULT_KEYS:
+        explicit = os.environ.get(key, "").strip()
+        if explicit:
+            return explicit
+    return fallback
 
 
 def env_truthy(name: str) -> bool:

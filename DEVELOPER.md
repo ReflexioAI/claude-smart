@@ -21,12 +21,12 @@ Internal notes for maintainers of `claude-smart`. End-user install instructions 
 
 ## Environment variables
 
-Tunables read by the plugin at runtime. Most users don't need to touch these — the installer writes the local-provider flags to `~/.reflexio/.env` and sensible defaults cover the rest. Hook-side variables must be set in the Claude Code process environment, such as a project `.claude/settings.local.json` `env` block or user-scoped `~/.claude/settings.json`, because hooks do not read Reflexio's backend `.env` file.
+Tunables read by the plugin at runtime. Most users don't need to touch these — the installer writes the local-provider flags to `~/.claude-smart/.env` and sensible defaults cover the rest. Hook-side variables must be set in the Claude Code process environment, such as a project `.claude/settings.local.json` `env` block or user-scoped `~/.claude/settings.json`, because hooks do not read Reflexio's backend `.env` file.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CLAUDE_SMART_USE_LOCAL_CLI` | `0` (installer sets `1`) | Route generation through the active host CLI (`claude` for Claude Code, `codex` for Codex). Written to `~/.reflexio/.env` by `claude-smart install`. |
-| `CLAUDE_SMART_USE_LOCAL_EMBEDDING` | `0` (installer sets `1`) | Route embeddings to the shared local embedding daemon on `localhost:8072`. Written to `~/.reflexio/.env` by `claude-smart install`. |
+| `CLAUDE_SMART_USE_LOCAL_CLI` | `0` (installer sets `1`) | Route generation through the active host CLI (`claude` for Claude Code, `codex` for Codex). Written to `~/.claude-smart/.env` by `claude-smart install`. |
+| `CLAUDE_SMART_USE_LOCAL_EMBEDDING` | `0` (installer sets `1`) | Route embeddings to the shared local embedding daemon on `localhost:8072`. Written to `~/.claude-smart/.env` by `claude-smart install`. |
 | `REFLEXIO_EMBEDDING_PROVIDER` | `local_service` when local embedding is enabled | Embedding provider mode: `cloud`, `local_service`, `internal_service`, `inprocess`, or `off`. |
 | `REFLEXIO_EMBEDDING_SERVICE_URL` | `http://127.0.0.1:$EMBEDDING_PORT` | OpenAI-compatible embedding endpoint used by `local_service` and `internal_service`. |
 | `EMBEDDING_PORT` | `8072` | Local embedding daemon port. Shared by Claude Code and Codex on the same machine. |
@@ -50,7 +50,7 @@ claude-smart uses one shared local embedding daemon by default. The backend star
 
 Supported local models are `local/nomic-embed-v1.5`, `local/nomic-embed-text-v1.5`, and `local/minilm-l6-v2`. The daemon owns exactly one model for its lifetime; start a second daemon on another port if you need to serve a different model concurrently.
 
-If you still want to use a cloud embedding provider (OpenAI, Gemini, etc.), omit `CLAUDE_SMART_USE_LOCAL_EMBEDDING` and set the corresponding API key in `~/.reflexio/.env` — reflexio will fall back to its standard provider-priority chain. For hosted Reflexio, prefer a managed embedding provider or a scalable `REFLEXIO_EMBEDDING_PROVIDER=internal_service` endpoint instead of a single-machine daemon.
+If you still want to use a cloud embedding provider (OpenAI, Gemini, etc.), set `CLAUDE_SMART_USE_LOCAL_EMBEDDING=0` and the corresponding API key in `~/.claude-smart/.env` — reflexio will fall back to its standard provider-priority chain. For hosted Reflexio, prefer a managed embedding provider or a scalable `REFLEXIO_EMBEDDING_PROVIDER=internal_service` endpoint instead of a single-machine daemon.
 
 ## Install dependency policy
 
@@ -122,7 +122,7 @@ claude-smart has learned:
 - **Preferences / Skills** — reflexio data fetched via a proxy route
   (`plugin/dashboard/app/api/reflexio/[...path]/route.ts`) that forwards to the URL
   configured in the top bar; defaults to `http://localhost:8071`.
-- **Configure** — reads and writes backend/provider settings in `~/.reflexio/.env`
+- **Configure** — reads and writes backend/provider settings in `~/.claude-smart/.env`
   and hook-side Claude Code settings in `.claude/settings.local.json`. Unknown
   `.env` keys (API secrets, user additions) are preserved on write and never
   returned to the browser.

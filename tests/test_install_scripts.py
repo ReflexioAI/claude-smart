@@ -526,8 +526,8 @@ def test_smart_install_repairs_local_env_defaults() -> None:
     lib = (REPO_ROOT / "plugin" / "scripts" / "_lib.sh").read_text()
 
     assert 'touch "$REFLEXIO_ENV"' in script
-    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in script
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in script
+    assert "CLAUDE_SMART_USE_LOCAL_CLI" in script
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" in script
     assert "CLAUDE_SMART_READ_ONLY=0" in script
     assert "CLAUDE_SMART_USE_LOCAL_CLI=" in script.split("install_complete()", 1)[1]
     assert "claude_smart_source_reflexio_env" in script
@@ -915,6 +915,37 @@ def test_node_installer_ignores_stale_url_without_api_key(tmp_path: Path) -> Non
     assert 'CLAUDE_SMART_READ_ONLY="0"' in env_text
     assert "CLAUDE_SMART_HOST=opencode" in env_text
     assert claude_smart_env_path.read_text() == env_text
+
+
+def test_node_installer_persists_local_embedding_override(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    assert node is not None
+
+    env_path = tmp_path / ".reflexio" / ".env"
+    runtime_env_path = tmp_path / ".claude-smart" / ".env"
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        "installer.configureReflexioSetup('opencode');"
+    )
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_USE_LOCAL_EMBEDDING"] = "0"
+
+    result = subprocess.run(
+        [node, "-e", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    for path in (env_path, runtime_env_path):
+        text = path.read_text()
+        assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+        assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" in text
+        assert "CLAUDE_SMART_HOST=opencode" in text
 
 
 def test_node_installer_updates_existing_host_in_env_files(tmp_path: Path) -> None:
@@ -1740,6 +1771,27 @@ def test_smart_install_locked_sync_success_does_not_refresh_lock(
     assert (tmp_path / "uv.log").read_text().splitlines()[:1] == [
         "uv sync --locked --python 3.12 --quiet",
     ]
+
+
+def test_smart_install_persists_local_embedding_override(tmp_path: Path) -> None:
+    _plugin_root, smart_install, env = _prepare_smart_install_sync_fixture(
+        tmp_path,
+        mode="fresh",
+    )
+    env["CLAUDE_SMART_USE_LOCAL_EMBEDDING"] = "0"
+
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(smart_install)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    text = (tmp_path / ".claude-smart" / ".env").read_text()
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" in text
 
 
 def test_smart_install_non_lock_sync_failure_stays_strict(tmp_path: Path) -> None:

@@ -209,6 +209,23 @@ def test_install_setup_default_creates_local_env(monkeypatch, tmp_path: Path) ->
     assert env_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_install_setup_persists_local_embedding_override(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    env_path = tmp_path / ".claude-smart" / ".env"
+    monkeypatch.setattr(cli, "_REFLEXIO_ENV_PATH", env_path)
+    monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "0")
+
+    read_only = cli._configure_reflexio_setup(host="opencode")
+
+    assert read_only is False
+    text = env_path.read_text()
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" in text
+    assert "CLAUDE_SMART_HOST=opencode" in text
+
+
 def test_install_setup_updates_existing_host(monkeypatch, tmp_path: Path) -> None:
     env_path = tmp_path / ".reflexio" / ".env"
     env_path.parent.mkdir()

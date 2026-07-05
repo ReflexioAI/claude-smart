@@ -125,6 +125,10 @@ const LOCAL_DEFAULT_ENV_ENTRIES = [
   [null, CLAUDE_SMART_READ_ONLY_ENV, "0"],
   [null, CLAUDE_SMART_HOST_ENV, "claude-code"],
 ];
+const ENV_BACKED_LOCAL_DEFAULT_KEYS = new Set([
+  CLAUDE_SMART_USE_LOCAL_CLI_ENV,
+  CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV,
+]);
 const LOCAL_MODE_PRUNE_KEYS = new Set([
   "REFLEXIO_URL",
   "REFLEXIO_API_KEY",
@@ -259,6 +263,15 @@ function escapeEnvValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+function localDefaultEnvValue(key, fallback, host) {
+  if (key === CLAUDE_SMART_HOST_ENV) return host;
+  if (ENV_BACKED_LOCAL_DEFAULT_KEYS.has(key)) {
+    const explicit = (process.env[key] || "").trim();
+    if (explicit) return explicit;
+  }
+  return fallback;
+}
+
 function ensureLocalEnvFile(path, host) {
   mkdirSync(dirname(path), { recursive: true });
   const existing = existsSync(path)
@@ -297,7 +310,7 @@ function ensureLocalEnvFile(path, host) {
   const added = [];
   for (const [comment, key, value] of LOCAL_DEFAULT_ENV_ENTRIES) {
     if (present.has(key)) continue;
-    const effectiveValue = key === CLAUDE_SMART_HOST_ENV ? host : value;
+    const effectiveValue = localDefaultEnvValue(key, value, host);
     if (comment) additions.push(comment);
     if (key === CLAUDE_SMART_READ_ONLY_ENV) {
       additions.push(`${key}="${escapeEnvValue(effectiveValue)}"`);

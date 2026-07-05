@@ -117,7 +117,7 @@ The installer prepares claude-smart's runtime dependencies, but expects the Open
 
 OpenCode support is new and uses OpenCode's plugin loader to inject relevant learned context before each model request. Learning extraction runs `opencode run --pure` from an isolated temp project, so it uses OpenCode's default model unless you set `CLAUDE_SMART_OPENCODE_MODEL=provider/model`. Set that env var if your normal project config pins a different provider or model.
 
-On native Windows, install Git for Windows and make `bash.exe` available on `PATH` before starting OpenCode, or run OpenCode from WSL. OpenCode loads the plugin directly, but claude-smart still uses bundled Bash scripts to start the local backend/dashboard and process hook events. The installer records `CLAUDE_SMART_OPENCODE_PATH` so those Bash-launched services can find the same OpenCode executable even if Git Bash has a narrower `PATH`. The default local semantic search also needs the Microsoft Visual C++ Redistributable because `onnxruntime` loads native DLLs; the installer checks this and points to the x64 redistributable if it is missing.
+On native Windows, install Git for Windows and make `bash.exe` available on `PATH` before starting OpenCode, or run OpenCode from WSL. OpenCode loads the plugin directly, but claude-smart still uses bundled Bash scripts to start the local backend/dashboard and process hook events. The installer records `CLAUDE_SMART_OPENCODE_PATH` so those Bash-launched services can find the same OpenCode executable even if Git Bash has a narrower `PATH`. The default local semantic search also needs the x64 Microsoft Visual C++ Redistributable because `onnxruntime` loads native DLLs; the installer checks this and points to `https://aka.ms/vs/17/release/vc_redist.x64.exe` if it is missing. If you intentionally use a cloud embedder instead, set `CLAUDE_SMART_USE_LOCAL_EMBEDDING=0` before install and configure the provider key in `~/.claude-smart/.env`.
 
 To uninstall:
 
@@ -241,7 +241,7 @@ Advanced users can tune claude-smart via environment variables — see [DEVELOPE
 | Path | What |
 | --- | --- |
 | `~/.reflexio/data/reflexio.db` | Source of truth for learned preferences, skills, interactions, full-text indexes, and embedding tables (plus `.db-shm` / `.db-wal` WAL sidecars). Inspect with `sqlite3`. |
-| `~/.reflexio/.env` | Provider config — `CLAUDE_SMART_USE_LOCAL_CLI`, `CLAUDE_SMART_USE_LOCAL_EMBEDDING`, any optional API keys. |
+| `~/.claude-smart/.env` | claude-smart runtime/provider config — `CLAUDE_SMART_HOST`, `CLAUDE_SMART_USE_LOCAL_CLI`, `CLAUDE_SMART_USE_LOCAL_EMBEDDING`, `CLAUDE_SMART_OPENCODE_PATH`, any optional API keys for cloud providers. |
 | `.claude/settings.local.json` or `~/.claude/settings.json` | Claude Code hook environment, such as `CLAUDE_SMART_ENABLE_OPTIMIZER`; use project-local settings for one repo or user settings for all projects. |
 | `~/.codex/config.toml` | Codex plugin state, hook feature flags, and per-hook trust entries after `claude-smart install --host codex`. |
 | `~/.codex/plugins/cache/reflexioai/claude-smart/<version>/` | Codex's cached install of the `claude-smart` plugin from the `ReflexioAI` marketplace. |

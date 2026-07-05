@@ -618,6 +618,9 @@ claude_smart_prune_managed_env_keys_for_local() {
 }
 
 claude_smart_ensure_local_env_defaults() {
+  local local_cli_default local_embedding_default
+  local_cli_default="${CLAUDE_SMART_USE_LOCAL_CLI:-1}"
+  local_embedding_default="${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}"
   [ -z "${REFLEXIO_API_KEY:-}" ] || return 0
   mkdir -p "$(dirname "$REFLEXIO_ENV")"
   touch "$REFLEXIO_ENV"
@@ -626,13 +629,13 @@ claude_smart_ensure_local_env_defaults() {
   unset REFLEXIO_URL REFLEXIO_API_KEY REFLEXIO_USER_ID CLAUDE_SMART_MANAGED_SETUP
   if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
     printf '# Route reflexio generation through the local Claude Code CLI\n' >> "$REFLEXIO_ENV"
-    claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_CLI "1"
-    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_CLI=1 to $REFLEXIO_ENV" >&2
+    claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_CLI "$local_cli_default"
+    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_CLI=$local_cli_default to $REFLEXIO_ENV" >&2
   fi
   if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
     printf '# Use the in-process ONNX embedder (chromadb) - no API key for semantic search\n' >> "$REFLEXIO_ENV"
-    claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_EMBEDDING "1"
-    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 to $REFLEXIO_ENV" >&2
+    claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_EMBEDDING "$local_embedding_default"
+    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=$local_embedding_default to $REFLEXIO_ENV" >&2
   fi
   if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY=' "$REFLEXIO_ENV"; then
     claude_smart_env_upsert CLAUDE_SMART_READ_ONLY "0"
