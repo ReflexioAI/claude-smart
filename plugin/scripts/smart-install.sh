@@ -628,7 +628,7 @@ claude_smart_ensure_local_env_defaults() {
   claude_smart_prune_managed_env_keys_for_local
   unset REFLEXIO_URL REFLEXIO_API_KEY REFLEXIO_USER_ID CLAUDE_SMART_MANAGED_SETUP
   if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
-    printf '# Route reflexio generation through the local Claude Code CLI\n' >> "$REFLEXIO_ENV"
+    printf '# Route reflexio generation through the configured local host CLI\n' >> "$REFLEXIO_ENV"
     claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_CLI "$local_cli_default"
     echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_CLI=$local_cli_default to $REFLEXIO_ENV" >&2
   fi

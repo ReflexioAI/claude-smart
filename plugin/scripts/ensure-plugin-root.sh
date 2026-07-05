@@ -14,8 +14,8 @@ if [ -f "$HERE/_lib.sh" ]; then
     . "$HERE/_lib.sh"
 fi
 
-# This script can be invoked without sourcing _lib.sh; keep these fallbacks in sync
-# with the shared helpers above.
+# This script can be invoked without plugin/scripts/_lib.sh; keep these fallbacks
+# in sync with the shared helpers there.
 if ! command -v claude_smart_is_windows >/dev/null 2>&1; then
     claude_smart_is_windows() {
         case "$(uname -s 2>/dev/null)" in

@@ -130,6 +130,7 @@ function isWindowsSystemBash(path: string): boolean {
 }
 
 function pathCommandCandidates(names: string[]): string[] {
+  // Return every PATH match so Windows can skip System32 bash and still find Git Bash.
   const pathParts = (process.env.PATH || "").split(delimiter).filter(Boolean)
   const candidates: string[] = []
   for (const dir of pathParts) {

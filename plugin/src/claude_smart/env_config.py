@@ -25,7 +25,7 @@ DEFAULT_CLAUDE_SMART_HOST = "claude-code"
 
 _LOCAL_DEFAULT_ENTRIES = (
     (
-        "# Route reflexio generation through the local Claude Code CLI",
+        "# Route reflexio generation through the configured local host CLI",
         CLAUDE_SMART_USE_LOCAL_CLI_ENV,
         "1",
     ),

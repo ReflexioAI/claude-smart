@@ -221,6 +221,7 @@ claude_smart_to_windows_path() {
     cygpath -w "$path"
     return $?
   fi
+  # Convert MSYS/Cygwin/WSL-style paths to native Windows paths for cmd.exe.
   printf '%s\n' "$path" | awk '
   function slash_to_backslash(value) {
     gsub(/\//, "\\", value)

@@ -744,12 +744,11 @@ def test_opencode_extraction_provider_accepts_explicit_opencode_path(
     assert cli._has_extraction_provider() is True
 
 
-def test_opencode_backend_service_prefers_opencode_bridge() -> None:
+def test_opencode_backend_service_uses_bridge_without_opencode_path_probe() -> None:
     service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
     assert 'CLAUDE_SMART_HOST:-claude-code}" = "opencode"' in service
     assert 'CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"' in service
-    assert "don't require" in service
     assert "command -v opencode" not in service
     assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"' in service
 

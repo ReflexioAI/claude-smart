@@ -108,6 +108,7 @@ function isWindowsSystemBash(path) {
     return WINDOWS_SYSTEM_BASH_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
 }
 function pathCommandCandidates(names) {
+    // Return every PATH match so Windows can skip System32 bash and still find Git Bash.
     const pathParts = (process.env.PATH || "").split(delimiter).filter(Boolean);
     const candidates = [];
     for (const dir of pathParts) {

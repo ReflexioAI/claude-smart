@@ -122,7 +122,7 @@ claude-smart has learned:
 - **Preferences / Skills** — reflexio data fetched via a proxy route
   (`plugin/dashboard/app/api/reflexio/[...path]/route.ts`) that forwards to the URL
   configured in the top bar; defaults to `http://localhost:8071`.
-- **Configure** — reads and writes backend/provider settings in `~/.claude-smart/.env`
+- **Configure** — reads and writes backend/provider settings in `~/.reflexio/.env`
   and hook-side Claude Code settings in `.claude/settings.local.json`. Unknown
   `.env` keys (API secrets, user additions) are preserved on write and never
   returned to the browser.

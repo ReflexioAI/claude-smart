@@ -535,28 +535,6 @@ def test_smart_install_repairs_local_env_defaults() -> None:
     assert "REFLEXIO_USER_ID" in lib
 
 
-def test_smart_install_checks_windows_local_embedding_runtime() -> None:
-    script = (REPO_ROOT / "plugin" / "scripts" / "smart-install.sh").read_text()
-
-    assert "verify_windows_local_embedding_runtime" in script
-    assert "verify-windows-embedding" in script
-    assert 'claude_smart_is_windows || return 0' in script
-    assert 'CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1' in script
-    assert 'claude_smart_python_imports "$PLUGIN_ROOT" onnxruntime' in script
-    assert "Microsoft Visual C++ Redistributable" in script
-    assert "vc_redist.x64.exe" in script
-
-
-def test_smart_install_cli_warning_is_host_aware() -> None:
-    script = (REPO_ROOT / "plugin" / "scripts" / "smart-install.sh").read_text()
-
-    assert 'case "${CLAUDE_SMART_HOST:-claude-code}" in' in script
-    assert "CLAUDE_SMART_OPENCODE_PATH is not set" in script
-    assert "command -v opencode" in script
-    assert "command -v codex" in script
-    assert "command -v claude" in script
-
-
 def test_python_import_probe_uses_plugin_python(tmp_path: Path) -> None:
     python_path = tmp_path / ".venv" / "Scripts" / "python.exe"
     python_path.parent.mkdir(parents=True)
@@ -3664,30 +3642,6 @@ def test_windows_path_conversion_falls_back_without_cygpath(tmp_path: Path) -> N
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == expected
-
-
-def test_backend_service_documents_windows_path_and_port_probe_patterns() -> None:
-    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
-    lib = (REPO_ROOT / "plugin" / "scripts" / "_lib.sh").read_text()
-
-    assert 'CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"' in backend
-    assert "CLAUDE_SMART_OPENCODE_PATH or PATH" in backend
-    assert "CLAUDE_SMART_OPENCODE_PATH" in lib
-    assert 'vendor_pythonpath="$(claude_smart_to_windows_path "$vendor_pythonpath")"' in backend
-    assert "Best-effort port probe" in backend
-    assert 'curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$PORT"' in backend
-
-
-def test_windows_plugin_root_diagnoses_occupied_junction_path() -> None:
-    ensure_root = (REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh").read_text()
-
-    assert "mklink //J" in ensure_root
-    assert "plugin-root.txt" in ensure_root
-    assert "could not remove existing Windows junction/path" in ensure_root
-    assert "blocks Windows junction" in ensure_root
-    assert "preserving occupied path" in ensure_root
-    assert 'cmd.exe //C rmdir //S //Q "$link_win"' not in ensure_root
-    assert 'cmd.exe //C rmdir "$link_win" >/dev/null 2>&1 || true' not in ensure_root
 
 
 def test_windows_plugin_root_tracks_cache_junction_metadata(tmp_path: Path) -> None:

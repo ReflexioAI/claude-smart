@@ -45,7 +45,7 @@ const CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI";
 const CODEX_PLUGIN_ID = `claude-smart@${CODEX_MARKETPLACE_NAME}`;
 const OPENCODE_BARE_PLUGIN_SPEC = "claude-smart";
 const OPENCODE_CONFIG_NAMES = ["opencode.json", "opencode.jsonc"];
-const REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
+const REFLEXIO_SETUP_ENV_PATH = join(homedir(), ".reflexio", ".env");
 const CLAUDE_SMART_ENV_PATH = join(homedir(), ".claude-smart", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
 const MANAGED_SETUP_ENV = "CLAUDE_SMART_MANAGED_SETUP";
@@ -114,7 +114,7 @@ const COPYTREE_IGNORE_NAMES = new Set([
 ]);
 const LOCAL_DEFAULT_ENV_ENTRIES = [
   [
-    "# Route reflexio generation through the local Claude Code CLI",
+    "# Route reflexio generation through the configured local host CLI",
     CLAUDE_SMART_USE_LOCAL_CLI_ENV,
     "1",
   ],
@@ -361,8 +361,8 @@ function setEnvVars(path, values) {
   return added;
 }
 
-function ensureLocalReflexioEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
-  const added = ensureLocalEnvFile(REFLEXIO_ENV_PATH, installHost);
+function ensureLocalInstallEnvDefaults(installHost = DEFAULT_CLAUDE_SMART_HOST) {
+  const added = ensureLocalEnvFile(REFLEXIO_SETUP_ENV_PATH, installHost);
   const runtimeAdded = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, installHost);
   return Array.from(new Set([...added, ...runtimeAdded]));
 }
@@ -378,8 +378,8 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
   let readOnlyValue = "";
   let fileApiKey = "";
   let fileUrl = "";
-  if (existsSync(REFLEXIO_ENV_PATH)) {
-    const text = readFileSync(REFLEXIO_ENV_PATH, "utf8");
+  if (existsSync(REFLEXIO_SETUP_ENV_PATH)) {
+    const text = readFileSync(REFLEXIO_SETUP_ENV_PATH, "utf8");
     for (const line of text.split(/\r?\n/)) {
       const parsed = parseEnvLine(line);
       if (!parsed) continue;
@@ -407,9 +407,9 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
     delete process.env.REFLEXIO_API_KEY;
     delete process.env[REFLEXIO_USER_ID_ENV];
     delete process.env[MANAGED_SETUP_ENV];
-    const added = ensureLocalReflexioEnv(installHost);
+    const added = ensureLocalInstallEnvDefaults(installHost);
     if (added.length > 0) {
-      process.stdout.write(`Seeded ${REFLEXIO_ENV_PATH} with ${added.join(", ")}.\n`);
+      process.stdout.write(`Seeded ${REFLEXIO_SETUP_ENV_PATH} with ${added.join(", ")}.\n`);
     }
   }
   const readOnly = ["1", "true", "yes", "on"].includes(
@@ -649,6 +649,7 @@ function isWindowsSystemBash(path) {
 }
 
 function pathCommandCandidates(names) {
+  // Return every PATH match so Windows can skip System32 bash and still find Git Bash.
   const delimiter = isWindows() ? ";" : ":";
   const pathParts = (process.env.PATH || "").split(delimiter).filter(Boolean);
   const candidates = [];
@@ -1379,7 +1380,7 @@ function patchCodexHooksForNode(pluginRoot, nodePath) {
 }
 
 function ensurePluginRoot(pluginRoot) {
-  const reflexioDir = dirname(REFLEXIO_ENV_PATH);
+  const reflexioDir = dirname(REFLEXIO_SETUP_ENV_PATH);
   const pluginRootLink = join(reflexioDir, "plugin-root");
   mkdirSync(reflexioDir, { recursive: true });
   let pathNotReplaceable = false;
