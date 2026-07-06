@@ -16,6 +16,7 @@ rewrites the tracked reflexio.lock.json.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
@@ -28,6 +29,7 @@ from typing import NoReturn
 PACKAGE_NAME = "reflexio-ai"
 REPO_URL = "https://github.com/ReflexioAI/reflexio.git"
 VENDOR_PATH = Path("plugin/vendor/reflexio")
+VENDOR_MANIFEST = ".claude-smart-vendor.json"
 DEFAULT_INCLUDE = ["pyproject.toml", "README.md", "LICENSE", ".env.example", "reflexio"]
 
 
@@ -211,6 +213,48 @@ def copy_worktree(reflexio_path: Path, vendor_dest: Path, files: list[str]) -> N
             shutil.copy2(src, dest)
 
 
+def vendor_content_fingerprint(vendor_dest: Path) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    file_count = 0
+    for path in sorted(vendor_dest.rglob("*"), key=lambda item: item.relative_to(vendor_dest).as_posix()):
+        relative = path.relative_to(vendor_dest).as_posix()
+        if relative == VENDOR_MANIFEST:
+            continue
+        if path.is_symlink():
+            fail(f"vendored Reflexio contains unexpected symlink: {path}")
+        if not path.is_file():
+            continue
+        data = path.read_bytes()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(len(data)).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(data)
+        digest.update(b"\0")
+        file_count += 1
+    return digest.hexdigest(), file_count
+
+
+def write_vendor_manifest(
+    vendor_dest: Path,
+    *,
+    version: str,
+    commit: str,
+    dependency: str,
+) -> None:
+    content_sha256, content_file_count = vendor_content_fingerprint(vendor_dest)
+    manifest = {
+        "package": PACKAGE_NAME,
+        "repo": REPO_URL,
+        "version": version,
+        "commit": commit,
+        "dependency": dependency,
+        "content_sha256": content_sha256,
+        "content_file_count": content_file_count,
+    }
+    (vendor_dest / VENDOR_MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n")
+
+
 def existing_updated_at(lock_file: Path, payload: dict[str, str]) -> str | None:
     if not lock_file.is_file():
         return None
@@ -342,6 +386,12 @@ def main() -> int:
 
     if args.write:
         copy_worktree(reflexio_path, vendor_dest, include_paths)
+        write_vendor_manifest(
+            vendor_dest,
+            version=version,
+            commit=commit,
+            dependency=dependency,
+        )
         print(f"Updated: {VENDOR_PATH}")
         if args.bundle_only:
             print("Skipped: reflexio.lock.json (--bundle-only)")

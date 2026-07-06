@@ -386,11 +386,11 @@ def test_backend_service_forces_utf8_stdio_for_managed_backend() -> None:
     assert 'env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"' in service
 
 
-def test_backend_service_uses_prepared_venv_reflexio_backend_wrapper() -> None:
+def test_backend_service_uses_prepared_venv_reflexio_cli() -> None:
     service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
     assert 'backend_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"' in service
-    assert '"$backend_python" -m claude_smart.reflexio_backend services start' in service
+    assert '"$backend_python" -m reflexio.cli services start' in service
     assert 'uv run --project "$PLUGIN_ROOT" --no-sync --quiet' not in service
     assert "ensure_vendored_reflexio_active" in service
     assert 'plugin_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"' in service
@@ -1492,13 +1492,14 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     assert "uv pip install --project plugin --python" in release_script
     assert "--reinstall --no-deps plugin/vendor/reflexio" in release_script
     assert "OK: npm tarball includes vendored Reflexio files" in release_script
+    assert "plugin/vendor/reflexio/.claude-smart-vendor.json" in release_script
     assert "Keep generated plugin/vendor/reflexio in place" in release_script
     assert "make release-npm VERSION=<new-claude-smart-version>" in release_script
     assert "VALID_SOURCES" in lock_script
     assert "source=pypi must not include vendor_path" in lock_script
     assert "vendored Reflexio version mismatch" in lock_script
-    assert "read_lock_file(lock_path)" in lock_script
-    assert "reflexio.lock.json is not valid JSON" in lock_script
+    assert "vendored Reflexio metadata mismatch" in lock_script
+    assert "vendored Reflexio content mismatch" in lock_script
     assert "top-level value must be a JSON object" in lock_script
     assert "vendor_path must stay within repo root" in lock_script
     assert "installVendoredReflexio(pluginRoot, uv, env)" in installer
@@ -2021,6 +2022,9 @@ def test_vendor_release_is_npm_only() -> None:
     # release-npm self-vendors the current (clean) reflexio submodule before publishing.
     assert "vendor-release:" in makefile
     assert "python3 scripts/vendor-reflexio.py --require-clean --write" in makefile
+    assert "package-local:" in makefile
+    assert "python3 scripts/vendor-reflexio.py --require-clean --bundle-only --write" in makefile
+    assert "python3 scripts/check-reflexio-lock.py --check-vendor" in makefile
     assert "make release-npm VERSION=<new-claude-smart-version>" in developer
 
 

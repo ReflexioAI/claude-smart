@@ -6,6 +6,9 @@ Extraction is async by default. Run `/learn` to flag the previous turn as a corr
 **Reflexio refuses to boot with "no embedding-capable provider".**
 The default local setup starts `reflexio embeddings serve` on `127.0.0.1:8072` with the shared backend. Check `~/.claude-smart/backend.log` for the `embedding` service startup line and fix any error shown there.
 
+**Manual profile generation fails with `SQLiteStorage.get_all_user_ids` or reports `profiles_generated: 0`.**
+Older local installs could capture interactions but either fail `POST /api/manual_profile_generation` when called without `user_id`, or complete with an incorrect zero generated count when processing all users. The fixed release uses a vendored Reflexio bundle with both fixes. Run `claude-smart update`, then `/claude-smart:restart`. If the error persists, remove stale plugin caches and reinstall so the vendored Reflexio bundle is refreshed.
+
 **`claude-smart` doesn't see my interactions.**
 Check `~/.claude-smart/sessions/`. If your current session's JSONL has no `User`/`Assistant` rows, the plugin isn't receiving hook events — verify `.claude/settings.local.json` has the right path and that `enabledPlugins` is `true`.
 

@@ -354,7 +354,7 @@ case "$CMD" in
       "$LOG_FILE" "$LOG_MAX_BYTES" -- \
       env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
       PYTHONPATH="$backend_pythonpath" \
-      "$backend_python" -m claude_smart.reflexio_backend services start --only backend --no-reload --workers "$workers"
+      "$backend_python" -m reflexio.cli services start --only backend --no-reload --workers "$workers"
     svc_pid=$!
     # Record the spawned pid, not a pgid sampled with ps. On POSIX,
     # setsid/python os.setsid make this pid the new process group leader;

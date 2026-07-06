@@ -31,6 +31,7 @@ from pathlib import Path
 payload = json.loads(Path(sys.argv[1]).read_text())
 files = {entry["path"] for package in payload for entry in package.get("files", [])}
 required = {
+    "plugin/vendor/reflexio/.claude-smart-vendor.json",
     "plugin/vendor/reflexio/pyproject.toml",
     "plugin/vendor/reflexio/reflexio/__init__.py",
 }

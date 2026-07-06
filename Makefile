@@ -7,7 +7,8 @@
 #   make publish                     Publish current version to npm
 #   make publish-npm                 npm publish only
 #   make publish-dry                 Show what would ship without uploading
-#   make package                     Build the npm tarball locally (vendors local reflexio working tree)
+#   make package                     Build the npm tarball locally from the locked Reflexio bundle
+#   make package-local               Build a local test tarball from the current Reflexio working tree
 #
 # claude-smart is distributed exclusively via npm; it is no longer published to
 # PyPI (uvx install is unsupported). The reflexio-ai dependency still resolves
@@ -18,7 +19,7 @@
 #   - uv (for standalone lockfile resolution + the plugin venv)
 #   - git (for the release flow)
 
-.PHONY: help bump release release-npm publish publish-npm publish-dry package vendor-release \
+.PHONY: help bump release release-npm publish publish-npm publish-dry package package-local vendor-release \
         check-version check-clean check-npm-auth check-reflexio-pin check-reflexio-lock \
         check-vendor-reflexio \
         check-locked-project-version check-standalone-lock relock unskip-worktree
@@ -129,9 +130,10 @@ publish-dry: unskip-worktree check-vendor-reflexio check-locked-project-version 
 	@npm run build:opencode
 	@npm publish --dry-run
 
-package: check-locked-project-version check-standalone-lock ## Build the npm tarball locally (vendors the local reflexio working tree)
-	@echo "→ vendoring local reflexio working tree (uncommitted edits included) into plugin/vendor/reflexio"
-	@python3 scripts/vendor-reflexio.py --bundle-only --write
+package: check-locked-project-version check-standalone-lock ## Build the npm tarball locally from the locked Reflexio bundle
+	@echo "→ vendoring clean Reflexio working tree into plugin/vendor/reflexio"
+	@python3 scripts/vendor-reflexio.py --require-clean --bundle-only --write
+	@python3 scripts/check-reflexio-lock.py --check-vendor
 	@echo "→ npm pack"
 	@npm run build:opencode
 	@tarball=$$(npm pack 2>/dev/null | tail -1); \
@@ -146,6 +148,18 @@ package: check-locked-project-version check-standalone-lock ## Build the npm tar
 	  echo "  npx --package=$$abs -- claude-smart install"; \
 	  echo "  npx --package=$$abs -- claude-smart install --host codex"; \
 	  echo "  npx --package=$$abs -- claude-smart install --host opencode"
+
+package-local: check-locked-project-version check-standalone-lock ## Build a test tarball from the current Reflexio working tree
+	@echo "→ vendoring local Reflexio working tree (may diverge from reflexio.lock.json)"
+	@python3 scripts/vendor-reflexio.py --bundle-only --write
+	@echo "→ npm pack"
+	@npm run build:opencode
+	@tarball=$$(npm pack 2>/dev/null | tail -1); \
+	  abs=$$(cd "$$(dirname "$$tarball")" && pwd)/$$(basename "$$tarball"); \
+	  echo ""; \
+	  echo "✓ built local test package $$abs"; \
+	  echo ""; \
+	  echo "Do not publish this tarball unless scripts/check-reflexio-lock.py --check-vendor passes."
 
 publish: publish-npm ## Publish the current version to npm (claude-smart is npm-only)
 
