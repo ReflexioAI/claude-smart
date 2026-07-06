@@ -50,7 +50,7 @@ claude-smart uses one shared local embedding daemon by default. The backend star
 
 Supported local models are `local/nomic-embed-v1.5`, `local/nomic-embed-text-v1.5`, and `local/minilm-l6-v2`. The daemon owns exactly one model for its lifetime; start a second daemon on another port if you need to serve a different model concurrently.
 
-If you still want to use a cloud embedding provider (OpenAI, Gemini, etc.), set `CLAUDE_SMART_USE_LOCAL_EMBEDDING=0` and the corresponding API key in `~/.claude-smart/.env` — reflexio will fall back to its standard provider-priority chain. For hosted Reflexio, prefer a managed embedding provider or a scalable `REFLEXIO_EMBEDDING_PROVIDER=internal_service` endpoint instead of a single-machine daemon.
+Hosted Reflexio deployments should use a managed embedding provider or a scalable `REFLEXIO_EMBEDDING_PROVIDER=internal_service` endpoint instead of a single-machine daemon. The local claude-smart install path assumes the shared local daemon.
 
 ## Install dependency policy
 

@@ -105,7 +105,7 @@ verify_windows_local_embedding_runtime() {
   if claude_smart_python_imports "$PLUGIN_ROOT" onnxruntime; then
     return 0
   fi
-  write_failure "Windows local embedding requires Microsoft Visual C++ Redistributable for onnxruntime; install the x64 redistributable from https://aka.ms/vs/17/release/vc_redist.x64.exe and rerun claude-smart install, or set CLAUDE_SMART_USE_LOCAL_EMBEDDING=0 before install to use a configured cloud embedder."
+  write_failure "Windows local embedding requires Microsoft Visual C++ Redistributable for onnxruntime; install the x64 redistributable from https://aka.ms/vs/17/release/vc_redist.x64.exe and rerun claude-smart install."
 }
 
 if [ "${1:-}" = "verify-windows-embedding" ]; then
