@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import argparse
+import io
+import sys
 
 from claude_smart import cli
 
@@ -18,7 +20,7 @@ def test_show_reports_reflexio_read_errors(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli.ids, "resolve_user_id", lambda: "claude-smart")
     monkeypatch.setattr(cli, "Adapter", BrokenAdapter)
 
-    code = cli.cmd_show(SimpleNamespace(project=None))
+    code = cli.cmd_show(argparse.Namespace(project=None))
 
     out = capsys.readouterr().out
     assert code == 1
@@ -31,7 +33,7 @@ def test_show_reports_reflexio_read_errors(monkeypatch, capsys) -> None:
     assert "star it on GitHub" not in out
 
 
-def test_show_reports_empty_when_reflexio_read_succeeds(monkeypatch, capsys) -> None:
+def test_show_reports_empty_when_reflexio_read_succeeds(monkeypatch) -> None:
     class EmptyAdapter:
         url = "https://www.reflexio.ai/"
         read_errors: list[str] = []
@@ -39,12 +41,16 @@ def test_show_reports_empty_when_reflexio_read_succeeds(monkeypatch, capsys) -> 
         def fetch_all(self, **_kwargs):
             return [], [], []
 
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", stream)
     monkeypatch.setattr(cli.ids, "resolve_user_id", lambda: "claude-smart")
     monkeypatch.setattr(cli, "Adapter", EmptyAdapter)
 
-    code = cli.cmd_show(SimpleNamespace(project=None))
+    code = cli.cmd_show(argparse.Namespace(project=None))
 
-    out = capsys.readouterr().out
+    stream.flush()
+    out = raw.getvalue().decode("cp1252")
     assert code == 0
     assert "_No skills or preferences yet for project `claude-smart`._" in out
     # The reflexio attribution footer rides along even when empty.
@@ -63,7 +69,7 @@ def test_show_appends_reflexio_footer_when_populated(monkeypatch, capsys) -> Non
     monkeypatch.setattr(cli.ids, "resolve_user_id", lambda: "claude-smart")
     monkeypatch.setattr(cli, "Adapter", PopulatedAdapter)
 
-    code = cli.cmd_show(SimpleNamespace(project=None))
+    code = cli.cmd_show(argparse.Namespace(project=None))
 
     out = capsys.readouterr().out
     assert code == 0

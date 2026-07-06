@@ -1811,7 +1811,7 @@ def _reflexio_show_footer() -> str:
         str: A leading-separator markdown footer ending in a newline.
     """
     return (
-        f"\n---\n⭐ claude-smart is powered by [reflexio]({cs_cite.REFLEXIO_REPO_URL})"
+        f"\n---\nclaude-smart is powered by [reflexio]({cs_cite.REFLEXIO_REPO_URL})"
         f" — if it helps you, [star it on GitHub]({cs_cite.REFLEXIO_REPO_URL}).\n"
     )
 
