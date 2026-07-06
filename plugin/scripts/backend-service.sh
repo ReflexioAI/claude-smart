@@ -192,6 +192,27 @@ port_occupied() {
   (echo >"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
 }
 
+# List PIDs listening on $1 without lsof, for Windows git-bash where lsof is
+# absent. Parses `netstat -ano` (the Windows netstat, on PATH under git-bash):
+# columns are Proto, Local, Foreign, State, PID; we want LISTENING rows whose
+# local address ends in :$port. Empty if netstat is unavailable or nothing
+# listens.
+port_pids_netstat() {
+  command -v netstat >/dev/null 2>&1 || return 0
+  netstat -ano 2>/dev/null | awk -v p=":$1\$" '
+    $1 ~ /^TCP/ && $2 ~ p && $4 == "LISTENING" { print $5 }
+  ' | sort -u
+}
+
+# Command line for a Windows PID via tasklist, for cmdline pattern matching
+# when ps/lsof are unavailable. Prints the image name (best available proxy
+# for the command on Windows) or empty.
+pid_cmdline_win() {
+  command -v tasklist >/dev/null 2>&1 || return 0
+  tasklist /FI "PID eq $1" /FO CSV /NH 2>/dev/null \
+    | awk -F'","' 'NR==1 { gsub(/"/,"",$1); print $1 }'
+}
+
 # Reap listeners still holding the given port after the PID file kill
 # when their command line matches one of the supplied patterns. Filters
 # by cmdline so we don't knock over an
@@ -201,12 +222,23 @@ reap_port_listeners() {
   port="${1:-$PORT}"
   shift || true
   [ "$#" -eq 0 ] && return 0
-  command -v lsof >/dev/null 2>&1 || return 0
-  candidates=$(lsof -ti:"$port" 2>/dev/null) || candidates=""
+  if command -v lsof >/dev/null 2>&1; then
+    candidates=$(lsof -ti:"$port" 2>/dev/null) || candidates=""
+  else
+    candidates=$(port_pids_netstat "$port")
+  fi
   [ -z "$candidates" ] && return 0
   ours=""
   for pid in $candidates; do
-    cmdline=$(ps -p "$pid" -o command= 2>/dev/null || true)
+    cmdline=""
+    if command -v ps >/dev/null 2>&1; then
+      cmdline=$(ps -p "$pid" -o command= 2>/dev/null || true)
+    fi
+    # Git Bash ships `ps` but it may not support `-o command=` or resolve a
+    # native PID from netstat, leaving cmdline empty — fall back to tasklist.
+    if [ -z "$cmdline" ]; then
+      cmdline=$(pid_cmdline_win "$pid")
+    fi
     for pattern in "$@"; do
       if [[ "$cmdline" == $pattern ]]; then
         ours="$ours $pid"
@@ -215,6 +247,11 @@ reap_port_listeners() {
     done
   done
   [ -z "$ours" ] && return 0
+  if command -v taskkill >/dev/null 2>&1 && ! command -v lsof >/dev/null 2>&1; then
+    # Windows: no POSIX signals to these PIDs; force-kill directly.
+    for pid in $ours; do taskkill /F /PID "$pid" >/dev/null 2>&1 || true; done
+    return 0
+  fi
   # shellcheck disable=SC2086
   kill -TERM $ours 2>/dev/null || true
   sleep 1
@@ -231,9 +268,14 @@ reap_port_listeners() {
 # "<command> (pid <pid>)" or empty if the port is free or lsof is
 # unavailable. Used to make port-conflict log lines diagnosable.
 port_holder() {
-  command -v lsof >/dev/null 2>&1 || return 0
-  lsof -i:"$1" -sTCP:LISTEN -P -n 2>/dev/null \
-    | awk 'NR==2 {print $1" (pid "$2")"; exit}'
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -i:"$1" -sTCP:LISTEN -P -n 2>/dev/null \
+      | awk 'NR==2 {print $1" (pid "$2")"; exit}'
+    return 0
+  fi
+  pid=$(port_pids_netstat "$1" | head -n1)
+  [ -z "$pid" ] && return 0
+  printf '%s (pid %s)' "$(pid_cmdline_win "$pid")" "$pid"
 }
 
 ensure_vendored_reflexio_active() {
@@ -304,15 +346,25 @@ case "$CMD" in
       emit_ok; exit 0
     fi
     if port_occupied; then
-      # is_our_backend_running already ruled out a healthy Reflexio backend.
-      # Anything still holding the port would make uvicorn fail to bind, so
-      # surface the holder instead of silently starting into a collision.
+      # is_our_backend_running already ruled out a healthy Reflexio backend, so
+      # the holder is either our own wedged/unhealthy backend (reap + retry) or
+      # a foreign process (surface and skip, never stomp it).
       holder="$(port_holder "$PORT" 2>/dev/null || true)"
-      msg="[claude-smart] backend: port $PORT held by another process${holder:+ ($holder)}; skipping start"
-      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "$msg"
-      echo "$msg" >&2
-      echo "Free port $PORT (or stop the process above) and run /claude-smart:restart again." >&2
-      emit_ok; exit 0
+      case "$holder" in
+        *reflexio*|*uvicorn*|*python*)
+          claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
+            "[claude-smart] backend: stale unhealthy holder on port $PORT (${holder:-unknown}); reaping and retrying"
+          reap_port_listeners "$PORT" '*reflexio*' '*uvicorn*' '*python*'
+          ;;
+      esac
+      if port_occupied; then
+        holder="$(port_holder "$PORT" 2>/dev/null || true)"
+        msg="[claude-smart] backend: port $PORT held by another process${holder:+ ($holder)}; skipping start"
+        claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "$msg"
+        echo "$msg" >&2
+        echo "Free port $PORT (or stop the process above) and run /claude-smart:restart again." >&2
+        emit_ok; exit 0
+      fi
     fi
     if ! command -v uv >/dev/null 2>&1; then
       if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
