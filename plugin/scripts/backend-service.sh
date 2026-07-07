@@ -64,20 +64,12 @@ fi
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "backend-service.sh" "$@"
 PLUGIN_ROOT_CANONICAL="$(cd "$PLUGIN_ROOT" 2>/dev/null && pwd -P || printf '%s\n' "$PLUGIN_ROOT")"
-PLUGIN_VERSION="$(
-  sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-    "$PLUGIN_ROOT/.codex-plugin/plugin.json" 2>/dev/null | head -n1
-)"
-if [ -z "$PLUGIN_VERSION" ]; then
-  PLUGIN_VERSION="$(
-    sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
-      "$PLUGIN_ROOT/pyproject.toml" 2>/dev/null | head -n1
-  )"
+VENDORED_REFLEXIO="$PLUGIN_ROOT_CANONICAL/vendor/reflexio"
+VENDORED_REFLEXIO_FOR_PYTHON="$VENDORED_REFLEXIO"
+if claude_smart_is_windows; then
+  VENDORED_REFLEXIO_FOR_PYTHON="$(claude_smart_to_windows_path "$VENDORED_REFLEXIO")"
 fi
-PLUGIN_VERSION="${PLUGIN_VERSION:-unknown}"
-export CLAUDE_SMART_BACKEND="1"
-export CLAUDE_SMART_PLUGIN_ROOT="$PLUGIN_ROOT_CANONICAL"
-export CLAUDE_SMART_VERSION="$PLUGIN_VERSION"
+export CLAUDE_SMART_REFLEXIO_VENDOR_ROOT="$VENDORED_REFLEXIO_FOR_PYTHON"
 
 if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
   if [ "${CLAUDE_SMART_HOST:-claude-code}" = "opencode" ]; then
@@ -149,91 +141,11 @@ kill_group() {
   claude_smart_kill_tree "$1"
 }
 
-health_headers() {
-  port="$1"
-  path="${2:-/health}"
-  command -v curl >/dev/null 2>&1 || return 1
-  curl -sf --connect-timeout 2 --max-time 5 -D - -o /dev/null "http://127.0.0.1:$port$path" 2>/dev/null
-}
-
-header_value_from() {
-  header_name="$1"
-  awk -v wanted="$header_name" '
-    BEGIN { wanted = tolower(wanted) ":" }
-    {
-      line = $0
-      sub(/\r$/, "", line)
-      lower = tolower(line)
-      if (index(lower, wanted) == 1) {
-        sub(/^[^:]*:[[:space:]]*/, "", line)
-        print line
-        exit
-      }
-    }
-  '
-}
-
-canonical_dir() {
-  dir="$1"
-  (cd "$dir" 2>/dev/null && pwd -P) || printf '%s\n' "$dir"
-}
-
-normalize_identity_path() {
-  path="$1"
-  if claude_smart_is_windows; then
-    if command -v cygpath >/dev/null 2>&1; then
-      path="$(cygpath -u "$path" 2>/dev/null || printf '%s\n' "$path")"
-    else
-      path="$(
-        printf '%s\n' "$path" | awk '{
-          gsub(/\\/, "/")
-          if ($0 ~ /^[A-Za-z]:/) {
-            drive = tolower(substr($0, 1, 1))
-            sub(/^[A-Za-z]:/, "/" drive)
-          }
-          print
-        }'
-      )"
-    fi
-  fi
-  while [ "${path%/}" != "$path" ] && [ "$path" != "/" ]; do
-    path="${path%/}"
-  done
-  printf '%s\n' "$path"
-}
-
-identity_matches_current_root() {
-  marker="$1"
-  headers="$2"
-  expected_root="$(normalize_identity_path "$(canonical_dir "$PLUGIN_ROOT")")"
-  printf '%s\n' "$headers" | grep -qi "^$marker:" || return 1
-  actual_root="$(printf '%s\n' "$headers" | header_value_from "x-claude-smart-plugin-root")"
-  [ -n "$actual_root" ] || return 1
-  actual_root="$(normalize_identity_path "$actual_root")"
-  [ "$actual_root" = "$expected_root" ]
-}
-
 # True if /health returns 200, regardless of runtime identity. Used only for
-# generic liveness; ownership checks use backend_matches_current_root.
+# generic liveness; ownership checks inspect the listener process.
 backend_healthy() {
   command -v curl >/dev/null 2>&1 || return 1
   curl -sf --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/health" 2>/dev/null
-}
-
-backend_has_claude_smart_marker() {
-  headers="$(health_headers "$PORT" "/health")" || return 1
-  printf '%s\n' "$headers" | grep -qi '^x-claude-smart-backend:'
-}
-
-backend_matches_current_root() {
-  headers="$(health_headers "$PORT" "/health")" || return 1
-  identity_matches_current_root "x-claude-smart-backend" "$headers"
-}
-
-embedding_matches_current_root() {
-  [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-}" = "1" ] || return 0
-  headers="$(health_headers "$EMBEDDING_PORT" "/health")" || return 1
-  identity_matches_current_root "x-claude-smart-embedding" "$headers"
 }
 
 wait_for_health() {
@@ -251,26 +163,6 @@ wait_for_health() {
 log_embedding_degraded() {
   claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
     "[claude-smart] backend: Embedding service did not become healthy on port $EMBEDDING_PORT; semantic retrieval remains unavailable until the local embedding daemon recovers"
-}
-
-# True only if the recorded PID is alive AND /health responds. A stale
-# PID file from a crashed backend is not enough — we must see the port
-# actually answer, so next hook retries cleanly.
-is_our_backend_running() {
-  if [ -f "$PID_FILE" ]; then
-    pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      if command -v curl >/dev/null 2>&1; then
-        backend_matches_current_root && return 0
-      else
-        return 0
-      fi
-    fi
-  fi
-  # Recover from a missing PID file only when the listener proves it belongs
-  # to this plugin root. A generic healthy Reflexio process is not enough.
-  backend_matches_current_root && return 0
-  return 1
 }
 
 # Best-effort port probe. curl catches responsive HTTP listeners; /dev/tcp
@@ -305,10 +197,105 @@ looks_like_claude_smart_backend_pid() {
   text="$(pid_details "$pid")"
   [ -n "$text" ] || return 1
   case "$text" in
-    *CLAUDE_SMART_BACKEND=1*|*CLAUDE_SMART_USE_LOCAL_CLI=1*|*CLAUDE_SMART_USE_LOCAL_EMBEDDING=1*|*".claude-smart/.env"*|*"reflexioai/claude-smart"*|*"reflexioai\\claude-smart"*|*"local-agent-mode-sessions"*|*"$PLUGIN_ROOT_CANONICAL"*|*"$HOME/.reflexio/plugin-root"*)
+    *CLAUDE_SMART_REFLEXIO_VENDOR_ROOT=*|*CLAUDE_SMART_USE_LOCAL_CLI=1*|*CLAUDE_SMART_USE_LOCAL_EMBEDDING=1*|*".claude-smart/.env"*|*"reflexioai/claude-smart"*|*"reflexioai\\claude-smart"*|*"local-agent-mode-sessions"*|*"$PLUGIN_ROOT_CANONICAL"*|*"$HOME/.reflexio/plugin-root"*)
       return 0
       ;;
   esac
+  return 1
+}
+
+pid_uses_current_vendor_root() {
+  pid="$1"
+  text="$(pid_details "$pid")"
+  [ -n "$text" ] || return 1
+  case "$text" in
+    *"CLAUDE_SMART_REFLEXIO_VENDOR_ROOT=$VENDORED_REFLEXIO"*|*"CLAUDE_SMART_REFLEXIO_VENDOR_ROOT=$VENDORED_REFLEXIO_FOR_PYTHON"*|*"PYTHONPATH=$VENDORED_REFLEXIO"*|*"PYTHONPATH=$VENDORED_REFLEXIO_FOR_PYTHON"*|*"$VENDORED_REFLEXIO"*|*"$VENDORED_REFLEXIO_FOR_PYTHON"*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+backend_owned_by_current_vendor() {
+  backend_healthy || return 1
+  pids="$(port_listener_pids "$PORT")"
+  for pid in $pids; do
+    if looks_like_claude_smart_backend_pid "$pid" && pid_uses_current_vendor_root "$pid"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+backend_owned_by_stale_claude_smart() {
+  pids="$(port_listener_pids "$PORT")"
+  for pid in $pids; do
+    if looks_like_claude_smart_backend_pid "$pid" && ! pid_uses_current_vendor_root "$pid"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+embedding_owned_by_current_vendor() {
+  [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-}" = "1" ] || return 0
+  pids="$(port_listener_pids "$EMBEDDING_PORT")"
+  for pid in $pids; do
+    if looks_like_claude_smart_backend_pid "$pid" && pid_uses_current_vendor_root "$pid"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+verify_bundled_reflexio_import() {
+  python_bin="$1"
+  pythonpath="$2"
+  vendor_root_for_python="$3"
+  [ -d "$VENDORED_REFLEXIO/reflexio" ] || {
+    echo "bundled Reflexio package not found at $VENDORED_REFLEXIO" >&2
+    return 1
+  }
+  PYTHONPATH="$pythonpath" "$python_bin" - "$vendor_root_for_python" <<'PY'
+from pathlib import Path
+import sys
+
+vendor = Path(sys.argv[1]).resolve()
+try:
+    import reflexio
+except Exception as exc:
+    print(f"failed to import bundled reflexio from {vendor}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+module = Path(reflexio.__file__).resolve()
+try:
+    module.relative_to(vendor)
+except ValueError:
+    print(
+        f"reflexio import resolved outside bundled vendor: {module} (expected under {vendor})",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PY
+}
+
+# True only if the recorded PID is alive, /health responds, and the listener
+# process is using this package's bundled Reflexio import path.
+is_our_backend_running() {
+  if [ -f "$PID_FILE" ]; then
+    pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      if command -v curl >/dev/null 2>&1; then
+        backend_healthy && pid_uses_current_vendor_root "$pid" && return 0
+      else
+        pid_uses_current_vendor_root "$pid" && return 0
+      fi
+    fi
+  fi
+  # Recover from a missing PID file only when the listener proves it belongs
+  # to the current vendored Reflexio package. A generic healthy service is not
+  # enough.
+  backend_owned_by_current_vendor && return 0
   return 1
 }
 
@@ -327,13 +314,7 @@ stop_port_pids() {
   kill -KILL $remaining 2>/dev/null || true
 }
 
-stop_marked_backend_listener() {
-  backend_has_claude_smart_marker || return 1
-  stop_port_pids "$(port_listener_pids "$PORT")"
-}
-
-stop_legacy_backend_listener_if_owned() {
-  backend_healthy || return 1
+stop_backend_listener_if_owned() {
   pids="$(port_listener_pids "$PORT")"
   [ -n "$pids" ] || return 1
   ours=""
@@ -346,19 +327,25 @@ stop_legacy_backend_listener_if_owned() {
   stop_port_pids "$ours"
 }
 
+stop_stale_backend_listener_if_owned() {
+  backend_owned_by_stale_claude_smart || return 1
+  stale=""
+  for pid in $(port_listener_pids "$PORT"); do
+    if looks_like_claude_smart_backend_pid "$pid" && ! pid_uses_current_vendor_root "$pid"; then
+      stale="$stale $pid"
+    fi
+  done
+  [ -n "$stale" ] || return 1
+  stop_port_pids "$stale"
+}
+
 stop_stale_embedding_listener_if_owned() {
   [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-}" = "1" ] || return 0
-  embedding_matches_current_root && return 0
-  headers="$(health_headers "$EMBEDDING_PORT" "/health" 2>/dev/null || true)"
-  if printf '%s\n' "$headers" | grep -qi '^x-claude-smart-embedding:'; then
-    stop_port_pids "$(port_listener_pids "$EMBEDDING_PORT")"
-    return 0
-  fi
   pids="$(port_listener_pids "$EMBEDDING_PORT")"
   [ -n "$pids" ] || return 0
   ours=""
   for pid in $pids; do
-    if looks_like_claude_smart_backend_pid "$pid"; then
+    if looks_like_claude_smart_backend_pid "$pid" && ! pid_uses_current_vendor_root "$pid"; then
       ours="$ours $pid"
     fi
   done
@@ -412,11 +399,7 @@ full_stop() {
     kill_group "$(cat "$PID_FILE" 2>/dev/null)"
     rm -f "$PID_FILE"
   fi
-  if backend_has_claude_smart_marker; then
-    stop_marked_backend_listener || true
-  else
-    stop_legacy_backend_listener_if_owned || true
-  fi
+  stop_backend_listener_if_owned || true
   if [ -n "${EMBEDDING_PORT:-}" ] && [ "$EMBEDDING_PORT" != "$PORT" ]; then
     stop_stale_embedding_listener_if_owned || true
   fi
@@ -437,18 +420,12 @@ case "$CMD" in
       emit_ok; exit 0
     fi
     if is_our_backend_running; then
-      embedding_matches_current_root || log_embedding_degraded
+      embedding_owned_by_current_vendor || log_embedding_degraded
       emit_ok; exit 0
     fi
-    if backend_has_claude_smart_marker; then
+    if stop_stale_backend_listener_if_owned; then
       claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
-        "[claude-smart] backend: stale claude-smart backend on port $PORT; restarting from $PLUGIN_ROOT"
-      stop_marked_backend_listener || true
-    else
-      if stop_legacy_backend_listener_if_owned; then
-        claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
-          "[claude-smart] backend: replaced legacy claude-smart backend on port $PORT that did not expose identity headers"
-      fi
+        "[claude-smart] backend: replaced claude-smart backend on port $PORT that was not using bundled Reflexio at $VENDORED_REFLEXIO"
     fi
     stop_stale_embedding_listener_if_owned || true
     if port_occupied; then
@@ -500,14 +477,14 @@ case "$CMD" in
     export REFLEXIO_STORAGE="sqlite"
 
     backend_pythonpath="${PYTHONPATH:-}"
-    if [ -d "$PLUGIN_ROOT/vendor/reflexio/reflexio" ]; then
-      vendor_pythonpath="$PLUGIN_ROOT/vendor/reflexio"
+    if [ -d "$VENDORED_REFLEXIO/reflexio" ]; then
+      vendor_pythonpath="$VENDORED_REFLEXIO"
       pythonpath_sep=":"
       if claude_smart_is_windows; then
         # Native Windows Python expects ;-separated Windows-style paths in
         # PYTHONPATH; MSYS does not auto-convert arbitrary env vars.
         pythonpath_sep=";"
-        vendor_pythonpath="$(claude_smart_to_windows_path "$vendor_pythonpath")"
+        vendor_pythonpath="$VENDORED_REFLEXIO_FOR_PYTHON"
       fi
       backend_pythonpath="$vendor_pythonpath${backend_pythonpath:+$pythonpath_sep$backend_pythonpath}"
     fi
@@ -524,6 +501,12 @@ case "$CMD" in
     # Claude Code sessions or wanting zero-downtime recycling.
     workers="${CLAUDE_SMART_BACKEND_WORKERS:-1}"
     backend_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
+    if ! verify_bundled_reflexio_import "$backend_python" "$backend_pythonpath" "$VENDORED_REFLEXIO_FOR_PYTHON"; then
+      reason="bundled Reflexio import preflight failed"
+      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: $reason"
+      emit_start_failure "$reason"
+      exit 0
+    fi
     # Record the spawned pid, not a pgid sampled with ps. On POSIX,
     # setsid/python os.setsid make this pid the new process group leader;
     # sampling immediately can race and capture the caller's pgid instead.
@@ -538,10 +521,10 @@ case "$CMD" in
 
     # Give uvicorn about 20s to answer /health. The first boot after a fresh
     # checkout may be slower; if it catches up later, the next hook observes it.
-    if wait_for_health backend_matches_current_root 10 1; then
+    if wait_for_health backend_healthy 10 1; then
       # The Node installer waits 45s for this script. Each curl probe is also
       # bounded so a wedged listener cannot outlive the caller's timeout budget.
-      if ! wait_for_health embedding_matches_current_root 5 3; then
+      if ! wait_for_health embedding_owned_by_current_vendor 5 3; then
         log_embedding_degraded
       fi
     else
@@ -570,16 +553,16 @@ case "$CMD" in
   status)
     if claude_smart_reflexio_url_is_remote; then
       echo "remote configured at $REFLEXIO_URL"
-    elif backend_matches_current_root; then
-      if embedding_matches_current_root; then
-        echo "running on http://localhost:$PORT (plugin $PLUGIN_VERSION at $PLUGIN_ROOT_CANONICAL)"
+    elif backend_owned_by_current_vendor; then
+      if embedding_owned_by_current_vendor; then
+        echo "running on http://localhost:$PORT (bundled Reflexio at $VENDORED_REFLEXIO)"
       else
-        echo "running on http://localhost:$PORT (plugin $PLUGIN_VERSION at $PLUGIN_ROOT_CANONICAL; embedding degraded on http://127.0.0.1:$EMBEDDING_PORT)"
+        echo "running on http://localhost:$PORT (bundled Reflexio at $VENDORED_REFLEXIO; embedding degraded on http://127.0.0.1:$EMBEDDING_PORT)"
       fi
-    elif backend_has_claude_smart_marker; then
-      echo "stale claude-smart backend on http://localhost:$PORT"
+    elif backend_owned_by_stale_claude_smart; then
+      echo "stale claude-smart backend on http://localhost:$PORT (not using bundled Reflexio at $VENDORED_REFLEXIO)"
     elif backend_healthy; then
-      echo "foreign or legacy backend on http://localhost:$PORT (identity headers missing)"
+      echo "foreign or ambiguous backend on http://localhost:$PORT (not managed by claude-smart)"
     else
       echo "not running"
     fi
