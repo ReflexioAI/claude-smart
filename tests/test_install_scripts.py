@@ -179,6 +179,9 @@ def _seed_fake_claude_cache(tmp_path: Path) -> Path:
 
 def _seed_backend_service_test_plugin(tmp_path: Path, *, port: int) -> Path:
     plugin_root = _seed_fake_claude_cache(tmp_path)
+    vendor_package = plugin_root / "vendor" / "reflexio" / "reflexio"
+    vendor_package.mkdir(parents=True, exist_ok=True)
+    (vendor_package / "__init__.py").write_text('__version__ = "0.0.0-test"\n')
     backend_service = plugin_root / "scripts" / "backend-service.sh"
     backend_service.write_text(
         backend_service.read_text().replace("\nPORT=8071\n", f"\nPORT={port}\n")
