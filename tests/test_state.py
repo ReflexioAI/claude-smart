@@ -360,12 +360,46 @@ def test_to_wire_citations_filters_invalid_kinds() -> None:
     """Items with unknown ``kind`` are dropped (server has a Literal there)."""
     items = [
         {"id": "s1-ab12", "kind": "playbook", "title": "ok", "real_id": "pb_1"},
-        {"id": "x1-0001", "kind": "agent_playbook", "title": "junk", "real_id": "ap_1"},
+        {
+            "id": "x1-0001",
+            "kind": "agent_playbook",
+            "title": "explicit",
+            "real_id": "ap_1",
+        },
         {"id": "y1-0002", "kind": "", "title": "junk2", "real_id": "z_1"},
     ]
     result = state._to_wire_citations(items)
-    assert [c["kind"] for c in result] == ["playbook"]
+    assert [c["kind"] for c in result] == ["playbook", "agent_playbook"]
     assert result[0]["real_id"] == "pb_1"
+    assert result[1]["real_id"] == "ap_1"
+
+
+def test_to_wire_citations_preserves_explicit_playbook_source_kind() -> None:
+    wire = state._to_wire_citations(
+        [
+            {
+                "id": "s1-1",
+                "kind": "playbook",
+                "source_kind": "agent_playbook",
+                "real_id": "20",
+                "title": "Agent",
+            },
+            {
+                "id": "s2-1",
+                "kind": "playbook",
+                "source_kind": "user_playbook",
+                "real_id": "101",
+                "title": "User",
+            },
+            {"id": "p1-1", "kind": "profile", "real_id": "p1", "title": "Profile"},
+        ]
+    )
+
+    assert [item["kind"] for item in wire] == [
+        "agent_playbook",
+        "user_playbook",
+        "profile",
+    ]
 
 
 def test_to_wire_citations_drops_unresolved_real_id() -> None:

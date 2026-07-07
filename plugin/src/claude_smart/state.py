@@ -19,8 +19,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 try:
     import fcntl  # POSIX only — Windows hooks fall back to append-without-lock.
@@ -34,7 +35,9 @@ _DEFAULT_STATE_DIR = Path.home() / ".claude-smart" / "sessions"
 
 _TOOL_DATA_FIELD_MAX_LEN = 256
 
-_VALID_CITATION_KINDS = frozenset({"playbook", "profile"})
+_VALID_CITATION_KINDS = frozenset(
+    {"playbook", "profile", "user_playbook", "agent_playbook"}
+)
 
 
 def _truncate_tool_data_field(value: Any) -> Any:
@@ -206,13 +209,18 @@ def _to_wire_citations(cited_items: Any) -> list[dict[str, str]]:
         kind = item.get("kind")
         if not isinstance(real_id, str) or not real_id:
             continue
-        if kind not in _VALID_CITATION_KINDS:
+        wire_kind = kind
+        if kind == "playbook":
+            source_kind = item.get("source_kind")
+            if source_kind in {"user_playbook", "agent_playbook"}:
+                wire_kind = source_kind
+        if wire_kind not in _VALID_CITATION_KINDS:
             continue
         tag = item.get("id")
         title = item.get("title")
         out.append(
             {
-                "kind": kind,
+                "kind": wire_kind,
                 "real_id": real_id,
                 "tag": tag if isinstance(tag, str) else "",
                 "title": title if isinstance(title, str) else "",

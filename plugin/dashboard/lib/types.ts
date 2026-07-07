@@ -167,7 +167,7 @@ export interface ReflexioConfig {
 export interface PlaybookApplicationStat {
   real_id: string;
   citation_id?: string;
-  kind: "playbook" | "profile";
+  kind: "playbook" | "profile" | "user_playbook" | "agent_playbook";
   source_kind?: "user_playbook" | "agent_playbook" | "profile";
   title: string;
   href?: string;
