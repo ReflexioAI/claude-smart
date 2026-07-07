@@ -11,7 +11,6 @@ const HOME = os.homedir();
 const STATE_DIR = path.join(HOME, ".claude-smart");
 const REFLEXIO_DIR = path.join(HOME, ".reflexio");
 const DEFAULT_BACKEND_PORT = 8071;
-const FALLBACK_BACKEND_PORT = 8072;
 const DASHBOARD_PORT = 3001;
 const LOG_MAX_BYTES = 10000000;
 
@@ -223,11 +222,6 @@ function backendUrlFile() {
   return stateFile("backend-url");
 }
 
-function writeBackendUrl(port) {
-  ensureDir(STATE_DIR);
-  fs.writeFileSync(backendUrlFile(), `http://localhost:${port}/\n`);
-}
-
 function unquoteEnvValue(value) {
   const trimmed = String(value || "").trim();
   if (trimmed.length >= 2) {
@@ -279,12 +273,6 @@ function loadReflexioEnv() {
   }
 }
 
-function reflexioUrlIsRemote() {
-  const url = process.env.REFLEXIO_URL || "";
-  if (!url) return false;
-  return !/^http:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i.test(url);
-}
-
 function codexCompatPath(root) {
   const filename = process.platform === "win32"
     ? "codex-claude-compat.cmd"
@@ -322,29 +310,6 @@ function healthOk(port, pathname, markerHeader) {
     );
     req.on("timeout", () => req.destroy());
     req.on("error", () => resolve(false));
-    req.end();
-  });
-}
-
-function portOccupied(port) {
-  return new Promise((resolve) => {
-    const req = http.request(
-      {
-        host: "127.0.0.1",
-        port,
-        path: "/",
-        method: "GET",
-        timeout: 900,
-      },
-      (res) => {
-        res.resume();
-        resolve(true);
-      },
-    );
-    req.on("timeout", () => req.destroy());
-    req.on("error", (err) => {
-      resolve(err && err.code !== "ECONNREFUSED");
-    });
     req.end();
   });
 }
@@ -439,76 +404,38 @@ function ensurePluginRoot(root) {
 
 async function startBackend(root) {
   trimLog(path.join(STATE_DIR, "backend.log"));
-  if (process.env.CLAUDE_SMART_BACKEND_AUTOSTART === "0") {
+  const bash = bashPath();
+  const script = path.join(root, "scripts", "backend-service.sh");
+  if (!bash || !fs.existsSync(script)) {
+    appendLog("backend.log", "[claude-smart] backend: backend-service.sh unavailable; skipping local backend start");
     emitOk();
     return;
   }
-  if (reflexioUrlIsRemote()) {
-    appendLog("backend.log", "[claude-smart] backend: remote REFLEXIO_URL configured; skipping local backend start");
-    emitOk();
-    return;
-  }
-  const pidFile = path.join(STATE_DIR, "backend.pid");
-  for (const port of [DEFAULT_BACKEND_PORT, FALLBACK_BACKEND_PORT]) {
-    if (pidAlive(readPid(pidFile)) && await healthOk(port, "/health")) {
-      writeBackendUrl(port);
-      emitOk();
-      return;
-    }
-    if (await healthOk(port, "/health")) {
-      writeBackendUrl(port);
-      emitOk();
-      return;
-    }
-  }
-  const uv = uvPath();
-  if (!uv) {
-    startInstallerDetached(root, "backend: uv not on PATH");
-  }
-  const readyUv = uvPath();
-  if (!readyUv) {
-    appendLog("backend.log", "[claude-smart] backend: uv not on PATH; installer recovery scheduled; skipping");
-    emitOk();
-    return;
-  }
-  let selectedPort = DEFAULT_BACKEND_PORT;
-  if (await portOccupied(DEFAULT_BACKEND_PORT)) {
-    appendLog("backend.log", "[claude-smart] backend: port 8071 occupied; trying 8072");
-    selectedPort = FALLBACK_BACKEND_PORT;
-  }
-  const backendUrl = `http://localhost:${selectedPort}/`;
-  const env = {
-    ...process.env,
-    BACKEND_PORT: String(selectedPort),
-    REFLEXIO_URL: backendUrl,
-    CLAUDE_SMART_USE_LOCAL_CLI: process.env.CLAUDE_SMART_USE_LOCAL_CLI || "1",
-    CLAUDE_SMART_USE_LOCAL_EMBEDDING: process.env.CLAUDE_SMART_USE_LOCAL_EMBEDDING || "1",
-    CLAUDE_SMART_HOST: "codex",
-    CLAUDE_SMART_CLI_PATH: process.env.CLAUDE_SMART_CLI_PATH || codexCompatPath(root),
-    INTERACTION_CLEANUP_THRESHOLD: process.env.INTERACTION_CLEANUP_THRESHOLD || "500",
-    INTERACTION_CLEANUP_DELETE_COUNT: process.env.INTERACTION_CLEANUP_DELETE_COUNT || "200",
-  };
-  const pid = detached(
-    readyUv,
-    [
-      "run",
-      "--project",
-      root,
-      "--quiet",
-      "reflexio",
-      "services",
-      "start",
-      "--only",
-      "backend",
-      "--no-reload",
-    ],
-    { cwd: root, env },
+  const result = spawnSync(
+    bash,
+    [script, "start"],
+    {
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAUDE_SMART_HOST: "codex",
+        CLAUDE_SMART_CLI_PATH: process.env.CLAUDE_SMART_CLI_PATH || codexCompatPath(root),
+      },
+      text: true,
+      encoding: "utf8",
+      input: "",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 45000,
+      windowsHide: true,
+    },
   );
-  writePid(pidFile, pid);
-  if (await waitForHealth(selectedPort, "/health", null, 10)) {
-    writeBackendUrl(selectedPort);
+  if (result.error) {
+    appendLog("backend.log", `[claude-smart] backend-service.sh failed to run: ${result.error.message}`);
   }
-  emitOk();
+  if (result.stderr) {
+    appendLog("backend.log", `[claude-smart] backend-service.sh stderr: ${String(result.stderr).slice(0, 1000)}`);
+  }
+  emitNormalizedHookOutput(result.stdout);
 }
 
 async function startDashboard(root) {

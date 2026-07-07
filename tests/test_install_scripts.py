@@ -467,8 +467,7 @@ def test_detached_spawns_with_log_redirection_preserve_output_on_windows() -> No
     ) in dashboard
     assert (
         "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached "
-        '"$NPM_BIN" run start >>"$LOG_FILE" 2>&1'
-        in dashboard
+        '"$NPM_BIN" run start >>"$LOG_FILE" 2>&1' in dashboard
     )
 
 
@@ -909,7 +908,7 @@ def test_node_installer_updates_existing_host_and_local_defaults(
     runtime_env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     runtime_env_path.parent.mkdir()
-    stale = "# keep\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_READ_ONLY=\"1\"\n"
+    stale = '# keep\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_READ_ONLY="1"\n'
     env_path.write_text(stale)
     runtime_env_path.write_text(stale)
     script = (
@@ -1252,6 +1251,25 @@ def test_dashboard_service_restarts_stale_claude_smart_dashboard() -> None:
     assert "stale claude-smart dashboard on port $PORT; restarting" in dashboard
     assert "stop_dashboard_listener" in dashboard
     assert "foreign app on 3001 is never killed" in dashboard
+
+
+def test_backend_service_verifies_current_plugin_identity() -> None:
+    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+
+    assert 'export CLAUDE_SMART_BACKEND="1"' in backend
+    assert 'export CLAUDE_SMART_PLUGIN_ROOT="$PLUGIN_ROOT_CANONICAL"' in backend
+    assert 'export CLAUDE_SMART_VERSION="$PLUGIN_VERSION"' in backend
+    assert "backend_matches_current_root()" in backend
+    assert "x-claude-smart-backend" in backend
+    assert "x-claude-smart-plugin-root" in backend
+    assert "normalize_identity_path()" in backend
+    assert "cygpath -u" in backend
+    assert 'expected_root="$(normalize_identity_path ' in backend
+    assert 'actual_root="$(normalize_identity_path "$actual_root")"' in backend
+    assert '[ "$actual_root" = "$expected_root" ]' in backend
+    assert "stale claude-smart backend on port $PORT; restarting" in backend
+    assert "replaced legacy claude-smart backend" in backend
+    assert "foreign or legacy backend on http://localhost:$PORT" in backend
 
 
 def test_installers_start_backend_and_refresh_dashboard_services() -> None:
@@ -1792,9 +1810,9 @@ def test_smart_install_rerun_preserves_existing_host(tmp_path: Path) -> None:
 
     assert second.returncode == 0, second.stderr
     env_lines = runtime_env.read_text().splitlines()
-    assert [
-        line for line in env_lines if line.startswith("CLAUDE_SMART_HOST=")
-    ] == ["CLAUDE_SMART_HOST=opencode"]
+    assert [line for line in env_lines if line.startswith("CLAUDE_SMART_HOST=")] == [
+        "CLAUDE_SMART_HOST=opencode"
+    ]
     assert (tmp_path / "uv.log").read_text().count(
         "sync --locked --python 3.12 --quiet"
     ) == 1
@@ -1853,7 +1871,15 @@ def test_smart_install_redirects_reflexio_stray_copies_to_stable_root(
     ~/.reflexio), so it must hold regardless of the mangled name's prefix/case.
     """
     session_root = tmp_path / ".reflexio" / copy_dirname / "plugin"
-    stable_root = tmp_path / ".claude" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.42"
+    stable_root = (
+        tmp_path
+        / ".claude"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.42"
+    )
     fake_bin = tmp_path / "bin"
     for root in (session_root, stable_root):
         scripts = root / "scripts"
@@ -1910,7 +1936,15 @@ def test_smart_install_redirects_reflexio_stray_copies_to_stable_root(
 
 
 def test_ensure_plugin_root_canonicalizes_symlink_target(tmp_path: Path) -> None:
-    plugin_root = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.43"
+    plugin_root = (
+        tmp_path
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.43"
+    )
     scripts = plugin_root / "scripts"
     scripts.mkdir(parents=True)
     shutil.copy2(
@@ -2039,12 +2073,13 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
     """claude-smart reports degraded vectors; Reflexio owns MiniLM cache repair."""
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
-    assert "embedding_healthy()" in backend
-    assert 'http://127.0.0.1:$EMBEDDING_PORT/health' in backend
-    assert "--connect-timeout 1 --max-time 1" in backend
+    assert "embedding_healthy()" not in backend
+    assert "embedding_matches_current_root()" in backend
+    assert 'health_headers "$EMBEDDING_PORT" "/health"' in backend
+    assert "--connect-timeout 2 --max-time 5" in backend
     assert "wait_for_health()" in backend
-    assert "wait_for_health backend_healthy 10 1" in backend
-    assert "wait_for_health embedding_healthy 5 3" in backend
+    assert "wait_for_health backend_matches_current_root 10 1" in backend
+    assert "wait_for_health embedding_matches_current_root 5 3" in backend
     assert "spawn_backend()" not in backend
     assert "Embedding service did not become healthy" in backend
     assert "semantic retrieval remains unavailable" in backend
@@ -2057,11 +2092,11 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
     start_case = start_match.group("body")
     assert "full_stop" not in start_case
     assert "backend_started" not in start_case
-    assert "if wait_for_health backend_healthy 10 1; then" in start_case
-    assert "if ! wait_for_health embedding_healthy 5 3; then" in start_case
+    assert "if wait_for_health backend_matches_current_root 10 1; then" in start_case
+    assert "if ! wait_for_health embedding_matches_current_root 5 3; then" in start_case
     assert (
         "running on http://localhost:$PORT "
-        "(embedding degraded on http://127.0.0.1:$EMBEDDING_PORT)"
+        "(plugin $PLUGIN_VERSION at $PLUGIN_ROOT_CANONICAL; embedding degraded on http://127.0.0.1:$EMBEDDING_PORT)"
     ) in backend
 
     bin_dir = tmp_path / "bin"
@@ -2071,7 +2106,15 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$HOME/curl.log"\n'
         'case " $* " in\n'
-        '  *" http://127.0.0.1:8071/health "*) exit 0 ;;\n'
+        '  *" http://127.0.0.1:8071/health "*)\n'
+        '    case " $* " in *" -D - "*)\n'
+        '      printf "HTTP/1.1 200 OK\\r\\n"\n'
+        '      printf "x-claude-smart-backend: 1\\r\\n"\n'
+        '      printf "x-claude-smart-plugin-root: %s\\r\\n" "$CLAUDE_SMART_PLUGIN_ROOT"\n'
+        "      ;;\n"
+        "    esac\n"
+        "    exit 0\n"
+        "    ;;\n"
         '  *" http://127.0.0.1:8072/health "*) exit 22 ;;\n'
         "esac\n"
         "exit 22\n",
@@ -2088,7 +2131,11 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
     )
 
     status = subprocess.run(
-        ["bash", str(REPO_ROOT / "plugin" / "scripts" / "backend-service.sh"), "status"],
+        [
+            "bash",
+            str(REPO_ROOT / "plugin" / "scripts" / "backend-service.sh"),
+            "status",
+        ],
         env=env,
         text=True,
         capture_output=True,
@@ -2098,7 +2145,8 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
     assert status.returncode == 0, status.stderr
     assert status.stdout.strip() == (
         "running on http://localhost:8071 "
-        "(embedding degraded on http://127.0.0.1:8072)"
+        f"(plugin {json.loads((REPO_ROOT / 'plugin' / '.codex-plugin' / 'plugin.json').read_text())['version']} at {REPO_ROOT / 'plugin'}; "
+        "embedding degraded on http://127.0.0.1:8072)"
     )
 
     start = subprocess.run(
@@ -2138,9 +2186,7 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
     cold_bin_dir.mkdir()
     _write_executable(
         cold_bin_dir / "uv",
-        "#!/bin/sh\n"
-        'printf "uv %s\\n" "$*" >> "$HOME/uv.log"\n'
-        "exit 0\n",
+        '#!/bin/sh\nprintf "uv %s\\n" "$*" >> "$HOME/uv.log"\nexit 0\n',
     )
     _write_executable(cold_bin_dir / "sleep", "#!/bin/sh\nexit 0\n")
     _write_executable(
@@ -2150,9 +2196,17 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
         'case " $* " in\n'
         '  *" http://127.0.0.1:8071/health "*)\n'
         '    count=$(cat "$HOME/backend-health-count" 2>/dev/null || echo 0)\n'
-        '    count=$((count + 1))\n'
+        "    count=$((count + 1))\n"
         '    printf "%s\\n" "$count" > "$HOME/backend-health-count"\n'
-        '    [ "$count" -ge 3 ] && exit 0\n'
+        '    if [ "$count" -ge 3 ]; then\n'
+        '      case " $* " in *" -D - "*)\n'
+        '        printf "HTTP/1.1 200 OK\\r\\n"\n'
+        '        printf "x-claude-smart-backend: 1\\r\\n"\n'
+        '        printf "x-claude-smart-plugin-root: %s\\r\\n" "$CLAUDE_SMART_PLUGIN_ROOT"\n'
+        "        ;;\n"
+        "      esac\n"
+        "      exit 0\n"
+        "    fi\n"
         "    exit 22\n"
         "    ;;\n"
         '  *" http://127.0.0.1:8072/health "*) exit 22 ;;\n'
@@ -2196,15 +2250,17 @@ def test_backend_service_full_stop_reaps_embedding_port() -> None:
     """
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
-    assert 'reap_port_listeners "$PORT"' in backend
-    assert 'reap_port_listeners "$EMBEDDING_PORT"' in backend
-    assert "'*reflexio.server.llm.embedding_service:app*'" in backend
-    assert "'*reflexio*embedding_service*'" in backend
-    assert "'*embedding_service*'" not in backend
+    assert "stop_marked_backend_listener" in backend
+    assert "stop_legacy_backend_listener_if_owned" in backend
+    assert "stop_stale_embedding_listener_if_owned" in backend
+    assert "x-claude-smart-embedding" in backend
+    assert "looks_like_claude_smart_backend_pid" in backend
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in backend
     assert (
         "reap_port_listeners \"$EMBEDDING_PORT\" '*reflexio*' '*uvicorn*'"
         not in backend
     )
+    assert "reap_port_listeners()" not in backend
 
 
 def test_backend_service_surfaces_port_holder_on_skip() -> None:
@@ -2225,9 +2281,11 @@ def test_codex_hook_recovers_missing_dependencies_without_cli_command() -> None:
     script = CODEX_HOOK.read_text()
 
     assert "function startInstallerDetached(root, reason)" in script
-    assert 'startInstallerDetached(root, "backend: uv not on PATH")' in script
     assert 'startInstallerDetached(root, "dashboard: npm not on PATH")' in script
     assert 'startInstallerDetached(root, "hook: uv not on PATH")' in script
+    assert 'path.join(root, "scripts", "backend-service.sh")' in script
+    assert '[script, "start"]' in script
+    assert "port 8071 occupied; trying 8072" not in script
 
 
 def test_smart_install_waits_on_existing_lock() -> None:
@@ -2878,7 +2936,9 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _npm_install_global_tarball(tarball: Path, *, prefix: Path, env: dict[str, str]) -> None:
+def _npm_install_global_tarball(
+    tarball: Path, *, prefix: Path, env: dict[str, str]
+) -> None:
     npm = shutil.which("npm")
     if not npm:
         pytest.skip("npm is required for package install smoke tests")
@@ -2931,7 +2991,9 @@ def _install_opencode_tarball_fixture(
     _write_bootstrap_uv(uv_bin / "uv", mode="fresh")
 
     env = os.environ.copy()
-    test_path = f"{prefix / 'bin'}{os.pathsep}{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    test_path = (
+        f"{prefix / 'bin'}{os.pathsep}{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    )
     env.update(
         {
             "HOME": str(home),
@@ -3001,9 +3063,7 @@ def _assert_installed_host_learning_e2e(
             "HOME": str(home),
             "PYTHONPATH": os.pathsep.join(pythonpath_entries),
             "CLAUDE_SMART_STATE_DIR": str(home / ".claude-smart" / f"{host}-sessions"),
-            "CLAUDE_SMART_HOOK_LOG": str(
-                home / ".claude-smart" / f"{host}-hook.log"
-            ),
+            "CLAUDE_SMART_HOOK_LOG": str(home / ".claude-smart" / f"{host}-hook.log"),
             "CLAUDE_SMART_ENABLE_OPTIMIZER": "0",
             "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
             "CLAUDE_SMART_DASHBOARD_AUTOSTART": "0",
@@ -3051,7 +3111,9 @@ def test_claude_code_fresh_tarball_install_prepares_matching_cache(
     _write_bootstrap_uv(uv_bin / "uv", mode="fresh")
 
     env = os.environ.copy()
-    test_path = f"{prefix / 'bin'}{os.pathsep}{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    test_path = (
+        f"{prefix / 'bin'}{os.pathsep}{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    )
     env.update(
         {
             "HOME": str(home),
@@ -3081,7 +3143,9 @@ def test_claude_code_fresh_tarball_install_prepares_matching_cache(
     installed_package = prefix / "lib" / "node_modules" / "claude-smart"
     version = next(
         line.split("=", 1)[1].strip().strip('"')
-        for line in (installed_package / "plugin" / "pyproject.toml").read_text().splitlines()
+        for line in (installed_package / "plugin" / "pyproject.toml")
+        .read_text()
+        .splitlines()
         if line.strip().startswith("version =")
     )
     cache_plugin = (
@@ -3130,7 +3194,9 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
     _write_bootstrap_uv(uv_bin / "uv", mode="fresh")
 
     env = os.environ.copy()
-    test_path = f"{prefix / 'bin'}{os.pathsep}{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    test_path = (
+        f"{prefix / 'bin'}{os.pathsep}{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    )
     env.update(
         {
             "HOME": str(home),
@@ -3166,13 +3232,7 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
         home / ".claude" / "plugins" / "marketplaces" / "reflexioai" / "plugin"
     )
     cache_plugin = (
-        home
-        / ".codex"
-        / "plugins"
-        / "cache"
-        / "reflexioai"
-        / "claude-smart"
-        / version
+        home / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / version
     )
     for root in [marketplace_plugin, cache_plugin]:
         assert (root / "pyproject.toml").exists()
@@ -3258,8 +3318,8 @@ def test_opencode_fresh_tarball_install_uses_local_file_plugin(
 def test_opencode_fresh_tarball_uninstall_removes_plugin_and_keeps_data(
     tmp_path: Path,
 ) -> None:
-    home, prefix, project, xdg, env, install_result = (
-        _install_opencode_tarball_fixture(tmp_path)
+    home, prefix, project, xdg, env, install_result = _install_opencode_tarball_fixture(
+        tmp_path
     )
     assert install_result.returncode == 0, install_result.stderr
 
@@ -3502,7 +3562,9 @@ def test_node_installer_preserves_occupied_plugin_root(tmp_path: Path) -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for installer wrapper tests")
-    home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(tmp_path, mode="fresh")
+    home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(
+        tmp_path, mode="fresh"
+    )
     occupied = home / ".reflexio" / "plugin-root"
     occupied.mkdir(parents=True)
     sentinel = occupied / "keep.txt"
@@ -3537,7 +3599,9 @@ def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for installer wrapper tests")
-    home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(tmp_path, mode="fresh")
+    home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(
+        tmp_path, mode="fresh"
+    )
     scripts = plugin_root / "scripts"
     scripts.mkdir()
     shutil.copy2(LIB, scripts / "_lib.sh")
@@ -3602,9 +3666,7 @@ def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
 
 
 def test_node_installer_non_lock_sync_failure_stays_strict(tmp_path: Path) -> None:
-    result, home, plugin_root = _run_node_bootstrap(
-        tmp_path, mode="non_lock_failure"
-    )
+    result, home, plugin_root = _run_node_bootstrap(tmp_path, mode="non_lock_failure")
 
     assert result.returncode == 1
     assert "uv sync failed" in result.stderr
@@ -3819,7 +3881,9 @@ def test_windows_private_node_path_skips_posix_bin_probe(tmp_path: Path) -> None
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split(":", 1)[0] == str(tmp_path / ".claude-smart" / "node" / "current")
+    assert result.stdout.split(":", 1)[0] == str(
+        tmp_path / ".claude-smart" / "node" / "current"
+    )
 
 
 def test_windows_path_conversion_falls_back_without_cygpath(tmp_path: Path) -> None:
@@ -3887,21 +3951,21 @@ def test_windows_plugin_root_tracks_cache_junction_metadata(tmp_path: Path) -> N
     _write_executable(
         fake_bin / "cmd.exe",
         "#!/bin/sh\n"
-        "[ \"$1\" = \"//C\" ] || exit 2\n"
+        '[ "$1" = "//C" ] || exit 2\n'
         "shift\n"
-        "case \"$1\" in\n"
+        'case "$1" in\n'
         "  rmdir)\n"
-        "    rm -rf \"$2\"\n"
+        '    rm -rf "$2"\n'
         "    exit 0\n"
         "    ;;\n"
         "  mklink)\n"
-        "    [ \"$2\" = \"//J\" ] || exit 3\n"
-        "    link=\"$3\"\n"
-        "    target=\"$4\"\n"
-        "    rm -rf \"$link\"\n"
-        "    mkdir -p \"$link\"\n"
-        "    cp \"$target/pyproject.toml\" \"$link/pyproject.toml\"\n"
-        "    printf '%s\\n' \"$target\" > \"$link/target.txt\"\n"
+        '    [ "$2" = "//J" ] || exit 3\n'
+        '    link="$3"\n'
+        '    target="$4"\n'
+        '    rm -rf "$link"\n'
+        '    mkdir -p "$link"\n'
+        '    cp "$target/pyproject.toml" "$link/pyproject.toml"\n'
+        '    printf \'%s\\n\' "$target" > "$link/target.txt"\n'
         "    exit 0\n"
         "    ;;\n"
         "esac\n"
@@ -3911,7 +3975,12 @@ def test_windows_plugin_root_tracks_cache_junction_metadata(tmp_path: Path) -> N
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
 
     first = subprocess.run(
-        ["/bin/bash", str(scripts / "ensure-plugin-root.sh"), str(old_cache), "--force"],
+        [
+            "/bin/bash",
+            str(scripts / "ensure-plugin-root.sh"),
+            str(old_cache),
+            "--force",
+        ],
         env=env,
         text=True,
         capture_output=True,
@@ -3928,12 +3997,16 @@ def test_windows_plugin_root_tracks_cache_junction_metadata(tmp_path: Path) -> N
     link = tmp_path / ".reflexio" / "plugin-root"
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
-    assert (tmp_path / ".reflexio" / "plugin-root.txt").read_text().strip() == str(new_cache)
+    assert (tmp_path / ".reflexio" / "plugin-root.txt").read_text().strip() == str(
+        new_cache
+    )
     assert (link / "target.txt").read_text().strip() == str(new_cache)
     assert "cache-tracking, was" in second.stderr
 
 
-def test_windows_plugin_root_warns_when_junction_metadata_missing(tmp_path: Path) -> None:
+def test_windows_plugin_root_warns_when_junction_metadata_missing(
+    tmp_path: Path,
+) -> None:
     scripts = tmp_path / "plugin" / "scripts"
     scripts.mkdir(parents=True)
     shutil.copy2(
@@ -3941,7 +4014,15 @@ def test_windows_plugin_root_warns_when_junction_metadata_missing(tmp_path: Path
         scripts / "ensure-plugin-root.sh",
     )
     shutil.copy2(REPO_ROOT / "plugin" / "scripts" / "_lib.sh", scripts / "_lib.sh")
-    new_root = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.48"
+    new_root = (
+        tmp_path
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.48"
+    )
     new_root.mkdir(parents=True)
     (new_root / "pyproject.toml").write_text("[project]\nname='new'\n")
     link = tmp_path / ".reflexio" / "plugin-root"
@@ -3977,7 +4058,9 @@ def test_windows_private_node_current_uses_backup_restore() -> None:
     assert 'mv "$install_dir" "$node_root/current"' in smart_install
     assert 'if ! mv "$old_current" "$node_root/current"; then' in smart_install
     assert "could not restore previous private Node.js install" in smart_install
-    assert "previous install remains at $old_current for manual recovery" in smart_install
+    assert (
+        "previous install remains at $old_current for manual recovery" in smart_install
+    )
     assert 'rm -rf "$node_root/current" 2>/dev/null || true' not in smart_install
 
 
@@ -4171,9 +4254,10 @@ def test_codex_hook_redirects_reflexio_stray_copy_to_stable_root(
     assert (reflexio / "plugin-root").resolve() == stable_root
     assert json.loads(result.stdout) == {"continue": True}
     assert not (reflexio / "plugin-root").resolve() == stray_root
-    assert "redirecting stray plugin copy" in (
-        tmp_path / ".claude-smart" / "backend.log"
-    ).read_text()
+    assert (
+        "redirecting stray plugin copy"
+        in (tmp_path / ".claude-smart" / "backend.log").read_text()
+    )
 
 
 def test_codex_hook_preserves_occupied_plugin_root(tmp_path: Path) -> None:
@@ -4181,7 +4265,15 @@ def test_codex_hook_preserves_occupied_plugin_root(tmp_path: Path) -> None:
     if not node:
         pytest.skip("node is required for codex hook wrapper tests")
 
-    plugin_root = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.47"
+    plugin_root = (
+        tmp_path
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.47"
+    )
     plugin_root.mkdir(parents=True)
     (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
     occupied = tmp_path / ".reflexio" / "plugin-root"

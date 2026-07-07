@@ -55,9 +55,14 @@ def test_codex_hook_loads_managed_reflexio_env_and_skips_backend_start() -> None
     assert "function loadReflexioEnv()" in script
     assert '"REFLEXIO_API_KEY"' in script
     assert '"CLAUDE_SMART_READ_ONLY"' in script
-    assert "function reflexioUrlIsRemote()" in script
-    assert "remote REFLEXIO_URL configured; skipping local backend start" in script
     assert "loadReflexioEnv();" in script
+    # Backend start (including the remote-REFLEXIO_URL skip) is delegated to
+    # backend-service.sh; codex-hook.js no longer decides locally.
+    assert "function reflexioUrlIsRemote()" not in script
+    assert '[script, "start"]' in script
+    assert "backend-service.sh" in script
+    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+    assert "remote REFLEXIO_URL configured; skipping local backend start" in backend
 
 
 def test_codex_marketplace_points_at_plugin_root() -> None:
