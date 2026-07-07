@@ -107,6 +107,49 @@ poll_header() {
   return 1
 }
 
+read_reflexio_lock_field() {
+  local field="$1"
+  python3 - "$REPO_ROOT/reflexio.lock.json" "$field" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text())
+value = payload.get(sys.argv[2])
+if not isinstance(value, str) or not value:
+    raise SystemExit(f"missing field: {sys.argv[2]}")
+print(value)
+PY
+}
+
+prepare_vendored_reflexio() {
+  local vendor_dir="$PLUGIN_ROOT/vendor/reflexio"
+  if [ -f "$vendor_dir/pyproject.toml" ] && [ -d "$vendor_dir/reflexio" ]; then
+    log "setup: vendored Reflexio already present"
+    return 0
+  fi
+
+  local reflexio_path="${REFLEXIO_PATH:-$REPO_ROOT/../reflexio}"
+  if [ ! -f "$reflexio_path/pyproject.toml" ]; then
+    local repo commit clone_dir
+    repo="$(read_reflexio_lock_field repo)"
+    commit="$(read_reflexio_lock_field commit)"
+    clone_dir="$HOME/reflexio-vendor-source"
+    log "setup: cloning locked Reflexio source $commit"
+    rm -rf "$clone_dir"
+    git clone --quiet "$repo" "$clone_dir"
+    git -C "$clone_dir" checkout --quiet "$commit"
+    reflexio_path="$clone_dir"
+  else
+    log "setup: using Reflexio source at $reflexio_path"
+  fi
+
+  python3 "$REPO_ROOT/scripts/vendor-reflexio.py" \
+    --reflexio-path "$reflexio_path" \
+    --bundle-only \
+    --write
+}
+
 stage_setup() {
   log "setup: sandbox HOME=$HOME"
   if ! command -v claude >/dev/null 2>&1; then
@@ -115,6 +158,8 @@ stage_setup() {
   # Plugin subcommands are local-config only, but the CLI may probe for
   # auth on first launch; a dummy key prevents a hang at a login prompt.
   export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-dummy-for-plugin-install}"
+
+  prepare_vendored_reflexio
 
   log "setup: claude plugin marketplace add $REPO_ROOT"
   if ! claude plugin marketplace add "$REPO_ROOT" >"$HOME/marketplace-add.log" 2>&1; then

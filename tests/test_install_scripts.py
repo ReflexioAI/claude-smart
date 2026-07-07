@@ -1285,12 +1285,25 @@ def test_backend_service_verifies_bundled_reflexio_runtime_identity() -> None:
     assert "backend_matches_current_root()" not in backend
     assert "CLAUDE_SMART_REFLEXIO_VENDOR_ROOT" in backend
     assert 'VENDORED_REFLEXIO="$PLUGIN_ROOT_CANONICAL/vendor/reflexio"' in backend
+    assert (
+        'VENDORED_REFLEXIO_FOR_PYTHON="$(claude_smart_to_windows_path "$VENDORED_REFLEXIO")"'
+        in backend
+    )
+    assert (
+        'export CLAUDE_SMART_REFLEXIO_VENDOR_ROOT="$VENDORED_REFLEXIO_FOR_PYTHON"'
+        in backend
+    )
     assert "verify_bundled_reflexio_import()" in backend
     assert "reflexio.__file__" in backend
     assert "module.relative_to(vendor)" in backend
     assert "reflexio import resolved outside bundled vendor" in backend
     assert "bundled Reflexio import preflight failed" in backend
     assert 'vendor_pythonpath="$VENDORED_REFLEXIO"' in backend
+    assert 'vendor_pythonpath="$VENDORED_REFLEXIO_FOR_PYTHON"' in backend
+    assert (
+        'verify_bundled_reflexio_import "$backend_python" "$backend_pythonpath" "$VENDORED_REFLEXIO_FOR_PYTHON"'
+        in backend
+    )
     assert 'PYTHONPATH="$backend_pythonpath"' in backend
     assert "pid_uses_current_vendor_root()" in backend
     assert "backend_owned_by_current_vendor()" in backend
@@ -1563,6 +1576,20 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     assert "install_vendored_reflexio" in smart_install
     assert "vendor_reflexio_pyproject" in lib
     assert "/plugin/vendor/" in gitignore
+
+
+def test_integration_harness_prepares_vendored_reflexio() -> None:
+    integration = (REPO_ROOT / "tests" / "integration" / "integration.sh").read_text()
+
+    assert "prepare_vendored_reflexio()" in integration
+    assert "read_reflexio_lock_field repo" in integration
+    assert "read_reflexio_lock_field commit" in integration
+    assert 'rm -rf "$clone_dir"' in integration
+    assert 'git clone --quiet "$repo" "$clone_dir"' in integration
+    assert 'git -C "$clone_dir" checkout --quiet "$commit"' in integration
+    assert "--bundle-only" in integration
+    assert "--write" in integration
+    assert "prepare_vendored_reflexio" in integration.split("stage_setup()", 1)[1]
 
 
 def test_check_reflexio_lock_reports_invalid_json(tmp_path: Path) -> None:
