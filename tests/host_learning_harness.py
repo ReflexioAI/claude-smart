@@ -261,7 +261,7 @@ def run_host_learning_happy_path(
         ]
         assert interactions[1]["citations"] == [
             {
-                "kind": "playbook",
+                "kind": "user_playbook",
                 "real_id": f"user-{host}",
                 "tag": "s2-user",
                 "title": f"{host} project skill",
