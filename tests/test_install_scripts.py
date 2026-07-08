@@ -2647,6 +2647,71 @@ def test_backend_stop_does_not_kill_newer_peer_from_shared_pid(
             peer_runner.wait(timeout=5)
 
 
+def test_backend_stop_reaps_legacy_same_root_shared_pid(
+    tmp_path: Path,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("process termination fixture is POSIX-only")
+    port = 23500 + (abs(hash(tmp_path.name)) % 1000)
+    plugin_root = _seed_backend_service_test_plugin(tmp_path, port=port)
+    legacy = subprocess.Popen(["/bin/sleep", "60"])
+    try:
+        state_dir = tmp_path / ".claude-smart"
+        state_dir.mkdir()
+        (state_dir / "backend.pid").write_text(f"{legacy.pid}\n")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _write_executable(
+            bin_dir / "lsof",
+            "#!/bin/sh\n"
+            'case " $* " in\n'
+            '  *" -a -p $LEGACY_PID -d cwd -Fn "*) printf "n%s\\n" "$PWD"; exit 0 ;;\n'
+            "esac\n"
+            "exit 0\n",
+        )
+        _write_executable(
+            bin_dir / "ps",
+            "#!/bin/sh\n"
+            'case " $* " in\n'
+            '  *" -o ppid= "*) printf "0\\n"; exit 0 ;;\n'
+            "esac\n"
+            'if [ "${3:-}" = "$LEGACY_PID" ]; then\n'
+            '  printf "python -m reflexio.cli services start --only backend --no-reload --workers 1\\n"\n'
+            "fi\n",
+        )
+        _write_executable(bin_dir / "sleep", "#!/bin/sh\nexit 0\n")
+        env = _isolated_env(tmp_path)
+        env.update(
+            {
+                "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                "BACKEND_TEST_PORT": str(port),
+                "CLAUDE_SMART_HOST": "codex",
+                "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
+                "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "0",
+                "LEGACY_PID": str(legacy.pid),
+                "REFLEXIO_URL": "",
+            }
+        )
+
+        result = subprocess.run(
+            ["bash", str(plugin_root / "scripts" / "backend-service.sh"), "stop"],
+            cwd=plugin_root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == '{"continue":true}'
+        legacy.wait(timeout=5)
+    finally:
+        if legacy.poll() is None:
+            legacy.terminate()
+            legacy.wait(timeout=5)
+
+
 def test_backend_start_waits_for_existing_service_lock_without_spawn(
     tmp_path: Path,
 ) -> None:
@@ -2854,7 +2919,9 @@ def test_backend_service_full_stop_reaps_embedding_port() -> None:
     assert "x-claude-smart-embedding" not in backend
     assert "looks_like_claude_smart_backend_pid" in backend
     assert "pid_uses_current_vendor_root" in backend
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in backend
+    assert "*CLAUDE_SMART_USE_LOCAL_EMBEDDING=1*" not in backend
+    assert '".claude-smart/.env"' not in backend
+    assert '"local-agent-mode-sessions"' not in backend
     assert (
         "reap_port_listeners \"$EMBEDDING_PORT\" '*reflexio*' '*uvicorn*'"
         not in backend

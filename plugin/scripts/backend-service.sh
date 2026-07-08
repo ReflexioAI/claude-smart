@@ -267,7 +267,7 @@ looks_like_claude_smart_backend_pid() {
   text="$(pid_details "$pid")"
   [ -n "$text" ] || return 1
   case "$text" in
-    *--claude-smart-backend=1*|*--claude-smart-reflexio-vendor-root=*|*--claude-smart-plugin-root=*|*CLAUDE_SMART_REFLEXIO_VENDOR_ROOT=*|*CLAUDE_SMART_USE_LOCAL_CLI=1*|*CLAUDE_SMART_USE_LOCAL_EMBEDDING=1*|*".claude-smart/.env"*|*"reflexioai/claude-smart"*|*"reflexioai\\claude-smart"*|*"local-agent-mode-sessions"*|*"$PLUGIN_ROOT_CANONICAL"*|*"$HOME/.reflexio/plugin-root"*)
+    *--claude-smart-backend=1*|*--claude-smart-reflexio-vendor-root=*|*--claude-smart-plugin-root=*|*"reflexioai/claude-smart"*|*"reflexioai\\claude-smart"*|*"$PLUGIN_ROOT_CANONICAL"*)
       return 0
       ;;
   esac
@@ -291,23 +291,6 @@ pid_vendor_root() {
         ;;
       --claude-smart-plugin-root=*)
         printf '%s/vendor/reflexio\n' "${token#--claude-smart-plugin-root=}"
-        return 0
-        ;;
-      CLAUDE_SMART_REFLEXIO_VENDOR_ROOT=*)
-        printf '%s\n' "${token#CLAUDE_SMART_REFLEXIO_VENDOR_ROOT=}"
-        return 0
-        ;;
-      PYTHONPATH=*)
-        pythonpath_value="${token#PYTHONPATH=}"
-        if claude_smart_is_windows; then
-          printf '%s\n' "$pythonpath_value" \
-            | tr ';' '\n' \
-            | awk '/\/vendor\/reflexio$|\\vendor\\reflexio$/ {print; exit}'
-        else
-          printf '%s\n' "$pythonpath_value" \
-            | tr ':' '\n' \
-            | awk '/\/vendor\/reflexio$|\\vendor\\reflexio$/ {print; exit}'
-        fi
         return 0
         ;;
       */vendor/reflexio|*\\vendor\\reflexio)
@@ -363,7 +346,7 @@ pid_uses_current_vendor_root() {
   text="$(pid_details "$pid")"
   [ -n "$text" ] || return 1
   case "$text" in
-    *"--claude-smart-plugin-root=$PLUGIN_ROOT_CANONICAL"*|*"--claude-smart-reflexio-vendor-root=$VENDORED_REFLEXIO"*|*"--claude-smart-reflexio-vendor-root=$VENDORED_REFLEXIO_FOR_PYTHON"*|*"CLAUDE_SMART_REFLEXIO_VENDOR_ROOT=$VENDORED_REFLEXIO"*|*"CLAUDE_SMART_REFLEXIO_VENDOR_ROOT=$VENDORED_REFLEXIO_FOR_PYTHON"*|*"PYTHONPATH=$VENDORED_REFLEXIO"*|*"PYTHONPATH=$VENDORED_REFLEXIO_FOR_PYTHON"*|*"$VENDORED_REFLEXIO"*|*"$VENDORED_REFLEXIO_FOR_PYTHON"*)
+    *"--claude-smart-plugin-root=$PLUGIN_ROOT_CANONICAL"*|*"--claude-smart-reflexio-vendor-root=$VENDORED_REFLEXIO"*|*"--claude-smart-reflexio-vendor-root=$VENDORED_REFLEXIO_FOR_PYTHON"*|*"$VENDORED_REFLEXIO"*|*"$VENDORED_REFLEXIO_FOR_PYTHON"*)
       return 0
       ;;
   esac
@@ -625,6 +608,26 @@ backend_pid_is_own_recorded() {
   [ -n "$recorded" ] && [ "$pid" = "$recorded" ]
 }
 
+pid_cwd_matches_current_plugin_root() {
+  pid="$1"
+  command -v lsof >/dev/null 2>&1 || return 1
+  cwd="$(
+    lsof -a -p "$pid" -d cwd -Fn 2>/dev/null \
+      | sed -n 's/^n//p' \
+      | head -n 1
+  )"
+  [ -n "$cwd" ] || return 1
+  cwd_canonical="$(cd "$cwd" 2>/dev/null && pwd -P || printf '%s\n' "$cwd")"
+  [ "$cwd_canonical" = "$PLUGIN_ROOT_CANONICAL" ]
+}
+
+backend_pid_is_legacy_same_root_shared() {
+  pid="$1"
+  shared="$(shared_backend_pid 2>/dev/null || true)"
+  [ -n "$shared" ] && [ "$pid" = "$shared" ] || return 1
+  pid_cwd_matches_current_plugin_root "$pid"
+}
+
 backend_start_grace_seconds() {
   value="${CLAUDE_SMART_BACKEND_START_GRACE_SECONDS:-60}"
   case "$value" in
@@ -646,7 +649,10 @@ kill_pid_if_directionally_owned() {
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   is_claude_smart_backend_pid "$pid" || return 1
-  if pid_uses_current_vendor_root "$pid" || backend_pid_strictly_older_than_plugin "$pid" || backend_pid_is_own_recorded "$pid"; then
+  if pid_uses_current_vendor_root "$pid" \
+    || backend_pid_strictly_older_than_plugin "$pid" \
+    || backend_pid_is_own_recorded "$pid" \
+    || backend_pid_is_legacy_same_root_shared "$pid"; then
     kill_group "$pid"
     return 0
   fi
