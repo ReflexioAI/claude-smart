@@ -1007,6 +1007,8 @@ def test_user_prompt_injects_context_when_hits_present(
     # Prompt text is passed verbatim as the search query.
     assert calls[0]["project_id"] == "demo"
     assert calls[0]["query"] == "edit pyproject.toml"
+    # Session id scopes server-side injection dedup.
+    assert calls[0]["session_id"] == "s1"
     # The prompt is still buffered for downstream extraction.
     records = state.read_all("s1")
     assert records[-1]["role"] == "User"
@@ -1820,6 +1822,8 @@ def test_pre_tool_injects_context_when_hits_present(session_dir, monkeypatch) ->
     # Composed query must reach the adapter scoped to the project.
     assert calls[0]["project_id"] == "demo"
     assert "pyproject.toml" in calls[0]["query"]
+    # Session id scopes server-side injection dedup.
+    assert calls[0]["session_id"] == "s1"
 
 
 def test_pre_tool_emits_continue_when_search_empty(session_dir, monkeypatch) -> None:

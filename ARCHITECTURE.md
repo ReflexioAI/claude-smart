@@ -41,7 +41,7 @@ Next user prompt / tool call → query-aware search for project-specific skills,
 | --- | --- |
 | `user_id` | `project_id` (git-toplevel basename) — scopes preferences to the current project |
 | `agent_version` | `claude-code` for shared skills; project-specific skills also carry project provenance |
-| `session_id` | Claude Code `session_id` — for reflexio's deferred success evaluation |
+| `session_id` | Claude Code `session_id` — for reflexio's deferred success evaluation, and sent on every hook search so the server dedups injections per session |
 
 `plugin/src/claude_smart/reflexio_adapter.py` keeps user-facing behavior scoped clearly:
 
@@ -50,6 +50,18 @@ Next user prompt / tool call → query-aware search for project-specific skills,
 - **Shared skills** are retrieved across projects and filtered to auto-generated or persisted statuses; rejected shared skills are not injected.
 
 The adapter method names still mirror Reflexio's wire fields (`user_profiles`, `user_playbooks`, `agent_playbooks`) because those are backend API names, not user-facing terminology.
+
+### Per-session injection dedup
+
+Hook searches (UserPromptSubmit and PreToolUse) fire many times per session, so
+`search_all` passes the Claude Code `session_id` to reflexio's `/api/search`.
+The server remembers which rules it already returned to that session and skips
+them on later searches, backfilling next-best matches instead — a turn with ten
+tool calls injects each rule once, not ten times. The seen-state lives
+in-memory on the backend (lost on restart, which only means an occasional
+re-injection). Known limitation: after Claude Code compacts a conversation, the
+`session_id` stays the same, so rules that fell out of the model's context are
+not re-injected for the remainder of that session.
 
 ## Extraction signals
 

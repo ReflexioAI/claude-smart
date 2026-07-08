@@ -422,6 +422,25 @@ def test_search_all_makes_one_client_call() -> None:
     assert client.search_call_count == 1
 
 
+def test_search_all_passes_session_id_for_server_side_dedup() -> None:
+    """session_id scopes the server's per-session result dedup."""
+    client = _RecordingClient(
+        unified_resp=SimpleNamespace(user_playbooks=[], agent_playbooks=[], profiles=[])
+    )
+    a = _adapter_with(client)
+    a.search_all(project_id="p", query="q", session_id="sess-1")
+    assert client.search_kwargs["session_id"] == "sess-1"
+
+
+def test_search_all_session_id_defaults_to_none() -> None:
+    client = _RecordingClient(
+        unified_resp=SimpleNamespace(user_playbooks=[], agent_playbooks=[], profiles=[])
+    )
+    a = _adapter_with(client)
+    a.search_all(project_id="p", query="q")
+    assert client.search_kwargs["session_id"] is None
+
+
 def test_search_all_returns_three_empty_lists_on_error() -> None:
     class BrokenSearch:
         def search(self, **_kw):

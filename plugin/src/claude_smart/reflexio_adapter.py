@@ -340,7 +340,12 @@ class Adapter:
     # -----------------------------------------------------------------
 
     def search_all(
-        self, *, project_id: str, query: str, top_k: int = 5
+        self,
+        *,
+        project_id: str,
+        query: str,
+        top_k: int = 5,
+        session_id: str | None = None,
     ) -> tuple[list[Any], list[Any], list[Any]]:
         """Unified hybrid search → ``(user_playbooks, agent_playbooks, preferences)``.
 
@@ -354,6 +359,10 @@ class Adapter:
             project_id (str): reflexio ``user_id`` for this repo.
             query (str): Free-text query routed through BM25 + vector RRF.
             top_k (int): Cap on results per entity type.
+            session_id (str | None): Claude Code session id. When set, the
+                server skips results it already returned to this session
+                and backfills next-best matches, so repeated hook searches
+                within one session stop re-injecting the same rules.
 
         Returns:
             tuple[list[Any], list[Any], list[Any]]: ``(user_playbooks,
@@ -374,6 +383,7 @@ class Adapter:
                 enable_agent_answer=False,
                 top_k=top_k,
                 search_mode=_SEARCH_MODE_HYBRID,
+                session_id=session_id,
             )
         except Exception as exc:  # noqa: BLE001
             self._record_read_error("unified search", exc)

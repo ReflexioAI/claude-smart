@@ -59,6 +59,9 @@ def emit_context(
         project_id=project_id,
         query=query,
         top_k=top_k,
+        # Scopes server-side dedup: rules already injected into this session
+        # are not returned again; next-best matches backfill instead.
+        session_id=session_id or None,
     )
     renderer = (
         context_format.render_inline_compact_with_registry
