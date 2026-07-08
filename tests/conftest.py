@@ -30,6 +30,11 @@ def clear_reflexio_connection_env(monkeypatch, tmp_path):
     monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
     monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_READ_ONLY", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_MANAGED_SETUP", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_OPENCODE_PATH", raising=False)
 
 
 @pytest.fixture(autouse=True)

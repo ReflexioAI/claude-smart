@@ -27,6 +27,10 @@ const BOOL_KEYS = new Set([
   "CLAUDE_SMART_READ_ONLY",
 ]);
 
+function defaultReflexioUrl(): string {
+  return `http://localhost:${process.env.BACKEND_PORT || "8071"}/`;
+}
+
 function envPath(): string {
   return path.join(os.homedir(), ".reflexio", ".env");
 }
@@ -49,7 +53,7 @@ function parseLine(line: string): { key: string; value: string } | null {
 
 export async function readConfig(): Promise<ClaudeSmartConfig> {
   const defaults: ClaudeSmartConfig = {
-    REFLEXIO_URL: "http://localhost:8071/",
+    REFLEXIO_URL: defaultReflexioUrl(),
     REFLEXIO_API_KEY: "",
     CLAUDE_SMART_USE_LOCAL_CLI: false,
     CLAUDE_SMART_USE_LOCAL_EMBEDDING: false,

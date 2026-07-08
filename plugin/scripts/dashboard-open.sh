@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start backend + dashboard (idempotent), wait briefly for dashboard to come
-# up, print statuses, then open http://localhost:3001 in the default browser.
+# up, print statuses, then open the dashboard in the default browser.
 #
 # Exists so the /claude-smart:dashboard slash command can invoke a single
 # plain `bash <script>` with no inline $(...) or ${...:-...} expansion in
@@ -18,6 +18,8 @@ STATE_DIR="$HOME/.claude-smart"
 BACKEND_LOG="$STATE_DIR/backend.log"
 DASHBOARD_LOG="$STATE_DIR/dashboard.log"
 DASHBOARD_UNAVAILABLE="$(claude_smart_dashboard_unavailable_marker)"
+BACKEND_PORT="${BACKEND_PORT:-8071}"
+DASHBOARD_PORT="${DASHBOARD_PORT:-${PORT:-3001}}"
 
 # Capture start-command output so we can surface fatal errors (e.g. uv/npm
 # missing, port collisions, .next not built) rather than silently swallow
@@ -64,7 +66,7 @@ failed=0
 if [ "$backend_status" = "not running" ]; then
     failed=1
     echo ""
-    echo "ERROR: backend failed to start on http://localhost:8071"
+    echo "ERROR: backend failed to start on http://localhost:$BACKEND_PORT"
     [ -n "$backend_start_out" ] && echo "$backend_start_out"
     show_log_tail "backend" "$BACKEND_LOG"
 fi
@@ -75,7 +77,7 @@ if [ "$dashboard_status" = "not running" ]; then
     if claude_smart_pid_alive_file "$BUILD_PID_FILE"; then
         echo "dashboard: still building (first-run cost, ~1-2 min). Re-run /claude-smart:dashboard in a minute."
     else
-        echo "ERROR: dashboard failed to start on http://localhost:3001"
+        echo "ERROR: dashboard failed to start on http://localhost:$DASHBOARD_PORT"
         [ -n "$dashboard_start_out" ] && echo "$dashboard_start_out"
         if [ -f "$DASHBOARD_UNAVAILABLE" ]; then
             echo ""
@@ -92,7 +94,7 @@ if [ "$failed" = "1" ]; then
     exit 1
 fi
 
-URL="http://localhost:3001"
+URL="http://localhost:$DASHBOARD_PORT"
 PY_BIN=$(claude_smart_resolve_python || true)
 if [ -n "$PY_BIN" ] && "$PY_BIN" -m webbrowser "$URL"; then
     echo "Opened $URL"

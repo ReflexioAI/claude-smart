@@ -31,6 +31,7 @@ CLI_SH = REPO_ROOT / "plugin" / "scripts" / "cli.sh"
 CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
 CODEX_HOOK = REPO_ROOT / "plugin" / "scripts" / "codex-hook.js"
 BACKEND_LOG_RUNNER = REPO_ROOT / "plugin" / "scripts" / "backend-log-runner.sh"
+BACKEND_PYTHON_RUNNER = REPO_ROOT / "plugin" / "scripts" / "backend-python-runner.py"
 NODE_INSTALLER = REPO_ROOT / "bin" / "claude-smart.js"
 HEALTH_ROUTE = (
     REPO_ROOT / "plugin" / "dashboard" / "app" / "api" / "health" / "route.ts"
@@ -183,9 +184,13 @@ def _seed_backend_service_test_plugin(tmp_path: Path, *, port: int) -> Path:
     vendor_package.mkdir(parents=True, exist_ok=True)
     (vendor_package / "__init__.py").write_text('__version__ = "0.0.0-test"\n')
     backend_service = plugin_root / "scripts" / "backend-service.sh"
-    backend_service.write_text(
-        backend_service.read_text().replace("\nPORT=8071\n", f"\nPORT={port}\n")
+    backend_text = backend_service.read_text()
+    backend_text = backend_text.replace("\nPORT=8071\n", f"\nPORT={port}\n")
+    backend_text = backend_text.replace(
+        '\nPORT="${BACKEND_PORT:-8071}"\n',
+        f'\nPORT="${{BACKEND_PORT:-{port}}}"\n',
     )
+    backend_service.write_text(backend_text)
     return plugin_root
 
 
@@ -414,7 +419,8 @@ def test_backend_service_uses_prepared_venv_reflexio_cli() -> None:
     service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
     assert 'backend_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"' in service
-    assert '"$backend_python" -m reflexio.cli services start' in service
+    assert '"$backend_python" "$HERE/backend-python-runner.py"' in service
+    assert "-- services start" in service
     assert 'uv run --project "$PLUGIN_ROOT" --no-sync --quiet' not in service
     assert "ensure_vendored_reflexio_active" in service
     assert 'plugin_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"' in service
@@ -491,7 +497,8 @@ def test_detached_spawns_with_log_redirection_preserve_output_on_windows() -> No
     ) in dashboard
     assert (
         "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached "
-        '"$NPM_BIN" run start >>"$LOG_FILE" 2>&1' in dashboard
+        '"$NEXT_BIN" start -p "$PORT" -H 127.0.0.1 >>"$LOG_FILE" 2>&1'
+        in dashboard
     )
 
 
@@ -1260,21 +1267,18 @@ def test_dashboard_health_exposes_plugin_identity_for_stale_process_detection() 
     assert "x-claude-smart-version" in route
 
 
-def test_dashboard_service_restarts_stale_claude_smart_dashboard() -> None:
+def test_dashboard_service_accepts_shared_marker_dashboard_without_root_reap() -> None:
     dashboard = (REPO_ROOT / "plugin" / "scripts" / "dashboard-service.sh").read_text()
 
-    assert "dashboard_matches_current_root()" in dashboard
-    assert "x-claude-smart-plugin-root" in dashboard
-    assert "curl -sfI --connect-timeout 2 --max-time 5" in dashboard
+    assert "dashboard_matches_current_root()" not in dashboard
+    assert "curl -sfI --connect-timeout 1 --max-time 2" in dashboard
     assert 'curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$PORT"' in dashboard
-    assert "normalize_identity_path()" in dashboard
-    assert "cygpath -u" in dashboard
-    assert 'expected_root="$(normalize_identity_path ' in dashboard
-    assert 'actual_root="$(normalize_identity_path "$actual_root")"' in dashboard
-    assert '[ "$actual_root" = "$expected_root" ]' in dashboard
-    assert "stale claude-smart dashboard on port $PORT; restarting" in dashboard
+    assert "normalize_identity_path()" not in dashboard
+    assert "cygpath -u" not in dashboard
+    assert 'if marker_responds; then claude_smart_clear_dashboard_unavailable; emit_ok; exit 0; fi' in dashboard
+    assert "stale claude-smart dashboard on port $PORT; restarting" not in dashboard
     assert "stop_dashboard_listener" in dashboard
-    assert "foreign app on 3001 is never killed" in dashboard
+    assert "foreign listener" in dashboard
 
 
 def test_backend_service_verifies_bundled_reflexio_runtime_identity() -> None:
@@ -1309,14 +1313,80 @@ def test_backend_service_verifies_bundled_reflexio_runtime_identity() -> None:
     )
     assert 'PYTHONPATH="$backend_pythonpath"' in backend
     assert "pid_uses_current_vendor_root()" in backend
+    assert "plugin_version_from_root()" in backend
+    assert "backend_pid_current_or_compatible()" in backend
+    assert "backend_pid_strictly_older_than_plugin()" in backend
+    assert "classify_backend_listener()" in backend
     assert "backend_owned_by_current_vendor()" in backend
     assert "backend_owned_by_stale_claude_smart()" in backend
+    assert 'PID_FILE="$STATE_DIR/backend.$backend_pid_key.pid"' in backend
+    assert 'SHARED_PID_FILE="$STATE_DIR/backend.pid"' in backend
+    assert "backend-python-runner.py" in backend
+    assert "--claude-smart-backend=1" in backend
+    assert '"--claude-smart-plugin-root=$PLUGIN_ROOT_CANONICAL"' in backend
+    assert '"--claude-smart-version=$PLUGIN_VERSION"' in backend
+    assert '"--claude-smart-reflexio-vendor-root=$VENDORED_REFLEXIO_FOR_PYTHON"' in backend
+    assert "CLAUDE_SMART_BACKEND=1" in backend
+    assert 'CLAUDE_SMART_PLUGIN_ROOT="$PLUGIN_ROOT_CANONICAL"' in backend
+    assert 'CLAUDE_SMART_VERSION="$PLUGIN_VERSION"' in backend
     assert "stop_stale_backend_listener_if_owned" in backend
-    assert "looks_like_claude_smart_backend_pid \"$pid\" && ! pid_uses_current_vendor_root \"$pid\"" in backend
+    assert "backend_pid_strictly_older_than_plugin" in backend
     assert "if stop_stale_backend_listener_if_owned; then" in backend
     assert "if port_occupied; then" in backend
-    assert "not using bundled Reflexio" in backend
+    assert "older than plugin $PLUGIN_VERSION" in backend
     assert "foreign or ambiguous backend on http://localhost:$PORT" in backend
+
+
+def test_backend_python_runner_exposes_metadata_and_forwards_reflexio_args(
+    tmp_path: Path,
+) -> None:
+    package_dir = tmp_path / "reflexio"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("")
+    (package_dir / "cli.py").write_text(
+        "import json\n"
+        "import os\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['OUT']).write_text(json.dumps({\n"
+        "    'argv': sys.argv,\n"
+        "    'backend': os.environ.get('CLAUDE_SMART_BACKEND'),\n"
+        "    'version': os.environ.get('CLAUDE_SMART_VERSION'),\n"
+        "    'vendor': os.environ.get('CLAUDE_SMART_REFLEXIO_VENDOR_ROOT'),\n"
+        "}))\n"
+    )
+    output = tmp_path / "out.json"
+    env = os.environ.copy()
+    env.update({"OUT": str(output), "PYTHONPATH": str(tmp_path)})
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(BACKEND_PYTHON_RUNNER),
+            "--claude-smart-backend=1",
+            "--claude-smart-version=0.2.49",
+            "--claude-smart-reflexio-vendor-root=/tmp/vendor/reflexio",
+            "--",
+            "services",
+            "start",
+            "--only",
+            "backend",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(output.read_text())
+    assert payload == {
+        "argv": ["reflexio.cli", "services", "start", "--only", "backend"],
+        "backend": "1",
+        "version": "0.2.49",
+        "vendor": "/tmp/vendor/reflexio",
+    }
 
 
 def test_installers_start_backend_and_refresh_dashboard_services() -> None:
@@ -2138,22 +2208,22 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
     assert "embedding_matches_current_root()" not in backend
     assert 'health_headers "$EMBEDDING_PORT" "/health"' not in backend
     assert "embedding_owned_by_current_vendor()" in backend
+    assert "embedding_current_or_compatible()" in backend
     assert "wait_for_health()" in backend
-    assert "wait_for_health backend_healthy 10 1" in backend
+    assert "wait_for_health backend_owned_by_current_vendor 10 1" in backend
     assert "wait_for_health embedding_owned_by_current_vendor 5 3" in backend
     assert "spawn_backend()" not in backend
     assert "Embedding service did not become healthy" in backend
     assert "semantic retrieval remains unavailable" in backend
     assert "clear_minilm_cache" not in backend
     assert "clearing MiniLM cache" not in backend
-    assert "restarting local services" not in backend
     assert "backend_healthy && embedding_healthy" not in backend
     start_match = re.search(r"(?ms)^  start\)\n(?P<body>.*?)(?=^  stop\)\n)", backend)
     assert start_match, "backend-service.sh start case not found"
     start_case = start_match.group("body")
     assert "full_stop" not in start_case
     assert "backend_started" not in start_case
-    assert "if wait_for_health backend_healthy 10 1; then" in start_case
+    assert "if wait_for_health backend_owned_by_current_vendor 10 1; then" in start_case
     assert "if ! wait_for_health embedding_owned_by_current_vendor 5 3; then" in start_case
     assert (
         "running on http://localhost:$PORT "
@@ -2178,8 +2248,8 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
         bin_dir / "lsof",
         "#!/bin/sh\n"
         'case " $* " in\n'
-        '  *" -t -i :8071 -sTCP:LISTEN "*) printf "12345\\n"; exit 0 ;;\n'
-        '  *" -t -i :8072 -sTCP:LISTEN "*) exit 0 ;;\n'
+        '  *" -t -i :8071 -sTCP:LISTEN "*|*" -tiTCP:8071 -sTCP:LISTEN "*) printf "12345\\n"; exit 0 ;;\n'
+        '  *" -t -i :8072 -sTCP:LISTEN "*|*" -tiTCP:8072 -sTCP:LISTEN "*) exit 0 ;;\n'
         '  *" -a -p 12345 -d cwd -Fn "*) printf "n%s\\n" "$PWD"; exit 0 ;;\n'
         "esac\n"
         "exit 0\n",
@@ -2187,7 +2257,7 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
     _write_executable(
         bin_dir / "ps",
         "#!/bin/sh\n"
-        'printf "python -m reflexio.cli CLAUDE_SMART_REFLEXIO_VENDOR_ROOT=%s PYTHONPATH=%s\\n" "$CLAUDE_SMART_REFLEXIO_VENDOR_ROOT" "$CLAUDE_SMART_REFLEXIO_VENDOR_ROOT"\n',
+        'printf "python backend-python-runner.py --claude-smart-backend=1 --claude-smart-plugin-root=%s --claude-smart-version=0.2.49 --claude-smart-reflexio-vendor-root=%s -- services start\\n" "$PWD" "$CLAUDE_SMART_REFLEXIO_VENDOR_ROOT"\n',
     )
     _write_executable(bin_dir / "sleep", "#!/bin/sh\nexit 0\n")
     env = _isolated_env(tmp_path)
@@ -2243,17 +2313,28 @@ def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
         pytest.skip("process termination fixture is POSIX-only")
     port = 19000 + (abs(hash(tmp_path.name)) % 1000)
     plugin_root = _seed_backend_service_test_plugin(tmp_path, port=port)
-    old_vendor = tmp_path / "old-plugin" / "vendor" / "reflexio"
+    old_root = tmp_path / "old-plugin"
+    old_vendor = old_root / "vendor" / "reflexio"
+    (old_root / ".codex-plugin").mkdir(parents=True)
+    old_vendor.mkdir(parents=True)
+    (old_root / ".codex-plugin" / "plugin.json").write_text(
+        json.dumps({"version": "0.0.1"})
+    )
     (tmp_path / "stale-listener").write_text("1\n")
     stale = subprocess.Popen(["/bin/sleep", "60"])
+    stale_runner = subprocess.Popen(["/bin/sleep", "60"])
+    current = subprocess.Popen(["/bin/sleep", "60"])
+    current_runner = subprocess.Popen(["/bin/sleep", "60"])
     try:
         _write_fake_plugin_python(
             plugin_root,
             "#!/bin/sh\n"
             'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
-            'if [ "$1" = "-m" ]; then\n'
+            'case "$1" in\n'
+            "  *backend-python-runner.py)\n"
             '  printf "spawned backend\\n" >> "$HOME/python.log"\n'
-            "fi\n"
+            "  ;;\n"
+            "esac\n"
             "exit 0\n",
         )
         bin_dir = tmp_path / "bin"
@@ -2277,11 +2358,12 @@ def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
             bin_dir / "lsof",
             "#!/bin/sh\n"
             'case " $* " in\n'
-            '  *" -t -i :$BACKEND_TEST_PORT -sTCP:LISTEN "*)\n'
-            '    if [ -f "$HOME/stale-listener" ]; then printf "%s\\n" "$STALE_PID"; fi\n'
+            '  *" -t -i :$BACKEND_TEST_PORT -sTCP:LISTEN "*|*" -tiTCP:$BACKEND_TEST_PORT -sTCP:LISTEN "*)\n'
+            '    if [ -f "$HOME/stale-listener" ]; then printf "%s\\n" "$STALE_PID"; else printf "%s\\n" "$CURRENT_PID"; fi\n'
             "    exit 0\n"
             "    ;;\n"
             '  *" -a -p $STALE_PID -d cwd -Fn "*) printf "n%s\\n" "$OLD_VENDOR"; exit 0 ;;\n'
+            '  *" -a -p $CURRENT_PID -d cwd -Fn "*) printf "n%s\\n" "$PWD"; exit 0 ;;\n'
             '  *" -i:$BACKEND_TEST_PORT -sTCP:LISTEN -P -n "*)\n'
             '    if [ -f "$HOME/stale-listener" ]; then printf "python %s\\n" "$STALE_PID"; fi\n'
             "    exit 0\n"
@@ -2292,8 +2374,22 @@ def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
         _write_executable(
             bin_dir / "ps",
             "#!/bin/sh\n"
+            'case " $* " in\n'
+            '  *" -o ppid= "*)\n'
+            '    if [ "${2:-}" = "$STALE_PID" ]; then printf "%s\\n" "$STALE_RUNNER_PID";\n'
+            '    elif [ "${2:-}" = "$CURRENT_PID" ]; then printf "%s\\n" "$CURRENT_RUNNER_PID";\n'
+            '    else printf "0\\n"; fi\n'
+            "    exit 0\n"
+            "    ;;\n"
+            "esac\n"
             'if [ "${3:-}" = "$STALE_PID" ]; then\n'
-            '  printf "python -m reflexio.cli CLAUDE_SMART_REFLEXIO_VENDOR_ROOT=%s PYTHONPATH=%s\\n" "$OLD_VENDOR" "$OLD_VENDOR"\n'
+            '  printf "python -m reflexio.server --port %s\\n" "$BACKEND_TEST_PORT"\n'
+            'elif [ "${3:-}" = "$STALE_RUNNER_PID" ]; then\n'
+            '  printf "python backend-python-runner.py --claude-smart-backend=1 --claude-smart-plugin-root=%s --claude-smart-version=0.0.1 --claude-smart-reflexio-vendor-root=%s -- services start\\n" "$OLD_ROOT" "$OLD_VENDOR"\n'
+            'elif [ "${3:-}" = "$CURRENT_PID" ]; then\n'
+            '  printf "python -m reflexio.server --port %s\\n" "$BACKEND_TEST_PORT"\n'
+            'elif [ "${3:-}" = "$CURRENT_RUNNER_PID" ]; then\n'
+            '  printf "python backend-python-runner.py --claude-smart-backend=1 --claude-smart-plugin-root=%s --claude-smart-version=0.2.49 --claude-smart-reflexio-vendor-root=%s -- services start\\n" "$PWD" "$CLAUDE_SMART_REFLEXIO_VENDOR_ROOT"\n'
             "fi\n",
         )
         _write_executable(
@@ -2312,9 +2408,13 @@ def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
                 "CLAUDE_SMART_HOST": "codex",
                 "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
                 "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "0",
+                "CURRENT_PID": str(current.pid),
+                "CURRENT_RUNNER_PID": str(current_runner.pid),
+                "OLD_ROOT": str(old_root),
                 "OLD_VENDOR": str(old_vendor),
                 "REFLEXIO_URL": "",
                 "STALE_PID": str(stale.pid),
+                "STALE_RUNNER_PID": str(stale_runner.pid),
             }
         )
 
@@ -2331,13 +2431,276 @@ def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
         assert result.stdout.strip() == '{"continue":true}'
         stale.wait(timeout=5)
         assert "spawned backend" in (tmp_path / "python.log").read_text()
-        assert "not using bundled Reflexio" in (
+        assert "older than plugin" in (
             tmp_path / ".claude-smart" / "backend.log"
         ).read_text()
     finally:
         if stale.poll() is None:
             stale.terminate()
             stale.wait(timeout=5)
+        if stale_runner.poll() is None:
+            stale_runner.terminate()
+            stale_runner.wait(timeout=5)
+        if current.poll() is None:
+            current.terminate()
+            current.wait(timeout=5)
+        if current_runner.poll() is None:
+            current_runner.terminate()
+            current_runner.wait(timeout=5)
+
+
+def test_backend_start_accepts_newer_other_root_without_downgrade(
+    tmp_path: Path,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("process termination fixture is POSIX-only")
+    port = 22000 + (abs(hash(tmp_path.name)) % 1000)
+    plugin_root = _seed_backend_service_test_plugin(tmp_path, port=port)
+    newer_root = tmp_path / "newer-plugin"
+    newer_vendor = newer_root / "vendor" / "reflexio"
+    (newer_root / ".codex-plugin").mkdir(parents=True)
+    newer_vendor.mkdir(parents=True)
+    (newer_root / ".codex-plugin" / "plugin.json").write_text(
+        json.dumps({"version": "9.9.9"})
+    )
+    peer = subprocess.Popen(["/bin/sleep", "60"])
+    peer_runner = subprocess.Popen(["/bin/sleep", "60"])
+    try:
+        _write_fake_plugin_python(
+            plugin_root,
+            "#!/bin/sh\n"
+            'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
+            'if [ "$1" = "-" ]; then exit 0; fi\n'
+            'case "$1" in *backend-python-runner.py) printf "spawned backend\\n" >> "$HOME/python.log" ;; esac\n'
+            "exit 0\n",
+        )
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _write_executable(
+            bin_dir / "curl",
+            "#!/bin/sh\n"
+            'case " $* " in\n'
+            '  *"http://127.0.0.1:$BACKEND_TEST_PORT/health"*) exit 0 ;;\n'
+            '  *"http://127.0.0.1:$BACKEND_TEST_PORT"*) exit 0 ;;\n'
+            "esac\n"
+            "exit 22\n",
+        )
+        _write_executable(
+            bin_dir / "lsof",
+            "#!/bin/sh\n"
+            'case " $* " in\n'
+            '  *" -t -i :$BACKEND_TEST_PORT -sTCP:LISTEN "*|*" -tiTCP:$BACKEND_TEST_PORT -sTCP:LISTEN "*) printf "%s\\n" "$PEER_PID"; exit 0 ;;\n'
+            '  *" -a -p $PEER_PID -d cwd -Fn "*) printf "n%s\\n" "$NEWER_ROOT"; exit 0 ;;\n'
+            '  *" -i:$BACKEND_TEST_PORT -sTCP:LISTEN -P -n "*) printf "python (pid %s)\\n" "$PEER_PID"; exit 0 ;;\n'
+            "esac\n"
+            "exit 0\n",
+        )
+        _write_executable(
+            bin_dir / "ps",
+            "#!/bin/sh\n"
+            'case " $* " in\n'
+            '  *" -o ppid= "*)\n'
+            '    if [ "${2:-}" = "$PEER_PID" ]; then printf "%s\\n" "$PEER_RUNNER_PID"; else printf "0\\n"; fi\n'
+            "    exit 0\n"
+            "    ;;\n"
+            "esac\n"
+            'if [ "${3:-}" = "$PEER_PID" ]; then\n'
+            '  printf "python -m reflexio.server --port %s\\n" "$BACKEND_TEST_PORT"\n'
+            'elif [ "${3:-}" = "$PEER_RUNNER_PID" ]; then\n'
+            '  printf "python backend-python-runner.py --claude-smart-backend=1 --claude-smart-plugin-root=%s --claude-smart-version=9.9.9 --claude-smart-reflexio-vendor-root=%s -- services start\\n" "$NEWER_ROOT" "$NEWER_VENDOR"\n'
+            "fi\n",
+        )
+        _write_executable(
+            bin_dir / "uv",
+            '#!/bin/sh\nprintf "uv %s\\n" "$*" >> "$HOME/uv.log"\nexit 0\n',
+        )
+        _write_executable(bin_dir / "sleep", "#!/bin/sh\nexit 0\n")
+        env = _isolated_env(tmp_path)
+        env.update(
+            {
+                "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                "BACKEND_TEST_PORT": str(port),
+                "CLAUDE_SMART_HOST": "codex",
+                "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
+                "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "0",
+                "NEWER_ROOT": str(newer_root),
+                "NEWER_VENDOR": str(newer_vendor),
+                "PEER_PID": str(peer.pid),
+                "PEER_RUNNER_PID": str(peer_runner.pid),
+                "REFLEXIO_URL": "",
+            }
+        )
+
+        result = subprocess.run(
+            ["bash", str(plugin_root / "scripts" / "backend-service.sh"), "start"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == '{"continue":true}'
+        assert peer.poll() is None
+        assert not (tmp_path / "python.log").exists()
+    finally:
+        if peer.poll() is None:
+            peer.terminate()
+            peer.wait(timeout=5)
+        if peer_runner.poll() is None:
+            peer_runner.terminate()
+            peer_runner.wait(timeout=5)
+
+
+def test_backend_stop_does_not_kill_newer_peer_from_shared_pid(
+    tmp_path: Path,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("process termination fixture is POSIX-only")
+    port = 23000 + (abs(hash(tmp_path.name)) % 1000)
+    plugin_root = _seed_backend_service_test_plugin(tmp_path, port=port)
+    newer_root = tmp_path / "newer-plugin"
+    newer_vendor = newer_root / "vendor" / "reflexio"
+    (newer_root / ".codex-plugin").mkdir(parents=True)
+    newer_vendor.mkdir(parents=True)
+    (newer_root / ".codex-plugin" / "plugin.json").write_text(
+        json.dumps({"version": "9.9.9"})
+    )
+    peer = subprocess.Popen(["/bin/sleep", "60"])
+    peer_runner = subprocess.Popen(["/bin/sleep", "60"])
+    try:
+        state_dir = tmp_path / ".claude-smart"
+        state_dir.mkdir()
+        (state_dir / "backend.pid").write_text(f"{peer_runner.pid}\n")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _write_executable(
+            bin_dir / "curl",
+            "#!/bin/sh\n"
+            'case " $* " in\n'
+            '  *"http://127.0.0.1:$BACKEND_TEST_PORT/health"*) exit 0 ;;\n'
+            '  *"http://127.0.0.1:$BACKEND_TEST_PORT"*) exit 0 ;;\n'
+            "esac\n"
+            "exit 22\n",
+        )
+        _write_executable(
+            bin_dir / "lsof",
+            "#!/bin/sh\n"
+            'case " $* " in\n'
+            '  *" -t -i :$BACKEND_TEST_PORT -sTCP:LISTEN "*|*" -tiTCP:$BACKEND_TEST_PORT -sTCP:LISTEN "*) printf "%s\\n" "$PEER_PID"; exit 0 ;;\n'
+            '  *" -a -p $PEER_PID -d cwd -Fn "*) printf "n%s\\n" "$NEWER_ROOT"; exit 0 ;;\n'
+            "esac\n"
+            "exit 0\n",
+        )
+        _write_executable(
+            bin_dir / "ps",
+            "#!/bin/sh\n"
+            'case " $* " in\n'
+            '  *" -o ppid= "*)\n'
+            '    if [ "${2:-}" = "$PEER_PID" ]; then printf "%s\\n" "$PEER_RUNNER_PID"; else printf "0\\n"; fi\n'
+            "    exit 0\n"
+            "    ;;\n"
+            "esac\n"
+            'if [ "${3:-}" = "$PEER_PID" ]; then\n'
+            '  printf "python -m reflexio.server --port %s\\n" "$BACKEND_TEST_PORT"\n'
+            'elif [ "${3:-}" = "$PEER_RUNNER_PID" ]; then\n'
+            '  printf "python backend-python-runner.py --claude-smart-backend=1 --claude-smart-plugin-root=%s --claude-smart-version=9.9.9 --claude-smart-reflexio-vendor-root=%s -- services start\\n" "$NEWER_ROOT" "$NEWER_VENDOR"\n'
+            "fi\n",
+        )
+        _write_executable(bin_dir / "sleep", "#!/bin/sh\nexit 0\n")
+        env = _isolated_env(tmp_path)
+        env.update(
+            {
+                "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                "BACKEND_TEST_PORT": str(port),
+                "CLAUDE_SMART_HOST": "codex",
+                "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
+                "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "0",
+                "NEWER_ROOT": str(newer_root),
+                "NEWER_VENDOR": str(newer_vendor),
+                "PEER_PID": str(peer.pid),
+                "PEER_RUNNER_PID": str(peer_runner.pid),
+                "REFLEXIO_URL": "",
+            }
+        )
+
+        result = subprocess.run(
+            ["bash", str(plugin_root / "scripts" / "backend-service.sh"), "stop"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == '{"continue":true}'
+        assert peer.poll() is None
+        assert peer_runner.poll() is None
+    finally:
+        if peer.poll() is None:
+            peer.terminate()
+            peer.wait(timeout=5)
+        if peer_runner.poll() is None:
+            peer_runner.terminate()
+            peer_runner.wait(timeout=5)
+
+
+def test_backend_start_waits_for_existing_service_lock_without_spawn(
+    tmp_path: Path,
+) -> None:
+    port = 24000 + (abs(hash(tmp_path.name)) % 1000)
+    plugin_root = _seed_backend_service_test_plugin(tmp_path, port=port)
+    locker = subprocess.Popen(["/bin/sleep", "60"])
+    try:
+        state_dir = tmp_path / ".claude-smart"
+        lock_dir = state_dir / "backend.start.lock"
+        lock_dir.mkdir(parents=True)
+        (lock_dir / "pid").write_text(f"{locker.pid}\n")
+        _write_fake_plugin_python(
+            plugin_root,
+            "#!/bin/sh\n"
+            'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
+            "exit 0\n",
+        )
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _write_executable(bin_dir / "curl", "#!/bin/sh\nexit 22\n")
+        _write_executable(bin_dir / "lsof", "#!/bin/sh\nexit 0\n")
+        _write_executable(
+            bin_dir / "uv",
+            '#!/bin/sh\nprintf "uv %s\\n" "$*" >> "$HOME/uv.log"\nexit 0\n',
+        )
+        _write_executable(bin_dir / "sleep", "#!/bin/sh\nexit 0\n")
+        env = _isolated_env(tmp_path)
+        env.update(
+            {
+                "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                "BACKEND_TEST_PORT": str(port),
+                "CLAUDE_SMART_HOST": "codex",
+                "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
+                "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "0",
+                "REFLEXIO_URL": "",
+            }
+        )
+
+        result = subprocess.run(
+            ["bash", str(plugin_root / "scripts" / "backend-service.sh"), "start"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == '{"continue":true}'
+        assert not (tmp_path / "python.log").exists()
+    finally:
+        if locker.poll() is None:
+            locker.terminate()
+            locker.wait(timeout=5)
 
 
 def test_backend_service_does_not_kill_foreign_listener(tmp_path: Path) -> None:
@@ -2351,7 +2714,7 @@ def test_backend_service_does_not_kill_foreign_listener(tmp_path: Path) -> None:
             plugin_root,
             "#!/bin/sh\n"
             'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
-            'if [ "$1" = "-m" ]; then printf "spawned backend\\n" >> "$HOME/python.log"; fi\n'
+            'case "$1" in *backend-python-runner.py) printf "spawned backend\\n" >> "$HOME/python.log" ;; esac\n'
             "exit 0\n",
         )
         bin_dir = tmp_path / "bin"
@@ -2369,7 +2732,7 @@ def test_backend_service_does_not_kill_foreign_listener(tmp_path: Path) -> None:
             bin_dir / "lsof",
             "#!/bin/sh\n"
             'case " $* " in\n'
-            '  *" -t -i :$BACKEND_TEST_PORT -sTCP:LISTEN "*) printf "%s\\n" "$FOREIGN_PID"; exit 0 ;;\n'
+            '  *" -t -i :$BACKEND_TEST_PORT -sTCP:LISTEN "*|*" -tiTCP:$BACKEND_TEST_PORT -sTCP:LISTEN "*) printf "%s\\n" "$FOREIGN_PID"; exit 0 ;;\n'
             '  *" -a -p $FOREIGN_PID -d cwd -Fn "*) printf "n/tmp/foreign\\n"; exit 0 ;;\n'
             '  *" -i:$BACKEND_TEST_PORT -sTCP:LISTEN -P -n "*) printf "foreign (pid %s)\\n" "$FOREIGN_PID"; exit 0 ;;\n'
             "esac\n"
@@ -2430,7 +2793,7 @@ def test_backend_service_preflight_rejects_non_bundled_reflexio(
         "    *) exit 0 ;;\n"
         "  esac\n"
         "fi\n"
-        'if [ "$1" = "-m" ]; then printf "spawned backend\\n" >> "$HOME/python.log"; fi\n'
+        'case "$1" in *backend-python-runner.py) printf "spawned backend\\n" >> "$HOME/python.log" ;; esac\n'
         "exit 0\n",
     )
     bin_dir = tmp_path / "bin"
@@ -2517,10 +2880,19 @@ def test_codex_hook_recovers_missing_dependencies_without_cli_command() -> None:
     script = CODEX_HOOK.read_text()
 
     assert "function startInstallerDetached(root, reason)" in script
-    assert 'startInstallerDetached(root, "dashboard: npm not on PATH")' in script
     assert 'startInstallerDetached(root, "hook: uv not on PATH")' in script
-    assert 'path.join(root, "scripts", "backend-service.sh")' in script
-    assert '[script, "start"]' in script
+    assert "function runServiceScript(root, scriptName, action, logName)" in script
+    assert 'path.join(root, "scripts", scriptName)' in script
+    assert "[script, action]" in script
+    assert 'runServiceScript(root, "backend-service.sh", "start", "backend.log")' in script
+    assert (
+        'runServiceScript(root, "dashboard-service.sh", "start", "dashboard.log")'
+        in script
+    )
+    assert "SERVICE_SCRIPT_TIMEOUT_MS" in script
+    assert "parsePort(process.env.BACKEND_PORT, 8071)" in script
+    assert "parsePort(process.env.EMBEDDING_PORT, 8072)" in script
+    assert "parsePort(process.env.DASHBOARD_PORT" in script
     assert "port 8071 occupied; trying 8072" not in script
 
 

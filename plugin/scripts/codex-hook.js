@@ -3,16 +3,30 @@
 
 const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
-const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 
 const HOME = os.homedir();
 const STATE_DIR = path.join(HOME, ".claude-smart");
 const REFLEXIO_DIR = path.join(HOME, ".reflexio");
-const DEFAULT_BACKEND_PORT = 8071;
-const DASHBOARD_PORT = 3001;
+const SERVICE_SCRIPT_TIMEOUT_MS = parsePositiveInteger(
+  process.env.CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS,
+  45_000,
+);
+const DEFAULT_BACKEND_PORT = parsePort(process.env.BACKEND_PORT, 8071);
+const DEFAULT_EMBEDDING_PORT = parsePort(process.env.EMBEDDING_PORT, 8072);
+const DASHBOARD_PORT = parsePort(process.env.DASHBOARD_PORT, parsePort(process.env.PORT, 3001));
 const LOG_MAX_BYTES = 10000000;
+
+function parsePort(value, fallback) {
+  const port = Number(value);
+  return Number.isInteger(port) && port > 0 && port <= 65535 ? port : fallback;
+}
+
+function parsePositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 function emitOk() {
   process.stdout.write('{"continue":true}\n');
@@ -206,20 +220,8 @@ function uvPath() {
   return commandPath(process.platform === "win32" ? ["uv.exe", "uv"] : ["uv"]);
 }
 
-function npmPath() {
-  return commandPath(process.platform === "win32" ? ["npm.cmd", "npm.exe", "npm"] : ["npm"]);
-}
-
 function bashPath() {
   return commandPath(process.platform === "win32" ? ["bash.exe", "bash"] : ["bash"]);
-}
-
-function stateFile(name) {
-  return path.join(STATE_DIR, name);
-}
-
-function backendUrlFile() {
-  return stateFile("backend-url");
 }
 
 function unquoteEnvValue(value) {
@@ -282,44 +284,7 @@ function codexCompatPath(root) {
 
 function readBackendUrl() {
   if (process.env.REFLEXIO_URL) return process.env.REFLEXIO_URL;
-  try {
-    const value = fs.readFileSync(backendUrlFile(), "utf8").trim();
-    if (value) return value;
-  } catch {
-    // Fall through to default.
-  }
   return `http://localhost:${DEFAULT_BACKEND_PORT}/`;
-}
-
-function healthOk(port, pathname, markerHeader) {
-  return new Promise((resolve) => {
-    const req = http.request(
-      {
-        host: "127.0.0.1",
-        port,
-        path: pathname,
-        method: "GET",
-        timeout: 1200,
-      },
-      (res) => {
-        const ok = res.statusCode && res.statusCode >= 200 && res.statusCode < 400;
-        const markerOk = markerHeader ? Boolean(res.headers[markerHeader]) : true;
-        res.resume();
-        resolve(Boolean(ok && markerOk));
-      },
-    );
-    req.on("timeout", () => req.destroy());
-    req.on("error", () => resolve(false));
-    req.end();
-  });
-}
-
-async function waitForHealth(port, pathname, markerHeader, attempts) {
-  for (let i = 0; i < attempts; i += 1) {
-    if (await healthOk(port, pathname, markerHeader)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-  return false;
 }
 
 function detached(command, args, options = {}) {
@@ -351,28 +316,52 @@ function startInstallerDetached(root, reason) {
   return true;
 }
 
-function readPid(file) {
-  try {
-    const value = fs.readFileSync(file, "utf8").trim();
-    return value ? Number(value) : null;
-  } catch {
-    return null;
+function runServiceScript(root, scriptName, action, logName) {
+  trimLog(path.join(STATE_DIR, logName));
+  const bash = bashPath();
+  const script = path.join(root, "scripts", scriptName);
+  if (!bash || !fs.existsSync(script)) {
+    appendLog(
+      logName,
+      `[claude-smart] codex hook: cannot run ${scriptName}; bash or script missing`,
+    );
+    emitOk();
+    return 0;
   }
-}
-
-function pidAlive(pid) {
-  if (!pid || Number.isNaN(pid)) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
+  const result = spawnSync(bash, [script, action], {
+    cwd: root,
+    env: {
+      ...process.env,
+      PLUGIN_ROOT: root,
+      CLAUDE_PLUGIN_ROOT: root,
+      CLAUDE_SMART_HOST: "codex",
+      CLAUDE_SMART_CLI_PATH: process.env.CLAUDE_SMART_CLI_PATH || codexCompatPath(root),
+      BACKEND_PORT: String(DEFAULT_BACKEND_PORT),
+      EMBEDDING_PORT: String(DEFAULT_EMBEDDING_PORT),
+      DASHBOARD_PORT: String(DASHBOARD_PORT),
+      PORT: String(DASHBOARD_PORT),
+      REFLEXIO_URL: readBackendUrl(),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: SERVICE_SCRIPT_TIMEOUT_MS,
+    windowsHide: true,
+  });
+  const stderr = String(result.stderr || "").trim();
+  if (stderr) appendLog(logName, stderr);
+  if (result.error) {
+    appendLog(
+      logName,
+      `[claude-smart] codex hook: ${scriptName} ${action} failed: ${result.error.message}`,
+    );
   }
-}
-
-function writePid(file, pid) {
-  ensureDir(path.dirname(file));
-  fs.writeFileSync(file, `${pid}\n`);
+  if (result.signal) {
+    appendLog(
+      logName,
+      `[claude-smart] codex hook: ${scriptName} ${action} terminated by ${result.signal}`,
+    );
+  }
+  emitNormalizedHookOutput(result.stdout);
+  return typeof result.status === "number" ? result.status : 0;
 }
 
 function ensurePluginRoot(root) {
@@ -403,89 +392,11 @@ function ensurePluginRoot(root) {
 }
 
 async function startBackend(root) {
-  trimLog(path.join(STATE_DIR, "backend.log"));
-  const bash = bashPath();
-  const script = path.join(root, "scripts", "backend-service.sh");
-  if (!bash || !fs.existsSync(script)) {
-    appendLog("backend.log", "[claude-smart] backend: backend-service.sh unavailable; skipping local backend start");
-    emitOk();
-    return;
-  }
-  const result = spawnSync(
-    bash,
-    [script, "start"],
-    {
-      cwd: root,
-      env: {
-        ...process.env,
-        CLAUDE_SMART_HOST: "codex",
-        CLAUDE_SMART_CLI_PATH: process.env.CLAUDE_SMART_CLI_PATH || codexCompatPath(root),
-      },
-      text: true,
-      encoding: "utf8",
-      input: "",
-      stdio: ["pipe", "pipe", "pipe"],
-      timeout: 45000,
-      windowsHide: true,
-    },
-  );
-  if (result.error) {
-    appendLog("backend.log", `[claude-smart] backend-service.sh failed to run: ${result.error.message}`);
-  }
-  if (result.stderr) {
-    appendLog("backend.log", `[claude-smart] backend-service.sh stderr: ${String(result.stderr).slice(0, 1000)}`);
-  }
-  emitNormalizedHookOutput(result.stdout);
+  runServiceScript(root, "backend-service.sh", "start", "backend.log");
 }
 
 async function startDashboard(root) {
-  if (process.env.CLAUDE_SMART_DASHBOARD_AUTOSTART === "0") {
-    emitOk();
-    return;
-  }
-  const dashboard = path.join(root, "dashboard");
-  if (!fs.existsSync(dashboard)) {
-    emitOk();
-    return;
-  }
-  const pidFile = path.join(STATE_DIR, "dashboard.pid");
-  if (
-    pidAlive(readPid(pidFile)) &&
-    await healthOk(DASHBOARD_PORT, "/api/health", "x-claude-smart-dashboard")
-  ) {
-    emitOk();
-    return;
-  }
-  const npm = npmPath();
-  if (!npm) {
-    startInstallerDetached(root, "dashboard: npm not on PATH");
-  }
-  const readyNpm = npmPath();
-  if (!readyNpm) {
-    appendLog("dashboard.log", "[claude-smart] dashboard: npm not on PATH; installer recovery scheduled; skipping");
-    emitOk();
-    return;
-  }
-  if (!fs.existsSync(path.join(dashboard, ".next"))) {
-    const buildPidFile = path.join(STATE_DIR, "dashboard-build.pid");
-    if (!pidAlive(readPid(buildPidFile))) {
-      const pid = detached(readyNpm, ["run", "build"], { cwd: dashboard });
-      writePid(buildPidFile, pid);
-      appendLog("dashboard.log", "[claude-smart] dashboard: .next missing; started background build");
-    }
-    emitOk();
-    return;
-  }
-  const env = {
-    ...process.env,
-    PORT: String(DASHBOARD_PORT),
-    REFLEXIO_URL: readBackendUrl(),
-    CLAUDE_SMART_DASHBOARD_WORKSPACE: process.cwd(),
-  };
-  const pid = detached(readyNpm, ["run", "start"], { cwd: dashboard, env });
-  writePid(pidFile, pid);
-  await waitForHealth(DASHBOARD_PORT, "/api/health", "x-claude-smart-dashboard", 5);
-  emitOk();
+  runServiceScript(root, "dashboard-service.sh", "start", "dashboard.log");
 }
 
 function runHook(root, event) {

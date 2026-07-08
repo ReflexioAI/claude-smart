@@ -162,6 +162,55 @@ def test_adapter_process_env_overrides_reflexio_env(monkeypatch, tmp_path) -> No
     }
 
 
+def test_adapter_default_url_follows_backend_port(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        reflexio_adapter.env_config, "CLAUDE_SMART_ENV_PATH", tmp_path / "missing.env"
+    )
+    monkeypatch.delenv("REFLEXIO_URL", raising=False)
+    monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
+    monkeypatch.setenv("BACKEND_PORT", "8171")
+    seen: dict[str, str] = {}
+
+    class FakeReflexioClient:
+        def __init__(self, *, url_endpoint: str, api_key: str):
+            seen["url_endpoint"] = url_endpoint
+            seen["api_key"] = api_key
+
+    monkeypatch.setitem(
+        sys.modules,
+        "reflexio",
+        SimpleNamespace(ReflexioClient=FakeReflexioClient),
+    )
+
+    assert reflexio_adapter.Adapter()._get_client() is not None
+    assert seen == {"url_endpoint": "http://localhost:8171/", "api_key": ""}
+
+
+def test_adapter_local_default_file_url_follows_backend_port(monkeypatch, tmp_path) -> None:
+    env_path = tmp_path / ".claude-smart" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text('REFLEXIO_URL="http://localhost:8071/"\n')
+    monkeypatch.setattr(reflexio_adapter.env_config, "CLAUDE_SMART_ENV_PATH", env_path)
+    monkeypatch.delenv("REFLEXIO_URL", raising=False)
+    monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
+    monkeypatch.setenv("BACKEND_PORT", "8171")
+    seen: dict[str, str] = {}
+
+    class FakeReflexioClient:
+        def __init__(self, *, url_endpoint: str, api_key: str):
+            seen["url_endpoint"] = url_endpoint
+            seen["api_key"] = api_key
+
+    monkeypatch.setitem(
+        sys.modules,
+        "reflexio",
+        SimpleNamespace(ReflexioClient=FakeReflexioClient),
+    )
+
+    assert reflexio_adapter.Adapter()._get_client() is not None
+    assert seen == {"url_endpoint": "http://localhost:8171/", "api_key": ""}
+
+
 def test_publish_returns_true_on_success() -> None:
     client = _FakeClient()
     a = _adapter_with(client)

@@ -4,7 +4,9 @@ import { readConfig } from "@/lib/config-file";
 
 export const dynamic = "force-dynamic";
 
-const DEFAULT_URL = "http://localhost:8071";
+function defaultUrl(): string {
+  return `http://localhost:${process.env.BACKEND_PORT || "8071"}`;
+}
 
 async function reflexioConfig(): Promise<{ base: string; apiKey: string }> {
   const config = await readConfig();
@@ -13,7 +15,7 @@ async function reflexioConfig(): Promise<{ base: string; apiKey: string }> {
   const fromConfig = originOnly(config.REFLEXIO_URL ?? "");
   const configuredBase = fromEnv ?? fromConfig;
   return {
-    base: configuredBase ?? DEFAULT_URL,
+    base: configuredBase ?? defaultUrl(),
     apiKey: configuredBase ? apiKey : "",
   };
 }

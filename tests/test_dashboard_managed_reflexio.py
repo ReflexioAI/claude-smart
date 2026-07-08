@@ -16,6 +16,8 @@ def test_dashboard_config_knows_reflexio_api_key() -> None:
     ).read_text()
 
     assert '"REFLEXIO_API_KEY"' in config
+    assert "function defaultReflexioUrl()" in config
+    assert 'process.env.BACKEND_PORT || "8071"' in config
     assert "REFLEXIO_API_KEY: string;" in types
     assert "REFLEXIO_API_KEY_SET?: boolean;" in types
     assert "<Label>REFLEXIO_API_KEY</Label>" in page
@@ -63,6 +65,8 @@ def test_dashboard_proxy_forwards_bearer_auth_without_client_auth() -> None:
     ).read_text()
 
     assert 'headers.delete("authorization")' in route
+    assert "function defaultUrl()" in route
+    assert 'process.env.BACKEND_PORT || "8071"' in route
     assert 'headers.set("user-agent", "claude-smart")' in route
     assert 'headers.set("authorization", `Bearer ${apiKey}`)' in route
     assert "readConfig" in route

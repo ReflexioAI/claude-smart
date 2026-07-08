@@ -143,6 +143,17 @@ claude_smart_reflexio_url_is_remote() {
   return 0
 }
 
+claude_smart_derive_reflexio_url_from_backend_port() {
+  local port default_url
+  port="${BACKEND_PORT:-8071}"
+  default_url="http://localhost:$port/"
+  case "${REFLEXIO_URL:-}" in
+    ""|"http://localhost:8071"|"http://localhost:8071/"|"http://127.0.0.1:8071"|"http://127.0.0.1:8071/")
+      export REFLEXIO_URL="$default_url"
+      ;;
+  esac
+}
+
 claude_smart_is_internal_invocation_env() {
   if [ "${CLAUDE_SMART_INTERNAL:-}" = "1" ]; then
     return 0
@@ -701,6 +712,191 @@ claude_smart_kill_tree() {
     sleep 0.2
   done
   kill -KILL -- "-$pid" 2>/dev/null || true
+}
+
+claude_smart_now_epoch() {
+  date +%s 2>/dev/null || {
+    _CS_PY=$(claude_smart_resolve_python 2>/dev/null || true)
+    [ -n "$_CS_PY" ] || return 1
+    "$_CS_PY" - <<'PY'
+import time
+
+print(int(time.time()))
+PY
+  }
+}
+
+claude_smart_path_mtime_epoch() {
+  path="$1"
+  mtime=""
+  [ -e "$path" ] || return 1
+  mtime="$(stat -f %m "$path" 2>/dev/null || true)"
+  case "$mtime" in
+    ''|*[!0-9]*) ;;
+    *) printf '%s\n' "$mtime"; return 0 ;;
+  esac
+  mtime="$(stat -c %Y "$path" 2>/dev/null || true)"
+  case "$mtime" in
+    ''|*[!0-9]*) ;;
+    *) printf '%s\n' "$mtime"; return 0 ;;
+  esac
+  _CS_PY=$(claude_smart_resolve_python 2>/dev/null || true)
+  [ -n "$_CS_PY" ] || return 1
+  "$_CS_PY" - "$path" <<'PY'
+import os
+import sys
+
+print(int(os.path.getmtime(sys.argv[1])))
+PY
+}
+
+claude_smart_service_lock_stale_seconds() {
+  value="${CLAUDE_SMART_SERVICE_LOCK_STALE_SECONDS:-60}"
+  case "$value" in
+    ''|*[!0-9]*) printf '%s\n' "60" ;;
+    *) printf '%s\n' "$value" ;;
+  esac
+}
+
+claude_smart_service_lock() {
+  name="$1"
+  lock_dir="$HOME/.claude-smart/$name.start.lock"
+  pid_file="$lock_dir/pid"
+  mkdir -p "$HOME/.claude-smart"
+  for _ in 1 2 3; do
+    if mkdir "$lock_dir" 2>/dev/null; then
+      printf '%s\n' "$$" > "$pid_file"
+      return 0
+    fi
+
+    lock_pid="$(cat "$pid_file" 2>/dev/null || true)"
+    now="$(claude_smart_now_epoch 2>/dev/null || printf '%s\n' "0")"
+    mtime="$(claude_smart_path_mtime_epoch "$lock_dir" 2>/dev/null || printf '%s\n' "$now")"
+    age=$((now - mtime))
+    stale_after="$(claude_smart_service_lock_stale_seconds)"
+
+    if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+      return 1
+    fi
+    if [ -z "$lock_pid" ] && [ "$age" -lt "$stale_after" ]; then
+      return 1
+    fi
+    if [ -n "$lock_pid" ] || [ "$age" -ge "$stale_after" ]; then
+      stale_dir="$lock_dir.stale.$$"
+      if mv "$lock_dir" "$stale_dir" 2>/dev/null; then
+        rm -rf "$stale_dir"
+        continue
+      fi
+    fi
+    return 1
+  done
+  return 1
+}
+
+claude_smart_service_unlock() {
+  name="$1"
+  lock_dir="$HOME/.claude-smart/$name.start.lock"
+  pid_file="$lock_dir/pid"
+  [ -d "$lock_dir" ] || return 0
+  lock_pid="$(cat "$pid_file" 2>/dev/null || true)"
+  [ "$lock_pid" = "$$" ] || return 0
+  rm -rf "$lock_dir"
+}
+
+claude_smart_powershell_bin() {
+  for cand in powershell.exe powershell pwsh.exe pwsh; do
+    if command -v "$cand" >/dev/null 2>&1; then
+      command -v "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+claude_smart_port_listener_pids() {
+  port="$1"
+  if claude_smart_is_windows; then
+    ps_bin="$(claude_smart_powershell_bin 2>/dev/null || true)"
+    if [ -n "$ps_bin" ]; then
+      PORT="$port" "$ps_bin" -NoProfile -ExecutionPolicy Bypass -Command \
+        '$ErrorActionPreference="SilentlyContinue"; Get-NetTCPConnection -LocalPort $env:PORT -State Listen | Select-Object -ExpandProperty OwningProcess' \
+        2>/dev/null | tr -d '\r' | awk 'NF && !seen[$1]++ {print $1}'
+      return 0
+    fi
+    if command -v netstat >/dev/null 2>&1; then
+      netstat -ano 2>/dev/null | awk -v port=":$port" '
+        $1 ~ /^TCP/ && $2 ~ port "$" && $4 == "LISTENING" && !seen[$5]++ {print $5}
+      '
+      return 0
+    fi
+  fi
+  command -v lsof >/dev/null 2>&1 || return 0
+  lsof -tiTCP:"$port" -sTCP:LISTEN -P -n 2>/dev/null | awk 'NF && !seen[$1]++ {print $1}'
+}
+
+claude_smart_pid_command() {
+  pid="$1"
+  if claude_smart_is_windows; then
+    ps_bin="$(claude_smart_powershell_bin 2>/dev/null || true)"
+    if [ -n "$ps_bin" ]; then
+      PID="$pid" "$ps_bin" -NoProfile -ExecutionPolicy Bypass -Command \
+        '$ErrorActionPreference="SilentlyContinue"; $p=Get-CimInstance Win32_Process -Filter "ProcessId=$env:PID"; if ($p) { $p.CommandLine }' \
+        2>/dev/null | tr -d '\r'
+      return 0
+    fi
+    if command -v tasklist >/dev/null 2>&1; then
+      tasklist //FI "PID eq $pid" //FO CSV //NH 2>/dev/null \
+        | awk -F, 'NR==1 {gsub(/^"|"$/, "", $1); print $1}'
+      return 0
+    fi
+  fi
+  command -v ps >/dev/null 2>&1 || return 0
+  ps -ww -p "$pid" -o command= 2>/dev/null || true
+}
+
+claude_smart_pid_parent() {
+  pid="$1"
+  if claude_smart_is_windows; then
+    ps_bin="$(claude_smart_powershell_bin 2>/dev/null || true)"
+    if [ -n "$ps_bin" ]; then
+      PID="$pid" "$ps_bin" -NoProfile -ExecutionPolicy Bypass -Command \
+        '$ErrorActionPreference="SilentlyContinue"; $p=Get-CimInstance Win32_Process -Filter "ProcessId=$env:PID"; if ($p) { $p.ParentProcessId }' \
+        2>/dev/null | tr -d '\r'
+      return 0
+    fi
+  fi
+  command -v ps >/dev/null 2>&1 || return 0
+  ps -p "$pid" -o ppid= 2>/dev/null | awk 'NF {print $1; exit}' || true
+}
+
+claude_smart_port_holder() {
+  port="$1"
+  pid="$(claude_smart_port_listener_pids "$port" | head -n1)"
+  [ -n "$pid" ] || return 0
+  cmdline="$(claude_smart_pid_command "$pid" | head -n1)"
+  [ -n "$cmdline" ] || cmdline="unknown"
+  printf '%s (pid %s)\n' "$cmdline" "$pid"
+}
+
+claude_smart_reap_port_listeners_matching() {
+  port="$1"
+  shift || true
+  [ "$#" -gt 0 ] || return 1
+  killed=1
+  pids="$(claude_smart_port_listener_pids "$port" || true)"
+  [ -n "$pids" ] || return 1
+  for pid in $pids; do
+    cmdline="$(claude_smart_pid_command "$pid" | tr '\n' ' ' || true)"
+    [ -n "$cmdline" ] || continue
+    for pattern in "$@"; do
+      if [[ "$cmdline" == $pattern ]]; then
+        claude_smart_kill_tree "$pid"
+        killed=0
+        break
+      fi
+    done
+  done
+  return "$killed"
 }
 
 # Return 0 (true) if $1 names a pid file whose pid is currently alive.

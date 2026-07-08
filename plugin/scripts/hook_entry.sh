@@ -44,10 +44,13 @@ claude_smart_source_login_path
 # Explicit fallback for the astral.sh installer's default paths, in case
 # the user's login-shell rc hasn't yet been re-sourced to pick them up.
 claude_smart_prepend_astral_bins
+BACKEND_PORT="${BACKEND_PORT:-8071}"
+export BACKEND_PORT
 claude_smart_source_reflexio_env
 
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "hook_entry.sh" "$@"
+claude_smart_derive_reflexio_url_from_backend_port
 
 FAILURE_MARKER="$HOME/.claude-smart/install-failed"
 STATE_DIR="$HOME/.claude-smart"

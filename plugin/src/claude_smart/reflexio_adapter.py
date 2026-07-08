@@ -20,7 +20,6 @@ _LOGGER = logging.getLogger(__name__)
 
 _ENV_URL = "REFLEXIO_URL"
 _ENV_API_KEY = "REFLEXIO_API_KEY"
-_DEFAULT_URL = "http://localhost:8071/"
 # Cap every HTTP round-trip from a hook so a hung backend can't stall the
 # Claude Code / Codex session. reflexio's client default is 300s, which is
 # fine for batch workloads but unacceptable on the hook path — a single
@@ -31,6 +30,24 @@ _SEARCH_MODE_HYBRID = "hybrid"  # reflexio.models.config_schema.SearchMode.HYBRI
 _UNIFIED_ENTITY_TYPES = ("profiles", "user_playbooks", "agent_playbooks")
 _AGENT_PLAYBOOK_APPROVAL_STATUSES = ("pending", "approved")
 _REJECTED_AGENT_PLAYBOOK_STATUS = "rejected"
+_LOCAL_8071_URLS = {
+    "http://localhost:8071",
+    "http://localhost:8071/",
+    "http://127.0.0.1:8071",
+    "http://127.0.0.1:8071/",
+}
+
+
+def _default_url() -> str:
+    return f"http://localhost:{os.environ.get('BACKEND_PORT', '8071')}/"
+
+
+def _configured_url() -> str:
+    url = os.environ.get(_ENV_URL, "")
+    backend_port = os.environ.get("BACKEND_PORT", "")
+    if url in _LOCAL_8071_URLS and backend_port not in {"", "8071"}:
+        return _default_url()
+    return url or _default_url()
 
 
 @dataclass
@@ -48,7 +65,7 @@ class Adapter:
 
     def __post_init__(self) -> None:
         env_config.load_reflexio_env()
-        self.url = self.url or os.environ.get(_ENV_URL, _DEFAULT_URL)
+        self.url = self.url or _configured_url()
         self.api_key = self.api_key or os.environ.get(_ENV_API_KEY, "")
         self._client: Any | None = None
 

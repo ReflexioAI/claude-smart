@@ -55,11 +55,21 @@ def test_codex_hook_loads_managed_reflexio_env_and_skips_backend_start() -> None
     assert "function loadReflexioEnv()" in script
     assert '"REFLEXIO_API_KEY"' in script
     assert '"CLAUDE_SMART_READ_ONLY"' in script
+    assert "function runServiceScript(root, scriptName, action, logName)" in script
+    assert "function parsePort(value, fallback)" in script
+    assert "function parsePositiveInteger(value, fallback)" in script
+    assert "const SERVICE_SCRIPT_TIMEOUT_MS = parsePositiveInteger" in script
+    assert "timeout: SERVICE_SCRIPT_TIMEOUT_MS" in script
+    assert 'runServiceScript(root, "backend-service.sh", "start", "backend.log")' in script
+    assert (
+        'runServiceScript(root, "dashboard-service.sh", "start", "dashboard.log")'
+        in script
+    )
     assert "loadReflexioEnv();" in script
     # Backend start (including the remote-REFLEXIO_URL skip) is delegated to
     # backend-service.sh; codex-hook.js no longer decides locally.
     assert "function reflexioUrlIsRemote()" not in script
-    assert '[script, "start"]' in script
+    assert "[script, action]" in script
     assert "backend-service.sh" in script
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
     assert "remote REFLEXIO_URL configured; skipping local backend start" in backend

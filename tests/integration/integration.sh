@@ -28,9 +28,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 PLUGIN_ROOT="$REPO_ROOT/plugin"
 
-BACKEND_PORT=8071
+BACKEND_PORT="${BACKEND_PORT:-8071}"
 EMBEDDING_PORT="${EMBEDDING_PORT:-8072}"
-DASHBOARD_PORT=3001
+DASHBOARD_PORT="${DASHBOARD_PORT:-3001}"
+export BACKEND_PORT EMBEDDING_PORT DASHBOARD_PORT
+BACKEND_HEALTH_TIMEOUT_SECONDS="${BACKEND_HEALTH_TIMEOUT_SECONDS:-90}"
 
 # Sandbox HOME so real ~/.reflexio, ~/.claude-smart, ~/.claude stay
 # untouched. Created once, reused across stages within a single run.
@@ -221,9 +223,9 @@ stage_setup_hook() {
 stage_backend() {
   log "backend: starting"
   bash "$PLUGIN_ROOT/scripts/backend-service.sh" start >/dev/null
-  log "backend: polling http://127.0.0.1:$BACKEND_PORT/health (20s)"
-  if ! poll_200 "http://127.0.0.1:$BACKEND_PORT/health" 20; then
-    fail "backend /health did not return 200 within 20s"
+  log "backend: polling http://127.0.0.1:$BACKEND_PORT/health (${BACKEND_HEALTH_TIMEOUT_SECONDS}s)"
+  if ! poll_200 "http://127.0.0.1:$BACKEND_PORT/health" "$BACKEND_HEALTH_TIMEOUT_SECONDS"; then
+    fail "backend /health did not return 200 within ${BACKEND_HEALTH_TIMEOUT_SECONDS}s"
   fi
   if [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}" = "1" ]; then
     log "backend: polling http://127.0.0.1:$EMBEDDING_PORT/health (120s)"
