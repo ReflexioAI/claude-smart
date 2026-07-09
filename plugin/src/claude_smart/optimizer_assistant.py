@@ -33,6 +33,16 @@ _MUTATING_TOOLS = "Bash,Edit,Write,MultiEdit,NotebookEdit"
 # so backend-service.sh can route both the reflexio Claude CLI provider and
 # this assistant script through the same host-specific bridge.
 _ENV_CLI_PATH = "CLAUDE_SMART_CLI_PATH"
+_CLAUDE_SMART_COMPAT_BRIDGE_NAMES = frozenset(
+    {
+        "codex-claude-compat",
+        "codex-claude-compat.cmd",
+        "codex-claude-compat.js",
+        "opencode-claude-compat",
+        "opencode-claude-compat.cmd",
+        "opencode-claude-compat.js",
+    }
+)
 
 
 class OptimizerAssistantError(Exception):
@@ -169,26 +179,35 @@ def _resolve_claude_cli_path() -> str:
     return shutil.which("claude") or "claude"
 
 
+def _is_claude_smart_compat_bridge(cli_path: str) -> bool:
+    return Path(cli_path).name.lower() in _CLAUDE_SMART_COMPAT_BRIDGE_NAMES
+
+
 def _run_claude(*, prompt: str, system_prompt: str) -> str:
     cli_path = _resolve_claude_cli_path()
-    # This is an evaluation rollout, not a real user session: allow local
-    # inspection, but prevent filesystem, shell, MCP, and session mutations.
     cmd = [
         cli_path,
         "-p",
         "--output-format",
         "json",
-        "--permission-mode",
-        "plan",
-        "--tools",
-        _READ_ONLY_TOOLS,
-        "--disallowedTools",
-        _MUTATING_TOOLS,
-        "--no-session-persistence",
-        "--mcp-config",
-        '{"mcpServers": {}}',
-        "--strict-mcp-config",
     ]
+    if not _is_claude_smart_compat_bridge(cli_path):
+        # This is an evaluation rollout, not a real user session: allow local
+        # inspection, but prevent filesystem, shell, MCP, and session mutations.
+        cmd.extend(
+            [
+                "--permission-mode",
+                "plan",
+                "--tools",
+                _READ_ONLY_TOOLS,
+                "--disallowedTools",
+                _MUTATING_TOOLS,
+                "--no-session-persistence",
+                "--mcp-config",
+                '{"mcpServers": {}}',
+                "--strict-mcp-config",
+            ]
+        )
     if system_prompt:
         cmd.extend(["--append-system-prompt", system_prompt])
 

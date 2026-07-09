@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -96,6 +98,7 @@ def test_optimizer_assistant_invokes_codex_for_codex_host(
         lambda name: "/bin/codex" if name == "codex" else None,
     )
     monkeypatch.setattr("claude_smart.optimizer_assistant.subprocess.run", fake_run)
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/ignored/codex-claude-compat")
 
     rc, stdout, stderr = _run_main(
         monkeypatch,
@@ -114,6 +117,7 @@ def test_optimizer_assistant_invokes_codex_for_codex_host(
     assert json.loads(stdout) == {"content": "codex reply"}
     cmd, kwargs = calls[0]
     assert cmd[:2] == ["/bin/codex", "exec"]
+    assert "/ignored/codex-claude-compat" not in cmd
     assert "--output-last-message" in cmd
     assert cmd[cmd.index("--sandbox") + 1] == "read-only"
     assert "--ask-for-approval" not in cmd
@@ -255,6 +259,44 @@ def test_optimizer_assistant_prefers_claude_smart_cli_path(monkeypatch) -> None:
     # actually spawned, because the override is an explicit operator signal.
     assert seen_cmds == ["/opt/router"]
     assert "/bin/claude" not in seen_cmds
+
+
+def test_optimizer_assistant_opencode_bridge_accepts_optimizer_args(
+    monkeypatch, tmp_path
+) -> None:
+    """Run through the real OpenCode bridge parser so optimizer-only Claude flags
+    cannot be reintroduced for host compatibility bridges.
+    """
+    if os.name == "nt":
+        pytest.skip("POSIX bridge wrapper exercised on non-Windows hosts")
+
+    repo_root = Path(__file__).resolve().parents[1]
+    bridge = repo_root / "plugin" / "scripts" / "opencode-claude-compat"
+    fake_opencode = tmp_path / "opencode"
+    fake_opencode.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' '{\"type\":\"result\",\"result\":\"bridge reply\"}'\n"
+    )
+    fake_opencode.chmod(0o755)
+
+    runtime.set_host(runtime.HOST_OPENCODE)
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(bridge))
+    monkeypatch.setenv("CLAUDE_SMART_OPENCODE_PATH", str(fake_opencode))
+
+    rc, stdout, stderr = _run_main(
+        monkeypatch,
+        {
+            "messages": [
+                {"role": "system", "content": "System note."},
+                {"role": "user", "content": "hello"},
+            ],
+            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": None}],
+        },
+    )
+
+    assert rc == 0, stderr
+    assert stderr == ""
+    assert json.loads(stdout) == {"content": "bridge reply"}
 
 
 def test_optimizer_assistant_override_missing_path_fails_loud(
