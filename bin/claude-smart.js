@@ -803,6 +803,7 @@ function installClaudeCodePluginCache(pluginRoot) {
     verbatimSymlinks: false,
     filter: shouldCopyPath,
   });
+  patchClaudeCodeMcpConfig(cacheDir);
   appendInstallLog("installed Claude Code plugin cache from local package", {
     host: HOST_CLAUDE_CODE,
     version,
@@ -996,10 +997,7 @@ async function bootstrapClaudeCodeInstall() {
     );
   }
   forcePluginRoot(pluginRoot);
-  const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
-  if (!bash) {
-    throw new Error("bash is required to bootstrap claude-smart dependencies");
-  }
+  const bash = requireMcpBash();
   const code = await runChecked(bash, [join(pluginRoot, "scripts", "smart-install.sh")], {
     cwd: pluginRoot,
   });
@@ -1010,19 +1008,72 @@ async function bootstrapClaudeCodeInstall() {
   return pluginRoot;
 }
 
-function claudeCodeLearningsMcpConfig(pluginRoot) {
-  const script = [
+function bashShellPath(path) {
+  return isWindows() ? String(path).replace(/\\/g, "/") : String(path);
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function resolveMcpBash() {
+  return resolveUsableBash();
+}
+
+function requireMcpBash() {
+  const bash = resolveMcpBash();
+  if (bash) return bash;
+  throw new Error(
+    isWindows()
+      ? "Git Bash is required for claude-smart MCP tools on Windows. Install Git for Windows and ensure bash.exe is on PATH, or run from WSL"
+      : "bash is required for claude-smart MCP tools but was not found on PATH",
+  );
+}
+
+function learningsMcpShellScript(pluginRoot, bash) {
+  const bashForShell = shellQuote(bashShellPath(bash));
+  const pluginRootForShell = shellQuote(bashShellPath(pluginRoot));
+  return [
+    `_B=${bashForShell}`,
     '_R=$(readlink "$HOME/.reflexio/plugin-root" 2>/dev/null || true)',
     'if [ -z "$_R" ] && [ -f "$HOME/.reflexio/plugin-root.txt" ]; then _R=$(cat "$HOME/.reflexio/plugin-root.txt" 2>/dev/null || true); fi',
-    `if [ -z "$_R" ] || [ ! -f "\${_R%/}/scripts/mcp-server.sh" ]; then _R=${JSON.stringify(pluginRoot)}; fi`,
+    `if [ -z "$_R" ] || [ ! -f "\${_R%/}/scripts/mcp-server.sh" ]; then _R=${pluginRootForShell}; fi`,
     'if [ -z "$_R" ] || [ ! -f "${_R%/}/scripts/mcp-server.sh" ]; then _R=$(ls -dt "$HOME/.claude/plugins/cache/reflexioai/claude-smart"/*/ "$HOME/.codex/plugins/cache/reflexioai/claude-smart"/*/ 2>/dev/null | head -n 1); fi',
     '[ -n "$_R" ] || exit 1',
-    'exec bash "${_R%/}/scripts/mcp-server.sh"',
+    'CLAUDE_SMART_BASH=$_B exec "$_B" "${_R%/}/scripts/mcp-server.sh"',
   ].join("; ");
+}
+
+function claudeCodeLearningsMcpConfig(pluginRoot) {
+  const bash = requireMcpBash();
+  const script = learningsMcpShellScript(pluginRoot, bash);
   return {
-    command: "bash",
+    command: bash,
     args: ["-lc", script],
   };
+}
+
+function patchMcpServerConfig(pluginRoot, configPath, serverPath) {
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  const target = serverPath.reduce((value, key) => value && value[key], config);
+  if (!target || typeof target !== "object") {
+    throw new Error(`missing learnings MCP server config in ${configPath}`);
+  }
+  Object.assign(target, claudeCodeLearningsMcpConfig(pluginRoot));
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+}
+
+function patchClaudeCodeMcpConfig(pluginRoot) {
+  patchMcpServerConfig(pluginRoot, join(pluginRoot, ".mcp.json"), [
+    "mcpServers",
+    "learnings",
+  ]);
+}
+
+function patchCodexMcpConfig(pluginRoot) {
+  patchMcpServerConfig(pluginRoot, join(pluginRoot, "hooks", "codex-mcp.json"), [
+    "learnings",
+  ]);
 }
 
 async function registerClaudeCodeLearningsMcp(pluginRoot) {
@@ -2111,6 +2162,7 @@ function installCodexPluginCache(pluginRoot) {
     force: true,
     verbatimSymlinks: false,
   });
+  patchCodexMcpConfig(cacheDir);
   setCodexPluginEnabled();
   appendInstallLog("installed Codex plugin cache from local package", {
     host: HOST_CODEX,

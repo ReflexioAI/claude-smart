@@ -401,7 +401,7 @@ claude_smart_reexec_stable_plugin_root_if_needed() {
   [ -f "$stable/scripts/$script" ] || return 0
   echo "[claude-smart] redirecting stray plugin copy under ~/.reflexio ($plugin_root) to stable root $stable" >&2
   shift 2
-  exec bash "$stable/scripts/$script" "$@"
+  exec "${CLAUDE_SMART_BASH:-bash}" "$stable/scripts/$script" "$@"
 }
 
 claude_smart_download() {
