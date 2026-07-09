@@ -628,13 +628,6 @@ port_holder() {
   claude_smart_port_holder "$1"
 }
 
-reflexio_services_start_supports_skip() {
-  python_bin="$1"
-  [ -x "$python_bin" ] || return 1
-  "$python_bin" -m reflexio.cli services start --help 2>/dev/null \
-    | grep -q -- "--skip-if-running"
-}
-
 recorded_backend_pid() {
   [ -f "$PID_FILE" ] || return 1
   pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
@@ -930,9 +923,6 @@ case "$CMD" in
     # sampling immediately can race and capture the caller's pgid instead.
     # On Windows, claude_smart_kill_tree translates the MSYS pid to WINPID.
     set -- services start --only backend --no-reload --workers "$workers"
-    if reflexio_services_start_supports_skip "$backend_python"; then
-      set -- services start --skip-if-running --only backend --no-reload --workers "$workers"
-    fi
     claude_smart_spawn_detached bash "$HERE/backend-log-runner.sh" \
       "$LOG_FILE" "$LOG_MAX_BYTES" -- \
       env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
