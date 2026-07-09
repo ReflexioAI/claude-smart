@@ -37,7 +37,7 @@ class FakeReflexioAdapter:
         return True
 
     def search_all(
-        self, *, project_id: str, query: str, top_k: int
+        self, *, project_id: str, query: str, top_k: int, session_id: str | None = None
     ) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
         from claude_smart import runtime
 
@@ -46,6 +46,7 @@ class FakeReflexioAdapter:
                 "project_id": project_id,
                 "query": query,
                 "top_k": top_k,
+                "session_id": session_id,
                 "host": runtime.host(),
             }
         )
@@ -236,6 +237,7 @@ def run_host_learning_happy_path(
                 "project_id": project.name,
                 "query": prompt,
                 "top_k": 3,
+                "session_id": session_id,
                 "host": host,
             }
         ]
