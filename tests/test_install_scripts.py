@@ -1713,14 +1713,24 @@ def test_integration_harness_defaults_to_isolated_runtime() -> None:
     assert 'DASHBOARD_PORT="${DASHBOARD_PORT:-3001}"' not in integration
 
 
+@pytest.mark.parametrize(
+    ("env_key", "port"),
+    [
+        ("BACKEND_PORT", "08071"),
+        ("EMBEDDING_PORT", "08072"),
+        ("DASHBOARD_PORT", "03001"),
+    ],
+)
 def test_integration_harness_rejects_production_ports_without_opt_in(
     tmp_path: Path,
+    env_key: str,
+    port: str,
 ) -> None:
     if not shutil.which("bash"):
         pytest.skip("bash is required for integration harness smoke tests")
 
     env = _isolated_env(tmp_path)
-    env["BACKEND_PORT"] = "08071"
+    env[env_key] = port
     result = subprocess.run(
         ["bash", str(REPO_ROOT / "tests" / "integration" / "integration.sh"), "cleanup"],
         env=env,
@@ -1732,7 +1742,27 @@ def test_integration_harness_rejects_production_ports_without_opt_in(
 
     assert result.returncode == 2
     assert "refusing to use production claude-smart port" in result.stderr
+    assert f"{env_key}={port}" in result.stderr
     assert "CLAUDE_SMART_INTEGRATION_ALLOW_PROD_PORTS=1" in result.stderr
+
+
+def test_integration_harness_rejects_non_numeric_ports(tmp_path: Path) -> None:
+    if not shutil.which("bash"):
+        pytest.skip("bash is required for integration harness smoke tests")
+
+    env = _isolated_env(tmp_path)
+    env["BACKEND_PORT"] = "8071abc"
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "tests" / "integration" / "integration.sh"), "cleanup"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert "BACKEND_PORT must be a numeric TCP port" in result.stderr
 
 
 def test_integration_harness_sanitizes_reused_managed_env(
@@ -1748,6 +1778,8 @@ def test_integration_harness_sanitizes_reused_managed_env(
     env_file.write_text(
         "\n".join(
             [
+                "# mode: local",
+                "",
                 'REFLEXIO_URL="https://www.reflexio.ai/"',
                 'export REFLEXIO_API_KEY="secret"',
                 'REFLEXIO_USER_ID="user-1"',
@@ -1758,7 +1790,7 @@ def test_integration_harness_sanitizes_reused_managed_env(
     )
     env = _isolated_env(tmp_path / "runner-home")
     env["CLAUDE_SMART_INTEG_HOME"] = str(home)
-    env_file.chmod(0o600)
+    env_file.chmod(0o644)
     result = subprocess.run(
         ["bash", str(REPO_ROOT / "tests" / "integration" / "integration.sh"), "cleanup"],
         env=env,
@@ -1773,6 +1805,7 @@ def test_integration_harness_sanitizes_reused_managed_env(
     assert "REFLEXIO_URL" not in sanitized
     assert "REFLEXIO_API_KEY" not in sanitized
     assert "REFLEXIO_USER_ID" not in sanitized
+    assert "# mode: local" in sanitized
     assert 'CLAUDE_SMART_USE_LOCAL_CLI="1"' in sanitized
     if os.name != "nt":
         assert stat.S_IMODE(env_file.stat().st_mode) == 0o600

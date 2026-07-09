@@ -40,32 +40,37 @@ export BACKEND_PORT EMBEDDING_PORT DASHBOARD_PORT
 BACKEND_HEALTH_TIMEOUT_SECONDS="${BACKEND_HEALTH_TIMEOUT_SECONDS:-90}"
 EMBEDDING_HEALTH_TIMEOUT_SECONDS="${EMBEDDING_HEALTH_TIMEOUT_SECONDS:-240}"
 
-require_prod_port_opt_in() {
-  [ "${CLAUDE_SMART_INTEGRATION_ALLOW_PROD_PORTS:-}" = "1" ] && return 0
+validate_integration_ports() {
   for selected in \
     "BACKEND_PORT=$BACKEND_PORT" \
     "EMBEDDING_PORT=$EMBEDDING_PORT" \
     "DASHBOARD_PORT=$DASHBOARD_PORT"
   do
+    port_name="${selected%%=*}"
     port_value="${selected#*=}"
     case "$port_value" in
-      *[!0-9]*|"") ;;
+      *[!0-9]*|"")
+        printf '[integration] %s must be a numeric TCP port, got %s\n' "$port_name" "$port_value" >&2
+        exit 2
+        ;;
       *)
         while [ "${port_value#0}" != "$port_value" ] && [ "$port_value" != "0" ]; do
           port_value="${port_value#0}"
         done
         ;;
     esac
-    case "$port_value" in
-      8071|8072|3001)
-        printf '[integration] refusing to use production claude-smart port via %s\n' "$selected" >&2
-        printf '[integration] use the isolated defaults, or set CLAUDE_SMART_INTEGRATION_ALLOW_PROD_PORTS=1 to opt in\n' >&2
-        exit 2
-        ;;
-    esac
+    if [ "${CLAUDE_SMART_INTEGRATION_ALLOW_PROD_PORTS:-}" != "1" ]; then
+      case "$port_value" in
+        8071|8072|3001)
+          printf '[integration] refusing to use production claude-smart port via %s\n' "$selected" >&2
+          printf '[integration] use the isolated defaults, or set CLAUDE_SMART_INTEGRATION_ALLOW_PROD_PORTS=1 to opt in\n' >&2
+          exit 2
+          ;;
+      esac
+    fi
   done
 }
-require_prod_port_opt_in
+validate_integration_ports
 
 # Sandbox HOME so real ~/.reflexio, ~/.claude-smart, ~/.claude stay
 # untouched. Created once, reused across stages within a single run.
@@ -79,11 +84,15 @@ else
   mkdir -p "$INTEG_HOME"
 fi
 INTEG_HOME="$(cd "$INTEG_HOME" && pwd -P)"
-ORIGINAL_HOME_CANONICAL="$(
-  if [ -n "$ORIGINAL_HOME" ]; then
-    cd "$ORIGINAL_HOME" 2>/dev/null && pwd -P || printf '%s\n' "$ORIGINAL_HOME"
+ORIGINAL_HOME_CANONICAL=""
+if [ -n "$ORIGINAL_HOME" ]; then
+  if ORIGINAL_HOME_CANONICAL="$(cd "$ORIGINAL_HOME" 2>/dev/null && pwd -P)"; then
+    :
+  else
+    printf '[integration] warning: could not resolve HOME=%s; using raw path for safety comparison\n' "$ORIGINAL_HOME" >&2
+    ORIGINAL_HOME_CANONICAL="$ORIGINAL_HOME"
   fi
-)"
+fi
 if [ -z "$INTEG_HOME" ] || [ "$INTEG_HOME" = "/" ] || { [ -n "$ORIGINAL_HOME_CANONICAL" ] && [ "$INTEG_HOME" = "$ORIGINAL_HOME_CANONICAL" ]; }; then
   printf '[integration] refusing unsafe CLAUDE_SMART_INTEG_HOME=%s\n' "$INTEG_HOME" >&2
   printf '[integration] use a temporary integration home so production ~/.reflexio and ~/.claude-smart stay untouched\n' >&2

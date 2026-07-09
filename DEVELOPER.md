@@ -451,6 +451,10 @@ CLAUDE_SMART_INTEGRATION_ALLOW_PROD_PORTS=1 \
 Do not use production ports for normal source debugging. If the goal is to
 validate the code as production, build and install a tarball instead.
 
+If local embedding startup is slow, set
+`EMBEDDING_HEALTH_TIMEOUT_SECONDS=<seconds>` before running the harness. The
+default is `240`.
+
 ### Production-like tarball validation
 
 Build the npm tarball from this checkout and install it. The tarball bundles
