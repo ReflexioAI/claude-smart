@@ -29,7 +29,10 @@ DEFAULT_CLAUDE_SMART_HOST = runtime.HOST_CLAUDE_CODE
 
 _LOCAL_DEFAULT_ENTRIES = (
     (
-        "# Route reflexio generation through the configured local host CLI",
+        "# Set to 1 to route reflexio generation through the active host CLI "
+        "(claude for Claude Code, the host compatibility bridge for OpenCode/Codex). "
+        "Set to 0 to disable that provider so reflexio auto-detects a cloud LLM "
+        "key (anthropic, minimax, openai, etc.) from ~/.claude-smart/.env instead.",
         CLAUDE_SMART_USE_LOCAL_CLI_ENV,
         "1",
     ),

@@ -4,6 +4,13 @@ Reflexio's ``LocalScriptAssistant`` sends one JSON payload on stdin and expects
 one JSON object on stdout. This module bridges that protocol to a guarded
 local CLI subprocess so candidate playbooks can be evaluated against the active
 host without re-entering claude-smart/reflexio hooks.
+
+Host CLI resolution: when ``CLAUDE_SMART_CLI_PATH`` is set in the environment
+(``backend-service.sh`` writes it for ``opencode`` and ``codex`` hosts so
+generation routes through the host-specific compatibility bridge instead of
+the real Claude CLI), this script honours that override. Falling back to
+``shutil.which("claude")`` preserves the legacy Claude Code host behaviour
+where no override is configured.
 """
 
 from __future__ import annotations
@@ -22,6 +29,10 @@ from claude_smart import internal_call, runtime
 _CLI_TIMEOUT_SECONDS = 300
 _READ_ONLY_TOOLS = "Read,Grep,Glob,LS"
 _MUTATING_TOOLS = "Bash,Edit,Write,MultiEdit,NotebookEdit"
+# Mirrors ``reflexio.server.llm.providers.claude_code_provider._ENV_CLI_PATH``
+# so backend-service.sh can route both the reflexio Claude CLI provider and
+# this assistant script through the same host-specific bridge.
+_ENV_CLI_PATH = "CLAUDE_SMART_CLI_PATH"
 
 
 class OptimizerAssistantError(Exception):
@@ -142,8 +153,24 @@ def _run_local_cli(*, prompt: str, system_prompt: str) -> str:
     return _run_claude(prompt=prompt, system_prompt=system_prompt)
 
 
+def _resolve_claude_cli_path() -> str:
+    """Return the host CLI to invoke for evaluation rollouts.
+
+    When ``CLAUDE_SMART_CLI_PATH`` is set, prefer it so backend-service.sh can
+    route the assistant through the same bridge it uses for the reflexio
+    ``claude-code`` provider (e.g. ``opencode-claude-compat`` for the OpenCode
+    host). Falls back to ``shutil.which("claude")`` so Claude Code hosts — and
+    any environment that never set the override — continue to use the real
+    ``claude`` CLI.
+    """
+    override = os.environ.get(_ENV_CLI_PATH)
+    if override:
+        return override
+    return shutil.which("claude") or "claude"
+
+
 def _run_claude(*, prompt: str, system_prompt: str) -> str:
-    cli_path = shutil.which("claude") or "claude"
+    cli_path = _resolve_claude_cli_path()
     # This is an evaluation rollout, not a real user session: allow local
     # inspection, but prevent filesystem, shell, MCP, and session mutations.
     cmd = [

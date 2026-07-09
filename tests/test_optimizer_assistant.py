@@ -210,3 +210,138 @@ def test_optimizer_assistant_returns_nonzero_on_timeout(monkeypatch) -> None:
     assert rc == 1
     assert stdout == ""
     assert "claude CLI timed out after 300s" in stderr
+
+
+def test_optimizer_assistant_prefers_claude_smart_cli_path(monkeypatch) -> None:
+    """When ``CLAUDE_SMART_CLI_PATH`` is set, the optimizer assistant must
+    invoke the override (e.g. ``opencode-claude-compat``) instead of the real
+    ``claude`` binary. backend-service.sh writes this override for the
+    OpenCode and Codex hosts so generation routes through the same host-aware
+    bridge the reflexio ``claude-code`` provider uses.
+    """
+    seen_cmds = []
+
+    def fake_run(cmd, **kwargs):
+        seen_cmds.append(cmd[0])
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"result": "router reply"}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "claude_smart.optimizer_assistant.shutil.which", lambda _: "/bin/claude"
+    )
+    monkeypatch.setattr("claude_smart.optimizer_assistant.subprocess.run", fake_run)
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/opt/router")
+
+    rc, stdout, _stderr = _run_main(
+        monkeypatch,
+        {
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "seen"},
+                {"role": "user", "content": "answer now"},
+            ],
+            "playbooks": [
+                {"id": 1, "content": "Be concise.", "trigger": "summaries"}
+            ],
+        },
+    )
+
+    assert rc == 0
+    assert json.loads(stdout) == {"content": "router reply"}
+    # shutil.which was registered but the override path must be the one
+    # actually spawned, because the override is an explicit operator signal.
+    assert seen_cmds == ["/opt/router"]
+    assert "/bin/claude" not in seen_cmds
+
+
+def test_optimizer_assistant_override_missing_path_fails_loud(
+    monkeypatch, tmp_path
+) -> None:
+    """An override path that doesn't exist must surface a clear ``FileNotFoundError``
+    rather than silently fall back to ``shutil.which("claude")`` (which would
+    re-introduce the original CC-quota bug for misconfigured bridges). The
+    ``OptimizerAssistantError`` wrapper reports this as
+    ``"claude CLI not found on PATH"`` so misconfiguration is diagnosable from
+    reflexio's optimizer error surface.
+    """
+    missing = tmp_path / "does-not-exist.sh"
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(missing))
+
+    def fake_run(cmd, **_kwargs):
+        raise FileNotFoundError(2, "No such file", str(missing))
+
+    monkeypatch.setattr("claude_smart.optimizer_assistant.subprocess.run", fake_run)
+
+    rc, stdout, stderr = _run_main(
+        monkeypatch,
+        {
+            "messages": [{"role": "user", "content": "hi"}],
+            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": None}],
+        },
+    )
+
+    assert rc == 1
+    assert stdout == ""
+    assert "claude CLI not found on PATH" in stderr
+
+
+def test_optimizer_assistant_falls_back_to_shutil_which_without_override(
+    monkeypatch,
+) -> None:
+    """Without ``CLAUDE_SMART_CLI_PATH``, the legacy Claude Code host path
+    continues to use ``shutil.which("claude")`` so non-OpenCode installs keep
+    working.
+    """
+    seen = []
+
+    def fake_run(cmd, **_kwargs):
+        seen.append(cmd[0])
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"result": "ok"}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "claude_smart.optimizer_assistant.shutil.which", lambda _: "/usr/bin/claude"
+    )
+    monkeypatch.setattr("claude_smart.optimizer_assistant.subprocess.run", fake_run)
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+
+    rc, stdout, _stderr = _run_main(
+        monkeypatch,
+        {
+            "messages": [{"role": "user", "content": "hello"}],
+            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": None}],
+        },
+    )
+
+    assert rc == 0
+    assert json.loads(stdout) == {"content": "ok"}
+    assert seen == ["/usr/bin/claude"]
+
+
+def test_optimizer_assistant_resolve_helpers(monkeypatch) -> None:
+    """The resolver ignores empty overrides and falls through to shutil."""
+    monkeypatch.setattr(
+        "claude_smart.optimizer_assistant.shutil.which",
+        lambda _: "/usr/local/bin/claude",
+    )
+
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+    assert (
+        optimizer_assistant._resolve_claude_cli_path() == "/usr/local/bin/claude"
+    )
+
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "")
+    assert (
+        optimizer_assistant._resolve_claude_cli_path() == "/usr/local/bin/claude"
+    )
+
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/bridge/claude")
+    assert (
+        optimizer_assistant._resolve_claude_cli_path() == "/bridge/claude"
+    )
