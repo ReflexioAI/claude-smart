@@ -19,6 +19,7 @@
   ],
   "skills": "./skills/",
   "hooks": "./hooks/codex-hooks.json",
+  "mcpServers": "./hooks/codex-mcp.json",
   "interface": {
     "displayName": "claude-smart",
     "shortDescription": "Persistent learning across coding sessions",

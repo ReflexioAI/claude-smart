@@ -36,6 +36,8 @@ dependencies = [
     # Python ranking without this, but installed claude-smart should include
     # the accelerator by default.
     "sqlite-vec>=0.1.6",
+    # mcp.server.fastmcp (used by claude_smart.mcp_server) first shipped in 1.2.
+    "mcp>=1.2",
 ]
 
 # claude-smart is distributed via npm only (see bin/claude-smart.js); it is not

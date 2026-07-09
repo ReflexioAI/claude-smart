@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import io
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
 from claude_smart import cli, cs_cite, hook, runtime, state
-from claude_smart.events import post_tool, pre_tool, stop
+from claude_smart.events import post_tool, stop
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,8 +32,32 @@ def test_codex_manifest_points_at_codex_hooks() -> None:
     manifest = _read_json("plugin/.codex-plugin/plugin.json")
     assert manifest["name"] == "claude-smart"
     assert manifest["hooks"] == "./hooks/codex-hooks.json"
+    assert manifest["mcpServers"] == "./hooks/codex-mcp.json"
     assert manifest["skills"] == "./skills/"
     assert manifest["interface"]["displayName"] == "claude-smart"
+
+
+def test_codex_mcp_config_is_direct_server_map_with_cache_fallback() -> None:
+    config = _read_json("plugin/hooks/codex-mcp.json")
+    assert set(config) == {"learnings"}
+    server = config["learnings"]
+    assert server["command"] == "bash"
+    command = " ".join(server["args"])
+    assert "CLAUDE_PLUGIN_ROOT" in command
+    assert "PLUGIN_ROOT" in command
+    assert ".codex/plugins/cache/reflexioai/claude-smart" in command
+    assert "scripts/mcp-server.sh" in command
+
+
+def test_claude_code_manifest_points_at_wrapped_mcp_config() -> None:
+    manifest = _read_json("plugin/.claude-plugin/plugin.json")
+    config = _read_json("plugin/.mcp.json")
+
+    assert manifest["mcpServers"] == "./.mcp.json"
+    assert set(config) == {"mcpServers"}
+    server = config["mcpServers"]["learnings"]
+    assert server["command"] == "bash"
+    assert "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.sh" in server["args"]
 
 
 def test_codex_skill_documents_command_mapping() -> None:
@@ -43,6 +65,8 @@ def test_codex_skill_documents_command_mapping() -> None:
 
     assert "name: claude-smart" in skill
     assert "Codex does not currently support plugin-provided slash commands" in skill
+    assert "search_learnings" in skill
+    assert "repo/workspace absolute path" in skill
     assert "bash ~/.reflexio/plugin-root/scripts/cli.sh show" in skill
     assert "bash ~/.reflexio/plugin-root/scripts/cli.sh learn --note" in skill
     assert "bash ~/.reflexio/plugin-root/scripts/cli.sh restart" in skill
@@ -223,30 +247,6 @@ def test_hook_main_accepts_legacy_and_host_argv(monkeypatch) -> None:
     assert hook.main(["stop"]) == 0
     assert hook.main(["codex", "stop"]) == 0
     assert calls == [("claude-code", "stop"), ("codex", "stop")]
-
-
-def test_codex_pre_tool_does_not_inject_context(monkeypatch) -> None:
-    runtime.set_host(runtime.HOST_CODEX)
-    called = False
-
-    def fail_emit(**_kwargs):
-        nonlocal called
-        called = True
-
-    monkeypatch.setattr(pre_tool.context_inject, "emit_context", fail_emit)
-    buf = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", buf)
-
-    pre_tool.handle(
-        {
-            "session_id": "s1",
-            "tool_name": "Bash",
-            "tool_input": {"command": "uv run pytest"},
-        }
-    )
-
-    assert called is False
-    assert json.loads(buf.getvalue()) == {"continue": True}
 
 
 def test_codex_citation_instruction_uses_text_marker_not_tool_call() -> None:

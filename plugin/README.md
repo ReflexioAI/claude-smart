@@ -4,6 +4,11 @@ Self-improving [Claude Code](https://claude.com/claude-code), Codex, and OpenCod
 
 This directory is the Claude Code/Codex/OpenCode plugin payload shipped through the marketplace and the `claude-smart` npm package. For the project overview, install instructions, benchmarks, and feature walkthrough, see the [top-level README](https://github.com/ReflexioAI/claude-smart#readme).
 
+Claude Code and Codex also get a read-only `search_learnings` MCP tool. Agents
+use it before non-trivial work with a rewritten, task-specific query and the
+active repo/workspace absolute path as `cwd`, so claude-smart searches the right
+project memories instead of blindly reusing the raw user prompt.
+
 ## Install
 
 ### Claude Code

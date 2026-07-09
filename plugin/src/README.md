@@ -7,7 +7,8 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 
 | File | Purpose |
 |------|---------|
-| `hook.py` | Hook dispatcher. Parses the stdin JSON payload and routes each event (Setup, SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd) to its handler in `events/`. |
+| `hook.py` | Hook dispatcher. Parses the stdin JSON payload and routes each event (Setup, SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd) to its handler in `events/`. |
+| `mcp_server.py` | MCP server that exposes the read-only `search_learnings` tool. |
 | `cli.py` | `claude-smart` CLI: `install`, `uninstall`, `show`, `learn`, `restart`, `dashboard`, `clear-all`. |
 | `state.py` | Per-session JSONL buffer at `~/.claude-smart/sessions/{session_id}.jsonl`; high-water mark for idempotent publish retries. |
 | `publish.py` | Drains the session buffer, calls the Reflexio adapter, and stamps the watermark. Used by Stop, SessionEnd, and `learn`. |
@@ -19,7 +20,6 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 |---------|------|------|
 | `session_start.py` | SessionStart | Apply extraction defaults, render stall banner, push optimizer context. |
 | `user_prompt.py` | UserPromptSubmit | Inject learned playbooks/preferences into context. |
-| `pre_tool.py` | PreToolUse (Edit/Write/Bash/NotebookEdit) | Inject project-specific context before tool execution. |
 | `post_tool.py` | PostToolUse | Buffer the tool invocation (name, input, response, duration) into session state. |
 | `stop.py` | Stop | Publish unpublished interactions (force extraction if configured). |
 | `session_end.py` | SessionEnd | Final publish + aggregation; optional backend/dashboard shutdown. |
@@ -31,7 +31,7 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 | `env_config.py` | Parses `~/.claude-smart/.env` (`REFLEXIO_URL`, `REFLEXIO_API_KEY`, `CLAUDE_SMART_READ_ONLY`, `CLAUDE_SMART_HOST`, local embedding/CLI flags). |
 | `runtime.py` | Host detection (Claude Code vs Codex); shared agent version. |
 | `ids.py` | Session / project ID generation and resolution. |
-| `context_inject.py`, `context_format.py`, `query_compose.py`, `cs_cite.py` | Build search queries, format learned skills as markdown, inject into context, format citations. |
+| `context_inject.py`, `context_format.py`, `learnings_search.py`, `cs_cite.py` | Search learnings, format learned skills as markdown, inject into context, format citations. |
 | `stall_banner.py` | User-facing message when the Reflexio provider hits an auth/billing stall. |
 | `optimizer_assistant.py` | Claude-code CLI agent that extracts Reflexio optimization hints. |
 | `hook_log.py`, `internal_call.py` | Structured JSON logging to `~/.claude-smart/hook.log`; detect internal/test invocations to skip learning. |
@@ -42,7 +42,8 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 SessionStart -> bootstrap Reflexio backend (8071) + Next.js dashboard (3001)
 PostToolUse  -> state.py buffers each tool call to ~/.claude-smart/sessions/{id}.jsonl
 Stop/SessionEnd -> publish.py -> reflexio_adapter -> Reflexio extracts playbooks + preferences
-UserPromptSubmit / PreToolUse -> context_inject pulls relevant learnings back into context
+UserPromptSubmit -> context_inject pulls relevant learnings back into context
+search_learnings MCP tool -> learnings_search returns model-requested learnings
 ```
 
 - **Dual-host** — the same package runs under Claude Code (native slash commands) and Codex (shell-script fallbacks in `../scripts/`); host shape is normalized in `runtime.py`.

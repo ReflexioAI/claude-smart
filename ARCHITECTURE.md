@@ -4,10 +4,9 @@ Technical reference for how `claude-smart` wires Claude Code's lifecycle hooks t
 
 ## Core components
 
-1. **6 lifecycle hooks** (`plugin/hooks/hooks.json`)
+1. **5 lifecycle hooks** (`plugin/hooks/hooks.json`)
    - `SessionStart` — applies claude-smart/reflexio defaults and starts supporting services; it does not retrieve memory.
    - `UserPromptSubmit` — buffers each user turn, heuristically flags corrections, and searches reflexio with the prompt text to inject matching preference/skill hits as `additionalContext`.
-   - `PreToolUse` — searches reflexio keyed on the first line of the tool-call text (Bash command, Edit `new_string`, etc.) and injects top matches as `additionalContext`.
    - `PostToolUse` — records tool invocations for later extraction.
    - `Stop` — finalizes the assistant turn from the transcript, publishes to reflexio.
    - `SessionEnd` — flushes the remaining buffer with `force_extraction=True`.
@@ -30,9 +29,12 @@ Claude Code session
                                         └────────────┬────────────┘
                                                      │
                                                      ▼
-Next user prompt / tool call → query-aware search for project-specific skills,
-                              shared skills, and preferences
-                           → additionalContext injected with matching hits
+Next user prompt → query-aware search for project-specific skills,
+                   shared skills, and preferences
+                → additionalContext injected with matching hits
+
+Mid-task model call → search_learnings MCP tool with a rewritten query + cwd
+                    → markdown results returned directly to the model
 ```
 
 ## Mapping to reflexio
@@ -53,7 +55,7 @@ The adapter method names still mirror Reflexio's wire fields (`user_profiles`, `
 
 ### Per-session injection dedup
 
-Hook searches (UserPromptSubmit and PreToolUse) fire many times per session, so
+Hook searches (UserPromptSubmit) fire many times per session, so
 `search_all` passes the Claude Code `session_id` to reflexio's `/api/search`.
 The server remembers which rules it already returned to that session and skips
 them on later searches, backfilling next-best matches instead — a turn with ten
@@ -61,7 +63,16 @@ tool calls injects each rule once, not ten times. The seen-state lives
 in-memory on the backend (lost on restart, which only means an occasional
 re-injection). Known limitation: after Claude Code compacts a conversation, the
 `session_id` stays the same, so rules that fell out of the model's context are
-not re-injected for the remainder of that session.
+not re-injected by the hook for the remainder of that session. The
+`search_learnings` MCP tool deliberately passes no session id, so an explicit
+model search can return the best matches even if the hook injected them earlier.
+
+For the same reason, `search_learnings` results are rendered *without* citation
+ids or the citation instruction (`context_format.render_learnings_plain`): the
+MCP server has no `session_id`, so its hits never enter the per-session
+citation registry and any rank-id marker the model emitted could not be
+resolved by the Stop hook. MCP-surfaced learnings link to the dashboard via
+stable real-id routes instead, and are simply not citation-tracked.
 
 ## Extraction signals
 

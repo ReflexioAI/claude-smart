@@ -1,6 +1,6 @@
 """Support helpers for claude-smart citation tracking.
 
-Context injected by UserPromptSubmit / PreToolUse tags each skill and
+Context injected by UserPromptSubmit tags each skill and
 preference bullet with a rank-based id fingerprinted by the underlying
 real id (``[cs:s1-1a2b]`` for the first skill whose
 ``user_playbook_id`` starts with ``1a2b``, ``[cs:p2-c3d4]`` for the

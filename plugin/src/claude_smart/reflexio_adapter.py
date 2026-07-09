@@ -81,6 +81,7 @@ class Adapter:
             from reflexio import ReflexioClient  # type: ignore[import-not-found]
         except ImportError as exc:
             _LOGGER.debug("reflexio not importable: %s", exc)
+            self._record_read_error("import reflexio", exc)
             return None
         try:
             try:
@@ -97,6 +98,7 @@ class Adapter:
                 )
         except Exception as exc:  # noqa: BLE001 — adapter must never raise.
             _LOGGER.warning("Failed to construct ReflexioClient: %s", exc)
+            self._record_read_error("construct ReflexioClient", exc)
             return None
         return self._client
 
@@ -353,7 +355,7 @@ class Adapter:
         return _extract_items(response, "user_profiles")
 
     # -----------------------------------------------------------------
-    # Query-aware unified search (used by PreToolUse / UserPromptSubmit)
+    # Query-aware unified search (used by UserPromptSubmit and search_learnings)
     # -----------------------------------------------------------------
 
     def search_all(

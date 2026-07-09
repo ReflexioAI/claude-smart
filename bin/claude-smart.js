@@ -62,6 +62,7 @@ const SUPPORTED_HOSTS = [HOST_CLAUDE_CODE, HOST_CODEX, HOST_OPENCODE];
 const DEFAULT_CLAUDE_SMART_HOST = HOST_CLAUDE_CODE;
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
+const CLAUDE_SMART_INSTALL_LOG_PATH = join(CLAUDE_SMART_STATE_DIR, "install.log");
 const INSTALL_FAILURE_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-failed");
 const OPENCODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "opencode", "claude-smart");
 const OPENCODE_PACKAGE_LOCK_TIMEOUT_MS = 120_000;
@@ -79,6 +80,14 @@ const CODEX_MARKETPLACE_PLUGIN_PATH = "plugin";
 const CODEX_PLUGIN_CACHE_DIR = join(
   homedir(),
   ".codex",
+  "plugins",
+  "cache",
+  CODEX_MARKETPLACE_NAME,
+  "claude-smart",
+);
+const CLAUDE_CODE_PLUGIN_CACHE_DIR = join(
+  homedir(),
+  ".claude",
   "plugins",
   "cache",
   CODEX_MARKETPLACE_NAME,
@@ -115,6 +124,8 @@ const COPYTREE_IGNORE_NAMES = new Set([
   ".git",
   "node_modules",
   ".next",
+  ".coverage",
+  "htmlcov",
 ]);
 const LOCAL_DEFAULT_ENV_ENTRIES = [
   [
@@ -144,6 +155,18 @@ function shouldCopyPath(src) {
   if (COPYTREE_IGNORE_NAMES.has(base)) return false;
   if (base.endsWith(".pyc") || base.endsWith(".pyo")) return false;
   return true;
+}
+
+function appendInstallLog(message, fields = {}) {
+  mkdirSync(CLAUDE_SMART_STATE_DIR, { recursive: true });
+  const payload = {
+    ts: new Date().toISOString(),
+    message,
+    ...fields,
+  };
+  writeFileSync(CLAUDE_SMART_INSTALL_LOG_PATH, JSON.stringify(payload) + "\n", {
+    flag: "a",
+  });
 }
 
 function runClaude(args, { spinnerLabel } = {}) {
@@ -709,7 +732,7 @@ function opencodePrerequisiteError() {
 }
 
 function findClaudeCodePluginRoot() {
-  const cacheRoot = join(homedir(), ".claude", "plugins", "cache", CODEX_MARKETPLACE_NAME, "claude-smart");
+  const cacheRoot = CLAUDE_CODE_PLUGIN_CACHE_DIR;
   const candidates = [];
   try {
     for (const entry of readdirSync(cacheRoot, { withFileTypes: true })) {
@@ -751,6 +774,42 @@ function findClaudeCodePluginRoot() {
     }
   }
   return null;
+}
+
+function claudeCodePluginVersion(pluginRoot) {
+  try {
+    const manifest = JSON.parse(
+      readFileSync(join(pluginRoot, ".claude-plugin", "plugin.json"), "utf8"),
+    );
+    return typeof manifest.version === "string" && manifest.version
+      ? manifest.version
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function installClaudeCodePluginCache(pluginRoot) {
+  const version = claudeCodePluginVersion(pluginRoot);
+  if (!version) {
+    throw new Error(`missing version in ${join(pluginRoot, ".claude-plugin", "plugin.json")}`);
+  }
+  const cacheDir = join(CLAUDE_CODE_PLUGIN_CACHE_DIR, version);
+  rmSync(cacheDir, { recursive: true, force: true });
+  mkdirSync(dirname(cacheDir), { recursive: true });
+  cpSync(pluginRoot, cacheDir, {
+    recursive: true,
+    force: true,
+    verbatimSymlinks: false,
+    filter: shouldCopyPath,
+  });
+  appendInstallLog("installed Claude Code plugin cache from local package", {
+    host: HOST_CLAUDE_CODE,
+    version,
+    cacheDir,
+    source: pluginRoot,
+  });
+  return cacheDir;
 }
 
 function semverLikePathName(path) {
@@ -949,6 +1008,47 @@ async function bootstrapClaudeCodeInstall() {
   }
   throwIfInstallFailureMarker();
   return pluginRoot;
+}
+
+function claudeCodeLearningsMcpConfig(pluginRoot) {
+  const script = [
+    '_R=$(readlink "$HOME/.reflexio/plugin-root" 2>/dev/null || true)',
+    'if [ -z "$_R" ] && [ -f "$HOME/.reflexio/plugin-root.txt" ]; then _R=$(cat "$HOME/.reflexio/plugin-root.txt" 2>/dev/null || true); fi',
+    `if [ -z "$_R" ] || [ ! -f "\${_R%/}/scripts/mcp-server.sh" ]; then _R=${JSON.stringify(pluginRoot)}; fi`,
+    'if [ -z "$_R" ] || [ ! -f "${_R%/}/scripts/mcp-server.sh" ]; then _R=$(ls -dt "$HOME/.claude/plugins/cache/reflexioai/claude-smart"/*/ "$HOME/.codex/plugins/cache/reflexioai/claude-smart"/*/ 2>/dev/null | head -n 1); fi',
+    '[ -n "$_R" ] || exit 1',
+    'exec bash "${_R%/}/scripts/mcp-server.sh"',
+  ].join("; ");
+  return {
+    command: "bash",
+    args: ["-lc", script],
+  };
+}
+
+async function registerClaudeCodeLearningsMcp(pluginRoot) {
+  const config = claudeCodeLearningsMcpConfig(pluginRoot);
+  await runClaude(["mcp", "remove", "learnings", "--scope", "user"]);
+  const code = await runClaude([
+    "mcp",
+    "add-json",
+    "--scope",
+    "user",
+    "learnings",
+    JSON.stringify(config),
+  ]);
+  appendInstallLog("registered Claude Code learnings MCP", {
+    host: HOST_CLAUDE_CODE,
+    pluginRoot,
+    status: code === 0 ? "ok" : "failed",
+  });
+  if (code !== 0) {
+    process.stderr.write(
+      "warning: could not register Claude Code user-scope MCP `learnings`; " +
+        "native plugin MCP may still work, or run `claude mcp add-json --scope user learnings ...` manually.\n",
+    );
+    return false;
+  }
+  return true;
 }
 
 function isWindows() {
@@ -2012,6 +2112,12 @@ function installCodexPluginCache(pluginRoot) {
     verbatimSymlinks: false,
   });
   setCodexPluginEnabled();
+  appendInstallLog("installed Codex plugin cache from local package", {
+    host: HOST_CODEX,
+    version,
+    cacheDir,
+    source: pluginRoot,
+  });
   return cacheDir;
 }
 
@@ -2102,6 +2208,20 @@ async function runUninstall(args) {
     );
     process.exit(code);
   }
+  // Symmetric with registerClaudeCodeLearningsMcp: without this, the
+  // user-scope registration outlives the plugin caches and every future
+  // session shows a failing `learnings` MCP server.
+  const mcpRemoveCode = await runClaude([
+    "mcp",
+    "remove",
+    "learnings",
+    "--scope",
+    "user",
+  ]);
+  appendInstallLog("removed Claude Code learnings MCP", {
+    host: HOST_CLAUDE_CODE,
+    status: mcpRemoveCode === 0 ? "ok" : "failed",
+  });
   stopClaudeSmartServices(join(PACKAGE_ROOT, "plugin"));
 
   process.stdout.write(
@@ -2181,6 +2301,7 @@ async function runInstall(args, options = {}) {
   }
 
   try {
+    installClaudeCodePluginCache(join(PACKAGE_ROOT, "plugin"));
     const pluginRoot = await bootstrapClaudeCodeInstall();
     restorePublishHooksFromSource(pluginRoot);
     if (readOnly) {
@@ -2188,10 +2309,21 @@ async function runInstall(args, options = {}) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
+    if (await registerClaudeCodeLearningsMcp(pluginRoot)) {
+      process.stdout.write("Registered Claude Code search_learnings MCP tool.\n");
+    }
     if (startBackendService(pluginRoot, HOST_CLAUDE_CODE)) {
+      appendInstallLog("started claude-smart backend service", {
+        host: HOST_CLAUDE_CODE,
+        pluginRoot,
+      });
       process.stdout.write("Started claude-smart backend service.\n");
     }
     if (refreshDashboardService(pluginRoot)) {
+      appendInstallLog("refreshed claude-smart dashboard service", {
+        host: HOST_CLAUDE_CODE,
+        pluginRoot,
+      });
       process.stdout.write("Refreshed claude-smart dashboard service.\n");
     }
   } catch (err) {
@@ -2272,9 +2404,17 @@ async function runInstallCodex(args) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
     if (startBackendService(cacheDir, HOST_CODEX)) {
+      appendInstallLog("started claude-smart backend service", {
+        host: HOST_CODEX,
+        pluginRoot: cacheDir,
+      });
       process.stdout.write("Started claude-smart backend service.\n");
     }
     if (refreshDashboardService(cacheDir)) {
+      appendInstallLog("refreshed claude-smart dashboard service", {
+        host: HOST_CODEX,
+        pluginRoot: cacheDir,
+      });
       process.stdout.write("Refreshed claude-smart dashboard service.\n");
     }
   } catch (err) {
@@ -2512,4 +2652,7 @@ module.exports = {
   prunePublishHooksForReadOnly,
   restorePublishHooksFromSource,
   stripJsonc,
+  claudeCodeLearningsMcpConfig,
+  installClaudeCodePluginCache,
+  registerClaudeCodeLearningsMcp,
 };

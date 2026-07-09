@@ -5,6 +5,7 @@
   "author": {
     "name": "Yi Lu"
   },
+  "mcpServers": "./.mcp.json",
   "keywords": [
     "claude",
     "claude-code",

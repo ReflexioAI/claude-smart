@@ -1,17 +1,9 @@
-"""Shared "search reflexio, render markdown, emit hookSpecificOutput" pipeline.
+"""Shared UserPromptSubmit search/render/emit pipeline.
 
-PreToolUse and UserPromptSubmit both (a) run a query-aware reflexio
-search, (b) render the hits with ``context_format.render_inline_with_registry``,
-(c) persist the citation registry for the Stop hook to resolve, and
-(d) emit a Claude Code ``hookSpecificOutput.additionalContext`` envelope
-on stdout. This module owns that shared pipeline so the two hook
-handlers keep exactly one source of truth for the injection contract —
-the envelope shape, the registry schema, and the injected context append.
-
-The caller remains responsible for handler-specific framing (PreToolUse
-needs ``hook.emit_continue()`` on the empty path; UserPromptSubmit wraps
-the search in ``try/except`` so a failed reflexio never breaks a user's
-turn) — see the two call sites for the small policy differences.
+The hook runs a query-aware reflexio search, renders the hits with
+``context_format.render_inline_with_registry``, persists the citation
+registry for the Stop hook to resolve, and emits a Claude Code
+``hookSpecificOutput.additionalContext`` envelope on stdout.
 """
 
 from __future__ import annotations
@@ -44,7 +36,7 @@ def emit_context(
             ``/api/search`` endpoint, which fans out to user playbooks
             (project-scoped), agent playbooks (global), and preferences
             (project-scoped) server-side.
-        hook_event_name (str): ``"PreToolUse"`` or ``"UserPromptSubmit"``;
+        hook_event_name (str): ``"UserPromptSubmit"``;
             echoed verbatim in the hook envelope so Claude Code attributes
             the context to the right event.
         top_k (int): Cap on hits per collection.

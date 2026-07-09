@@ -1,0 +1,9 @@
+{
+  "learnings": {
+    "command": "bash",
+    "args": [
+      "-c",
+      "_R=\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\"; [ -z \"$_R\" ] && _R=$(ls -dt \"$HOME/.codex/plugins/cache/reflexioai/claude-smart\"/*/ 2>/dev/null | head -n 1); [ -n \"$_R\" ] || exit 1; exec bash \"${_R%/}/scripts/mcp-server.sh\""
+    ]
+  }
+}

@@ -37,7 +37,6 @@ _LOGGER = logging.getLogger(__name__)
 def _load_handlers() -> dict[str, Callable[[dict[str, Any]], Any]]:
     from claude_smart.events import (
         post_tool,
-        pre_tool,
         session_end,
         session_start,
         stop,
@@ -47,7 +46,6 @@ def _load_handlers() -> dict[str, Callable[[dict[str, Any]], Any]]:
     return {
         "session-start": session_start.handle,
         "user-prompt": user_prompt.handle,
-        "pre-tool": pre_tool.handle,
         "post-tool": post_tool.handle,
         "stop": stop.handle,
         "session-end": session_end.handle,
