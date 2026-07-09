@@ -216,10 +216,6 @@ case "$CMD" in
       claude_smart_clear_dashboard_unavailable
       emit_ok; exit 0
     fi
-    if marker_responds; then
-      claude_smart_clear_dashboard_unavailable
-      emit_ok; exit 0
-    fi
     if ! kill -0 "$dash_pid" 2>/dev/null; then
       sleep 2
       if port_occupied; then

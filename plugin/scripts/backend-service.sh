@@ -272,16 +272,43 @@ looks_like_claude_smart_backend_pid() {
   text="$(pid_details "$pid")"
   [ -n "$text" ] || return 1
   case "$text" in
-    *--claude-smart-backend=1*|*--claude-smart-reflexio-vendor-root=*|*--claude-smart-plugin-root=*|*"reflexioai/claude-smart"*|*"reflexioai\\claude-smart"*|*"$PLUGIN_ROOT_CANONICAL"*)
+    *--claude-smart-backend=1*|*--claude-smart-reflexio-vendor-root=*|*--claude-smart-plugin-root=*|*"reflexioai/claude-smart"*|*"reflexioai\\claude-smart"*)
       return 0
       ;;
   esac
+  for token in $text; do
+    value="$(pid_token_path_entry "$token")"
+    path_is_or_under_root "$PLUGIN_ROOT_CANONICAL" "$value" && return 0
+  done
   return 1
 }
 
 is_claude_smart_backend_pid() {
   pid="$1"
   backend_pid_command_matches "$pid" && looks_like_claude_smart_backend_pid "$pid"
+}
+
+path_is_or_under_root() {
+  root="$1"
+  value="$2"
+  [ -n "$root" ] && [ -n "$value" ] || return 1
+  case "$value" in
+    "$root"|"$root"/*|"$root"\\*) return 0 ;;
+  esac
+  return 1
+}
+
+pid_token_path_entry() {
+  token="$1"
+  value="${token#*=}"
+  # PYTHONPATH can hold multiple roots; split path-list suffixes without
+  # treating a Windows drive prefix like C:\... as a separator.
+  case "$value" in
+    *";"*) value="${value%%;*}" ;;
+    [A-Za-z]:\\*) ;;
+    *) value="${value%%:*}" ;;
+  esac
+  printf '%s\n' "$value"
 }
 
 pid_vendor_root() {
@@ -299,16 +326,14 @@ pid_vendor_root() {
         return 0
         ;;
     esac
-    value="${token#*=}"
-    case "$value" in
-      *";"*) value="${value%%;*}" ;;
-      [A-Za-z]:\\*) ;;
-      *) value="${value%%:*}" ;;
-    esac
+    value="$(pid_token_path_entry "$token")"
     case "$value" in
       */vendor/reflexio|*\\vendor\\reflexio)
-        printf '%s\n' "$value"
-        return 0
+        root="$(plugin_root_from_vendor_root "$value" 2>/dev/null || true)"
+        if [ -n "$root" ] && plugin_root_has_version_manifest "$root"; then
+          printf '%s\n' "$value"
+          return 0
+        fi
         ;;
     esac
   done
@@ -371,11 +396,24 @@ pid_uses_current_vendor_root() {
   pid="$1"
   text="$(pid_details "$pid")"
   [ -n "$text" ] || return 1
-  case "$text" in
-    *"--claude-smart-plugin-root=$PLUGIN_ROOT_CANONICAL"*|*"--claude-smart-reflexio-vendor-root=$VENDORED_REFLEXIO"*|*"--claude-smart-reflexio-vendor-root=$VENDORED_REFLEXIO_FOR_PYTHON"*|*"$VENDORED_REFLEXIO"*|*"$VENDORED_REFLEXIO_FOR_PYTHON"*)
-      return 0
-      ;;
-  esac
+  for token in $text; do
+    case "$token" in
+      --claude-smart-plugin-root=*)
+        value="${token#--claude-smart-plugin-root=}"
+        path_is_or_under_root "$PLUGIN_ROOT_CANONICAL" "$value" && return 0
+        ;;
+      --claude-smart-reflexio-vendor-root=*)
+        value="${token#--claude-smart-reflexio-vendor-root=}"
+        path_is_or_under_root "$VENDORED_REFLEXIO" "$value" && return 0
+        path_is_or_under_root "$VENDORED_REFLEXIO_FOR_PYTHON" "$value" && return 0
+        ;;
+      *)
+        value="$(pid_token_path_entry "$token")"
+        path_is_or_under_root "$VENDORED_REFLEXIO" "$value" && return 0
+        path_is_or_under_root "$VENDORED_REFLEXIO_FOR_PYTHON" "$value" && return 0
+        ;;
+    esac
+  done
   return 1
 }
 
@@ -688,13 +726,19 @@ kill_pid_if_directionally_owned() {
 kill_recorded_backend() {
   pid="$(recorded_backend_pid 2>/dev/null || true)"
   if [ -n "$pid" ]; then
-    kill_pid_if_directionally_owned "$pid" || true
+    if ! kill_pid_if_directionally_owned "$pid"; then
+      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
+        "[claude-smart] backend: recorded pid $pid is not owned by this plugin; removing stale root-specific pid file"
+    fi
     rm -f "$PID_FILE"
   fi
   shared_pid="$(shared_backend_pid 2>/dev/null || true)"
   if [ -n "$shared_pid" ]; then
     if kill_pid_if_directionally_owned "$shared_pid"; then
       rm -f "$SHARED_PID_FILE"
+    else
+      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
+        "[claude-smart] backend: shared pid $shared_pid is not owned by this plugin; leaving shared pid file"
     fi
   fi
   return 0
