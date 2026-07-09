@@ -417,7 +417,45 @@ rm -f package.json.bak pyproject.toml.bak .claude-plugin/*.bak
 
 ## Developing locally
 
-There is one local test path: build the npm tarball from this checkout and install it. The tarball bundles the plugin plus a Reflexio source snapshot, so installing it exercises your local plugin code end-to-end on both hosts.
+There are two local validation paths. Use the isolated integration harness for
+day-to-day source debugging, and use a private tarball install when you need to
+prove the code exactly as a user would run it.
+
+### Safe source e2e
+
+Run the integration harness directly from the checkout:
+
+```bash
+bash tests/integration/integration.sh
+```
+
+The harness uses a temporary `HOME`, isolated Reflexio storage, and test-only
+ports by default:
+
+| Service | Production port | Integration port |
+| --- | ---: | ---: |
+| Backend | `8071` | `18071` |
+| Embedding daemon | `8072` | `18072` |
+| Dashboard | `3001` | `13001` |
+
+This path is for safely debugging source changes while your installed
+production claude-smart keeps running on the default ports. The harness refuses
+to use `8071`, `8072`, or `3001` unless you explicitly opt in:
+
+```bash
+CLAUDE_SMART_INTEGRATION_ALLOW_PROD_PORTS=1 \
+  BACKEND_PORT=8071 EMBEDDING_PORT=8072 DASHBOARD_PORT=3001 \
+  bash tests/integration/integration.sh
+```
+
+Do not use production ports for normal source debugging. If the goal is to
+validate the code as production, build and install a tarball instead.
+
+### Production-like tarball validation
+
+Build the npm tarball from this checkout and install it. The tarball bundles
+the plugin plus a Reflexio source snapshot, so installing it exercises your
+local plugin code end-to-end on real host paths and production ports.
 
 ```bash
 make package

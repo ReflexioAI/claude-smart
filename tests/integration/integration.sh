@@ -3,8 +3,7 @@
 #
 # Simulates a fresh user environment: sandboxed HOME, no prior reflexio
 # state, no prior claude-smart state. Exercises the two hook-driven
-# long-lived services (backend on :8071, embedding service on :8072, dashboard
-# on :3001) and asserts they come up healthy.
+# long-lived services on isolated test ports and asserts they come up healthy.
 #
 # Assumes a working install environment: uv, node, npm, python3 already
 # on PATH. The GitHub Actions matrix controls the node version; uv is
@@ -13,6 +12,9 @@
 #
 # Usage:
 #   bash tests/integration/integration.sh            # all stages
+#   CLAUDE_SMART_INTEGRATION_ALLOW_PROD_PORTS=1 \
+#     BACKEND_PORT=8071 EMBEDDING_PORT=8072 DASHBOARD_PORT=3001 \
+#     bash tests/integration/integration.sh          # explicit production-like ports
 #   bash tests/integration/integration.sh setup      # single stage
 #   bash tests/integration/integration.sh setup-hook
 #   bash tests/integration/integration.sh backend
@@ -27,12 +29,43 @@ set -Eeuo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 PLUGIN_ROOT="$REPO_ROOT/plugin"
+ORIGINAL_HOME="${HOME:-}"
 
-BACKEND_PORT="${BACKEND_PORT:-8071}"
-EMBEDDING_PORT="${EMBEDDING_PORT:-8072}"
-DASHBOARD_PORT="${DASHBOARD_PORT:-3001}"
+# Use non-production defaults so a local integration run cannot stop or
+# replace the user's installed claude-smart/Reflexio services on 8071/8072/3001.
+BACKEND_PORT="${BACKEND_PORT:-18071}"
+EMBEDDING_PORT="${EMBEDDING_PORT:-18072}"
+DASHBOARD_PORT="${DASHBOARD_PORT:-13001}"
 export BACKEND_PORT EMBEDDING_PORT DASHBOARD_PORT
 BACKEND_HEALTH_TIMEOUT_SECONDS="${BACKEND_HEALTH_TIMEOUT_SECONDS:-90}"
+EMBEDDING_HEALTH_TIMEOUT_SECONDS="${EMBEDDING_HEALTH_TIMEOUT_SECONDS:-240}"
+
+require_prod_port_opt_in() {
+  [ "${CLAUDE_SMART_INTEGRATION_ALLOW_PROD_PORTS:-}" = "1" ] && return 0
+  for selected in \
+    "BACKEND_PORT=$BACKEND_PORT" \
+    "EMBEDDING_PORT=$EMBEDDING_PORT" \
+    "DASHBOARD_PORT=$DASHBOARD_PORT"
+  do
+    port_value="${selected#*=}"
+    case "$port_value" in
+      *[!0-9]*|"") ;;
+      *)
+        while [ "${port_value#0}" != "$port_value" ] && [ "$port_value" != "0" ]; do
+          port_value="${port_value#0}"
+        done
+        ;;
+    esac
+    case "$port_value" in
+      8071|8072|3001)
+        printf '[integration] refusing to use production claude-smart port via %s\n' "$selected" >&2
+        printf '[integration] use the isolated defaults, or set CLAUDE_SMART_INTEGRATION_ALLOW_PROD_PORTS=1 to opt in\n' >&2
+        exit 2
+        ;;
+    esac
+  done
+}
+require_prod_port_opt_in
 
 # Sandbox HOME so real ~/.reflexio, ~/.claude-smart, ~/.claude stay
 # untouched. Created once, reused across stages within a single run.
@@ -45,7 +78,48 @@ else
   # Create it before exporting so later log redirects don't fail early.
   mkdir -p "$INTEG_HOME"
 fi
+INTEG_HOME="$(cd "$INTEG_HOME" && pwd -P)"
+ORIGINAL_HOME_CANONICAL="$(
+  if [ -n "$ORIGINAL_HOME" ]; then
+    cd "$ORIGINAL_HOME" 2>/dev/null && pwd -P || printf '%s\n' "$ORIGINAL_HOME"
+  fi
+)"
+if [ -z "$INTEG_HOME" ] || [ "$INTEG_HOME" = "/" ] || { [ -n "$ORIGINAL_HOME_CANONICAL" ] && [ "$INTEG_HOME" = "$ORIGINAL_HOME_CANONICAL" ]; }; then
+  printf '[integration] refusing unsafe CLAUDE_SMART_INTEG_HOME=%s\n' "$INTEG_HOME" >&2
+  printf '[integration] use a temporary integration home so production ~/.reflexio and ~/.claude-smart stay untouched\n' >&2
+  exit 2
+fi
+export CLAUDE_SMART_INTEG_HOME="$INTEG_HOME"
 export HOME="$INTEG_HOME"
+
+# Make data/config isolation explicit even if the caller has Reflexio env vars
+# exported in their shell. The services under test use the temp HOME only.
+export LOCAL_STORAGE_PATH="$HOME/.reflexio/data"
+export REFLEXIO_LOG_DIR="$HOME"
+export REFLEXIO_ENV_FILE="$HOME/.claude-smart/.env"
+export REFLEXIO_URL="http://localhost:$BACKEND_PORT/"
+unset REFLEXIO_API_KEY REFLEXIO_USER_ID
+
+sanitize_integration_env_file() {
+  env_file="$HOME/.claude-smart/.env"
+  [ -f "$env_file" ] || return 0
+  tmp_file="$env_file.integration.$$"
+  awk '
+    /^[[:space:]]*(#|$)/ { print; next }
+    {
+      line = $0
+      sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+      split(line, parts, "=")
+      key = parts[1]
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      if (key == "REFLEXIO_URL" || key == "REFLEXIO_API_KEY" || key == "REFLEXIO_USER_ID") next
+      print
+    }
+  ' "$env_file" >"$tmp_file"
+  chmod 600 "$tmp_file" 2>/dev/null || true
+  mv "$tmp_file" "$env_file"
+}
+sanitize_integration_env_file
 
 # Let the plugin scripts resolve their own root without the hooks.json
 # env var; smart-install.sh doesn't read CLAUDE_PLUGIN_ROOT but the
@@ -97,7 +171,8 @@ poll_200() {
 
 # Poll a URL up to $1 seconds for a specific response header. Returns 0
 # when the header is present in the response. Used for the dashboard
-# marker check so a foreign listener on :3001 doesn't pass the integration.
+# marker check so a foreign listener on the selected port doesn't pass the
+# integration.
 poll_header() {
   local url="$1" header="$2" timeout="$3"
   local i=0
@@ -228,9 +303,9 @@ stage_backend() {
     fail "backend /health did not return 200 within ${BACKEND_HEALTH_TIMEOUT_SECONDS}s"
   fi
   if [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}" = "1" ]; then
-    log "backend: polling http://127.0.0.1:$EMBEDDING_PORT/health (120s)"
-    if ! poll_200 "http://127.0.0.1:$EMBEDDING_PORT/health" 120; then
-      fail "embedding service /health did not return 200 within 120s"
+    log "backend: polling http://127.0.0.1:$EMBEDDING_PORT/health (${EMBEDDING_HEALTH_TIMEOUT_SECONDS}s)"
+    if ! poll_200 "http://127.0.0.1:$EMBEDDING_PORT/health" "$EMBEDDING_HEALTH_TIMEOUT_SECONDS"; then
+      fail "embedding service /health did not return 200 within ${EMBEDDING_HEALTH_TIMEOUT_SECONDS}s"
     fi
   fi
   log "backend: ok"

@@ -1688,6 +1688,96 @@ def test_integration_harness_prepares_vendored_reflexio() -> None:
     assert "prepare_vendored_reflexio" in integration.split("stage_setup()", 1)[1]
 
 
+def test_integration_harness_defaults_to_isolated_runtime() -> None:
+    integration = (REPO_ROOT / "tests" / "integration" / "integration.sh").read_text()
+
+    assert 'BACKEND_PORT="${BACKEND_PORT:-18071}"' in integration
+    assert 'EMBEDDING_PORT="${EMBEDDING_PORT:-18072}"' in integration
+    assert 'DASHBOARD_PORT="${DASHBOARD_PORT:-13001}"' in integration
+    assert 'EMBEDDING_HEALTH_TIMEOUT_SECONDS="${EMBEDDING_HEALTH_TIMEOUT_SECONDS:-240}"' in integration
+    assert "within ${EMBEDDING_HEALTH_TIMEOUT_SECONDS}s" in integration
+    assert "CLAUDE_SMART_INTEGRATION_ALLOW_PROD_PORTS" in integration
+    assert "refusing to use production claude-smart port" in integration
+    assert 'export LOCAL_STORAGE_PATH="$HOME/.reflexio/data"' in integration
+    assert 'export REFLEXIO_LOG_DIR="$HOME"' in integration
+    assert 'export REFLEXIO_ENV_FILE="$HOME/.claude-smart/.env"' in integration
+    assert 'export REFLEXIO_URL="http://localhost:$BACKEND_PORT/"' in integration
+    assert "unset REFLEXIO_API_KEY REFLEXIO_USER_ID" in integration
+    assert "sanitize_integration_env_file" in integration
+    assert 'key == "REFLEXIO_URL"' in integration
+    assert 'key == "REFLEXIO_API_KEY"' in integration
+    assert 'key == "REFLEXIO_USER_ID"' in integration
+    assert "refusing unsafe CLAUDE_SMART_INTEG_HOME" in integration
+    assert 'BACKEND_PORT="${BACKEND_PORT:-8071}"' not in integration
+    assert 'EMBEDDING_PORT="${EMBEDDING_PORT:-8072}"' not in integration
+    assert 'DASHBOARD_PORT="${DASHBOARD_PORT:-3001}"' not in integration
+
+
+def test_integration_harness_rejects_production_ports_without_opt_in(
+    tmp_path: Path,
+) -> None:
+    if not shutil.which("bash"):
+        pytest.skip("bash is required for integration harness smoke tests")
+
+    env = _isolated_env(tmp_path)
+    env["BACKEND_PORT"] = "08071"
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "tests" / "integration" / "integration.sh"), "cleanup"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert "refusing to use production claude-smart port" in result.stderr
+    assert "CLAUDE_SMART_INTEGRATION_ALLOW_PROD_PORTS=1" in result.stderr
+
+
+def test_integration_harness_sanitizes_reused_managed_env(
+    tmp_path: Path,
+) -> None:
+    if not shutil.which("bash"):
+        pytest.skip("bash is required for integration harness smoke tests")
+
+    home = tmp_path / "integ-home"
+    env_dir = home / ".claude-smart"
+    env_dir.mkdir(parents=True)
+    env_file = env_dir / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                'REFLEXIO_URL="https://www.reflexio.ai/"',
+                'export REFLEXIO_API_KEY="secret"',
+                'REFLEXIO_USER_ID="user-1"',
+                'CLAUDE_SMART_USE_LOCAL_CLI="1"',
+            ]
+        )
+        + "\n"
+    )
+    env = _isolated_env(tmp_path / "runner-home")
+    env["CLAUDE_SMART_INTEG_HOME"] = str(home)
+    env_file.chmod(0o600)
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "tests" / "integration" / "integration.sh"), "cleanup"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    sanitized = env_file.read_text()
+    assert "REFLEXIO_URL" not in sanitized
+    assert "REFLEXIO_API_KEY" not in sanitized
+    assert "REFLEXIO_USER_ID" not in sanitized
+    assert 'CLAUDE_SMART_USE_LOCAL_CLI="1"' in sanitized
+    if os.name != "nt":
+        assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+
+
 def test_check_reflexio_lock_reports_invalid_json(tmp_path: Path) -> None:
     scripts = tmp_path / "scripts"
     plugin = tmp_path / "plugin"
