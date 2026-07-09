@@ -92,6 +92,11 @@ plugin_version_from_root() {
   printf '%s\n' "${version:-unknown}"
 }
 
+plugin_root_has_version_manifest() {
+  root="$1"
+  [ -f "$root/.codex-plugin/plugin.json" ] || [ -f "$root/package.json" ] || [ -f "$root/pyproject.toml" ]
+}
+
 PLUGIN_VERSION="$(plugin_version_from_root "$PLUGIN_ROOT_CANONICAL")"
 
 if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
@@ -293,8 +298,16 @@ pid_vendor_root() {
         printf '%s/vendor/reflexio\n' "${token#--claude-smart-plugin-root=}"
         return 0
         ;;
+    esac
+    value="${token#*=}"
+    case "$value" in
+      *";"*) value="${value%%;*}" ;;
+      [A-Za-z]:\\*) ;;
+      *) value="${value%%:*}" ;;
+    esac
+    case "$value" in
       */vendor/reflexio|*\\vendor\\reflexio)
-        printf '%s\n' "$token"
+        printf '%s\n' "$value"
         return 0
         ;;
     esac
@@ -322,8 +335,21 @@ pid_plugin_root() {
     esac
   done
   vendor="$(pid_vendor_root "$1" 2>/dev/null || true)"
-  [ -n "$vendor" ] || return 1
-  plugin_root_from_vendor_root "$vendor"
+  if [ -n "$vendor" ]; then
+    plugin_root_from_vendor_root "$vendor" && return 0
+  fi
+  for token in $text; do
+    case "$token" in
+      cwd=*)
+        root="${token#cwd=}"
+        if plugin_root_has_version_manifest "$root"; then
+          printf '%s\n' "$root"
+          return 0
+        fi
+        ;;
+    esac
+  done
+  return 1
 }
 
 pid_plugin_version() {
@@ -523,7 +549,7 @@ stop_backend_listener_if_owned() {
   [ -n "$pids" ] || return 1
   ours=""
   for pid in $pids; do
-    if is_claude_smart_backend_pid "$pid" && { pid_uses_current_vendor_root "$pid" || backend_pid_strictly_older_than_plugin "$pid" || backend_pid_is_own_recorded "$pid"; }; then
+    if is_claude_smart_backend_pid "$pid" && { pid_uses_current_vendor_root "$pid" || backend_pid_strictly_older_than_plugin "$pid"; }; then
       ours="$ours $pid"
     fi
   done
@@ -739,6 +765,10 @@ case "$CMD" in
     case "$listener_class" in
       claude_smart)
         if backend_current_or_compatible; then
+          if ! backend_owned_by_current_vendor; then
+            claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
+              "[claude-smart] backend: accepted compatible claude-smart backend on port $PORT from another plugin root; not restarting"
+          fi
           embedding_current_or_compatible || log_embedding_degraded
           emit_ok; exit 0
         fi
@@ -855,37 +885,24 @@ case "$CMD" in
     # setsid/python os.setsid make this pid the new process group leader;
     # sampling immediately can race and capture the caller's pgid instead.
     # On Windows, claude_smart_kill_tree translates the MSYS pid to WINPID.
+    set -- services start --only backend --no-reload --workers "$workers"
     if reflexio_services_start_supports_skip "$backend_python"; then
-      claude_smart_spawn_detached bash "$HERE/backend-log-runner.sh" \
-        "$LOG_FILE" "$LOG_MAX_BYTES" -- \
-        env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
-        PYTHONPATH="$backend_pythonpath" \
-        CLAUDE_SMART_BACKEND=1 \
-        CLAUDE_SMART_PLUGIN_ROOT="$PLUGIN_ROOT_CANONICAL" \
-        CLAUDE_SMART_VERSION="$PLUGIN_VERSION" \
-        CLAUDE_SMART_REFLEXIO_VENDOR_ROOT="$VENDORED_REFLEXIO_FOR_PYTHON" \
-        "$backend_python" "$HERE/backend-python-runner.py" \
-        --claude-smart-backend=1 \
-        "--claude-smart-plugin-root=$PLUGIN_ROOT_CANONICAL" \
-        "--claude-smart-version=$PLUGIN_VERSION" \
-        "--claude-smart-reflexio-vendor-root=$VENDORED_REFLEXIO_FOR_PYTHON" \
-        -- services start --skip-if-running --only backend --no-reload --workers "$workers"
-    else
-      claude_smart_spawn_detached bash "$HERE/backend-log-runner.sh" \
-        "$LOG_FILE" "$LOG_MAX_BYTES" -- \
-        env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
-        PYTHONPATH="$backend_pythonpath" \
-        CLAUDE_SMART_BACKEND=1 \
-        CLAUDE_SMART_PLUGIN_ROOT="$PLUGIN_ROOT_CANONICAL" \
-        CLAUDE_SMART_VERSION="$PLUGIN_VERSION" \
-        CLAUDE_SMART_REFLEXIO_VENDOR_ROOT="$VENDORED_REFLEXIO_FOR_PYTHON" \
-        "$backend_python" "$HERE/backend-python-runner.py" \
-        --claude-smart-backend=1 \
-        "--claude-smart-plugin-root=$PLUGIN_ROOT_CANONICAL" \
-        "--claude-smart-version=$PLUGIN_VERSION" \
-        "--claude-smart-reflexio-vendor-root=$VENDORED_REFLEXIO_FOR_PYTHON" \
-        -- services start --only backend --no-reload --workers "$workers"
+      set -- services start --skip-if-running --only backend --no-reload --workers "$workers"
     fi
+    claude_smart_spawn_detached bash "$HERE/backend-log-runner.sh" \
+      "$LOG_FILE" "$LOG_MAX_BYTES" -- \
+      env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
+      PYTHONPATH="$backend_pythonpath" \
+      CLAUDE_SMART_BACKEND=1 \
+      CLAUDE_SMART_PLUGIN_ROOT="$PLUGIN_ROOT_CANONICAL" \
+      CLAUDE_SMART_VERSION="$PLUGIN_VERSION" \
+      CLAUDE_SMART_REFLEXIO_VENDOR_ROOT="$VENDORED_REFLEXIO_FOR_PYTHON" \
+      "$backend_python" "$HERE/backend-python-runner.py" \
+      --claude-smart-backend=1 \
+      "--claude-smart-plugin-root=$PLUGIN_ROOT_CANONICAL" \
+      "--claude-smart-version=$PLUGIN_VERSION" \
+      "--claude-smart-reflexio-vendor-root=$VENDORED_REFLEXIO_FOR_PYTHON" \
+      -- "$@"
     svc_pid=$!
     echo "$svc_pid" > "$PID_FILE"
 

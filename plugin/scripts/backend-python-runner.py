@@ -9,6 +9,17 @@ import sys
 
 
 def main() -> int:
+    """Mirror claude-smart metadata into env and delegate to Reflexio CLI.
+
+    Args:
+        None: Reads process argv. Arguments before ``--`` are
+            ``--claude-smart-*`` metadata kept visible in the process command
+            line; arguments after ``--`` become ``reflexio.cli`` arguments.
+
+    Returns:
+        int: Exit status. Returns ``2`` when required argument separators or
+            Reflexio CLI arguments are missing.
+    """
     try:
         separator = sys.argv.index("--")
     except ValueError:
