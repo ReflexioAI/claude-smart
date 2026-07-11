@@ -153,6 +153,11 @@ export default function DashboardPage() {
     (acc, s) => acc + s.learning_interaction_count,
     0,
   );
+  const archiveUsage = archiveStatus
+    ? archiveStatus.sizeBytes / archiveStatus.maxBytes
+    : 0;
+  const archiveTone =
+    archiveUsage >= 1 ? "danger" : archiveUsage >= 0.8 ? "warning" : "default";
   return (
     <div className="flex-1 overflow-auto">
       <PageHeader
@@ -194,11 +199,11 @@ export default function DashboardPage() {
             <StatCard
               label="Archived JSONL size"
               value={formatBytes(archiveStatus.sizeBytes)}
-              hint={`${archiveStatus.exceeded ? "Storage ceiling reached · " : ""}${formatBytes(
+              hint={`${archiveTone === "danger" ? "Storage ceiling reached · " : archiveTone === "warning" ? "Approaching storage ceiling · " : ""}${formatBytes(
                 archiveStatus.maxBytes,
               )} ceiling`}
               icon={Archive}
-              tone={archiveStatus.exceeded ? "danger" : "default"}
+              tone={archiveTone}
             />
           )}
         </div>

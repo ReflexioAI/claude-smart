@@ -14,7 +14,6 @@ export interface ArchiveStatus {
   enabled: boolean;
   sizeBytes: number;
   maxBytes: number;
-  exceeded: boolean;
 }
 
 function parseEnv(text: string): Record<string, string> {
@@ -74,7 +73,6 @@ export async function readArchiveStatus(): Promise<ArchiveStatus> {
       enabled: false,
       sizeBytes: 0,
       maxBytes: ceiling,
-      exceeded: false,
     };
   }
 
@@ -105,6 +103,5 @@ export async function readArchiveStatus(): Promise<ArchiveStatus> {
     enabled: true,
     sizeBytes,
     maxBytes: ceiling,
-    exceeded: sizeBytes >= ceiling,
   };
 }

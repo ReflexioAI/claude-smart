@@ -43,7 +43,7 @@ _VALID_CITATION_KINDS = frozenset(
     {"playbook", "profile", "user_playbook", "agent_playbook"}
 )
 _VALID_RETRIEVED_PLAYBOOK_KINDS = frozenset({"user_playbook", "agent_playbook"})
-_RETRIEVED_LEARNINGS_WIRE_CAP = 1000
+_RETRIEVED_LEARNINGS_PUBLISH_CAP = 1000
 _SNAPSHOT_TITLE_CAP = 1_000
 _SNAPSHOT_CONTENT_CAP = 100_000
 _SNAPSHOT_DETAIL_CAP = 10_000
@@ -261,7 +261,7 @@ def attach_retrieved_learnings(
     truncated = 0
     snapshots_omitted = 0
     snapshot_bytes = 0
-    attached_total = 0
+    attached_total = sum(len(items) for items in staged_retrieved.values())
     remaining: list[dict[str, Any]] = []
     for entry in [*pending, *injected_entries]:
         entry_ts = entry.get("ts")
@@ -293,10 +293,7 @@ def attach_retrieved_learnings(
         candidate_key = (wire_kind, real_id)
         if candidate_key in seen_by_interaction[interaction_index]:
             continue
-        if (
-            len(retrieved) >= _RETRIEVED_LEARNINGS_WIRE_CAP
-            or attached_total >= _RETRIEVED_LEARNINGS_WIRE_CAP
-        ):
+        if attached_total >= _RETRIEVED_LEARNINGS_PUBLISH_CAP:
             truncated += 1
             continue
         candidate: dict[str, Any] = {"kind": wire_kind, "learning_id": real_id}
