@@ -53,6 +53,7 @@ function isTruthy(value: string | undefined): boolean {
 
 function warningBytes(value: string | undefined): number {
   if (!value) return DEFAULT_WARNING_BYTES;
+  if (!/^[+-]?\d+$/.test(value)) return DEFAULT_WARNING_BYTES;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0
     ? parsed

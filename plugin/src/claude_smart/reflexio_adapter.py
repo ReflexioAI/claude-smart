@@ -122,21 +122,6 @@ class Adapter:
             return False
         try:
             interaction_list = list(interactions)
-            kwargs = {
-                "user_id": project_id,
-                "interactions": interaction_list,
-                "agent_version": runtime.agent_version(),
-                "session_id": session_id,
-                "wait_for_response": False,
-                "force_extraction": force_extraction,
-                "skip_aggregation": skip_aggregation,
-            }
-            if _supports_keyword(client.publish_interaction, "override_learning_stall"):
-                kwargs["override_learning_stall"] = override_learning_stall
-            elif override_learning_stall:
-                _LOGGER.debug(
-                    "publish_interaction client does not support override_learning_stall"
-                )
             if _needs_raw_retrieved_learning_publish(interaction_list):
                 client._make_request(  # noqa: SLF001 - pinned-client compatibility
                     "POST",
@@ -154,6 +139,24 @@ class Adapter:
                     params=None,
                 )
             else:
+                kwargs = {
+                    "user_id": project_id,
+                    "interactions": interaction_list,
+                    "agent_version": runtime.agent_version(),
+                    "session_id": session_id,
+                    "wait_for_response": False,
+                    "force_extraction": force_extraction,
+                    "skip_aggregation": skip_aggregation,
+                }
+                if _supports_keyword(
+                    client.publish_interaction, "override_learning_stall"
+                ):
+                    kwargs["override_learning_stall"] = override_learning_stall
+                elif override_learning_stall:
+                    _LOGGER.debug(
+                        "publish_interaction client does not support "
+                        "override_learning_stall"
+                    )
                 client.publish_interaction(**kwargs)
             return True
         except Exception as exc:  # noqa: BLE001
@@ -504,7 +507,7 @@ def _needs_raw_retrieved_learning_publish(
     request helper can carry the complete body safely: old servers ignore the
     field, while upgraded servers persist it.
     """
-    if not any("retrieved_learnings" in item for item in interactions):
+    if not any(item.get("retrieved_learnings") for item in interactions):
         return False
     try:
         from reflexio.models.api_schema.service_schemas import (  # type: ignore[import-not-found]

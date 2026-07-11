@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { reflexio } from "@/lib/reflexio-client";
 import { formatBytes, formatRelative, truncate, truncateId } from "@/lib/format";
 import { agentPlaybookStatusLabel } from "@/lib/status";
+import type { ArchiveStatus } from "@/lib/archive-status";
 import type {
   AgentPlaybook,
   PlaybookApplicationStat,
@@ -36,14 +37,6 @@ interface RecentLearning {
   content: string;
   createdAt: number;
   statKey: string;
-}
-
-interface ArchiveStatus {
-  enabled: boolean;
-  entryCount: number;
-  sizeBytes: number;
-  warningBytes: number;
-  exceeded: boolean;
 }
 
 export default function DashboardPage() {

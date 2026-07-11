@@ -44,6 +44,10 @@ _VALID_CITATION_KINDS = frozenset(
 )
 _VALID_RETRIEVED_PLAYBOOK_KINDS = frozenset({"user_playbook", "agent_playbook"})
 _RETRIEVED_LEARNINGS_WIRE_CAP = 1000
+_SNAPSHOT_TITLE_CAP = 1_000
+_SNAPSHOT_CONTENT_CAP = 100_000
+_SNAPSHOT_DETAIL_CAP = 10_000
+_SNAPSHOT_TOTAL_BYTES_CAP = 10 * 1024**2
 
 
 def _truncate_tool_data_field(value: Any) -> Any:
@@ -255,6 +259,8 @@ def attach_retrieved_learnings(
 
     skipped = 0
     truncated = 0
+    snapshots_omitted = 0
+    snapshot_bytes = 0
     attached_total = 0
     remaining: list[dict[str, Any]] = []
     for entry in [*pending, *injected_entries]:
@@ -284,15 +290,6 @@ def attach_retrieved_learnings(
 
         interaction_index = assistant_interaction_indexes[target]
         retrieved = staged_retrieved[interaction_index]
-        candidate: dict[str, Any] = {"kind": wire_kind, "learning_id": real_id}
-        content = entry.get("content")
-        if isinstance(content, str) and content:
-            candidate["snapshot"] = {
-                "title": str(entry.get("source_title") or entry.get("title") or ""),
-                "content": content,
-                "trigger": str(entry.get("trigger") or ""),
-                "rationale": str(entry.get("rationale") or ""),
-            }
         candidate_key = (wire_kind, real_id)
         if candidate_key in seen_by_interaction[interaction_index]:
             continue
@@ -302,18 +299,45 @@ def attach_retrieved_learnings(
         ):
             truncated += 1
             continue
+        candidate: dict[str, Any] = {"kind": wire_kind, "learning_id": real_id}
+        content = entry.get("content")
+        if isinstance(content, str) and content:
+            snapshot = {
+                "title": str(entry.get("source_title") or entry.get("title") or "")[
+                    :_SNAPSHOT_TITLE_CAP
+                ],
+                "content": content[:_SNAPSHOT_CONTENT_CAP],
+                "trigger": str(entry.get("trigger") or "")[:_SNAPSHOT_DETAIL_CAP],
+                "rationale": str(entry.get("rationale") or "")[:_SNAPSHOT_DETAIL_CAP],
+            }
+            candidate_snapshot_bytes = sum(
+                len(value.encode("utf-8")) for value in snapshot.values()
+            )
+            if snapshot_bytes + candidate_snapshot_bytes <= _SNAPSHOT_TOTAL_BYTES_CAP:
+                candidate["snapshot"] = snapshot
+                snapshot_bytes += candidate_snapshot_bytes
+            else:
+                snapshots_omitted += 1
         retrieved.append(candidate)
         seen_by_interaction[interaction_index].add(candidate_key)
         attached_total += 1
 
     for interaction_index, retrieved in staged_retrieved.items():
-        interactions[interaction_index]["retrieved_learnings"] = retrieved
+        if retrieved:
+            interactions[interaction_index]["retrieved_learnings"] = retrieved
+        else:
+            interactions[interaction_index].pop("retrieved_learnings", None)
 
     if skipped:
         _LOGGER.debug("Skipped %d unresolvable injected learning entries", skipped)
     if truncated:
         _LOGGER.warning(
             "Dropped %d retrieved learning links at the publish wire cap", truncated
+        )
+    if snapshots_omitted:
+        _LOGGER.warning(
+            "Omitted %d retrieved-learning snapshot(s) at the 10 MiB wire cap",
+            snapshots_omitted,
         )
     return {
         "retrieved_folded_up_to": end_offset,

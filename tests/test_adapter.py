@@ -283,9 +283,14 @@ def test_publish_omits_override_learning_stall_when_client_lacks_keyword() -> No
     assert "override_learning_stall" not in client.published_kwargs
 
 
-def test_pinned_client_sends_retrieved_learnings_without_model_stripping() -> None:
+def test_pinned_client_sends_retrieved_learnings_without_model_stripping(
+    monkeypatch,
+) -> None:
     client = _FakeClient()
     adapter = _adapter_with(client)
+    monkeypatch.setattr(
+        reflexio_adapter, "_needs_raw_retrieved_learning_publish", lambda _: True
+    )
 
     ok = adapter.publish(
         session_id="s1",

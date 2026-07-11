@@ -170,6 +170,43 @@ def test_registry_read_failure_does_not_break_publish(session_dir, monkeypatch) 
     assert "retrieved_learnings" not in adapter.calls[0]["interactions"][0]
 
 
+def test_publish_without_injected_learnings_keeps_typed_payload(session_dir) -> None:
+    _append_assistant("s1", 10)
+    adapter = _RecordingAdapter()
+
+    assert _publish("s1", adapter) == ("ok", 1)
+    assert "retrieved_learnings" not in adapter.calls[0]["interactions"][0]
+
+
+def test_snapshot_fields_are_clamped_to_server_caps(session_dir) -> None:
+    state.append_injected(
+        "s1",
+        [
+            {
+                "id": "p",
+                "kind": "profile",
+                "real_id": "profile-1",
+                "source_title": "t" * 1_001,
+                "content": "c" * 100_001,
+                "trigger": "g" * 10_001,
+                "rationale": "r" * 10_001,
+                "ts": 1,
+            }
+        ],
+    )
+    _append_assistant("s1", 10)
+    adapter = _RecordingAdapter()
+
+    assert _publish("s1", adapter) == ("ok", 1)
+    snapshot = adapter.calls[0]["interactions"][0]["retrieved_learnings"][0]["snapshot"]
+    assert {key: len(value) for key, value in snapshot.items()} == {
+        "title": 1_000,
+        "content": 100_000,
+        "trigger": 10_000,
+        "rationale": 10_000,
+    }
+
+
 def test_out_of_order_future_entry_does_not_block_eligible_entry(session_dir) -> None:
     state.append_injected(
         "s1",
