@@ -137,6 +137,13 @@ def read_injected_entries(
     Unlike :func:`read_injected`, this reader intentionally preserves repeated
     ids: each line represents a distinct injection event that must be folded
     into exactly one published Assistant turn.
+
+    Args:
+        session_id: Host session identifier.
+        start_offset: Previously committed safe byte offset.
+
+    Returns:
+        Ordered decoded entries and the last completely consumed byte offset.
     """
     path = injected_path(session_id)
     if not path.exists():
@@ -175,7 +182,14 @@ def read_injected_entries(
 
 
 def retrieved_learning_watermark(records: list[dict[str, Any]]) -> int:
-    """Return the latest successfully published injection-file byte offset."""
+    """Return the latest successfully published injection-file byte offset.
+
+    Args:
+        records: Raw persisted session-buffer records.
+
+    Returns:
+        Latest non-negative ``retrieved_folded_up_to`` value, or zero.
+    """
     offset = 0
     for record in records:
         candidate = record.get("retrieved_folded_up_to")
@@ -192,9 +206,16 @@ def attach_retrieved_learnings(
 ) -> dict[str, Any]:
     """Fold injected entries into the first eligible Assistant interaction.
 
-    Returns the registry offset and any not-yet-eligible entries. The caller
-    persists that state only after the publish succeeds, making retries
-    idempotent without assuming registry timestamps are monotonic.
+    Args:
+        records: Raw persisted session-buffer records.
+        interactions: Unpublished wire interactions to enrich after validation.
+        injected_entries: Newly read injection-registry entries in file order.
+        end_offset: Safe byte offset reached in the injection registry.
+
+    Returns:
+        Registry offset and any not-yet-eligible entries. The caller persists
+        this state only after publish succeeds, making retries idempotent
+        without assuming registry timestamps are monotonic.
     """
     published = 0
     pending: list[dict[str, Any]] = []
@@ -203,7 +224,11 @@ def attach_retrieved_learnings(
             published = rec["published_up_to"]
         if "retrieved_folded_up_to" in rec:
             pending_value = rec.get("retrieved_pending", [])
-            pending = pending_value if isinstance(pending_value, list) else []
+            pending = (
+                [item for item in pending_value if isinstance(item, dict)]
+                if isinstance(pending_value, list)
+                else []
+            )
 
     assistant_timestamps: list[int] = []
     for rec in records[published:]:
@@ -216,9 +241,17 @@ def attach_retrieved_learnings(
         for idx, interaction in enumerate(interactions)
         if interaction.get("role") == "Assistant"
     ]
-    for idx in assistant_interaction_indexes:
-        interactions[idx].setdefault("retrieved_learnings", [])
     assistant_count = min(len(assistant_timestamps), len(assistant_interaction_indexes))
+    staged_retrieved: dict[int, list[dict[str, str]]] = {}
+    seen_by_interaction: dict[int, set[tuple[str, str]]] = {}
+    for index in assistant_interaction_indexes:
+        existing = interactions[index].get("retrieved_learnings", [])
+        retrieved = [item.copy() for item in existing if isinstance(item, dict)]
+        staged_retrieved[index] = retrieved
+        seen_by_interaction[index] = {
+            (str(item.get("kind", "")), str(item.get("learning_id", "")))
+            for item in retrieved
+        }
 
     skipped = 0
     truncated = 0
@@ -249,16 +282,24 @@ def attach_retrieved_learnings(
             skipped += 1
             continue
 
-        interaction = interactions[assistant_interaction_indexes[target]]
-        retrieved = interaction.setdefault("retrieved_learnings", [])
+        interaction_index = assistant_interaction_indexes[target]
+        retrieved = staged_retrieved[interaction_index]
         candidate = {"kind": wire_kind, "learning_id": real_id}
-        if candidate in retrieved:
+        candidate_key = (wire_kind, real_id)
+        if candidate_key in seen_by_interaction[interaction_index]:
             continue
-        if attached_total >= _RETRIEVED_LEARNINGS_WIRE_CAP:
+        if (
+            len(retrieved) >= _RETRIEVED_LEARNINGS_WIRE_CAP
+            or attached_total >= _RETRIEVED_LEARNINGS_WIRE_CAP
+        ):
             truncated += 1
             continue
         retrieved.append(candidate)
+        seen_by_interaction[interaction_index].add(candidate_key)
         attached_total += 1
+
+    for interaction_index, retrieved in staged_retrieved.items():
+        interactions[interaction_index]["retrieved_learnings"] = retrieved
 
     if skipped:
         _LOGGER.debug("Skipped %d unresolvable injected learning entries", skipped)

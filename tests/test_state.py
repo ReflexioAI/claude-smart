@@ -229,6 +229,31 @@ def test_read_injected_entries_retries_incomplete_final_line(session_dir) -> Non
     assert offset == path.stat().st_size
 
 
+def test_retrieved_learning_failure_does_not_partially_mutate_interactions() -> None:
+    class ExplodingEntry(dict):
+        def get(self, *_args, **_kwargs):
+            raise RuntimeError("malformed pending entry")
+
+    interactions = [{"role": "Assistant", "content": "done"}]
+
+    try:
+        state.attach_retrieved_learnings(
+            [{"role": "Assistant", "ts": 10}],
+            interactions,
+            [
+                {"kind": "profile", "real_id": "p1", "ts": 1},
+                ExplodingEntry(),
+            ],
+            end_offset=100,
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "malformed pending entry"
+    else:
+        raise AssertionError("expected malformed entry to abort staged attachment")
+
+    assert "retrieved_learnings" not in interactions[0]
+
+
 def test_unpublished_slice_truncates_overlong_tool_fields_to_cap() -> None:
     """Top-level string fields over the cap are truncated; the result still
     round-trips through ``json.dumps`` so publish never sends invalid JSON.

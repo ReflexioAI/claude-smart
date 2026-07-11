@@ -86,8 +86,9 @@ def publish_unpublished(
         skip_aggregation=skip_aggregation,
     )
     if ok:
-        state.append(session_id, {"published_up_to": len(records)})
+        watermark_record: dict[str, object] = {"published_up_to": len(records)}
         if retrieved_state is not None:
-            state.append(session_id, retrieved_state)
+            watermark_record.update(retrieved_state)
+        state.append(session_id, watermark_record)
         return ("ok", len(interactions))
     return ("failed", len(interactions))

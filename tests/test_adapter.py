@@ -26,9 +26,15 @@ class _FakeClient:
         self._agent_playbook_resp = agent_playbook_resp
         self._profile_resp = profile_resp
         self.published_kwargs: dict[str, Any] = {}
+        self.raw_request: dict[str, Any] = {}
 
     def publish_interaction(self, **kwargs):
         self.published_kwargs = kwargs
+        if not self._publish_ok:
+            raise RuntimeError("reflexio unreachable")
+
+    def _make_request(self, method, path, **kwargs):
+        self.raw_request = {"method": method, "path": path, **kwargs}
         if not self._publish_ok:
             raise RuntimeError("reflexio unreachable")
 
@@ -186,7 +192,9 @@ def test_adapter_default_url_follows_backend_port(monkeypatch, tmp_path) -> None
     assert seen == {"url_endpoint": "http://localhost:8171/", "api_key": ""}
 
 
-def test_adapter_local_default_file_url_follows_backend_port(monkeypatch, tmp_path) -> None:
+def test_adapter_local_default_file_url_follows_backend_port(
+    monkeypatch, tmp_path
+) -> None:
     env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text('REFLEXIO_URL="http://localhost:8071/"\n')
@@ -273,6 +281,33 @@ def test_publish_omits_override_learning_stall_when_client_lacks_keyword() -> No
     assert client.published_kwargs["user_id"] == "p1"
     assert client.published_kwargs["force_extraction"] is True
     assert "override_learning_stall" not in client.published_kwargs
+
+
+def test_pinned_client_sends_retrieved_learnings_without_model_stripping() -> None:
+    client = _FakeClient()
+    adapter = _adapter_with(client)
+
+    ok = adapter.publish(
+        session_id="s1",
+        project_id="p1",
+        interactions=[
+            {
+                "role": "Assistant",
+                "content": "done",
+                "retrieved_learnings": [
+                    {"kind": "profile", "learning_id": "profile-1"}
+                ],
+            }
+        ],
+    )
+
+    assert ok is True
+    assert client.published_kwargs == {}
+    assert client.raw_request["method"] == "POST"
+    assert client.raw_request["path"] == "/api/publish_interaction"
+    assert client.raw_request["json"]["interaction_data_list"][0][
+        "retrieved_learnings"
+    ] == [{"kind": "profile", "learning_id": "profile-1"}]
 
 
 def test_publish_returns_false_when_client_raises() -> None:
@@ -587,9 +622,7 @@ def test_fetch_all_prefers_no_query_list_endpoints_for_show() -> None:
 
         def get_profiles(self, **kwargs):
             self.profile_kwargs = kwargs
-            return SimpleNamespace(
-                user_profiles=[{"user_id": "proj", "content": "p"}]
-            )
+            return SimpleNamespace(user_profiles=[{"user_id": "proj", "content": "p"}])
 
     client = ListClient()
     a = _adapter_with(client)

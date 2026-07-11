@@ -121,9 +121,10 @@ class Adapter:
         if client is None:
             return False
         try:
+            interaction_list = list(interactions)
             kwargs = {
                 "user_id": project_id,
-                "interactions": list(interactions),
+                "interactions": interaction_list,
                 "agent_version": runtime.agent_version(),
                 "session_id": session_id,
                 "wait_for_response": False,
@@ -136,7 +137,24 @@ class Adapter:
                 _LOGGER.debug(
                     "publish_interaction client does not support override_learning_stall"
                 )
-            client.publish_interaction(**kwargs)
+            if _needs_raw_retrieved_learning_publish(interaction_list):
+                client._make_request(  # noqa: SLF001 - pinned-client compatibility
+                    "POST",
+                    "/api/publish_interaction",
+                    json={
+                        "user_id": project_id,
+                        "interaction_data_list": interaction_list,
+                        "agent_version": runtime.agent_version(),
+                        "session_id": session_id,
+                        "skip_aggregation": skip_aggregation,
+                        "force_extraction": force_extraction,
+                        "evaluation_only": False,
+                        "override_learning_stall": override_learning_stall,
+                    },
+                    params=None,
+                )
+            else:
+                client.publish_interaction(**kwargs)
             return True
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("publish_interaction failed: %s", exc)
@@ -474,6 +492,27 @@ def _supports_keyword(callable_obj: Any, keyword: str) -> bool:
         if parameter.kind == inspect.Parameter.VAR_KEYWORD:
             return True
     return keyword in signature.parameters
+
+
+def _needs_raw_retrieved_learning_publish(
+    interactions: Sequence[dict[str, Any]],
+) -> bool:
+    """Return whether the pinned client would strip retrieved-learning links.
+
+    Reflexio 0.2.28 reconstructs dictionaries through an older Pydantic model
+    before HTTP, silently dropping ``retrieved_learnings``. Its authenticated
+    request helper can carry the complete body safely: old servers ignore the
+    field, while upgraded servers persist it.
+    """
+    if not any("retrieved_learnings" in item for item in interactions):
+        return False
+    try:
+        from reflexio.models.api_schema.service_schemas import (  # type: ignore[import-not-found]
+            InteractionData,
+        )
+    except ImportError:
+        return False
+    return "retrieved_learnings" not in InteractionData.model_fields
 
 
 def _filter_rejected_agent_playbooks(items: list[Any]) -> list[Any]:

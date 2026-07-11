@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ LEARNING_IDS = {
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse report paths and output-format flags."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--db", type=Path, default=Path("~/.reflexio/data/reflexio.db").expanduser()
@@ -56,6 +58,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def table_names(conn: sqlite3.Connection) -> set[str]:
+    """Return all table names visible in the SQLite database."""
     return {
         row[0]
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -63,32 +66,35 @@ def table_names(conn: sqlite3.Connection) -> set[str]:
 
 
 def columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    """Return column names for one SQLite table."""
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
-def archive_rows(archive_dir: Path, table: str) -> list[dict[str, Any]]:
+def iter_archive_rows(archive_dir: Path, table: str) -> Iterator[dict[str, Any]]:
+    """Yield valid archived rows for one table without loading the file."""
     path = archive_dir / f"{table}.jsonl"
     if not path.is_file():
-        return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text().splitlines():
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        row = record.get("row") if isinstance(record, dict) else None
-        if isinstance(row, dict):
-            rows.append(row)
-    return rows
+        return
+    with path.open("r", encoding="utf-8") as archive_file:
+        for line in archive_file:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            row = record.get("row") if isinstance(record, dict) else None
+            if isinstance(row, dict):
+                yield row
 
 
 def percent(part: int, whole: int) -> float:
+    """Return a two-decimal percentage with a zero-safe denominator."""
     return round(part * 100 / whole, 2) if whole else 0.0
 
 
 def non_empty_json(value: Any) -> bool:
+    """Return whether a value contains a non-empty JSON list or object."""
     if value is None or value == "":
         return False
     try:
@@ -104,6 +110,7 @@ def selected_rows(
     table: str,
     selected_columns: tuple[str, ...],
 ) -> list[dict[str, Any]]:
+    """Read only the requested columns that exist on a live table."""
     if table not in tables:
         return []
     available = columns(conn, table)
@@ -116,6 +123,7 @@ def selected_rows(
 
 
 def registry_kind(entry: dict[str, Any]) -> str | None:
+    """Map a local injection entry to a canonical Reflexio learning kind."""
     if entry.get("kind") == "profile":
         return "profile"
     if entry.get("kind") == "playbook" and entry.get("source_kind") in {
@@ -129,10 +137,8 @@ def registry_kind(entry: dict[str, Any]) -> str | None:
 def build_report(
     conn: sqlite3.Connection, archive_dir: Path, sessions_dir: Path
 ) -> dict[str, Any]:
+    """Build all report sections from live, archived, and local-session data."""
     tables = table_names(conn)
-    archived_by_table = {
-        table: archive_rows(archive_dir, table) for table in RETENTION_TARGETS
-    }
 
     retention: dict[str, dict[str, Any]] = {}
     for table in RETENTION_TARGETS:
@@ -149,33 +155,53 @@ def build_report(
                 live_created = [
                     value for value in (minimum, maximum) if value is not None
                 ]
+        archived_count = 0
+        archived_min: Any | None = None
+        archived_max: Any | None = None
+        for row in iter_archive_rows(archive_dir, table):
+            archived_count += 1
+            created_at = row.get("created_at")
+            if created_at is not None:
+                archived_min = (
+                    created_at
+                    if archived_min is None
+                    else min(archived_min, created_at)
+                )
+                archived_max = (
+                    created_at
+                    if archived_max is None
+                    else max(archived_max, created_at)
+                )
         created = live_created + [
-            row["created_at"]
-            for row in archived_by_table[table]
-            if row.get("created_at") is not None
+            value for value in (archived_min, archived_max) if value is not None
         ]
         retention[table] = {
             "live_rows": live_count,
-            "archived_rows": len(archived_by_table[table]),
+            "archived_rows": archived_count,
             "min_created_at": min(created) if created else None,
             "max_created_at": max(created) if created else None,
         }
 
-    interactions = (
-        selected_rows(
-            conn,
-            tables,
-            "interactions",
-            ("citations", "retrieved_learnings"),
-        )
-        + archived_by_table["interactions"]
+    live_interactions = selected_rows(
+        conn,
+        tables,
+        "interactions",
+        ("citations", "retrieved_learnings"),
     )
+    interaction_total = len(live_interactions)
+    citations_non_empty = sum(
+        non_empty_json(row.get("citations")) for row in live_interactions
+    )
+    retrieved_non_empty = sum(
+        non_empty_json(row.get("retrieved_learnings")) for row in live_interactions
+    )
+    for row in iter_archive_rows(archive_dir, "interactions"):
+        interaction_total += 1
+        citations_non_empty += non_empty_json(row.get("citations"))
+        retrieved_non_empty += non_empty_json(row.get("retrieved_learnings"))
     interaction_report: dict[str, Any] = {
-        "total": len(interactions),
-        "citations_non_empty_percent": percent(
-            sum(non_empty_json(row.get("citations")) for row in interactions),
-            len(interactions),
-        ),
+        "total": interaction_total,
+        "citations_non_empty_percent": percent(citations_non_empty, interaction_total),
     }
     if "interactions" not in tables or "retrieved_learnings" not in columns(
         conn, "interactions"
@@ -183,8 +209,8 @@ def build_report(
         interaction_report["retrieved_learnings_non_empty_percent"] = "column missing"
     else:
         interaction_report["retrieved_learnings_non_empty_percent"] = percent(
-            sum(non_empty_json(row.get("retrieved_learnings")) for row in interactions),
-            len(interactions),
+            retrieved_non_empty,
+            interaction_total,
         )
 
     known_ids: dict[str, set[str]] = {}
@@ -194,44 +220,51 @@ def build_report(
             for row in selected_rows(conn, tables, table, (id_column,))
             if row.get(id_column) is not None
         }
-    registry_entries: list[dict[str, Any]] = []
+    registry_total = 0
+    with_id = 0
+    resolved = 0
     if sessions_dir.is_dir():
         for path in sessions_dir.glob("*.injected.jsonl"):
-            for line in path.read_text().splitlines():
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(entry, dict):
-                    registry_entries.append(entry)
-    with_id = [entry for entry in registry_entries if str(entry.get("real_id") or "")]
-    resolved = sum(
-        str(entry["real_id"]) in known_ids.get(kind, set())
-        for entry in with_id
-        if (kind := registry_kind(entry)) is not None
-    )
+            with path.open("r", encoding="utf-8") as registry_file:
+                for line in registry_file:
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    registry_total += 1
+                    real_id = str(entry.get("real_id") or "")
+                    if not real_id:
+                        continue
+                    with_id += 1
+                    kind = registry_kind(entry)
+                    if kind is not None and real_id in known_ids.get(kind, set()):
+                        resolved += 1
     # Entries with an ID but an unknown kind cannot resolve and are dangling.
     registry_report = {
-        "total_entries": len(registry_entries),
-        "with_real_id": len(with_id),
-        "with_real_id_percent": percent(len(with_id), len(registry_entries)),
+        "total_entries": registry_total,
+        "with_real_id": with_id,
+        "with_real_id_percent": percent(with_id, registry_total),
         "resolved": resolved,
-        "resolved_percent": percent(resolved, len(with_id)),
-        "dangling": len(with_id) - resolved,
+        "resolved_percent": percent(resolved, with_id),
+        "dangling": with_id - resolved,
     }
 
-    request_rows = (
-        selected_rows(
-            conn,
-            tables,
-            "requests",
-            ("session_id", "evaluation_only"),
-        )
-        + archived_by_table["requests"]
+    live_request_rows = selected_rows(
+        conn,
+        tables,
+        "requests",
+        ("session_id", "evaluation_only"),
     )
     request_sessions = {
-        str(row["session_id"]) for row in request_rows if row.get("session_id")
+        str(row["session_id"]) for row in live_request_rows if row.get("session_id")
     }
+    evaluation_only = sum(bool(row.get("evaluation_only")) for row in live_request_rows)
+    for row in iter_archive_rows(archive_dir, "requests"):
+        if row.get("session_id"):
+            request_sessions.add(str(row["session_id"]))
+        evaluation_only += bool(row.get("evaluation_only"))
     local_sessions = (
         {
             path.name.removesuffix(".jsonl")
@@ -251,7 +284,6 @@ def build_report(
             len(request_sessions & local_sessions), len(local_sessions)
         ),
     }
-    evaluation_only = sum(bool(row.get("evaluation_only")) for row in request_rows)
     return {
         "retention_targets": retention,
         "interactions": interaction_report,
@@ -262,6 +294,7 @@ def build_report(
 
 
 def print_human(report: dict[str, Any]) -> None:
+    """Print the report in compact operator-readable sections."""
     print("Evidence window")
     for table, values in report["retention_targets"].items():
         print(
@@ -289,6 +322,7 @@ def print_human(report: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    """Run the read-only report and always return a non-gating exit code."""
     args = parse_args()
     try:
         uri = f"file:{args.db.resolve().as_posix()}?mode=ro"
