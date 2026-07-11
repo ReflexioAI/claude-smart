@@ -192,11 +192,11 @@ export default function DashboardPage() {
           />
           {archiveStatus?.enabled && (
             <StatCard
-              label="Archived JSONL entries"
-              value={archiveStatus.entryCount}
-              hint={`${archiveStatus.exceeded ? "Warning threshold exceeded · " : ""}${formatBytes(
-                archiveStatus.sizeBytes,
-              )} of ${formatBytes(archiveStatus.warningBytes)}`}
+              label="Archived JSONL size"
+              value={formatBytes(archiveStatus.sizeBytes)}
+              hint={`${archiveStatus.exceeded ? "Storage ceiling reached · " : ""}${formatBytes(
+                archiveStatus.maxBytes,
+              )} ceiling`}
               icon={Archive}
               tone={archiveStatus.exceeded ? "danger" : "default"}
             />
