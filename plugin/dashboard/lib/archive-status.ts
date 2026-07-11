@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const DEFAULT_WARNING_BYTES = 10 * 1024 ** 3;
+const DEFAULT_ARCHIVE_MAX_BYTES = 10 * 1024 ** 3;
 const ENV_KEYS = [
   "REFLEXIO_RETENTION_ARCHIVE",
   "REFLEXIO_RETENTION_ARCHIVE_DIR",
@@ -49,12 +49,12 @@ function isTruthy(value: string | undefined): boolean {
 }
 
 function maxBytes(value: string | undefined): number {
-  if (!value) return DEFAULT_WARNING_BYTES;
-  if (!/^[+-]?\d+$/.test(value)) return DEFAULT_WARNING_BYTES;
+  if (!value) return DEFAULT_ARCHIVE_MAX_BYTES;
+  if (!/^[+-]?\d+$/.test(value)) return DEFAULT_ARCHIVE_MAX_BYTES;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0
     ? parsed
-    : DEFAULT_WARNING_BYTES;
+    : DEFAULT_ARCHIVE_MAX_BYTES;
 }
 
 export async function readArchiveStatus(): Promise<ArchiveStatus> {
