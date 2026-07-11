@@ -211,6 +211,24 @@ def test_read_injected_drops_entries_without_id(session_dir) -> None:
     assert set(registry.keys()) == {"s1-ab12"}
 
 
+def test_read_injected_entries_retries_incomplete_final_line(session_dir) -> None:
+    path = state.injected_path("s1")
+    path.write_text('{"id":"partial","kind":"profile"', encoding="utf-8")
+
+    entries, offset = state.read_injected_entries("s1")
+
+    assert entries == []
+    assert offset == 0
+
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(',"real_id":"p1","ts":1}\n')
+
+    entries, offset = state.read_injected_entries("s1", offset)
+
+    assert entries == [{"id": "partial", "kind": "profile", "real_id": "p1", "ts": 1}]
+    assert offset == path.stat().st_size
+
+
 def test_unpublished_slice_truncates_overlong_tool_fields_to_cap() -> None:
     """Top-level string fields over the cap are truncated; the result still
     round-trips through ``json.dumps`` so publish never sends invalid JSON.

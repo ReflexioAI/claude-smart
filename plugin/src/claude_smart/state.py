@@ -143,19 +143,34 @@ def read_injected_entries(
         return [], start_offset
     entries: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as fh:
+        if fcntl is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+            except OSError as exc:
+                _LOGGER.debug("shared flock failed on %s: %s", path, exc)
         fh.seek(start_offset)
-        for line in fh:
+        end_offset = start_offset
+        while True:
+            line_start = fh.tell()
+            line = fh.readline()
+            if not line:
+                break
             candidate = line.strip()
             if not candidate:
+                end_offset = fh.tell()
                 continue
             try:
                 entry = json.loads(candidate)
             except json.JSONDecodeError as exc:
+                if not line.endswith("\n"):
+                    end_offset = line_start
+                    break
                 _LOGGER.warning("Skipping malformed injected line in %s: %s", path, exc)
+                end_offset = fh.tell()
                 continue
             if isinstance(entry, dict):
                 entries.append(entry)
-        end_offset = fh.tell()
+            end_offset = fh.tell()
     return entries, end_offset
 
 
