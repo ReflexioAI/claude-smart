@@ -242,7 +242,7 @@ def attach_retrieved_learnings(
         if interaction.get("role") == "Assistant"
     ]
     assistant_count = min(len(assistant_timestamps), len(assistant_interaction_indexes))
-    staged_retrieved: dict[int, list[dict[str, str]]] = {}
+    staged_retrieved: dict[int, list[dict[str, Any]]] = {}
     seen_by_interaction: dict[int, set[tuple[str, str]]] = {}
     for index in assistant_interaction_indexes:
         existing = interactions[index].get("retrieved_learnings", [])
@@ -284,7 +284,15 @@ def attach_retrieved_learnings(
 
         interaction_index = assistant_interaction_indexes[target]
         retrieved = staged_retrieved[interaction_index]
-        candidate = {"kind": wire_kind, "learning_id": real_id}
+        candidate: dict[str, Any] = {"kind": wire_kind, "learning_id": real_id}
+        content = entry.get("content")
+        if isinstance(content, str) and content:
+            candidate["snapshot"] = {
+                "title": str(entry.get("source_title") or entry.get("title") or ""),
+                "content": content,
+                "trigger": str(entry.get("trigger") or ""),
+                "rationale": str(entry.get("rationale") or ""),
+            }
         candidate_key = (wire_kind, real_id)
         if candidate_key in seen_by_interaction[interaction_index]:
             continue

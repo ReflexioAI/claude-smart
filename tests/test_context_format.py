@@ -146,15 +146,20 @@ def test_render_with_registry_playbook_trigger_and_rationale_emitted() -> None:
     pbs = [
         {
             "content": "use pathlib",
+            "playbook_name": "Filesystem discipline",
             "trigger": "writing a script",
             "rationale": "os.path is error-prone",
         }
     ]
-    md, _ = context_format.render_with_registry(
+    md, registry = context_format.render_with_registry(
         project_id="demo", user_playbooks=pbs, agent_playbooks=[], profiles=[]
     )
     assert "_(when: writing a script)_" in md
     assert "*why:* os.path is error-prone" in md
+    assert registry[0]["content"] == "use pathlib"
+    assert registry[0]["source_title"] == "Filesystem discipline"
+    assert registry[0]["trigger"] == "writing a script"
+    assert registry[0]["rationale"] == "os.path is error-prone"
 
 
 def test_render_with_registry_agent_playbooks_render_first_and_use_agent_id() -> None:

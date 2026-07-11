@@ -38,12 +38,24 @@ def test_publish_attaches_mapped_retrieved_learnings(session_dir) -> None:
     state.append_injected(
         "s1",
         [
-            {"id": "p", "kind": "profile", "real_id": "profile-1", "ts": 10},
+            {
+                "id": "p",
+                "kind": "profile",
+                "real_id": "profile-1",
+                "title": "Prefers concise answers",
+                "content": "Keep answers concise.",
+                "ts": 10,
+            },
             {
                 "id": "u",
                 "kind": "playbook",
                 "source_kind": "user_playbook",
                 "real_id": "11",
+                "title": "Use pathlib",
+                "source_title": "Filesystem discipline",
+                "content": "Use pathlib for filesystem work.",
+                "trigger": "writing Python filesystem code",
+                "rationale": "Path objects are easier to compose.",
                 "ts": 11,
             },
             {
@@ -60,8 +72,26 @@ def test_publish_attaches_mapped_retrieved_learnings(session_dir) -> None:
 
     assert _publish("s1", adapter) == ("ok", 1)
     assert adapter.calls[0]["interactions"][0]["retrieved_learnings"] == [
-        {"kind": "profile", "learning_id": "profile-1"},
-        {"kind": "user_playbook", "learning_id": "11"},
+        {
+            "kind": "profile",
+            "learning_id": "profile-1",
+            "snapshot": {
+                "title": "Prefers concise answers",
+                "content": "Keep answers concise.",
+                "trigger": "",
+                "rationale": "",
+            },
+        },
+        {
+            "kind": "user_playbook",
+            "learning_id": "11",
+            "snapshot": {
+                "title": "Filesystem discipline",
+                "content": "Use pathlib for filesystem work.",
+                "trigger": "writing Python filesystem code",
+                "rationale": "Path objects are easier to compose.",
+            },
+        },
         {"kind": "agent_playbook", "learning_id": "22"},
     ]
 
@@ -71,8 +101,22 @@ def test_publish_skips_old_entries_and_deduplicates(session_dir) -> None:
         "s1",
         [
             {"id": "old", "kind": "profile", "ts": 1},
-            {"id": "p1", "kind": "profile", "real_id": "profile-1", "ts": 2},
-            {"id": "p2", "kind": "profile", "real_id": "profile-1", "ts": 3},
+            {
+                "id": "p1",
+                "kind": "profile",
+                "real_id": "profile-1",
+                "title": "First",
+                "content": "First injected wording.",
+                "ts": 2,
+            },
+            {
+                "id": "p2",
+                "kind": "profile",
+                "real_id": "profile-1",
+                "title": "Second",
+                "content": "Later duplicate wording.",
+                "ts": 3,
+            },
         ],
     )
     _append_assistant("s1", 10)
@@ -80,7 +124,16 @@ def test_publish_skips_old_entries_and_deduplicates(session_dir) -> None:
 
     assert _publish("s1", adapter) == ("ok", 1)
     assert adapter.calls[0]["interactions"][0]["retrieved_learnings"] == [
-        {"kind": "profile", "learning_id": "profile-1"}
+        {
+            "kind": "profile",
+            "learning_id": "profile-1",
+            "snapshot": {
+                "title": "First",
+                "content": "First injected wording.",
+                "trigger": "",
+                "rationale": "",
+            },
+        }
     ]
 
 
