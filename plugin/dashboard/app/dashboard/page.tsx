@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   BookOpen,
+  Archive,
   MessageSquare,
   Sparkles,
   Activity,
@@ -16,7 +17,7 @@ import { StatCard } from "@/components/common/stat-card";
 import { EmptyState } from "@/components/common/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { reflexio } from "@/lib/reflexio-client";
-import { formatRelative, truncate, truncateId } from "@/lib/format";
+import { formatBytes, formatRelative, truncate, truncateId } from "@/lib/format";
 import { agentPlaybookStatusLabel } from "@/lib/status";
 import type {
   AgentPlaybook,
@@ -37,6 +38,14 @@ interface RecentLearning {
   statKey: string;
 }
 
+interface ArchiveStatus {
+  enabled: boolean;
+  entryCount: number;
+  sizeBytes: number;
+  warningBytes: number;
+  exceeded: boolean;
+}
+
 export default function DashboardPage() {
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [projectSkills, setProjectSkills] = useState<UserPlaybook[] | null>(null);
@@ -45,6 +54,7 @@ export default function DashboardPage() {
   const [topApplied, setTopApplied] = useState<PlaybookApplicationStat[] | null>(
     null,
   );
+  const [archiveStatus, setArchiveStatus] = useState<ArchiveStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -52,32 +62,37 @@ export default function DashboardPage() {
     async function load() {
       setError(null);
       try {
-        const [sRes, projectRes, sharedRes, prefRes, statsRes] = await Promise.all([
-          fetch("/api/sessions", { cache: "no-store" }).then((r) => r.json()),
-          reflexio
-            .getUserPlaybooks({})
-            .catch(() => ({ user_playbooks: [] as UserPlaybook[] })),
-          reflexio
-            .getAgentPlaybooks({})
-            .catch(() => ({ agent_playbooks: [] as AgentPlaybook[] })),
-          reflexio
-            .getAllProfiles({ limit: 100 })
-            .catch(() => ({ user_profiles: [] as UserProfile[] })),
-          fetch("/api/rules/applied?daysBack=30&limit=200", {
-            cache: "no-store",
-          })
-            .then((r) => r.json())
-            .catch(() => ({
-              success: false,
-              stats: [] as PlaybookApplicationStat[],
-            })),
-        ]);
+        const [sRes, projectRes, sharedRes, prefRes, statsRes, archiveRes] =
+          await Promise.all([
+            fetch("/api/sessions", { cache: "no-store" }).then((r) => r.json()),
+            reflexio
+              .getUserPlaybooks({})
+              .catch(() => ({ user_playbooks: [] as UserPlaybook[] })),
+            reflexio
+              .getAgentPlaybooks({})
+              .catch(() => ({ agent_playbooks: [] as AgentPlaybook[] })),
+            reflexio
+              .getAllProfiles({ limit: 100 })
+              .catch(() => ({ user_profiles: [] as UserProfile[] })),
+            fetch("/api/rules/applied?daysBack=30&limit=200", {
+              cache: "no-store",
+            })
+              .then((r) => r.json())
+              .catch(() => ({
+                success: false,
+                stats: [] as PlaybookApplicationStat[],
+              })),
+            fetch("/api/archive-status", { cache: "no-store" })
+              .then((r) => r.json())
+              .catch(() => null),
+          ]);
         if (cancelled) return;
         setSessions(sRes.sessions ?? []);
         setProjectSkills(projectRes.user_playbooks ?? []);
         setSharedSkills(sharedRes.agent_playbooks ?? []);
         setPreferences(prefRes.user_profiles ?? []);
         setTopApplied(statsRes.stats ?? []);
+        setArchiveStatus(archiveRes);
       } catch (e) {
         if (!cancelled)
           setError(e instanceof Error ? e.message : "failed to load");
@@ -95,7 +110,7 @@ export default function DashboardPage() {
   const approvedSharedSkills = (sharedSkills ?? []).filter(
     (p) => agentPlaybookStatusLabel(p) === "APPROVED",
   );
- const currentPreferences = (preferences ?? []).filter((p) => p.status == null);
+  const currentPreferences = (preferences ?? []).filter((p) => p.status == null);
   const statsByRule = useMemo(() => {
     const map = new Map<string, PlaybookApplicationStat>();
     for (const s of topApplied ?? []) {
@@ -153,7 +168,11 @@ export default function DashboardPage() {
       />
 
       <div className="p-6 space-y-6">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div
+          className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${
+            archiveStatus?.enabled ? "lg:grid-cols-5" : "lg:grid-cols-4"
+          }`}
+        >
           <StatCard
             label="Sessions recorded"
             value={sessions?.length ?? "—"}
@@ -178,6 +197,17 @@ export default function DashboardPage() {
             hint="turns where a skill or preference was cited"
             icon={Sparkles}
           />
+          {archiveStatus?.enabled && (
+            <StatCard
+              label="Archived JSONL entries"
+              value={archiveStatus.entryCount}
+              hint={`${archiveStatus.exceeded ? "Warning threshold exceeded · " : ""}${formatBytes(
+                archiveStatus.sizeBytes,
+              )} of ${formatBytes(archiveStatus.warningBytes)}`}
+              icon={Archive}
+              tone={archiveStatus.exceeded ? "danger" : "default"}
+            />
+          )}
         </div>
 
         {error && (
