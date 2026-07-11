@@ -202,6 +202,145 @@ def retrieved_learning_watermark(records: list[dict[str, Any]]) -> int:
     return offset
 
 
+def _retrieval_state(records: list[dict[str, Any]]) -> tuple[int, list[dict[str, Any]]]:
+    """Return the published turn count and last valid pending-entry list."""
+    published = 0
+    pending: list[dict[str, Any]] = []
+    for record in records:
+        if "published_up_to" in record:
+            published = record["published_up_to"]
+        if "retrieved_folded_up_to" in record:
+            value = record.get("retrieved_pending", [])
+            pending = (
+                [item for item in value if isinstance(item, dict)]
+                if isinstance(value, list)
+                else []
+            )
+    return published, pending
+
+
+def _assistant_targets(
+    records: list[dict[str, Any]],
+    published: int,
+    interactions: list[dict[str, Any]],
+) -> tuple[list[int], list[int]]:
+    """Return aligned Assistant timestamps and wire-interaction indexes."""
+    timestamps = [
+        record.get("ts") if isinstance(record.get("ts"), int) else 0
+        for record in records[published:]
+        if record.get("role") == "Assistant"
+    ]
+    indexes = [
+        index
+        for index, interaction in enumerate(interactions)
+        if interaction.get("role") == "Assistant"
+    ]
+    count = min(len(timestamps), len(indexes))
+    return timestamps[:count], indexes[:count]
+
+
+def _retrieved_candidate(
+    entry: dict[str, Any],
+) -> tuple[tuple[str, str], dict[str, Any], int] | None:
+    """Normalize one registry entry into a bounded wire candidate."""
+    real_id = entry.get("real_id")
+    kind = entry.get("kind")
+    if not isinstance(real_id, str) or not real_id:
+        return None
+    if kind == "profile":
+        wire_kind = "profile"
+    elif (
+        kind == "playbook"
+        and entry.get("source_kind") in _VALID_RETRIEVED_PLAYBOOK_KINDS
+    ):
+        wire_kind = entry["source_kind"]
+    else:
+        return None
+
+    candidate: dict[str, Any] = {"kind": wire_kind, "learning_id": real_id}
+    content = entry.get("content")
+    if not isinstance(content, str) or not content:
+        return (wire_kind, real_id), candidate, 0
+    snapshot = {
+        "title": str(entry.get("source_title") or entry.get("title") or "")[
+            :_SNAPSHOT_TITLE_CAP
+        ],
+        "content": content[:_SNAPSHOT_CONTENT_CAP],
+        "trigger": str(entry.get("trigger") or "")[:_SNAPSHOT_DETAIL_CAP],
+        "rationale": str(entry.get("rationale") or "")[:_SNAPSHOT_DETAIL_CAP],
+    }
+    candidate["snapshot"] = snapshot
+    snapshot_bytes = sum(len(value.encode("utf-8")) for value in snapshot.values())
+    return (wire_kind, real_id), candidate, snapshot_bytes
+
+
+def _commit_retrieved_learnings(
+    interactions: list[dict[str, Any]], staged: dict[int, list[dict[str, Any]]]
+) -> None:
+    """Commit fully validated attachments to wire interactions."""
+    for index, retrieved in staged.items():
+        if retrieved:
+            interactions[index]["retrieved_learnings"] = retrieved
+        else:
+            interactions[index].pop("retrieved_learnings", None)
+
+
+def _log_attachment_limits(
+    skipped: int, truncated: int, snapshots_omitted: int
+) -> None:
+    """Emit attachment diagnostics without affecting the publish path."""
+    if skipped:
+        _LOGGER.debug("Skipped %d unresolvable injected learning entries", skipped)
+    if truncated:
+        _LOGGER.warning(
+            "Dropped %d retrieved learning links at the publish wire cap", truncated
+        )
+    if snapshots_omitted:
+        _LOGGER.warning(
+            "Omitted %d retrieved-learning snapshot(s) at the 10 MiB wire cap",
+            snapshots_omitted,
+        )
+
+
+def _stage_registry_entries(
+    entries: list[dict[str, Any]],
+    timestamps: list[int],
+    indexes: list[int],
+    staged: dict[int, list[dict[str, Any]]],
+    seen: dict[int, set[tuple[str, str]]],
+) -> tuple[list[dict[str, Any]], int, int, int]:
+    """Attach resolvable registry entries to staged Assistant interactions."""
+    remaining: list[dict[str, Any]] = []
+    skipped = truncated = snapshots_omitted = snapshot_bytes = 0
+    attached_total = sum(len(items) for items in staged.values())
+    for entry in entries:
+        entry_ts = entry.get("ts")
+        target = bisect_left(timestamps, entry_ts if isinstance(entry_ts, int) else 0)
+        if target == len(timestamps):
+            remaining.append(entry)
+            continue
+        resolved = _retrieved_candidate(entry)
+        if resolved is None:
+            skipped += 1
+            continue
+        interaction_index = indexes[target]
+        candidate_key, candidate, candidate_snapshot_bytes = resolved
+        if candidate_key in seen[interaction_index]:
+            continue
+        if attached_total >= _RETRIEVED_LEARNINGS_PUBLISH_CAP:
+            truncated += 1
+            continue
+        if snapshot_bytes + candidate_snapshot_bytes <= _SNAPSHOT_TOTAL_BYTES_CAP:
+            snapshot_bytes += candidate_snapshot_bytes
+        elif candidate_snapshot_bytes:
+            candidate.pop("snapshot")
+            snapshots_omitted += 1
+        staged[interaction_index].append(candidate)
+        seen[interaction_index].add(candidate_key)
+        attached_total += 1
+    return remaining, skipped, truncated, snapshots_omitted
+
+
 def attach_retrieved_learnings(
     records: list[dict[str, Any]],
     interactions: list[dict[str, Any]],
@@ -221,31 +360,10 @@ def attach_retrieved_learnings(
         this state only after publish succeeds, making retries idempotent
         without assuming registry timestamps are monotonic.
     """
-    published = 0
-    pending: list[dict[str, Any]] = []
-    for rec in records:
-        if "published_up_to" in rec:
-            published = rec["published_up_to"]
-        if "retrieved_folded_up_to" in rec:
-            pending_value = rec.get("retrieved_pending", [])
-            pending = (
-                [item for item in pending_value if isinstance(item, dict)]
-                if isinstance(pending_value, list)
-                else []
-            )
-
-    assistant_timestamps: list[int] = []
-    for rec in records[published:]:
-        if rec.get("role") != "Assistant":
-            continue
-        ts = rec.get("ts")
-        assistant_timestamps.append(ts if isinstance(ts, int) else 0)
-    assistant_interaction_indexes = [
-        idx
-        for idx, interaction in enumerate(interactions)
-        if interaction.get("role") == "Assistant"
-    ]
-    assistant_count = min(len(assistant_timestamps), len(assistant_interaction_indexes))
+    published, pending = _retrieval_state(records)
+    assistant_timestamps, assistant_interaction_indexes = _assistant_targets(
+        records, published, interactions
+    )
     staged_retrieved: dict[int, list[dict[str, Any]]] = {}
     seen_by_interaction: dict[int, set[tuple[str, str]]] = {}
     for index in assistant_interaction_indexes:
@@ -257,85 +375,16 @@ def attach_retrieved_learnings(
             for item in retrieved
         }
 
-    skipped = 0
-    truncated = 0
-    snapshots_omitted = 0
-    snapshot_bytes = 0
-    attached_total = sum(len(items) for items in staged_retrieved.values())
-    remaining: list[dict[str, Any]] = []
-    for entry in [*pending, *injected_entries]:
-        entry_ts = entry.get("ts")
-        comparable_ts = entry_ts if isinstance(entry_ts, int) else 0
-        target = bisect_left(assistant_timestamps, comparable_ts, hi=assistant_count)
-        target = target if target < assistant_count else None
-        if target is None:
-            remaining.append(entry)
-            continue
+    remaining, skipped, truncated, snapshots_omitted = _stage_registry_entries(
+        [*pending, *injected_entries],
+        assistant_timestamps,
+        assistant_interaction_indexes,
+        staged_retrieved,
+        seen_by_interaction,
+    )
 
-        real_id = entry.get("real_id")
-        kind = entry.get("kind")
-        if not isinstance(real_id, str) or not real_id:
-            skipped += 1
-            continue
-        if kind == "profile":
-            wire_kind = "profile"
-        elif (
-            kind == "playbook"
-            and entry.get("source_kind") in _VALID_RETRIEVED_PLAYBOOK_KINDS
-        ):
-            wire_kind = entry["source_kind"]
-        else:
-            skipped += 1
-            continue
-
-        interaction_index = assistant_interaction_indexes[target]
-        retrieved = staged_retrieved[interaction_index]
-        candidate_key = (wire_kind, real_id)
-        if candidate_key in seen_by_interaction[interaction_index]:
-            continue
-        if attached_total >= _RETRIEVED_LEARNINGS_PUBLISH_CAP:
-            truncated += 1
-            continue
-        candidate: dict[str, Any] = {"kind": wire_kind, "learning_id": real_id}
-        content = entry.get("content")
-        if isinstance(content, str) and content:
-            snapshot = {
-                "title": str(entry.get("source_title") or entry.get("title") or "")[
-                    :_SNAPSHOT_TITLE_CAP
-                ],
-                "content": content[:_SNAPSHOT_CONTENT_CAP],
-                "trigger": str(entry.get("trigger") or "")[:_SNAPSHOT_DETAIL_CAP],
-                "rationale": str(entry.get("rationale") or "")[:_SNAPSHOT_DETAIL_CAP],
-            }
-            candidate_snapshot_bytes = sum(
-                len(value.encode("utf-8")) for value in snapshot.values()
-            )
-            if snapshot_bytes + candidate_snapshot_bytes <= _SNAPSHOT_TOTAL_BYTES_CAP:
-                candidate["snapshot"] = snapshot
-                snapshot_bytes += candidate_snapshot_bytes
-            else:
-                snapshots_omitted += 1
-        retrieved.append(candidate)
-        seen_by_interaction[interaction_index].add(candidate_key)
-        attached_total += 1
-
-    for interaction_index, retrieved in staged_retrieved.items():
-        if retrieved:
-            interactions[interaction_index]["retrieved_learnings"] = retrieved
-        else:
-            interactions[interaction_index].pop("retrieved_learnings", None)
-
-    if skipped:
-        _LOGGER.debug("Skipped %d unresolvable injected learning entries", skipped)
-    if truncated:
-        _LOGGER.warning(
-            "Dropped %d retrieved learning links at the publish wire cap", truncated
-        )
-    if snapshots_omitted:
-        _LOGGER.warning(
-            "Omitted %d retrieved-learning snapshot(s) at the 10 MiB wire cap",
-            snapshots_omitted,
-        )
+    _commit_retrieved_learnings(interactions, staged_retrieved)
+    _log_attachment_limits(skipped, truncated, snapshots_omitted)
     return {
         "retrieved_folded_up_to": end_offset,
         "retrieved_pending": remaining,
