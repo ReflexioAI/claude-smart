@@ -8,12 +8,14 @@ messaging without peeking at the adapter.
 
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from claude_smart import state
 from claude_smart.reflexio_adapter import Adapter
 
 PublishStatus = Literal["nothing", "ok", "failed"]
+_LOGGER = logging.getLogger(__name__)
 
 
 def publish_unpublished(
@@ -60,6 +62,20 @@ def publish_unpublished(
     _, interactions = state.unpublished_slice(records)
     if not interactions:
         return ("nothing", 0)
+    retrieved_state: dict[str, object] | None = None
+    try:
+        start_offset = state.retrieved_learning_watermark(records)
+        injected_entries, end_offset = state.read_injected_entries(
+            session_id, start_offset
+        )
+        retrieved_state = state.attach_retrieved_learnings(
+            records,
+            interactions,
+            injected_entries,
+            end_offset,
+        )
+    except Exception as exc:  # best-effort metadata must never block a publish
+        _LOGGER.warning("Could not attach retrieved learnings: %s", exc)
     client = adapter if adapter is not None else Adapter()
     ok = client.publish(
         session_id=session_id,
@@ -71,5 +87,7 @@ def publish_unpublished(
     )
     if ok:
         state.append(session_id, {"published_up_to": len(records)})
+        if retrieved_state is not None:
+            state.append(session_id, retrieved_state)
         return ("ok", len(interactions))
     return ("failed", len(interactions))

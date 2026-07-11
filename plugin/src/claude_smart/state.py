@@ -9,6 +9,9 @@ Each Claude Code session gets one file at
   to the next assistant turn at ``Stop`` time
 - ``{"published_up_to": N}`` — high-water mark so Stop / SessionEnd don't
   re-publish rows already sent to reflexio
+- ``{"retrieved_folded_up_to": N, "retrieved_pending": [...]}`` — byte offset
+  read from the injection registry plus future-dated entries awaiting an
+  eligible Assistant turn
 
 The buffer exists for offline resilience: when reflexio is unreachable,
 Stop appends without publishing and the next successful hook drains.
@@ -19,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from bisect import bisect_left
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -38,6 +42,8 @@ _TOOL_DATA_FIELD_MAX_LEN = 256
 _VALID_CITATION_KINDS = frozenset(
     {"playbook", "profile", "user_playbook", "agent_playbook"}
 )
+_VALID_RETRIEVED_PLAYBOOK_KINDS = frozenset({"user_playbook", "agent_playbook"})
+_RETRIEVED_LEARNINGS_WIRE_CAP = 1000
 
 
 def _truncate_tool_data_field(value: Any) -> Any:
@@ -114,24 +120,141 @@ def read_injected(session_id: str) -> dict[str, dict[str, Any]]:
     (identical content produces the same hash-derived id, so the extra
     record only refreshes metadata).
     """
+    registry: dict[str, dict[str, Any]] = {}
+    entries, _ = read_injected_entries(session_id)
+    for entry in entries:
+        item_id = entry.get("id")
+        if isinstance(item_id, str) and item_id:
+            registry[item_id] = entry
+    return registry
+
+
+def read_injected_entries(
+    session_id: str, start_offset: int = 0
+) -> tuple[list[dict[str, Any]], int]:
+    """Return new injection-registry entries and the ending byte offset.
+
+    Unlike :func:`read_injected`, this reader intentionally preserves repeated
+    ids: each line represents a distinct injection event that must be folded
+    into exactly one published Assistant turn.
+    """
     path = injected_path(session_id)
     if not path.exists():
-        return {}
-    registry: dict[str, dict[str, Any]] = {}
+        return [], start_offset
+    entries: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as fh:
+        fh.seek(start_offset)
         for line in fh:
-            line = line.strip()
-            if not line:
+            candidate = line.strip()
+            if not candidate:
                 continue
             try:
-                entry = json.loads(line)
+                entry = json.loads(candidate)
             except json.JSONDecodeError as exc:
                 _LOGGER.warning("Skipping malformed injected line in %s: %s", path, exc)
                 continue
-            item_id = entry.get("id")
-            if isinstance(item_id, str) and item_id:
-                registry[item_id] = entry
-    return registry
+            if isinstance(entry, dict):
+                entries.append(entry)
+        end_offset = fh.tell()
+    return entries, end_offset
+
+
+def retrieved_learning_watermark(records: list[dict[str, Any]]) -> int:
+    """Return the latest successfully published injection-file byte offset."""
+    offset = 0
+    for record in records:
+        candidate = record.get("retrieved_folded_up_to")
+        if isinstance(candidate, int) and candidate >= 0:
+            offset = candidate
+    return offset
+
+
+def attach_retrieved_learnings(
+    records: list[dict[str, Any]],
+    interactions: list[dict[str, Any]],
+    injected_entries: list[dict[str, Any]],
+    end_offset: int,
+) -> dict[str, Any]:
+    """Fold injected entries into the first eligible Assistant interaction.
+
+    Returns the registry offset and any not-yet-eligible entries. The caller
+    persists that state only after the publish succeeds, making retries
+    idempotent without assuming registry timestamps are monotonic.
+    """
+    published = 0
+    pending: list[dict[str, Any]] = []
+    for rec in records:
+        if "published_up_to" in rec:
+            published = rec["published_up_to"]
+        if "retrieved_folded_up_to" in rec:
+            pending_value = rec.get("retrieved_pending", [])
+            pending = pending_value if isinstance(pending_value, list) else []
+
+    assistant_timestamps: list[int] = []
+    for rec in records[published:]:
+        if rec.get("role") != "Assistant":
+            continue
+        ts = rec.get("ts")
+        assistant_timestamps.append(ts if isinstance(ts, int) else 0)
+    assistant_interaction_indexes = [
+        idx
+        for idx, interaction in enumerate(interactions)
+        if interaction.get("role") == "Assistant"
+    ]
+    for idx in assistant_interaction_indexes:
+        interactions[idx].setdefault("retrieved_learnings", [])
+    assistant_count = min(len(assistant_timestamps), len(assistant_interaction_indexes))
+
+    skipped = 0
+    truncated = 0
+    attached_total = 0
+    remaining: list[dict[str, Any]] = []
+    for entry in [*pending, *injected_entries]:
+        entry_ts = entry.get("ts")
+        comparable_ts = entry_ts if isinstance(entry_ts, int) else 0
+        target = bisect_left(assistant_timestamps, comparable_ts, hi=assistant_count)
+        target = target if target < assistant_count else None
+        if target is None:
+            remaining.append(entry)
+            continue
+
+        real_id = entry.get("real_id")
+        kind = entry.get("kind")
+        if not isinstance(real_id, str) or not real_id:
+            skipped += 1
+            continue
+        if kind == "profile":
+            wire_kind = "profile"
+        elif (
+            kind == "playbook"
+            and entry.get("source_kind") in _VALID_RETRIEVED_PLAYBOOK_KINDS
+        ):
+            wire_kind = entry["source_kind"]
+        else:
+            skipped += 1
+            continue
+
+        interaction = interactions[assistant_interaction_indexes[target]]
+        retrieved = interaction.setdefault("retrieved_learnings", [])
+        candidate = {"kind": wire_kind, "learning_id": real_id}
+        if candidate in retrieved:
+            continue
+        if attached_total >= _RETRIEVED_LEARNINGS_WIRE_CAP:
+            truncated += 1
+            continue
+        retrieved.append(candidate)
+        attached_total += 1
+
+    if skipped:
+        _LOGGER.debug("Skipped %d unresolvable injected learning entries", skipped)
+    if truncated:
+        _LOGGER.warning(
+            "Dropped %d retrieved learning links at the publish wire cap", truncated
+        )
+    return {
+        "retrieved_folded_up_to": end_offset,
+        "retrieved_pending": remaining,
+    }
 
 
 def append(session_id: str, record: dict[str, Any]) -> None:
