@@ -5,7 +5,6 @@ import path from "node:path";
 const DEFAULT_ARCHIVE_MAX_BYTES = 10 * 1024 ** 3;
 const ENV_KEYS = [
   "REFLEXIO_RETENTION_ARCHIVE",
-  "REFLEXIO_RETENTION_ARCHIVE_DIR",
   "REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES",
   "LOCAL_STORAGE_PATH",
 ] as const;
@@ -76,12 +75,10 @@ export async function readArchiveStatus(): Promise<ArchiveStatus> {
     };
   }
 
-  const archiveDir =
-    values.REFLEXIO_RETENTION_ARCHIVE_DIR ||
-    path.join(
-      values.LOCAL_STORAGE_PATH || path.join(home, ".reflexio", "data"),
-      "archive",
-    );
+  const archiveDir = path.join(
+    values.LOCAL_STORAGE_PATH || path.join(home, ".reflexio", "data"),
+    "archive",
+  );
   let files: string[] = [];
   try {
     files = (await fs.readdir(archiveDir))
