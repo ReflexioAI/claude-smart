@@ -15,17 +15,21 @@ INTERNAL_ENV = "CLAUDE_SMART_INTERNAL"
 HOST_CLAUDE_CODE = "claude-code"
 HOST_CODEX = "codex"
 HOST_OPENCODE = "opencode"
+HOST_UNKNOWN = "unknown"
 VALID_HOSTS = frozenset({HOST_CLAUDE_CODE, HOST_CODEX, HOST_OPENCODE})
+SOURCE_CLAUDE_SMART = "claude-smart"
 
 _SHARED_AGENT_VERSION = "claude-code"
 _current_host: str | None = None
+_current_attribution_host: str | None = None
 
 
 def set_host(value: str | None) -> str:
     """Set the current host, returning the normalized value."""
-    global _current_host
+    global _current_attribution_host, _current_host
     host = value if value in VALID_HOSTS else HOST_CLAUDE_CODE
     _current_host = host
+    _current_attribution_host = value if value in VALID_HOSTS else HOST_UNKNOWN
     os.environ[HOST_ENV] = host
     return host
 
@@ -36,6 +40,14 @@ def host() -> str:
         return _current_host
     value = os.environ.get(HOST_ENV)
     return value if value in VALID_HOSTS else HOST_CLAUDE_CODE
+
+
+def attribution_host() -> str:
+    """Return an explicit host for records, never a compatibility guess."""
+    if _current_attribution_host is not None:
+        return _current_attribution_host
+    value = os.environ.get(HOST_ENV)
+    return value if value in VALID_HOSTS else HOST_UNKNOWN
 
 
 def is_codex() -> bool:

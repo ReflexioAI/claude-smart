@@ -41,6 +41,8 @@ export interface Interaction {
   tools_used: ToolUsed[];
 }
 
+export type Host = "claude-code" | "codex" | "opencode" | "unknown";
+
 export interface UserPlaybook {
   user_playbook_id: number;
   user_id: string | null;
@@ -103,12 +105,15 @@ export interface SessionSummary {
   published_up_to: number;
   preview: string | null;
   source: "local";
+  host: Host | null;
+  request_ids: string[];
 }
 
 export interface SessionDetail {
   session_id: string;
   turns: SessionTurn[];
   published_up_to: number;
+  host: Host | null;
 }
 
 export interface ClaudeSmartConfig {

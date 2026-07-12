@@ -28,7 +28,7 @@ import logging
 import time
 from typing import Any
 
-from claude_smart import context_inject, ids, state
+from claude_smart import context_inject, ids, runtime, state
 
 _LOGGER = logging.getLogger(__name__)
 _TOP_K = 3
@@ -58,6 +58,7 @@ def handle(payload: dict[str, Any]) -> None:
             "role": "User",
             "content": prompt,
             "user_id": project_id,
+            "host": runtime.attribution_host(),
         },
     )
 

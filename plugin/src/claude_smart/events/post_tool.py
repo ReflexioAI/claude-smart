@@ -6,7 +6,7 @@ import re
 import time
 from typing import Any
 
-from claude_smart import state
+from claude_smart import runtime, state
 
 # Tool inputs are persisted locally and later published to reflexio, so we
 # apply a conservative redaction pass at ingestion time. Chosen to avoid
@@ -144,5 +144,6 @@ def handle(payload: dict[str, Any]) -> None:
         "tool_input": _redact(payload.get("tool_input") or {}),
         "tool_output": _redact_string(output_text) if output_text else "",
         "status": _derive_status(tool_response),
+        "host": runtime.attribution_host(),
     }
     state.append(session_id, record)

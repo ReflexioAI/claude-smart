@@ -13,9 +13,11 @@ from claude_smart.reflexio_adapter import Adapter
 class _RecordingAdapter:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.last_request_id: str | None = None
 
     def publish(self, **kwargs: Any) -> bool:
         self.calls.append(kwargs)
+        self.last_request_id = kwargs.get("request_id")
         return True
 
 
@@ -26,7 +28,9 @@ class _SequencedAdapter(_RecordingAdapter):
 
     def publish(self, **kwargs: Any) -> bool:
         self.calls.append(kwargs)
-        return next(self.results)
+        result = next(self.results)
+        self.last_request_id = kwargs.get("request_id") if result else None
+        return result
 
 
 class _CallbackAdapter(_RecordingAdapter):
@@ -37,6 +41,7 @@ class _CallbackAdapter(_RecordingAdapter):
     def publish(self, **kwargs: Any) -> bool:
         self.calls.append(kwargs)
         self.callback()
+        self.last_request_id = kwargs.get("request_id")
         return True
 
 
@@ -131,6 +136,36 @@ def test_retrieved_learnings_attach_once_across_publishes(session_dir) -> None:
         {"kind": "profile", "learning_id": "p2"}
     ]
     assert adapter.calls[0]["request_id"] != adapter.calls[1]["request_id"]
+
+
+def test_success_records_request_id_for_local_lineage(session_dir) -> None:
+    _append_assistant("s1", 10)
+    adapter = _RecordingAdapter()
+
+    assert _publish("s1", adapter) == ("ok", 1)
+
+    marker = state.read_all("s1")[-1]
+    assert marker["request_id"] == adapter.calls[0]["request_id"]
+    assert marker["published_up_to"] == 1
+
+
+def test_success_omits_unconfirmed_request_id_from_local_lineage(session_dir) -> None:
+    class UnconfirmedAdapter:
+        def publish(self, **_kwargs: Any) -> bool:
+            return True
+
+    _append_assistant("s1", 10)
+
+    assert publish.publish_unpublished(
+        session_id="s1",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=cast(Adapter, UnconfirmedAdapter()),
+    ) == ("ok", 1)
+
+    marker = state.read_all("s1")[-1]
+    assert marker == {"published_up_to": 1}
 
 
 def test_failed_publish_retries_frozen_batch_before_new_turns(session_dir) -> None:

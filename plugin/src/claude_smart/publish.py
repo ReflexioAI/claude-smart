@@ -107,18 +107,21 @@ def publish_unpublished(
     published_record_offset, publish_end, interactions = batch
 
     client = adapter if adapter is not None else Adapter()
+    request_id = _publish_request_id(session_id, published_record_offset, publish_end)
     ok = client.publish(
         session_id=session_id,
         project_id=project_id,
-        request_id=_publish_request_id(
-            session_id, published_record_offset, publish_end
-        ),
+        request_id=request_id,
         interactions=interactions,
         force_extraction=force_extraction,
         override_learning_stall=override_learning_stall,
         skip_aggregation=skip_aggregation,
     )
     if ok:
-        state.append(session_id, {"published_up_to": publish_end})
+        marker: dict[str, Any] = {"published_up_to": publish_end}
+        confirmed_request_id = getattr(client, "last_request_id", None)
+        if isinstance(confirmed_request_id, str) and confirmed_request_id:
+            marker["request_id"] = confirmed_request_id
+        state.append(session_id, marker)
         return ("ok", len(interactions))
     return ("failed", len(interactions))

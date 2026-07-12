@@ -233,6 +233,7 @@ def test_publish_returns_true_on_success() -> None:
     assert client.published_kwargs["user_id"] == "p1"
     assert client.published_kwargs["session_id"] == "s1"
     assert client.published_kwargs["agent_version"] == "claude-code"
+    assert client.published_kwargs["source"] == "claude-smart"
     assert client.published_kwargs["wait_for_response"] is False
     assert client.published_kwargs["force_extraction"] is True
     assert client.published_kwargs["override_learning_stall"] is True
@@ -279,6 +280,7 @@ def test_publish_omits_override_learning_stall_when_client_lacks_keyword() -> No
     assert client.published_kwargs["user_id"] == "p1"
     assert client.published_kwargs["force_extraction"] is True
     assert "override_learning_stall" not in client.published_kwargs
+    assert "source" not in client.published_kwargs
 
 
 def test_link_publish_uses_stable_raw_request() -> None:
@@ -305,9 +307,47 @@ def test_link_publish_uses_stable_raw_request() -> None:
     assert client.raw_request["method"] == "POST"
     assert client.raw_request["path"] == "/api/publish_interaction"
     assert client.raw_request["json"]["request_id"] == "request-1"
+    assert client.raw_request["json"]["source"] == "claude-smart"
     assert client.raw_request["json"]["interaction_data_list"][0][
         "retrieved_learnings"
     ] == [{"kind": "profile", "learning_id": "profile-1"}]
+
+
+def test_publish_with_request_id_uses_stable_raw_request() -> None:
+    client = _FakeClient()
+    adapter = _adapter_with(client)
+
+    ok = adapter.publish(
+        session_id="s1",
+        project_id="p1",
+        request_id="request-1",
+        interactions=[{"role": "User", "content": "hi"}],
+    )
+
+    assert ok is True
+    assert client.published_kwargs == {}
+    assert client.raw_request["json"]["request_id"] == "request-1"
+    assert client.raw_request["json"]["interaction_data_list"] == [
+        {"role": "User", "content": "hi"}
+    ]
+
+
+def test_public_publish_records_server_generated_request_id() -> None:
+    class PublicOnlyClient:
+        def publish_interaction(self, **_kwargs):
+            return SimpleNamespace(request_id="server-request")
+
+    adapter = _adapter_with(PublicOnlyClient())
+
+    ok = adapter.publish(
+        session_id="s1",
+        project_id="p1",
+        request_id="local-request",
+        interactions=[{"role": "User", "content": "hi"}],
+    )
+
+    assert ok is True
+    assert adapter.last_request_id == "server-request"
 
 
 def test_missing_raw_request_helper_falls_back_without_optional_links(

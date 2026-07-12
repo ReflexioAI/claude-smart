@@ -7,8 +7,9 @@ Each Claude Code session gets one file at
 - ``{"role": "Assistant", ...}`` — a finalized assistant turn
 - ``{"role": "Assistant_tool", ...}`` — a single tool invocation, attached
   to the next assistant turn at ``Stop`` time
-- ``{"published_up_to": N}`` — high-water mark so Stop / SessionEnd don't
-  re-publish rows already sent to reflexio
+- ``{"published_up_to": N, "request_id": "..."}`` — high-water mark so Stop /
+  SessionEnd don't re-publish rows already sent to reflexio; a confirmed
+  request ID preserves local learning lineage for the dashboard when available
 - ``{"retrieved_learning_refs": [...]}`` — identity pairs shown to the agent,
   attached by event order to the next Assistant turn
 - ``{"publish_attempt": {"start": N, "end": M}}`` — frozen retry boundary for

@@ -62,6 +62,7 @@ class Adapter:
     url: str = ""
     api_key: str = ""
     read_errors: list[str] = field(default_factory=list, init=False)
+    last_request_id: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         env_config.load_reflexio_env()
@@ -116,6 +117,7 @@ class Adapter:
         skip_aggregation: bool = False,
     ) -> bool:
         """Publish buffered interactions to reflexio. Returns True on success."""
+        self.last_request_id = None
         if not interactions:
             return True
         client = self._get_client()
@@ -123,53 +125,57 @@ class Adapter:
             return False
         try:
             interaction_list = list(interactions)
-            if _needs_raw_retrieved_learning_publish(interaction_list):
-                raw_request = getattr(client, "_make_request", None)
-                if request_id is not None and callable(raw_request):
-                    payload = {
-                        "request_id": request_id,
-                        "user_id": project_id,
-                        "interaction_data_list": interaction_list,
-                        "agent_version": runtime.agent_version(),
-                        "session_id": session_id,
-                        "skip_aggregation": skip_aggregation,
-                        "force_extraction": force_extraction,
-                        "evaluation_only": False,
-                        "override_learning_stall": override_learning_stall,
-                    }
-                    try:
-                        raw_request(
-                            "POST",
-                            "/api/publish_interaction",
-                            json=payload,
-                            params=None,
-                        )
-                        return True
-                    except Exception as exc:  # noqa: BLE001
-                        _LOGGER.warning(
-                            "Could not confirm retrieved-learning links; retrying "
-                            "the base interaction with the same request ID: %s",
-                            exc,
-                        )
-                        fallback_payload = {
-                            **payload,
-                            "interaction_data_list": _without_retrieved_learnings(
-                                interaction_list
-                            ),
-                        }
-                        raw_request(
-                            "POST",
-                            "/api/publish_interaction",
-                            json=fallback_payload,
-                            params=None,
-                        )
-                        return True
-                else:
-                    _LOGGER.warning(
-                        "Stable raw publishing is unavailable; publishing "
-                        "without optional retrieved-learning links"
+            raw_request = getattr(client, "_make_request", None)
+            if request_id is not None and callable(raw_request):
+                payload = {
+                    "request_id": request_id,
+                    "user_id": project_id,
+                    "interaction_data_list": interaction_list,
+                    "agent_version": runtime.agent_version(),
+                    "session_id": session_id,
+                    "source": runtime.SOURCE_CLAUDE_SMART,
+                    "skip_aggregation": skip_aggregation,
+                    "force_extraction": force_extraction,
+                    "evaluation_only": False,
+                    "override_learning_stall": override_learning_stall,
+                }
+                try:
+                    raw_request(
+                        "POST",
+                        "/api/publish_interaction",
+                        json=payload,
+                        params=None,
                     )
-                    interaction_list = _without_retrieved_learnings(interaction_list)
+                    self.last_request_id = request_id
+                    return True
+                except Exception as exc:  # noqa: BLE001
+                    if not _needs_raw_retrieved_learning_publish(interaction_list):
+                        raise
+                    _LOGGER.warning(
+                        "Could not confirm retrieved-learning links; retrying "
+                        "the base interaction with the same request ID: %s",
+                        exc,
+                    )
+                    fallback_payload = {
+                        **payload,
+                        "interaction_data_list": _without_retrieved_learnings(
+                            interaction_list
+                        ),
+                    }
+                    raw_request(
+                        "POST",
+                        "/api/publish_interaction",
+                        json=fallback_payload,
+                        params=None,
+                    )
+                    self.last_request_id = request_id
+                    return True
+            if _needs_raw_retrieved_learning_publish(interaction_list):
+                _LOGGER.warning(
+                    "Stable raw publishing is unavailable; publishing "
+                    "without optional retrieved-learning links"
+                )
+                interaction_list = _without_retrieved_learnings(interaction_list)
             kwargs = {
                 "user_id": project_id,
                 "interactions": interaction_list,
@@ -179,13 +185,18 @@ class Adapter:
                 "force_extraction": force_extraction,
                 "skip_aggregation": skip_aggregation,
             }
+            if _supports_keyword(client.publish_interaction, "source"):
+                kwargs["source"] = runtime.SOURCE_CLAUDE_SMART
             if _supports_keyword(client.publish_interaction, "override_learning_stall"):
                 kwargs["override_learning_stall"] = override_learning_stall
             elif override_learning_stall:
                 _LOGGER.debug(
                     "publish_interaction client does not support override_learning_stall"
                 )
-            client.publish_interaction(**kwargs)
+            response = client.publish_interaction(**kwargs)
+            response_request_id = getattr(response, "request_id", None)
+            if isinstance(response_request_id, str) and response_request_id:
+                self.last_request_id = response_request_id
             return True
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("publish_interaction failed: %s", exc)
