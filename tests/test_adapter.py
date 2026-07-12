@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -227,7 +228,7 @@ def test_publish_returns_true_on_success() -> None:
         force_extraction=True,
         override_learning_stall=True,
     )
-    assert ok is True
+    assert ok.ok is True
     # After the project-scoped preferences refactor (commit 88cb150), reflexio's
     # ``user_id`` is the project slug and ``session_id`` is sent separately.
     assert client.published_kwargs["user_id"] == "p1"
@@ -276,7 +277,7 @@ def test_publish_omits_override_learning_stall_when_client_lacks_keyword() -> No
         override_learning_stall=True,
     )
 
-    assert ok is True
+    assert ok.ok is True
     assert client.published_kwargs["user_id"] == "p1"
     assert client.published_kwargs["force_extraction"] is True
     assert "override_learning_stall" not in client.published_kwargs
@@ -302,7 +303,7 @@ def test_link_publish_uses_stable_raw_request() -> None:
         ],
     )
 
-    assert ok is True
+    assert ok.ok is True
     assert client.published_kwargs == {}
     assert client.raw_request["method"] == "POST"
     assert client.raw_request["path"] == "/api/publish_interaction"
@@ -324,12 +325,82 @@ def test_publish_with_request_id_uses_stable_raw_request() -> None:
         interactions=[{"role": "User", "content": "hi"}],
     )
 
-    assert ok is True
+    assert ok.ok is True
     assert client.published_kwargs == {}
     assert client.raw_request["json"]["request_id"] == "request-1"
     assert client.raw_request["json"]["interaction_data_list"] == [
         {"role": "User", "content": "hi"}
     ]
+
+
+def test_publish_confirmation_is_scoped_to_each_shared_adapter_call() -> None:
+    class ConcurrentRawClient:
+        def __init__(self) -> None:
+            self.barrier = threading.Barrier(2)
+
+        def publish_interaction(self, *, source="", **_kwargs):
+            raise AssertionError("stable request IDs use the raw path")
+
+        def _make_request(self, _method, _path, **_kwargs):
+            self.barrier.wait(timeout=5)
+
+    adapter = _adapter_with(ConcurrentRawClient())
+    results = {}
+
+    def publish(request_id: str) -> None:
+        results[request_id] = adapter.publish(
+            session_id=request_id,
+            project_id="p1",
+            request_id=request_id,
+            interactions=[{"role": "User", "content": request_id}],
+        )
+
+    threads = [
+        threading.Thread(target=publish, args=(request_id,))
+        for request_id in ("request-1", "request-2")
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert {request_id: result.request_id for request_id, result in results.items()} == {
+        "request-1": "request-1",
+        "request-2": "request-2",
+    }
+
+
+def test_raw_publish_omits_source_for_older_client_contract() -> None:
+    class OldRawClient:
+        def __init__(self) -> None:
+            self.raw_payload = None
+
+        def publish_interaction(
+            self,
+            *,
+            user_id,
+            interactions,
+            agent_version,
+            session_id,
+            wait_for_response,
+            force_extraction,
+            skip_aggregation,
+        ):
+            raise AssertionError("stable request IDs use the raw path")
+
+        def _make_request(self, _method, _path, **kwargs):
+            self.raw_payload = kwargs["json"]
+
+    client = OldRawClient()
+    result = _adapter_with(client).publish(
+        session_id="s1",
+        project_id="p1",
+        request_id="request-1",
+        interactions=[{"role": "User", "content": "hi"}],
+    )
+
+    assert result.request_id == "request-1"
+    assert "source" not in client.raw_payload
 
 
 def test_public_publish_records_server_generated_request_id() -> None:
@@ -346,8 +417,8 @@ def test_public_publish_records_server_generated_request_id() -> None:
         interactions=[{"role": "User", "content": "hi"}],
     )
 
-    assert ok is True
-    assert adapter.last_request_id == "server-request"
+    assert ok.ok is True
+    assert ok.request_id == "server-request"
 
 
 def test_missing_raw_request_helper_falls_back_without_optional_links(
@@ -371,7 +442,7 @@ def test_missing_raw_request_helper_falls_back_without_optional_links(
         ],
     )
 
-    assert ok is True
+    assert ok.ok is True
     assert client.published_kwargs["interactions"] == [
         {"role": "Assistant", "content": "done"}
     ]
@@ -409,7 +480,7 @@ def test_ambiguous_raw_failure_retries_base_with_same_request_id() -> None:
         ],
     )
 
-    assert ok is True
+    assert ok.ok is True
     assert len(client.raw_requests) == 2
     assert {request["request_id"] for request in client.raw_requests} == {
         "stable-request"
@@ -422,6 +493,25 @@ def test_ambiguous_raw_failure_retries_base_with_same_request_id() -> None:
     ]
 
 
+def test_ambiguous_raw_failure_does_not_retry_through_public_sdk() -> None:
+    class ResponseLossClient(_FakeClient):
+        def _make_request(self, _method, _path, **_kwargs):
+            raise TimeoutError("response was lost after send")
+
+        def publish_interaction(self, **_kwargs):
+            raise AssertionError("SDK retry could duplicate the stable request")
+
+    result = _adapter_with(ResponseLossClient()).publish(
+        session_id="s1",
+        project_id="p1",
+        request_id="stable-request",
+        interactions=[{"role": "User", "content": "hi"}],
+    )
+
+    assert not result.ok
+    assert result.request_id is None
+
+
 def test_publish_returns_false_when_client_raises() -> None:
     a = _adapter_with(_FakeClient(publish_ok=False))
     ok = a.publish(
@@ -430,12 +520,12 @@ def test_publish_returns_false_when_client_raises() -> None:
         interactions=[{"role": "User", "content": "hi"}],
         force_extraction=False,
     )
-    assert ok is False
+    assert ok.ok is False
 
 
 def test_publish_trivially_true_when_no_interactions() -> None:
     a = _adapter_with(_FakeClient())
-    assert a.publish(session_id="s", project_id="p", interactions=[]) is True
+    assert a.publish(session_id="s", project_id="p", interactions=[]).ok is True
 
 
 def test_fetch_user_playbooks_reads_user_playbooks_field() -> None:
@@ -513,14 +603,11 @@ def test_fetch_helpers_return_empty_on_unknown_shape() -> None:
 def test_publish_returns_false_when_client_unavailable(monkeypatch) -> None:
     a = reflexio_adapter.Adapter()
     monkeypatch.setattr(a, "_get_client", lambda: None)
-    assert (
-        a.publish(
-            session_id="s",
-            project_id="p",
-            interactions=[{"role": "User", "content": "x"}],
-        )
-        is False
-    )
+    assert not a.publish(
+        session_id="s",
+        project_id="p",
+        interactions=[{"role": "User", "content": "x"}],
+    ).ok
 
 
 # -----------------------------------------------------------------------------

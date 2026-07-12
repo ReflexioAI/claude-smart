@@ -43,7 +43,7 @@ def host() -> str:
 
 
 def attribution_host() -> str:
-    """Return an explicit host for records, never a compatibility guess."""
+    """Return the explicitly selected record host, or unknown when unset."""
     if _current_attribution_host is not None:
         return _current_attribution_host
     value = os.environ.get(HOST_ENV)

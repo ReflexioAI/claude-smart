@@ -7,7 +7,10 @@ import json
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from claude_smart.reflexio_adapter import PublishResult
 
 
 class FakeReflexioAdapter:
@@ -82,8 +85,9 @@ class FakeReflexioAdapter:
         force_extraction: bool = False,
         override_learning_stall: bool = False,
         skip_aggregation: bool = False,
-    ) -> bool:
+    ) -> PublishResult:
         from claude_smart import runtime
+        from claude_smart.reflexio_adapter import PublishResult
 
         self.publish_calls.append(
             {
@@ -98,7 +102,7 @@ class FakeReflexioAdapter:
                 "agent_version": runtime.agent_version(),
             }
         )
-        return True
+        return PublishResult(True, request_id)
 
 
 @contextmanager

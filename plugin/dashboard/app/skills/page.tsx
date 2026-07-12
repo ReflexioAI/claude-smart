@@ -70,6 +70,7 @@ interface SkillCard {
   status: SkillStatus;
   scopeId: string;
   host: Host | null;
+  hostUnavailable: boolean;
 }
 
 function projectSkill(
@@ -87,6 +88,7 @@ function projectSkill(
     status: statusLabel(p),
     scopeId: p.user_id || "unknown",
     host: requestHosts.get(p.request_id) ?? null,
+    hostUnavailable: false,
   };
 }
 
@@ -102,6 +104,7 @@ function sharedSkill(p: AgentPlaybook): SkillCard {
     status: agentPlaybookStatusLabel(p),
     scopeId: p.agent_version || "default",
     host: null,
+    hostUnavailable: true,
   };
 }
 
@@ -132,44 +135,44 @@ export default function SkillsPage() {
     let cancelled = false;
     async function load() {
       try {
-        const [projectRes, sharedRes, statsRes] = await Promise.all([
-            reflexio.getUserPlaybooks({
-              limit: 500,
-              statusFilter: ALL_LIFECYCLE_STATUSES,
-            }),
-            reflexio.getAgentPlaybooks({
-              limit: 500,
-              statusFilter: ALL_LIFECYCLE_STATUSES,
-            }),
-            fetch("/api/rules/applied?daysBack=30&limit=200", {
-              cache: "no-store",
+        const [projectRes, sharedRes, statsRes, attribution] = await Promise.all([
+          reflexio.getUserPlaybooks({
+            limit: 500,
+            statusFilter: ALL_LIFECYCLE_STATUSES,
+          }),
+          reflexio.getAgentPlaybooks({
+            limit: 500,
+            statusFilter: ALL_LIFECYCLE_STATUSES,
+          }),
+          fetch("/api/rules/applied?daysBack=30&limit=200", {
+            cache: "no-store",
+          })
+            .then((r) => r.json())
+            .catch(() => ({
+              success: false,
+              stats: [] as PlaybookApplicationStat[],
+            })),
+          fetch("/api/sessions", { cache: "no-store" })
+            .then(async (response) => {
+              if (!response.ok) throw new Error(`sessions ${response.status}`);
+              const data = await response.json();
+              return {
+                sessions: (data.sessions ?? []) as SessionSummary[],
+                failed: false,
+              };
             })
-              .then((r) => r.json())
-              .catch(() => ({
-                success: false,
-                stats: [] as PlaybookApplicationStat[],
-              })),
-          ]);
+            .catch(() => ({
+              sessions: [] as SessionSummary[],
+              failed: true,
+            })),
+        ]);
         if (cancelled) return;
         setProjectSkills(projectRes.user_playbooks ?? []);
         setSharedSkills(sharedRes.agent_playbooks ?? []);
         setAppStats(statsRes.stats ?? []);
+        setRequestHosts(hostByRequestId(attribution.sessions));
+        setAttributionUnavailable(attribution.failed);
         setError(null);
-        let attributionFailed = false;
-        const sessions = await fetch("/api/sessions", { cache: "no-store" })
-          .then(async (response) => {
-            if (!response.ok) throw new Error(`sessions ${response.status}`);
-            const data = await response.json();
-            return (data.sessions ?? []) as SessionSummary[];
-          })
-          .catch(() => {
-            attributionFailed = true;
-            return [] as SessionSummary[];
-          });
-        if (!cancelled) {
-          setRequestHosts(hostByRequestId(sessions));
-          setAttributionUnavailable(attributionFailed);
-        }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       }
@@ -423,10 +426,7 @@ export default function SkillsPage() {
                           {p.agentVersion}
                         </Badge>
                       )}
-                      <HostBadge
-                        host={p.host}
-                        unavailable={p.kind === "shared"}
-                      />
+                      <HostBadge host={p.host} unavailable={p.hostUnavailable} />
                       <StatusBadge kind={p.kind} status={p.status} />
                       <Badge variant="secondary" className="h-5 text-[10px]">
                         {p.kind === "project" ? "project-specific" : "shared"}

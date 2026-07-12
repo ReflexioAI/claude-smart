@@ -7,18 +7,16 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from claude_smart import publish, state
-from claude_smart.reflexio_adapter import Adapter
+from claude_smart.reflexio_adapter import Adapter, PublishResult
 
 
 class _RecordingAdapter:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
-        self.last_request_id: str | None = None
 
-    def publish(self, **kwargs: Any) -> bool:
+    def publish(self, **kwargs: Any) -> PublishResult:
         self.calls.append(kwargs)
-        self.last_request_id = kwargs.get("request_id")
-        return True
+        return PublishResult(True, kwargs.get("request_id"))
 
 
 class _SequencedAdapter(_RecordingAdapter):
@@ -26,11 +24,10 @@ class _SequencedAdapter(_RecordingAdapter):
         super().__init__()
         self.results = iter(results)
 
-    def publish(self, **kwargs: Any) -> bool:
+    def publish(self, **kwargs: Any) -> PublishResult:
         self.calls.append(kwargs)
         result = next(self.results)
-        self.last_request_id = kwargs.get("request_id") if result else None
-        return result
+        return PublishResult(result, kwargs.get("request_id") if result else None)
 
 
 class _CallbackAdapter(_RecordingAdapter):
@@ -38,11 +35,10 @@ class _CallbackAdapter(_RecordingAdapter):
         super().__init__()
         self.callback = callback
 
-    def publish(self, **kwargs: Any) -> bool:
+    def publish(self, **kwargs: Any) -> PublishResult:
         self.calls.append(kwargs)
         self.callback()
-        self.last_request_id = kwargs.get("request_id")
-        return True
+        return PublishResult(True, kwargs.get("request_id"))
 
 
 def _append_assistant(session_id: str, ts: int, content: str = "done") -> None:
@@ -151,8 +147,8 @@ def test_success_records_request_id_for_local_lineage(session_dir) -> None:
 
 def test_success_omits_unconfirmed_request_id_from_local_lineage(session_dir) -> None:
     class UnconfirmedAdapter:
-        def publish(self, **_kwargs: Any) -> bool:
-            return True
+        def publish(self, **_kwargs: Any) -> PublishResult:
+            return PublishResult(True)
 
     _append_assistant("s1", 10)
 
@@ -290,11 +286,11 @@ def test_overlapping_publishers_adopt_one_frozen_batch(
     _append_assistant("s1", 4, "second")
 
     class BlockingAdapter(_RecordingAdapter):
-        def publish(self, **kwargs: Any) -> bool:
+        def publish(self, **kwargs: Any) -> PublishResult:
             self.calls.append(kwargs)
             second_request_ready.set()
             assert allow_second_request.wait(timeout=5)
-            return True
+            return PublishResult(True, kwargs.get("request_id"))
 
     second_adapter = BlockingAdapter()
     second_result: list[tuple[str, int]] = []

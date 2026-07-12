@@ -50,19 +50,29 @@ def _configured_url() -> str:
     return url or _default_url()
 
 
+@dataclass(frozen=True)
+class PublishResult:
+    """Outcome and server-confirmed lineage for one publish call."""
+
+    ok: bool
+    request_id: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
 @dataclass
 class Adapter:
     """Wraps the reflexio client and absorbs connection errors.
 
-    All methods degrade to a neutral no-op return (empty list / False) on
-    connection failure so a missing or down reflexio server never crashes
-    a Claude Code hook.
+    All methods degrade to a neutral no-op result (an empty list or a falsey
+    result) on connection failure so a missing or down reflexio server never
+    crashes a host hook.
     """
 
     url: str = ""
     api_key: str = ""
     read_errors: list[str] = field(default_factory=list, init=False)
-    last_request_id: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         env_config.load_reflexio_env()
@@ -115,30 +125,30 @@ class Adapter:
         force_extraction: bool = False,
         override_learning_stall: bool = False,
         skip_aggregation: bool = False,
-    ) -> bool:
-        """Publish buffered interactions to reflexio. Returns True on success."""
-        self.last_request_id = None
+    ) -> PublishResult:
+        """Publish interactions and return this call's confirmed request ID."""
         if not interactions:
-            return True
+            return PublishResult(True)
         client = self._get_client()
         if client is None:
-            return False
+            return PublishResult(False)
         try:
             interaction_list = list(interactions)
             raw_request = getattr(client, "_make_request", None)
             if request_id is not None and callable(raw_request):
-                payload = {
+                payload: dict[str, Any] = {
                     "request_id": request_id,
                     "user_id": project_id,
                     "interaction_data_list": interaction_list,
                     "agent_version": runtime.agent_version(),
                     "session_id": session_id,
-                    "source": runtime.SOURCE_CLAUDE_SMART,
                     "skip_aggregation": skip_aggregation,
                     "force_extraction": force_extraction,
                     "evaluation_only": False,
                     "override_learning_stall": override_learning_stall,
                 }
+                if _supports_keyword(client.publish_interaction, "source"):
+                    payload["source"] = runtime.SOURCE_CLAUDE_SMART
                 try:
                     raw_request(
                         "POST",
@@ -146,8 +156,7 @@ class Adapter:
                         json=payload,
                         params=None,
                     )
-                    self.last_request_id = request_id
-                    return True
+                    return PublishResult(True, request_id)
                 except Exception as exc:  # noqa: BLE001
                     if not _needs_raw_retrieved_learning_publish(interaction_list):
                         raise
@@ -168,8 +177,7 @@ class Adapter:
                         json=fallback_payload,
                         params=None,
                     )
-                    self.last_request_id = request_id
-                    return True
+                    return PublishResult(True, request_id)
             if _needs_raw_retrieved_learning_publish(interaction_list):
                 _LOGGER.warning(
                     "Stable raw publishing is unavailable; publishing "
@@ -196,11 +204,11 @@ class Adapter:
             response = client.publish_interaction(**kwargs)
             response_request_id = getattr(response, "request_id", None)
             if isinstance(response_request_id, str) and response_request_id:
-                self.last_request_id = response_request_id
-            return True
+                return PublishResult(True, response_request_id)
+            return PublishResult(True)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("publish_interaction failed: %s", exc)
-            return False
+            return PublishResult(False)
 
     def apply_extraction_defaults(self, *, window_size: int, stride_size: int) -> bool:
         """Push claude-smart's preferred extraction defaults to the reflexio server.
