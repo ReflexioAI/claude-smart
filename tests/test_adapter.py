@@ -984,3 +984,30 @@ def test_mark_stall_notified_calls_through(monkeypatch):
     monkeypatch.setattr(adapter, "_get_client", lambda: stub)
     adapter.mark_stall_notified()
     assert stub.notified_called is True
+
+
+def test_publish_returns_false_when_client_hangs(monkeypatch):
+    """A wedged backend must not hang the hook: publish returns within the cap."""
+    import threading
+    import time
+
+    from claude_smart import reflexio_adapter
+
+    class HangingClient:
+        def publish_interaction(self, **_kwargs):
+            time.sleep(30)  # simulate the Windows write-path hang
+
+    adapter = reflexio_adapter.Adapter(url="http://x", api_key="")
+    monkeypatch.setattr(adapter, "_get_client", lambda: HangingClient())
+    monkeypatch.setattr(reflexio_adapter, "_PUBLISH_WALL_TIMEOUT_SECONDS", 1)
+
+    start = time.monotonic()
+    ok = adapter.publish(
+        session_id="s",
+        project_id="p",
+        interactions=[{"role": "user", "content": "hi"}],
+    )
+    elapsed = time.monotonic() - start
+    assert ok is False
+    assert elapsed < 5  # bounded, not the 30s hang
+    assert threading.active_count() >= 1  # no crash

@@ -9,6 +9,7 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import threading
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -26,6 +27,13 @@ _ENV_API_KEY = "REFLEXIO_API_KEY"
 # unhealthy POST would freeze the user's prompt. 5s matches the precedent
 # in ``ids.py`` for short-lived hook HTTP calls.
 _HTTP_TIMEOUT_SECONDS = 5
+# Wall-clock cap for a single publish_interaction call. wait_for_response=False
+# already makes this fire-and-forget semantically, but on Windows a wedged
+# backend's write path can hang the HTTP round-trip itself (see
+# ReflexioAI/claude-smart#109 / ReflexioAI/reflexio), which would freeze the
+# SessionStart hook. Bounding the call keeps the hook responsive; a dropped
+# publish is retried next turn from the unpublished buffer.
+_PUBLISH_WALL_TIMEOUT_SECONDS = 8
 _SEARCH_MODE_HYBRID = "hybrid"  # reflexio.models.config_schema.SearchMode.HYBRID
 _UNIFIED_ENTITY_TYPES = ("profiles", "user_playbooks", "agent_playbooks")
 _AGENT_PLAYBOOK_APPROVAL_STATUSES = ("pending", "approved")
@@ -185,8 +193,30 @@ class Adapter:
                 _LOGGER.debug(
                     "publish_interaction client does not support override_learning_stall"
                 )
-            client.publish_interaction(**kwargs)
-            return True
+            result: dict[str, Any] = {"ok": False, "error": None}
+
+            def _do_publish() -> None:
+                try:
+                    client.publish_interaction(**kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    result["error"] = exc
+                else:
+                    result["ok"] = True
+
+            worker = threading.Thread(target=_do_publish, daemon=True)
+            worker.start()
+            worker.join(_PUBLISH_WALL_TIMEOUT_SECONDS)
+            if worker.is_alive():
+                _LOGGER.warning(
+                    "publish_interaction exceeded %ss wall-clock; treating as "
+                    "dropped (buffer retries next turn)",
+                    _PUBLISH_WALL_TIMEOUT_SECONDS,
+                )
+                return False
+            if result["error"] is not None:
+                _LOGGER.warning("publish_interaction failed: %s", result["error"])
+                return False
+            return result["ok"]
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("publish_interaction failed: %s", exc)
             return False
