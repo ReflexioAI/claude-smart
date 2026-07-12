@@ -109,6 +109,7 @@ class Adapter:
         *,
         session_id: str,
         project_id: str,
+        request_id: str | None = None,
         interactions: Sequence[dict[str, Any]],
         force_extraction: bool = False,
         override_learning_stall: bool = False,
@@ -123,37 +124,52 @@ class Adapter:
         try:
             interaction_list = list(interactions)
             if _needs_raw_retrieved_learning_publish(interaction_list):
-                try:
-                    client._make_request(  # noqa: SLF001 - pinned-client compatibility
-                        "POST",
-                        "/api/publish_interaction",
-                        json={
-                            "user_id": project_id,
-                            "interaction_data_list": interaction_list,
-                            "agent_version": runtime.agent_version(),
-                            "session_id": session_id,
-                            "skip_aggregation": skip_aggregation,
-                            "force_extraction": force_extraction,
-                            "evaluation_only": False,
-                            "override_learning_stall": override_learning_stall,
-                        },
-                        params=None,
-                    )
-                    return True
-                except Exception as exc:  # noqa: BLE001
-                    _LOGGER.warning(
-                        "Could not publish retrieved-learning links; "
-                        "retrying the interaction without them: %s",
-                        exc,
-                    )
-                    interaction_list = [
-                        {
-                            key: value
-                            for key, value in interaction.items()
-                            if key != "retrieved_learnings"
+                raw_request = getattr(client, "_make_request", None)
+                if request_id is not None and callable(raw_request):
+                    payload = {
+                        "request_id": request_id,
+                        "user_id": project_id,
+                        "interaction_data_list": interaction_list,
+                        "agent_version": runtime.agent_version(),
+                        "session_id": session_id,
+                        "skip_aggregation": skip_aggregation,
+                        "force_extraction": force_extraction,
+                        "evaluation_only": False,
+                        "override_learning_stall": override_learning_stall,
+                    }
+                    try:
+                        raw_request(
+                            "POST",
+                            "/api/publish_interaction",
+                            json=payload,
+                            params=None,
+                        )
+                        return True
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.warning(
+                            "Could not confirm retrieved-learning links; retrying "
+                            "the base interaction with the same request ID: %s",
+                            exc,
+                        )
+                        fallback_payload = {
+                            **payload,
+                            "interaction_data_list": _without_retrieved_learnings(
+                                interaction_list
+                            ),
                         }
-                        for interaction in interaction_list
-                    ]
+                        raw_request(
+                            "POST",
+                            "/api/publish_interaction",
+                            json=fallback_payload,
+                            params=None,
+                        )
+                        return True
+                else:
+                    _LOGGER.warning(
+                        "Stable raw publishing is unavailable; publishing "
+                        "without optional retrieved-learning links"
+                    )
+                    interaction_list = _without_retrieved_learnings(interaction_list)
             kwargs = {
                 "user_id": project_id,
                 "interactions": interaction_list,
@@ -512,22 +528,27 @@ def _supports_keyword(callable_obj: Any, keyword: str) -> bool:
 def _needs_raw_retrieved_learning_publish(
     interactions: Sequence[dict[str, Any]],
 ) -> bool:
-    """Return whether the pinned client would strip retrieved-learning links.
+    """Return whether links require a caller-stable raw request.
 
-    Reflexio 0.2.28 reconstructs dictionaries through an older Pydantic model
-    before HTTP, silently dropping ``retrieved_learnings``. Its authenticated
-    request helper can carry the complete body safely: old servers ignore the
-    field, while upgraded servers persist it.
+    The public client does not accept a caller-supplied request ID, and older
+    clients also strip this field. The authenticated helper preserves both.
     """
-    if not any(item.get("retrieved_learnings") for item in interactions):
-        return False
-    try:
-        from reflexio.models.api_schema.service_schemas import (  # type: ignore[import-not-found]
-            InteractionData,
-        )
-    except ImportError:
-        return False
-    return "retrieved_learnings" not in InteractionData.model_fields
+    return any(item.get("retrieved_learnings") for item in interactions)
+
+
+def _without_retrieved_learnings(
+    interactions: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Copy interactions without the optional compatibility-only field."""
+
+    return [
+        {
+            key: value
+            for key, value in interaction.items()
+            if key != "retrieved_learnings"
+        }
+        for interaction in interactions
+    ]
 
 
 def _filter_rejected_agent_playbooks(items: list[Any]) -> list[Any]:

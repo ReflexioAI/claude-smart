@@ -8,14 +8,57 @@ messaging without peeking at the adapter.
 
 from __future__ import annotations
 
-import logging
-from typing import Literal
+import uuid
+from typing import Any, Literal
 
 from claude_smart import state
 from claude_smart.reflexio_adapter import Adapter
 
 PublishStatus = Literal["nothing", "ok", "failed"]
-_LOGGER = logging.getLogger(__name__)
+
+
+def _publish_request_id(session_id: str, start: int, end: int) -> str:
+    """Return a stable request ID for one buffered publish range."""
+
+    name = f"claude-smart:{session_id}:{start}:{end}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
+
+
+def _prepare_publish_batch(
+    session_id: str,
+) -> tuple[int, int, list[dict[str, Any]]] | None:
+    """Freeze and return one canonical unpublished record range."""
+
+    while True:
+        records = state.read_all(session_id)
+        published, available = state.unpublished_slice(records)
+        if not available:
+            return None
+
+        publish_end = state.pending_publish_end(records, published)
+        if publish_end is None:
+            publish_end = state.safe_publish_end(records, published)
+            _, proposed = state.unpublished_slice(
+                records[:publish_end], published_override=published
+            )
+            if not proposed:
+                return None
+            state.append(
+                session_id,
+                {"publish_attempt": {"start": published, "end": publish_end}},
+            )
+
+        canonical = state.read_all(session_id)
+        if state.published_record_offset(canonical) != published:
+            continue
+        canonical_end = state.pending_publish_end(canonical, published)
+        if canonical_end is None:
+            continue
+        _, interactions = state.unpublished_slice(
+            canonical[:canonical_end], published_override=published
+        )
+        if interactions:
+            return published, canonical_end, interactions
 
 
 def publish_unpublished(
@@ -58,38 +101,24 @@ def publish_unpublished(
             was unreachable. On ``"failed"`` the watermark is not advanced,
             so the next hook retries the same batch.
     """
-    records = state.read_all(session_id)
-    published_record_offset, interactions = state.unpublished_slice(records)
-    if not interactions:
+    batch = _prepare_publish_batch(session_id)
+    if batch is None:
         return ("nothing", 0)
-    retrieved_state: dict[str, object] | None = None
-    try:
-        start_offset = state.retrieved_learning_watermark(records)
-        injected_entries, end_offset = state.read_injected_entries(
-            session_id, start_offset
-        )
-        retrieved_state = state.attach_retrieved_learnings(
-            records,
-            published_record_offset,
-            interactions,
-            injected_entries,
-            end_offset,
-        )
-    except Exception as exc:  # best-effort metadata must never block a publish
-        _LOGGER.warning("Could not attach retrieved learnings: %s", exc)
+    published_record_offset, publish_end, interactions = batch
+
     client = adapter if adapter is not None else Adapter()
     ok = client.publish(
         session_id=session_id,
         project_id=project_id,
+        request_id=_publish_request_id(
+            session_id, published_record_offset, publish_end
+        ),
         interactions=interactions,
         force_extraction=force_extraction,
         override_learning_stall=override_learning_stall,
         skip_aggregation=skip_aggregation,
     )
     if ok:
-        watermark_record: dict[str, object] = {"published_up_to": len(records)}
-        if retrieved_state is not None:
-            watermark_record.update(retrieved_state)
-        state.append(session_id, watermark_record)
+        state.append(session_id, {"published_up_to": publish_end})
         return ("ok", len(interactions))
     return ("failed", len(interactions))

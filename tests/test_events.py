@@ -990,8 +990,16 @@ def test_user_prompt_injects_context_when_hits_present(
     calls: list[dict[str, Any]] = []
     _stub_user_prompt_adapter(
         monkeypatch,
-        playbooks=[{"content": "run uv sync after edits", "trigger": "pyproject.toml"}],
-        profiles=[{"content": "prefers anyio over asyncio"}],
+        playbooks=[
+            {
+                "user_playbook_id": "playbook-1",
+                "content": "run uv sync after edits",
+                "trigger": "pyproject.toml",
+            }
+        ],
+        profiles=[
+            {"profile_id": "profile-1", "content": "prefers anyio over asyncio"}
+        ],
         calls=calls,
     )
     buf = io.StringIO()
@@ -1011,8 +1019,10 @@ def test_user_prompt_injects_context_when_hits_present(
     assert calls[0]["session_id"] == "s1"
     # The prompt is still buffered for downstream extraction.
     records = state.read_all("s1")
-    assert records[-1]["role"] == "User"
-    assert records[-1]["content"] == "edit pyproject.toml"
+    turns = [record for record in records if "role" in record]
+    assert turns[-1]["role"] == "User"
+    assert turns[-1]["content"] == "edit pyproject.toml"
+    assert records[-1]["retrieved_learning_refs"]
     # The citation registry is populated so Stop can resolve text citation ids.
     registry = state.read_injected("s1")
     assert registry, "expected injected registry to hold at least one entry"

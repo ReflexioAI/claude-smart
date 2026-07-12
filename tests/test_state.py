@@ -139,13 +139,34 @@ def test_append_injected_roundtrip(session_dir) -> None:
     state.append_injected(
         "s1",
         [
-            {"id": "s1-ab12", "kind": "playbook", "title": "t1", "content": "c1"},
-            {"id": "p1-cd34", "kind": "profile", "title": "t2", "content": "c2"},
+            {
+                "id": "s1-ab12",
+                "kind": "playbook",
+                "source_kind": "user_playbook",
+                "real_id": "11",
+                "title": "t1",
+                "content": "c1",
+            },
+            {
+                "id": "p1-cd34",
+                "kind": "profile",
+                "real_id": "p1",
+                "title": "t2",
+                "content": "c2",
+            },
         ],
     )
     registry = state.read_injected("s1")
     assert registry["s1-ab12"]["title"] == "t1"
     assert registry["p1-cd34"]["kind"] == "profile"
+    assert state.read_all("s1") == [
+        {
+            "retrieved_learning_refs": [
+                {"kind": "user_playbook", "learning_id": "11"},
+                {"kind": "profile", "learning_id": "p1"},
+            ]
+        }
+    ]
 
 
 def test_append_injected_empty_iter_is_noop(session_dir) -> None:
@@ -209,50 +230,6 @@ def test_read_injected_drops_entries_without_id(session_dir) -> None:
     )
     registry = state.read_injected("s1")
     assert set(registry.keys()) == {"s1-ab12"}
-
-
-def test_read_injected_entries_retries_incomplete_final_line(session_dir) -> None:
-    path = state.injected_path("s1")
-    path.write_text('{"id":"partial","kind":"profile"', encoding="utf-8")
-
-    entries, offset = state.read_injected_entries("s1")
-
-    assert entries == []
-    assert offset == 0
-
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(',"real_id":"p1","ts":1}\n')
-
-    entries, offset = state.read_injected_entries("s1", offset)
-
-    assert entries == [{"id": "partial", "kind": "profile", "real_id": "p1", "ts": 1}]
-    assert offset == path.stat().st_size
-
-
-def test_retrieved_learning_failure_does_not_partially_mutate_interactions() -> None:
-    class ExplodingEntry(dict):
-        def get(self, *_args, **_kwargs):
-            raise RuntimeError("malformed pending entry")
-
-    interactions = [{"role": "Assistant", "content": "done"}]
-
-    try:
-        state.attach_retrieved_learnings(
-            [{"role": "Assistant", "ts": 10}],
-            0,
-            interactions,
-            [
-                {"kind": "profile", "real_id": "p1", "ts": 1},
-                ExplodingEntry(),
-            ],
-            end_offset=100,
-        )
-    except RuntimeError as exc:
-        assert str(exc) == "malformed pending entry"
-    else:
-        raise AssertionError("expected malformed entry to abort staged attachment")
-
-    assert "retrieved_learnings" not in interactions[0]
 
 
 def test_unpublished_slice_truncates_overlong_tool_fields_to_cap() -> None:

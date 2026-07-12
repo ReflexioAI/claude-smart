@@ -9,9 +9,10 @@ Each Claude Code session gets one file at
   to the next assistant turn at ``Stop`` time
 - ``{"published_up_to": N}`` — high-water mark so Stop / SessionEnd don't
   re-publish rows already sent to reflexio
-- ``{"retrieved_folded_up_to": N, "retrieved_pending": [...]}`` — byte offset
-  read from the injection registry plus future-dated entries awaiting an
-  eligible Assistant turn
+- ``{"retrieved_learning_refs": [...]}`` — identity pairs shown to the agent,
+  attached by event order to the next Assistant turn
+- ``{"publish_attempt": {"start": N, "end": M}}`` — frozen retry boundary for
+  one in-flight publish
 
 The buffer exists for offline resilience: when reflexio is unreachable,
 Stop appends without publishing and the next successful hook drains.
@@ -22,7 +23,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from bisect import bisect_left
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -43,6 +43,7 @@ _VALID_CITATION_KINDS = frozenset(
     {"playbook", "profile", "user_playbook", "agent_playbook"}
 )
 _VALID_RETRIEVED_PLAYBOOK_KINDS = frozenset({"user_playbook", "agent_playbook"})
+_VALID_RETRIEVED_KINDS = _VALID_RETRIEVED_PLAYBOOK_KINDS | {"profile"}
 _RETRIEVED_LEARNINGS_PUBLISH_CAP = 1000
 
 
@@ -90,169 +91,12 @@ def injected_path(session_id: str) -> Path:
     return state_dir() / f"{session_id}.injected.jsonl"
 
 
-def append_injected(session_id: str, entries: Iterable[dict[str, Any]]) -> None:
-    """Append citation-registry entries to the per-session injected-items file.
+def _normalize_registry_ref(entry: dict[str, Any]) -> dict[str, str] | None:
+    """Return the identity pair carried by one citation-registry entry."""
 
-    Each entry maps a short ``id`` (4-hex-char) back to the skill or
-    preference it came from so the Stop hook can resolve citation ids into
-    human-readable titles for the dashboard.
-    Silently no-ops when ``entries`` is empty.
-    """
-    records = list(entries)
-    if not records:
-        return
-    path = injected_path(session_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        if fcntl is not None:
-            try:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-            except OSError as exc:
-                _LOGGER.debug("flock failed on %s: %s", path, exc)
-        for rec in records:
-            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-
-
-def read_injected(session_id: str) -> dict[str, dict[str, Any]]:
-    """Return the per-session citation registry keyed by id.
-
-    Later entries win when the same id was injected multiple times
-    (identical content produces the same hash-derived id, so the extra
-    record only refreshes metadata).
-    """
-    registry: dict[str, dict[str, Any]] = {}
-    entries, _ = read_injected_entries(session_id)
-    for entry in entries:
-        item_id = entry.get("id")
-        if isinstance(item_id, str) and item_id:
-            registry[item_id] = entry
-    return registry
-
-
-def read_injected_entries(
-    session_id: str, start_offset: int = 0
-) -> tuple[list[dict[str, Any]], int]:
-    """Return new injection-registry entries and the ending byte offset.
-
-    Unlike :func:`read_injected`, this reader intentionally preserves repeated
-    ids: each line represents a distinct injection event that must be folded
-    into exactly one published Assistant turn.
-
-    Args:
-        session_id: Host session identifier.
-        start_offset: Previously committed safe byte offset.
-
-    Returns:
-        Ordered decoded entries and the last completely consumed byte offset.
-    """
-    path = injected_path(session_id)
-    if not path.exists():
-        return [], start_offset
-    entries: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as fh:
-        if fcntl is not None:
-            try:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
-            except OSError as exc:
-                _LOGGER.debug("shared flock failed on %s: %s", path, exc)
-        fh.seek(start_offset)
-        end_offset = start_offset
-        while True:
-            line_start = fh.tell()
-            line = fh.readline()
-            if not line:
-                break
-            candidate = line.strip()
-            if not candidate:
-                end_offset = fh.tell()
-                continue
-            try:
-                entry = json.loads(candidate)
-            except json.JSONDecodeError as exc:
-                if not line.endswith("\n"):
-                    end_offset = line_start
-                    break
-                _LOGGER.warning("Skipping malformed injected line in %s: %s", path, exc)
-                end_offset = fh.tell()
-                continue
-            if isinstance(entry, dict):
-                entries.append(entry)
-            end_offset = fh.tell()
-    return entries, end_offset
-
-
-def retrieved_learning_watermark(records: list[dict[str, Any]]) -> int:
-    """Return the latest successfully published injection-file byte offset.
-
-    Args:
-        records: Raw persisted session-buffer records.
-
-    Returns:
-        Latest non-negative ``retrieved_folded_up_to`` value, or zero.
-    """
-    offset = 0
-    for record in records:
-        candidate = record.get("retrieved_folded_up_to")
-        if isinstance(candidate, int) and candidate >= 0:
-            offset = candidate
-    return offset
-
-
-def _retrieval_pending(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return the latest valid list of not-yet-eligible registry entries."""
-    pending: list[dict[str, Any]] = []
-    for record in records:
-        if "retrieved_folded_up_to" in record:
-            value = record.get("retrieved_pending", [])
-            pending = (
-                [item for item in value if isinstance(item, dict)]
-                if isinstance(value, list)
-                else []
-            )
-    return pending
-
-
-def _assistant_targets(
-    records: list[dict[str, Any]],
-    published_record_offset: int,
-    interactions: list[dict[str, Any]],
-) -> list[tuple[int, int]]:
-    """Pair each unpublished Assistant timestamp with its wire-list index."""
-    timestamps: list[int] = []
-    for record in records[published_record_offset:]:
-        if record.get("role") != "Assistant":
-            continue
-        timestamp = record.get("ts")
-        timestamps.append(timestamp if isinstance(timestamp, int) else 0)
-    indexes = [
-        index
-        for index, interaction in enumerate(interactions)
-        if interaction.get("role") == "Assistant"
-    ]
-    if len(timestamps) != len(indexes):
-        raise ValueError("Assistant records and publish payload are out of sync")
-    return list(zip(timestamps, indexes, strict=True))
-
-
-def _last_published_assistant_timestamp(
-    records: list[dict[str, Any]], published_record_offset: int
-) -> int | None:
-    """Return the latest timestamp whose Assistant turn already published."""
-    timestamps = [
-        record["ts"]
-        for record in records[:published_record_offset]
-        if record.get("role") == "Assistant" and isinstance(record.get("ts"), int)
-    ]
-    return max(timestamps, default=None)
-
-
-def _retrieved_candidate(
-    entry: dict[str, Any],
-) -> tuple[tuple[str, str], dict[str, Any]] | None:
-    """Normalize one registry entry into a bounded wire candidate."""
-    real_id = entry.get("real_id")
+    learning_id = entry.get("real_id")
     kind = entry.get("kind")
-    if not isinstance(real_id, str) or not real_id:
+    if not isinstance(learning_id, str) or not learning_id:
         return None
     if kind == "profile":
         wire_kind = "profile"
@@ -263,122 +107,73 @@ def _retrieved_candidate(
         wire_kind = entry["source_kind"]
     else:
         return None
-
-    candidate = {"kind": wire_kind, "learning_id": real_id}
-    return (wire_kind, real_id), candidate
+    return {"kind": wire_kind, "learning_id": learning_id}
 
 
-def _commit_retrieved_learnings(
-    interactions: list[dict[str, Any]], staged: dict[int, list[dict[str, Any]]]
-) -> None:
-    """Commit fully validated attachments to wire interactions."""
-    for index, retrieved in staged.items():
-        if retrieved:
-            interactions[index]["retrieved_learnings"] = retrieved
-        else:
-            interactions[index].pop("retrieved_learnings", None)
+def append_injected(session_id: str, entries: Iterable[dict[str, Any]]) -> None:
+    """Record injected items for citations and the next Assistant publish.
 
-
-def _log_attachment_limits(skipped: int, truncated: int) -> None:
-    """Emit attachment diagnostics without affecting the publish path."""
-    if skipped:
-        _LOGGER.debug("Skipped %d stale or unresolvable injected entries", skipped)
-    if truncated:
-        _LOGGER.warning(
-            "Dropped %d retrieved learning links at the publish wire cap", truncated
-        )
-
-
-def _stage_registry_entries(
-    entries: list[dict[str, Any]],
-    assistant_targets: list[tuple[int, int]],
-    staged: dict[int, list[dict[str, Any]]],
-    seen: dict[int, set[tuple[str, str]]],
-    published_through_ts: int | None,
-) -> tuple[list[dict[str, Any]], int, int]:
-    """Attach resolvable registry entries to staged Assistant interactions."""
-    remaining: list[dict[str, Any]] = []
-    skipped = truncated = 0
-    attached_total = sum(len(items) for items in staged.values())
-    timestamps = [timestamp for timestamp, _ in assistant_targets]
-    for entry in entries:
-        entry_ts = entry.get("ts")
-        if published_through_ts is not None and (
-            not isinstance(entry_ts, int) or entry_ts <= published_through_ts
-        ):
-            skipped += 1
-            continue
-        target = bisect_left(timestamps, entry_ts if isinstance(entry_ts, int) else 0)
-        if target == len(timestamps):
-            remaining.append(entry)
-            continue
-        resolved = _retrieved_candidate(entry)
-        if resolved is None:
-            skipped += 1
-            continue
-        interaction_index = assistant_targets[target][1]
-        candidate_key, candidate = resolved
-        if candidate_key in seen[interaction_index]:
-            continue
-        if attached_total >= _RETRIEVED_LEARNINGS_PUBLISH_CAP:
-            truncated += 1
-            continue
-        staged[interaction_index].append(candidate)
-        seen[interaction_index].add(candidate_key)
-        attached_total += 1
-    return remaining, skipped, truncated
-
-
-def attach_retrieved_learnings(
-    records: list[dict[str, Any]],
-    published_record_offset: int,
-    interactions: list[dict[str, Any]],
-    injected_entries: list[dict[str, Any]],
-    end_offset: int,
-) -> dict[str, Any]:
-    """Fold injected entries into the first eligible Assistant interaction.
-
-    Args:
-        records: Raw persisted session-buffer records.
-        published_record_offset: First record not covered by the publish marker.
-        interactions: Unpublished wire interactions to enrich after validation.
-        injected_entries: Newly read injection-registry entries in file order.
-        end_offset: Safe byte offset reached in the injection registry.
-
-    Returns:
-        Registry offset and any not-yet-eligible entries. The caller persists
-        this state only after publish succeeds, making retries idempotent
-        without assuming registry timestamps are monotonic.
+    The citation sidecar keeps the display metadata used by Stop. The ordered
+    session event stores identity pairs only, so publishing never has to join
+    two files or infer event order from timestamps.
     """
-    pending = _retrieval_pending(records)
-    assistant_targets = _assistant_targets(
-        records, published_record_offset, interactions
-    )
-    staged_retrieved: dict[int, list[dict[str, Any]]] = {}
-    seen_by_interaction: dict[int, set[tuple[str, str]]] = {}
-    for _, index in assistant_targets:
-        existing = interactions[index].get("retrieved_learnings", [])
-        retrieved = [item.copy() for item in existing if isinstance(item, dict)]
-        staged_retrieved[index] = retrieved
-        seen_by_interaction[index] = {
-            (str(item.get("kind", "")), str(item.get("learning_id", "")))
-            for item in retrieved
-        }
 
-    remaining, skipped, truncated = _stage_registry_entries(
-        [*pending, *injected_entries],
-        assistant_targets,
-        staged_retrieved,
-        seen_by_interaction,
-        _last_published_assistant_timestamp(records, published_record_offset),
-    )
+    records = list(entries)
+    if not records:
+        return
 
-    _commit_retrieved_learnings(interactions, staged_retrieved)
-    _log_attachment_limits(skipped, truncated)
-    return {
-        "retrieved_folded_up_to": end_offset,
-        "retrieved_pending": remaining,
-    }
+    path = injected_path(session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        if fcntl is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            except OSError as exc:
+                _LOGGER.debug("flock failed on %s: %s", path, exc)
+        for record in records:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    refs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        ref = _normalize_registry_ref(record)
+        if ref is None:
+            continue
+        key = (ref["kind"], ref["learning_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        refs.append(ref)
+    if refs:
+        append(session_id, {"retrieved_learning_refs": refs})
+
+
+def read_injected(session_id: str) -> dict[str, dict[str, Any]]:
+    """Return the per-session citation registry keyed by id.
+
+    Later entries win when the same id was injected multiple times
+    (identical content produces the same hash-derived id, so the extra
+    record only refreshes metadata).
+    """
+
+    path = injected_path(session_id)
+    if not path.exists():
+        return {}
+    registry: dict[str, dict[str, Any]] = {}
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as exc:
+                _LOGGER.warning("Skipping malformed injected line in %s: %s", path, exc)
+                continue
+            item_id = entry.get("id")
+            if isinstance(item_id, str) and item_id:
+                registry[item_id] = entry
+    return registry
 
 
 def append(session_id: str, record: dict[str, Any]) -> None:
@@ -476,44 +271,127 @@ def _to_wire_citations(cited_items: Any) -> list[dict[str, str]]:
     return out
 
 
+def published_record_offset(records: list[dict[str, Any]]) -> int:
+    """Return the highest valid publish watermark in the session buffer."""
+
+    limit = len(records)
+    return max(
+        (
+            value
+            for record in records
+            if isinstance((value := record.get("published_up_to")), int)
+            and 0 <= value <= limit
+        ),
+        default=0,
+    )
+
+
+def pending_publish_end(
+    records: list[dict[str, Any]], published: int
+) -> int | None:
+    """Return the frozen end of the current publish attempt, if any."""
+
+    for marker_index, record in enumerate(records[published:], start=published):
+        attempt = record.get("publish_attempt")
+        if not isinstance(attempt, dict):
+            continue
+        start = attempt.get("start")
+        end = attempt.get("end")
+        if (
+            start == published
+            and isinstance(end, int)
+            and published < end <= marker_index
+        ):
+            _, interactions = unpublished_slice(
+                records[:end], published_override=published
+            )
+            if interactions:
+                return end
+    return None
+
+
+def _wire_retrieved_ref(value: Any) -> dict[str, str] | None:
+    """Validate one identity pair read from the ordered session buffer."""
+
+    if not isinstance(value, dict):
+        return None
+    kind = value.get("kind")
+    learning_id = value.get("learning_id")
+    if kind not in _VALID_RETRIEVED_KINDS:
+        return None
+    if not isinstance(learning_id, str) or not learning_id:
+        return None
+    return {"kind": kind, "learning_id": learning_id}
+
+
+def safe_publish_end(records: list[dict[str, Any]], published: int) -> int:
+    """Stop before identity refs that do not yet have an Assistant target."""
+
+    unmatched_start: int | None = None
+    for index, record in enumerate(records[published:], start=published):
+        refs = record.get("retrieved_learning_refs")
+        if (
+            unmatched_start is None
+            and isinstance(refs, list)
+            and any(_wire_retrieved_ref(value) is not None for value in refs)
+        ):
+            unmatched_start = index
+        if record.get("role") == "Assistant":
+            unmatched_start = None
+    return len(records) if unmatched_start is None else unmatched_start
+
+
 def unpublished_slice(
     records: Iterable[dict[str, Any]],
+    *,
+    published_override: int | None = None,
 ) -> tuple[int, list[dict[str, Any]]]:
-    """Split records into (last-published index, unpublished turn records).
+    """Return the current watermark and wire-ready unpublished interactions.
 
-    Walks the records in order, tracking the most recent ``published_up_to``
-    marker and collecting turn records (anything with a ``role``) that come
-    after it. Tool records are folded into the closest following Assistant
-    turn's ``tools_used``.
-
-    Returns:
-        tuple[int, list[dict]]: ``(published_up_to, interactions)``. The
-            integer is the watermark after which all turns are unpublished;
-            the list is formatted for ``InteractionData`` construction.
+    Metadata records are interpreted by their numeric boundary rather than
+    their physical position in the append-only file. This preserves turns that
+    arrive while an earlier network request is in flight.
     """
-    published = 0
+
+    buffered = list(records)
+    if published_override is None:
+        published = published_record_offset(buffered)
+    elif 0 <= published_override <= len(buffered):
+        published = published_override
+    else:
+        raise ValueError("published_override is outside the supplied record range")
     pending_tools: list[dict[str, Any]] = []
+    pending_refs: list[dict[str, str]] = []
     turns: list[dict[str, Any]] = []
-    for idx, rec in enumerate(records):
-        if "published_up_to" in rec:
-            published = rec["published_up_to"]
-            pending_tools = []
-            turns = []
+    attached_total = skipped = truncated = 0
+
+    for index, record in enumerate(buffered):
+        if index < published:
             continue
-        if idx < published:
+
+        refs = record.get("retrieved_learning_refs")
+        if "role" not in record and isinstance(refs, list):
+            for value in refs:
+                ref = _wire_retrieved_ref(value)
+                if ref is None:
+                    skipped += 1
+                else:
+                    pending_refs.append(ref)
             continue
-        role = rec.get("role")
+
+        role = record.get("role")
         if role == "Assistant_tool":
-            tool_input = rec.get("tool_input") or {}
-            tool_output = rec.get("tool_output") or ""
+            tool_input = record.get("tool_input") or {}
+            tool_output = record.get("tool_output") or ""
             tool_entry: dict[str, Any] = {
-                "tool_name": rec.get("tool_name", ""),
-                "status": rec.get("status", "success"),
+                "tool_name": record.get("tool_name", ""),
+                "status": record.get("status", "success"),
             }
             tool_data: dict[str, Any] = {}
             if tool_input:
                 tool_data["input"] = {
-                    k: _truncate_tool_data_field(v) for k, v in tool_input.items()
+                    key: _truncate_tool_data_field(value)
+                    for key, value in tool_input.items()
                 }
             if tool_output:
                 tool_data["output"] = _truncate_tool_data_field(tool_output)
@@ -521,20 +399,45 @@ def unpublished_slice(
                 tool_entry["tool_data"] = tool_data
             pending_tools.append(tool_entry)
             continue
-        if role in {"User", "Assistant"}:
-            # ``cited_items`` is local-only metadata (dashboard "used" badge);
-            # map it onto the wire's ``citations`` field — reflexio uses those
-            # to drive skill/preference reflection in the publish flow.
-            turn = {
-                k: v for k, v in rec.items() if k not in {"role", "ts", "cited_items"}
-            }
-            turn["role"] = role
-            if role == "Assistant":
-                citations = _to_wire_citations(rec.get("cited_items"))
-                if citations:
-                    turn["citations"] = citations
-                if pending_tools:
-                    turn["tools_used"] = pending_tools
-                    pending_tools = []
-            turns.append(turn)
+
+        if role not in {"User", "Assistant"}:
+            continue
+
+        turn = {
+            key: value
+            for key, value in record.items()
+            if key not in {"role", "ts", "cited_items"}
+        }
+        turn["role"] = role
+        if role == "Assistant":
+            citations = _to_wire_citations(record.get("cited_items"))
+            if citations:
+                turn["citations"] = citations
+            if pending_tools:
+                turn["tools_used"] = pending_tools
+                pending_tools = []
+
+            retrieved: list[dict[str, str]] = []
+            seen: set[tuple[str, str]] = set()
+            for ref in pending_refs:
+                key = (ref["kind"], ref["learning_id"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                if attached_total >= _RETRIEVED_LEARNINGS_PUBLISH_CAP:
+                    truncated += 1
+                    continue
+                retrieved.append(ref)
+                attached_total += 1
+            pending_refs = []
+            if retrieved:
+                turn["retrieved_learnings"] = retrieved
+        turns.append(turn)
+
+    if skipped:
+        _LOGGER.debug("Skipped %d malformed retrieved-learning refs", skipped)
+    if truncated:
+        _LOGGER.warning(
+            "Dropped %d retrieved-learning refs at the publish request cap", truncated
+        )
     return published, turns

@@ -77,6 +77,7 @@ class FakeReflexioAdapter:
         *,
         session_id: str,
         project_id: str,
+        request_id: str,
         interactions: list[dict[str, Any]],
         force_extraction: bool = False,
         override_learning_stall: bool = False,
@@ -88,6 +89,7 @@ class FakeReflexioAdapter:
             {
                 "session_id": session_id,
                 "project_id": project_id,
+                "request_id": request_id,
                 "interactions": interactions,
                 "force_extraction": force_extraction,
                 "override_learning_stall": override_learning_stall,
@@ -245,6 +247,7 @@ def run_host_learning_happy_path(
         publish_call = fake_reflexio.publish_calls[0]
         assert publish_call["session_id"] == session_id
         assert publish_call["project_id"] == project.name
+        assert publish_call["request_id"]
         assert publish_call["force_extraction"] is False
         assert publish_call["skip_aggregation"] is False
         assert publish_call["host"] == host
@@ -269,6 +272,14 @@ def run_host_learning_happy_path(
                 "title": f"{host} project skill",
             }
         ]
+        assert {
+            (item["kind"], item["learning_id"])
+            for item in interactions[1]["retrieved_learnings"]
+        } == {
+            ("user_playbook", f"user-{host}"),
+            ("agent_playbook", f"agent-{host}"),
+            ("profile", f"profile-{host}"),
+        }
 
         _, unpublished = state.unpublished_slice(state.read_all(session_id))
         assert unpublished == []
