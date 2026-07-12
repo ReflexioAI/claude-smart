@@ -198,13 +198,10 @@ def retrieved_learning_watermark(records: list[dict[str, Any]]) -> int:
     return offset
 
 
-def _retrieval_state(records: list[dict[str, Any]]) -> tuple[int, list[dict[str, Any]]]:
-    """Return the published turn count and last valid pending-entry list."""
-    published = 0
+def _retrieval_pending(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the latest valid list of not-yet-eligible registry entries."""
     pending: list[dict[str, Any]] = []
     for record in records:
-        if "published_up_to" in record:
-            published = record["published_up_to"]
         if "retrieved_folded_up_to" in record:
             value = record.get("retrieved_pending", [])
             pending = (
@@ -212,17 +209,17 @@ def _retrieval_state(records: list[dict[str, Any]]) -> tuple[int, list[dict[str,
                 if isinstance(value, list)
                 else []
             )
-    return published, pending
+    return pending
 
 
 def _assistant_targets(
     records: list[dict[str, Any]],
-    published: int,
+    published_record_offset: int,
     interactions: list[dict[str, Any]],
-) -> tuple[list[int], list[int]]:
-    """Return aligned Assistant timestamps and wire-interaction indexes."""
+) -> list[tuple[int, int]]:
+    """Pair each unpublished Assistant timestamp with its wire-list index."""
     timestamps: list[int] = []
-    for record in records[published:]:
+    for record in records[published_record_offset:]:
         if record.get("role") != "Assistant":
             continue
         timestamp = record.get("ts")
@@ -232,17 +229,18 @@ def _assistant_targets(
         for index, interaction in enumerate(interactions)
         if interaction.get("role") == "Assistant"
     ]
-    count = min(len(timestamps), len(indexes))
-    return timestamps[:count], indexes[:count]
+    if len(timestamps) != len(indexes):
+        raise ValueError("Assistant records and publish payload are out of sync")
+    return list(zip(timestamps, indexes, strict=True))
 
 
 def _last_published_assistant_timestamp(
-    records: list[dict[str, Any]], published: int
+    records: list[dict[str, Any]], published_record_offset: int
 ) -> int | None:
     """Return the latest timestamp whose Assistant turn already published."""
     timestamps = [
         record["ts"]
-        for record in records[:published]
+        for record in records[:published_record_offset]
         if record.get("role") == "Assistant" and isinstance(record.get("ts"), int)
     ]
     return max(timestamps, default=None)
@@ -293,8 +291,7 @@ def _log_attachment_limits(skipped: int, truncated: int) -> None:
 
 def _stage_registry_entries(
     entries: list[dict[str, Any]],
-    timestamps: list[int],
-    indexes: list[int],
+    assistant_targets: list[tuple[int, int]],
     staged: dict[int, list[dict[str, Any]]],
     seen: dict[int, set[tuple[str, str]]],
     published_through_ts: int | None,
@@ -303,6 +300,7 @@ def _stage_registry_entries(
     remaining: list[dict[str, Any]] = []
     skipped = truncated = 0
     attached_total = sum(len(items) for items in staged.values())
+    timestamps = [timestamp for timestamp, _ in assistant_targets]
     for entry in entries:
         entry_ts = entry.get("ts")
         if published_through_ts is not None and (
@@ -318,7 +316,7 @@ def _stage_registry_entries(
         if resolved is None:
             skipped += 1
             continue
-        interaction_index = indexes[target]
+        interaction_index = assistant_targets[target][1]
         candidate_key, candidate = resolved
         if candidate_key in seen[interaction_index]:
             continue
@@ -333,6 +331,7 @@ def _stage_registry_entries(
 
 def attach_retrieved_learnings(
     records: list[dict[str, Any]],
+    published_record_offset: int,
     interactions: list[dict[str, Any]],
     injected_entries: list[dict[str, Any]],
     end_offset: int,
@@ -341,6 +340,7 @@ def attach_retrieved_learnings(
 
     Args:
         records: Raw persisted session-buffer records.
+        published_record_offset: First record not covered by the publish marker.
         interactions: Unpublished wire interactions to enrich after validation.
         injected_entries: Newly read injection-registry entries in file order.
         end_offset: Safe byte offset reached in the injection registry.
@@ -350,13 +350,13 @@ def attach_retrieved_learnings(
         this state only after publish succeeds, making retries idempotent
         without assuming registry timestamps are monotonic.
     """
-    published, pending = _retrieval_state(records)
-    assistant_timestamps, assistant_interaction_indexes = _assistant_targets(
-        records, published, interactions
+    pending = _retrieval_pending(records)
+    assistant_targets = _assistant_targets(
+        records, published_record_offset, interactions
     )
     staged_retrieved: dict[int, list[dict[str, Any]]] = {}
     seen_by_interaction: dict[int, set[tuple[str, str]]] = {}
-    for index in assistant_interaction_indexes:
+    for _, index in assistant_targets:
         existing = interactions[index].get("retrieved_learnings", [])
         retrieved = [item.copy() for item in existing if isinstance(item, dict)]
         staged_retrieved[index] = retrieved
@@ -367,11 +367,10 @@ def attach_retrieved_learnings(
 
     remaining, skipped, truncated = _stage_registry_entries(
         [*pending, *injected_entries],
-        assistant_timestamps,
-        assistant_interaction_indexes,
+        assistant_targets,
         staged_retrieved,
         seen_by_interaction,
-        _last_published_assistant_timestamp(records, published),
+        _last_published_assistant_timestamp(records, published_record_offset),
     )
 
     _commit_retrieved_learnings(interactions, staged_retrieved)

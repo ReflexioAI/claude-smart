@@ -123,41 +123,53 @@ class Adapter:
         try:
             interaction_list = list(interactions)
             if _needs_raw_retrieved_learning_publish(interaction_list):
-                client._make_request(  # noqa: SLF001 - pinned-client compatibility
-                    "POST",
-                    "/api/publish_interaction",
-                    json={
-                        "user_id": project_id,
-                        "interaction_data_list": interaction_list,
-                        "agent_version": runtime.agent_version(),
-                        "session_id": session_id,
-                        "skip_aggregation": skip_aggregation,
-                        "force_extraction": force_extraction,
-                        "evaluation_only": False,
-                        "override_learning_stall": override_learning_stall,
-                    },
-                    params=None,
-                )
-            else:
-                kwargs = {
-                    "user_id": project_id,
-                    "interactions": interaction_list,
-                    "agent_version": runtime.agent_version(),
-                    "session_id": session_id,
-                    "wait_for_response": False,
-                    "force_extraction": force_extraction,
-                    "skip_aggregation": skip_aggregation,
-                }
-                if _supports_keyword(
-                    client.publish_interaction, "override_learning_stall"
-                ):
-                    kwargs["override_learning_stall"] = override_learning_stall
-                elif override_learning_stall:
-                    _LOGGER.debug(
-                        "publish_interaction client does not support "
-                        "override_learning_stall"
+                try:
+                    client._make_request(  # noqa: SLF001 - pinned-client compatibility
+                        "POST",
+                        "/api/publish_interaction",
+                        json={
+                            "user_id": project_id,
+                            "interaction_data_list": interaction_list,
+                            "agent_version": runtime.agent_version(),
+                            "session_id": session_id,
+                            "skip_aggregation": skip_aggregation,
+                            "force_extraction": force_extraction,
+                            "evaluation_only": False,
+                            "override_learning_stall": override_learning_stall,
+                        },
+                        params=None,
                     )
-                client.publish_interaction(**kwargs)
+                    return True
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.warning(
+                        "Could not publish retrieved-learning links; "
+                        "retrying the interaction without them: %s",
+                        exc,
+                    )
+                    interaction_list = [
+                        {
+                            key: value
+                            for key, value in interaction.items()
+                            if key != "retrieved_learnings"
+                        }
+                        for interaction in interaction_list
+                    ]
+            kwargs = {
+                "user_id": project_id,
+                "interactions": interaction_list,
+                "agent_version": runtime.agent_version(),
+                "session_id": session_id,
+                "wait_for_response": False,
+                "force_extraction": force_extraction,
+                "skip_aggregation": skip_aggregation,
+            }
+            if _supports_keyword(client.publish_interaction, "override_learning_stall"):
+                kwargs["override_learning_stall"] = override_learning_stall
+            elif override_learning_stall:
+                _LOGGER.debug(
+                    "publish_interaction client does not support override_learning_stall"
+                )
+            client.publish_interaction(**kwargs)
             return True
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("publish_interaction failed: %s", exc)

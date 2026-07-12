@@ -239,6 +239,7 @@ def test_retrieved_learning_failure_does_not_partially_mutate_interactions() -> 
     try:
         state.attach_retrieved_learnings(
             [{"role": "Assistant", "ts": 10}],
+            0,
             interactions,
             [
                 {"kind": "profile", "real_id": "p1", "ts": 1},

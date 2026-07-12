@@ -17,6 +17,16 @@ class _RecordingAdapter:
         return True
 
 
+class _SequencedAdapter(_RecordingAdapter):
+    def __init__(self, results: list[bool]) -> None:
+        super().__init__()
+        self.results = iter(results)
+
+    def publish(self, **kwargs: Any) -> bool:
+        self.calls.append(kwargs)
+        return next(self.results)
+
+
 def _append_assistant(session_id: str, ts: int, content: str = "done") -> None:
     state.append(
         session_id,
@@ -127,6 +137,24 @@ def test_retrieved_learnings_attach_once_across_publishes(session_dir) -> None:
     assert adapter.calls[1]["interactions"][0]["retrieved_learnings"] == [
         {"kind": "profile", "learning_id": "p2"}
     ]
+
+
+def test_failed_publish_retries_the_same_links_once(session_dir) -> None:
+    state.append_injected(
+        "s1", [{"id": "first", "kind": "profile", "real_id": "p1", "ts": 5}]
+    )
+    _append_assistant("s1", 10)
+    adapter = _SequencedAdapter([False, True])
+
+    assert _publish("s1", adapter) == ("failed", 1)
+    assert _publish("s1", adapter) == ("ok", 1)
+    assert _publish("s1", adapter) == ("nothing", 0)
+
+    expected = [{"kind": "profile", "learning_id": "p1"}]
+    assert adapter.calls[0]["interactions"][0]["retrieved_learnings"] == expected
+    assert adapter.calls[1]["interactions"][0]["retrieved_learnings"] == expected
+    marker = state.read_all("s1")[-1]
+    assert marker["retrieved_folded_up_to"] == state.injected_path("s1").stat().st_size
 
 
 def test_registry_read_failure_does_not_break_publish(session_dir, monkeypatch) -> None:

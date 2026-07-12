@@ -59,7 +59,7 @@ def publish_unpublished(
             so the next hook retries the same batch.
     """
     records = state.read_all(session_id)
-    _, interactions = state.unpublished_slice(records)
+    published_record_offset, interactions = state.unpublished_slice(records)
     if not interactions:
         return ("nothing", 0)
     retrieved_state: dict[str, object] | None = None
@@ -70,6 +70,7 @@ def publish_unpublished(
         )
         retrieved_state = state.attach_retrieved_learnings(
             records,
+            published_record_offset,
             interactions,
             injected_entries,
             end_offset,
