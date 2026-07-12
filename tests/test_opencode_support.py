@@ -23,11 +23,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture(autouse=True)
 def restore_runtime_host() -> Generator[None, None, None]:
     previous_host = getattr(runtime, "_current_host", None)
-    previous_attribution_host = getattr(runtime, "_current_attribution_host", None)
     previous_env = os.environ.get(runtime.HOST_ENV)
     yield
     runtime._current_host = previous_host
-    runtime._current_attribution_host = previous_attribution_host
     if previous_env is None:
         os.environ.pop(runtime.HOST_ENV, None)
     else:
@@ -197,6 +195,10 @@ def test_runtime_accepts_opencode_host() -> None:
 
 def test_runtime_keeps_unknown_attribution_separate_from_compatibility_host() -> None:
     assert runtime.set_host("unsupported-host") == runtime.HOST_CLAUDE_CODE
+    assert runtime.host() == runtime.HOST_CLAUDE_CODE
+    assert runtime.attribution_host() == runtime.HOST_UNKNOWN
+
+    assert runtime.set_host(None) == runtime.HOST_CLAUDE_CODE
     assert runtime.host() == runtime.HOST_CLAUDE_CODE
     assert runtime.attribution_host() == runtime.HOST_UNKNOWN
 

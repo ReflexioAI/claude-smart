@@ -18,7 +18,6 @@ def isolated_runtime_host(monkeypatch):
     from claude_smart import runtime
 
     monkeypatch.setattr(runtime, "_current_host", None)
-    monkeypatch.setattr(runtime, "_current_attribution_host", None)
     monkeypatch.delenv(runtime.HOST_ENV, raising=False)
     return runtime
 

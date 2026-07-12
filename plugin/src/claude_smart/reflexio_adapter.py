@@ -27,6 +27,7 @@ _ENV_API_KEY = "REFLEXIO_API_KEY"
 # in ``ids.py`` for short-lived hook HTTP calls.
 _HTTP_TIMEOUT_SECONDS = 5
 _SEARCH_MODE_HYBRID = "hybrid"  # reflexio.models.config_schema.SearchMode.HYBRID
+_SOURCE = "claude-smart"
 _UNIFIED_ENTITY_TYPES = ("profiles", "user_playbooks", "agent_playbooks")
 _AGENT_PLAYBOOK_APPROVAL_STATUSES = ("pending", "approved")
 _REJECTED_AGENT_PLAYBOOK_STATUS = "rejected"
@@ -135,6 +136,7 @@ class Adapter:
         try:
             interaction_list = list(interactions)
             raw_request = getattr(client, "_make_request", None)
+            supports_source = _supports_keyword(client.publish_interaction, "source")
             if request_id is not None and callable(raw_request):
                 payload: dict[str, Any] = {
                     "request_id": request_id,
@@ -147,8 +149,8 @@ class Adapter:
                     "evaluation_only": False,
                     "override_learning_stall": override_learning_stall,
                 }
-                if _supports_keyword(client.publish_interaction, "source"):
-                    payload["source"] = runtime.SOURCE_CLAUDE_SMART
+                if supports_source:
+                    payload["source"] = _SOURCE
                 try:
                     raw_request(
                         "POST",
@@ -193,8 +195,8 @@ class Adapter:
                 "force_extraction": force_extraction,
                 "skip_aggregation": skip_aggregation,
             }
-            if _supports_keyword(client.publish_interaction, "source"):
-                kwargs["source"] = runtime.SOURCE_CLAUDE_SMART
+            if supports_source:
+                kwargs["source"] = _SOURCE
             if _supports_keyword(client.publish_interaction, "override_learning_stall"):
                 kwargs["override_learning_stall"] = override_learning_stall
             elif override_learning_stall:

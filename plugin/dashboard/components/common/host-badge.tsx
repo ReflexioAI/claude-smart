@@ -21,13 +21,14 @@ export function HostBadge({
   className?: string;
 }) {
   const compact = size === "sm";
+  const sizeClass = compact ? "h-4 px-1.5 text-[10px]" : "h-5";
   if (unavailable) {
     return (
       <Badge
         variant="outline"
         className={cn(
           "border-dashed text-muted-foreground",
-          compact ? "h-4 px-1.5 text-[10px]" : "h-5",
+          sizeClass,
           className,
         )}
         title="Host unavailable: shared skill aggregation lineage is not recorded"
@@ -47,7 +48,7 @@ export function HostBadge({
         knownHost
           ? "border-blue-500/45 bg-blue-500/10 text-blue-700 dark:text-blue-300"
           : "border-dashed text-muted-foreground",
-        compact ? "h-4 px-1.5 text-[10px]" : "h-5",
+        sizeClass,
         className,
       )}
       title={knownHost ? `Produced by ${label}` : "Host was not recorded"}

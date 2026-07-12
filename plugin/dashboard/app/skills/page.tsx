@@ -18,7 +18,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { reflexio } from "@/lib/reflexio-client";
-import { hostByRequestId } from "@/lib/host-attribution";
 import { formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
@@ -40,6 +39,16 @@ type SkillStatus = StatusLabel | AgentPlaybookStatusLabel;
 type SkillSort = "newest" | "applied";
 
 const ALL_LIFECYCLE_STATUSES: (string | null)[] = [null, "pending", "archived"];
+
+function hostByRequestId(sessions: SessionSummary[]): Map<string, Host | null> {
+  const result = new Map<string, Host | null>();
+  for (const session of sessions) {
+    for (const requestId of session.request_ids) {
+      result.set(requestId, session.host);
+    }
+  }
+  return result;
+}
 
 const SHARED_STATUS_META: Record<
   AgentPlaybookStatusLabel,
@@ -238,6 +247,8 @@ export default function SkillsPage() {
   const activeCount = activeKind === "project" ? projectCount : sharedCount;
   const loading = projectSkills === null || sharedSkills === null;
   const hasNoSharedSkills = activeKind === "shared" && sharedCount === 0;
+  const allScopesLabel =
+    activeKind === "project" ? "All user scopes" : "All agents";
 
   const switchKind = (kind: SkillKind) => {
     setActiveKind(kind);
@@ -258,17 +269,11 @@ export default function SkillsPage() {
             >
               <SelectTrigger size="sm" className="w-40 text-xs bg-background/80">
                 <SelectValue>
-                  {scope === "__all__"
-                    ? activeKind === "project"
-                      ? "All user scopes"
-                      : "All agents"
-                    : scope}
+                  {scope === "__all__" ? allScopesLabel : scope}
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__all__">
-                  {activeKind === "project" ? "All user scopes" : "All agents"}
-                </SelectItem>
+                <SelectItem value="__all__">{allScopesLabel}</SelectItem>
                 {scopes.map((p) => (
                   <SelectItem key={p} value={p}>
                     {p}
