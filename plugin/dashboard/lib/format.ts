@@ -37,18 +37,6 @@ export function truncateId(id: string, prefix = 8, suffix = 4): string {
   return `${id.slice(0, prefix)}…${id.slice(-suffix)}`;
 }
 
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = bytes;
-  let unit = -1;
-  do {
-    value /= 1024;
-    unit += 1;
-  } while (value >= 1024 && unit < units.length - 1);
-  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
-}
-
 export function dayBucket(ts: number | null | undefined): string {
   if (!ts) return "Unknown";
   const ms = ts < 1e12 ? ts * 1000 : ts;

@@ -44,10 +44,6 @@ _VALID_CITATION_KINDS = frozenset(
 )
 _VALID_RETRIEVED_PLAYBOOK_KINDS = frozenset({"user_playbook", "agent_playbook"})
 _RETRIEVED_LEARNINGS_PUBLISH_CAP = 1000
-_SNAPSHOT_TITLE_CAP = 1_000
-_SNAPSHOT_CONTENT_CAP = 100_000
-_SNAPSHOT_DETAIL_CAP = 10_000
-_SNAPSHOT_TOTAL_BYTES_CAP = 10 * 1024**2
 
 
 def _truncate_tool_data_field(value: Any) -> Any:
@@ -225,11 +221,12 @@ def _assistant_targets(
     interactions: list[dict[str, Any]],
 ) -> tuple[list[int], list[int]]:
     """Return aligned Assistant timestamps and wire-interaction indexes."""
-    timestamps = [
-        record.get("ts") if isinstance(record.get("ts"), int) else 0
-        for record in records[published:]
-        if record.get("role") == "Assistant"
-    ]
+    timestamps: list[int] = []
+    for record in records[published:]:
+        if record.get("role") != "Assistant":
+            continue
+        timestamp = record.get("ts")
+        timestamps.append(timestamp if isinstance(timestamp, int) else 0)
     indexes = [
         index
         for index, interaction in enumerate(interactions)
@@ -239,9 +236,21 @@ def _assistant_targets(
     return timestamps[:count], indexes[:count]
 
 
+def _last_published_assistant_timestamp(
+    records: list[dict[str, Any]], published: int
+) -> int | None:
+    """Return the latest timestamp whose Assistant turn already published."""
+    timestamps = [
+        record["ts"]
+        for record in records[:published]
+        if record.get("role") == "Assistant" and isinstance(record.get("ts"), int)
+    ]
+    return max(timestamps, default=None)
+
+
 def _retrieved_candidate(
     entry: dict[str, Any],
-) -> tuple[tuple[str, str], dict[str, Any], int] | None:
+) -> tuple[tuple[str, str], dict[str, Any]] | None:
     """Normalize one registry entry into a bounded wire candidate."""
     real_id = entry.get("real_id")
     kind = entry.get("kind")
@@ -257,21 +266,8 @@ def _retrieved_candidate(
     else:
         return None
 
-    candidate: dict[str, Any] = {"kind": wire_kind, "learning_id": real_id}
-    content = entry.get("content")
-    if not isinstance(content, str) or not content:
-        return (wire_kind, real_id), candidate, 0
-    snapshot = {
-        "title": str(entry.get("source_title") or entry.get("title") or "")[
-            :_SNAPSHOT_TITLE_CAP
-        ],
-        "content": content[:_SNAPSHOT_CONTENT_CAP],
-        "trigger": str(entry.get("trigger") or "")[:_SNAPSHOT_DETAIL_CAP],
-        "rationale": str(entry.get("rationale") or "")[:_SNAPSHOT_DETAIL_CAP],
-    }
-    candidate["snapshot"] = snapshot
-    snapshot_bytes = sum(len(value.encode("utf-8")) for value in snapshot.values())
-    return (wire_kind, real_id), candidate, snapshot_bytes
+    candidate = {"kind": wire_kind, "learning_id": real_id}
+    return (wire_kind, real_id), candidate
 
 
 def _commit_retrieved_learnings(
@@ -285,20 +281,13 @@ def _commit_retrieved_learnings(
             interactions[index].pop("retrieved_learnings", None)
 
 
-def _log_attachment_limits(
-    skipped: int, truncated: int, snapshots_omitted: int
-) -> None:
+def _log_attachment_limits(skipped: int, truncated: int) -> None:
     """Emit attachment diagnostics without affecting the publish path."""
     if skipped:
-        _LOGGER.debug("Skipped %d unresolvable injected learning entries", skipped)
+        _LOGGER.debug("Skipped %d stale or unresolvable injected entries", skipped)
     if truncated:
         _LOGGER.warning(
             "Dropped %d retrieved learning links at the publish wire cap", truncated
-        )
-    if snapshots_omitted:
-        _LOGGER.warning(
-            "Omitted %d retrieved-learning snapshot(s) at the 10 MiB wire cap",
-            snapshots_omitted,
         )
 
 
@@ -308,13 +297,19 @@ def _stage_registry_entries(
     indexes: list[int],
     staged: dict[int, list[dict[str, Any]]],
     seen: dict[int, set[tuple[str, str]]],
-) -> tuple[list[dict[str, Any]], int, int, int]:
+    published_through_ts: int | None,
+) -> tuple[list[dict[str, Any]], int, int]:
     """Attach resolvable registry entries to staged Assistant interactions."""
     remaining: list[dict[str, Any]] = []
-    skipped = truncated = snapshots_omitted = snapshot_bytes = 0
+    skipped = truncated = 0
     attached_total = sum(len(items) for items in staged.values())
     for entry in entries:
         entry_ts = entry.get("ts")
+        if published_through_ts is not None and (
+            not isinstance(entry_ts, int) or entry_ts <= published_through_ts
+        ):
+            skipped += 1
+            continue
         target = bisect_left(timestamps, entry_ts if isinstance(entry_ts, int) else 0)
         if target == len(timestamps):
             remaining.append(entry)
@@ -324,21 +319,16 @@ def _stage_registry_entries(
             skipped += 1
             continue
         interaction_index = indexes[target]
-        candidate_key, candidate, candidate_snapshot_bytes = resolved
+        candidate_key, candidate = resolved
         if candidate_key in seen[interaction_index]:
             continue
         if attached_total >= _RETRIEVED_LEARNINGS_PUBLISH_CAP:
             truncated += 1
             continue
-        if snapshot_bytes + candidate_snapshot_bytes <= _SNAPSHOT_TOTAL_BYTES_CAP:
-            snapshot_bytes += candidate_snapshot_bytes
-        elif candidate_snapshot_bytes:
-            candidate.pop("snapshot")
-            snapshots_omitted += 1
         staged[interaction_index].append(candidate)
         seen[interaction_index].add(candidate_key)
         attached_total += 1
-    return remaining, skipped, truncated, snapshots_omitted
+    return remaining, skipped, truncated
 
 
 def attach_retrieved_learnings(
@@ -375,16 +365,17 @@ def attach_retrieved_learnings(
             for item in retrieved
         }
 
-    remaining, skipped, truncated, snapshots_omitted = _stage_registry_entries(
+    remaining, skipped, truncated = _stage_registry_entries(
         [*pending, *injected_entries],
         assistant_timestamps,
         assistant_interaction_indexes,
         staged_retrieved,
         seen_by_interaction,
+        _last_published_assistant_timestamp(records, published),
     )
 
     _commit_retrieved_learnings(interactions, staged_retrieved)
-    _log_attachment_limits(skipped, truncated, snapshots_omitted)
+    _log_attachment_limits(skipped, truncated)
     return {
         "retrieved_folded_up_to": end_offset,
         "retrieved_pending": remaining,

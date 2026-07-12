@@ -300,16 +300,7 @@ def test_pinned_client_sends_retrieved_learnings_without_model_stripping(
                 "role": "Assistant",
                 "content": "done",
                 "retrieved_learnings": [
-                    {
-                        "kind": "profile",
-                        "learning_id": "profile-1",
-                        "snapshot": {
-                            "title": "Concise answers",
-                            "content": "Keep answers concise.",
-                            "trigger": "",
-                            "rationale": "",
-                        },
-                    }
+                    {"kind": "profile", "learning_id": "profile-1"}
                 ],
             }
         ],
@@ -321,18 +312,7 @@ def test_pinned_client_sends_retrieved_learnings_without_model_stripping(
     assert client.raw_request["path"] == "/api/publish_interaction"
     assert client.raw_request["json"]["interaction_data_list"][0][
         "retrieved_learnings"
-    ] == [
-        {
-            "kind": "profile",
-            "learning_id": "profile-1",
-            "snapshot": {
-                "title": "Concise answers",
-                "content": "Keep answers concise.",
-                "trigger": "",
-                "rationale": "",
-            },
-        }
-    ]
+    ] == [{"kind": "profile", "learning_id": "profile-1"}]
 
 
 def test_publish_returns_false_when_client_raises() -> None:

@@ -52,10 +52,7 @@ def test_publish_attaches_mapped_retrieved_learnings(session_dir) -> None:
                 "source_kind": "user_playbook",
                 "real_id": "11",
                 "title": "Use pathlib",
-                "source_title": "Filesystem discipline",
                 "content": "Use pathlib for filesystem work.",
-                "trigger": "writing Python filesystem code",
-                "rationale": "Path objects are easier to compose.",
                 "ts": 11,
             },
             {
@@ -72,26 +69,8 @@ def test_publish_attaches_mapped_retrieved_learnings(session_dir) -> None:
 
     assert _publish("s1", adapter) == ("ok", 1)
     assert adapter.calls[0]["interactions"][0]["retrieved_learnings"] == [
-        {
-            "kind": "profile",
-            "learning_id": "profile-1",
-            "snapshot": {
-                "title": "Prefers concise answers",
-                "content": "Keep answers concise.",
-                "trigger": "",
-                "rationale": "",
-            },
-        },
-        {
-            "kind": "user_playbook",
-            "learning_id": "11",
-            "snapshot": {
-                "title": "Filesystem discipline",
-                "content": "Use pathlib for filesystem work.",
-                "trigger": "writing Python filesystem code",
-                "rationale": "Path objects are easier to compose.",
-            },
-        },
+        {"kind": "profile", "learning_id": "profile-1"},
+        {"kind": "user_playbook", "learning_id": "11"},
         {"kind": "agent_playbook", "learning_id": "22"},
     ]
 
@@ -124,16 +103,7 @@ def test_publish_skips_old_entries_and_deduplicates(session_dir) -> None:
 
     assert _publish("s1", adapter) == ("ok", 1)
     assert adapter.calls[0]["interactions"][0]["retrieved_learnings"] == [
-        {
-            "kind": "profile",
-            "learning_id": "profile-1",
-            "snapshot": {
-                "title": "First",
-                "content": "First injected wording.",
-                "trigger": "",
-                "rationale": "",
-            },
-        }
+        {"kind": "profile", "learning_id": "profile-1"}
     ]
 
 
@@ -170,41 +140,39 @@ def test_registry_read_failure_does_not_break_publish(session_dir, monkeypatch) 
     assert "retrieved_learnings" not in adapter.calls[0]["interactions"][0]
 
 
+def test_registry_read_failure_does_not_move_old_links_to_a_later_turn(
+    session_dir, monkeypatch
+) -> None:
+    state.append_injected(
+        "s1",
+        [
+            {"id": "old", "kind": "profile", "real_id": "p1", "ts": 5},
+            {"id": "future", "kind": "profile", "real_id": "p2", "ts": 15},
+        ],
+    )
+    _append_assistant("s1", 10, "first")
+    read_injected_entries = state.read_injected_entries
+    monkeypatch.setattr(
+        state, "read_injected_entries", lambda _session_id, _offset: 1 / 0
+    )
+    adapter = _RecordingAdapter()
+
+    assert _publish("s1", adapter) == ("ok", 1)
+
+    monkeypatch.setattr(state, "read_injected_entries", read_injected_entries)
+    _append_assistant("s1", 20, "second")
+    assert _publish("s1", adapter) == ("ok", 1)
+    assert adapter.calls[1]["interactions"][0]["retrieved_learnings"] == [
+        {"kind": "profile", "learning_id": "p2"}
+    ]
+
+
 def test_publish_without_injected_learnings_keeps_typed_payload(session_dir) -> None:
     _append_assistant("s1", 10)
     adapter = _RecordingAdapter()
 
     assert _publish("s1", adapter) == ("ok", 1)
     assert "retrieved_learnings" not in adapter.calls[0]["interactions"][0]
-
-
-def test_snapshot_fields_are_clamped_to_server_caps(session_dir) -> None:
-    state.append_injected(
-        "s1",
-        [
-            {
-                "id": "p",
-                "kind": "profile",
-                "real_id": "profile-1",
-                "source_title": "t" * 1_001,
-                "content": "c" * 100_001,
-                "trigger": "g" * 10_001,
-                "rationale": "r" * 10_001,
-                "ts": 1,
-            }
-        ],
-    )
-    _append_assistant("s1", 10)
-    adapter = _RecordingAdapter()
-
-    assert _publish("s1", adapter) == ("ok", 1)
-    snapshot = adapter.calls[0]["interactions"][0]["retrieved_learnings"][0]["snapshot"]
-    assert {key: len(value) for key, value in snapshot.items()} == {
-        "title": 1_000,
-        "content": 100_000,
-        "trigger": 10_000,
-        "rationale": 10_000,
-    }
 
 
 def test_out_of_order_future_entry_does_not_block_eligible_entry(session_dir) -> None:

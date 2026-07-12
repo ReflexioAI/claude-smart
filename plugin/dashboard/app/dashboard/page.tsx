@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   BookOpen,
-  Archive,
   MessageSquare,
   Sparkles,
   Activity,
@@ -17,9 +16,8 @@ import { StatCard } from "@/components/common/stat-card";
 import { EmptyState } from "@/components/common/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { reflexio } from "@/lib/reflexio-client";
-import { formatBytes, formatRelative, truncate, truncateId } from "@/lib/format";
+import { formatRelative, truncate, truncateId } from "@/lib/format";
 import { agentPlaybookStatusLabel } from "@/lib/status";
-import type { ArchiveStatus } from "@/lib/archive-status";
 import type {
   AgentPlaybook,
   PlaybookApplicationStat,
@@ -47,7 +45,6 @@ export default function DashboardPage() {
   const [topApplied, setTopApplied] = useState<PlaybookApplicationStat[] | null>(
     null,
   );
-  const [archiveStatus, setArchiveStatus] = useState<ArchiveStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -55,37 +52,32 @@ export default function DashboardPage() {
     async function load() {
       setError(null);
       try {
-        const [sRes, projectRes, sharedRes, prefRes, statsRes, archiveRes] =
-          await Promise.all([
-            fetch("/api/sessions", { cache: "no-store" }).then((r) => r.json()),
-            reflexio
-              .getUserPlaybooks({})
-              .catch(() => ({ user_playbooks: [] as UserPlaybook[] })),
-            reflexio
-              .getAgentPlaybooks({})
-              .catch(() => ({ agent_playbooks: [] as AgentPlaybook[] })),
-            reflexio
-              .getAllProfiles({ limit: 100 })
-              .catch(() => ({ user_profiles: [] as UserProfile[] })),
-            fetch("/api/rules/applied?daysBack=30&limit=200", {
-              cache: "no-store",
-            })
-              .then((r) => r.json())
-              .catch(() => ({
-                success: false,
-                stats: [] as PlaybookApplicationStat[],
-              })),
-            fetch("/api/archive-status", { cache: "no-store" })
-              .then((r) => r.json())
-              .catch(() => null),
-          ]);
+        const [sRes, projectRes, sharedRes, prefRes, statsRes] = await Promise.all([
+          fetch("/api/sessions", { cache: "no-store" }).then((r) => r.json()),
+          reflexio
+            .getUserPlaybooks({})
+            .catch(() => ({ user_playbooks: [] as UserPlaybook[] })),
+          reflexio
+            .getAgentPlaybooks({})
+            .catch(() => ({ agent_playbooks: [] as AgentPlaybook[] })),
+          reflexio
+            .getAllProfiles({ limit: 100 })
+            .catch(() => ({ user_profiles: [] as UserProfile[] })),
+          fetch("/api/rules/applied?daysBack=30&limit=200", {
+            cache: "no-store",
+          })
+            .then((r) => r.json())
+            .catch(() => ({
+              success: false,
+              stats: [] as PlaybookApplicationStat[],
+            })),
+        ]);
         if (cancelled) return;
         setSessions(sRes.sessions ?? []);
         setProjectSkills(projectRes.user_playbooks ?? []);
         setSharedSkills(sharedRes.agent_playbooks ?? []);
         setPreferences(prefRes.user_profiles ?? []);
         setTopApplied(statsRes.stats ?? []);
-        setArchiveStatus(archiveRes);
       } catch (e) {
         if (!cancelled)
           setError(e instanceof Error ? e.message : "failed to load");
@@ -103,7 +95,7 @@ export default function DashboardPage() {
   const approvedSharedSkills = (sharedSkills ?? []).filter(
     (p) => agentPlaybookStatusLabel(p) === "APPROVED",
   );
-  const currentPreferences = (preferences ?? []).filter((p) => p.status == null);
+ const currentPreferences = (preferences ?? []).filter((p) => p.status == null);
   const statsByRule = useMemo(() => {
     const map = new Map<string, PlaybookApplicationStat>();
     for (const s of topApplied ?? []) {
@@ -153,11 +145,6 @@ export default function DashboardPage() {
     (acc, s) => acc + s.learning_interaction_count,
     0,
   );
-  const archiveUsage = archiveStatus
-    ? archiveStatus.sizeBytes / archiveStatus.maxBytes
-    : 0;
-  const archiveTone =
-    archiveUsage >= 1 ? "danger" : archiveUsage >= 0.8 ? "warning" : "default";
   return (
     <div className="flex-1 overflow-auto">
       <PageHeader
@@ -166,11 +153,7 @@ export default function DashboardPage() {
       />
 
       <div className="p-6 space-y-6">
-        <div
-          className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${
-            archiveStatus?.enabled ? "lg:grid-cols-5" : "lg:grid-cols-4"
-          }`}
-        >
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <StatCard
             label="Sessions recorded"
             value={sessions?.length ?? "—"}
@@ -195,17 +178,6 @@ export default function DashboardPage() {
             hint="turns where a skill or preference was cited"
             icon={Sparkles}
           />
-          {archiveStatus?.enabled && (
-            <StatCard
-              label="Archived JSONL size"
-              value={formatBytes(archiveStatus.sizeBytes)}
-              hint={`${archiveTone === "danger" ? "Storage ceiling reached · " : archiveTone === "warning" ? "Approaching storage ceiling · " : ""}${formatBytes(
-                archiveStatus.maxBytes,
-              )} ceiling`}
-              icon={Archive}
-              tone={archiveTone}
-            />
-          )}
         </div>
 
         {error && (
