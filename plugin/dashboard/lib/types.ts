@@ -112,6 +112,7 @@ export interface SessionSummary {
 export interface SessionDetail {
   session_id: string;
   turns: SessionTurn[];
+  learning_interaction_count: number;
   published_up_to: number;
   host: Host | null;
 }

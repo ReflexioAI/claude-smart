@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { HostBadge } from "@/components/common/host-badge";
+import { LearningsBadge } from "@/components/common/learnings-badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -79,7 +80,15 @@ export default function InteractionDetailPage({
         description={
           <span className="flex flex-wrap items-center gap-2">
             <span>{sessionId}</span>
-            {detail && <HostBadge host={detail.host} size="sm" />}
+            {detail && (
+              <>
+                <LearningsBadge
+                  count={detail.learning_interaction_count}
+                  size="sm"
+                />
+                <HostBadge host={detail.host} size="sm" />
+              </>
+            )}
           </span>
         }
         actions={

@@ -487,6 +487,13 @@ export async function readSession(
   } catch {
     return null;
   }
-  const { turns, publishedUpTo, host } = foldTurns(records);
-  return { session_id: sessionId, turns, published_up_to: publishedUpTo, host };
+  const { turns, publishedUpTo, learningInteractionCount, host } =
+    foldTurns(records);
+  return {
+    session_id: sessionId,
+    turns,
+    learning_interaction_count: learningInteractionCount,
+    published_up_to: publishedUpTo,
+    host,
+  };
 }

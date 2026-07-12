@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { reflexio } from "@/lib/reflexio-client";
 import { formatRelative } from "@/lib/format";
+import { hostsByRequestId } from "@/lib/host-attribution";
 import { cn } from "@/lib/utils";
 import {
   agentPlaybookStatusLabel,
@@ -45,16 +46,6 @@ type SkillStatus = StatusLabel | AgentPlaybookStatusLabel;
 type SkillSort = "newest" | "applied";
 
 const ALL_LIFECYCLE_STATUSES: (string | null)[] = [null, "pending", "archived"];
-
-function hostByRequestId(sessions: SessionSummary[]): Map<string, Host | null> {
-  const result = new Map<string, Host | null>();
-  for (const session of sessions) {
-    for (const requestId of session.request_ids) {
-      result.set(requestId, session.host);
-    }
-  }
-  return result;
-}
 
 const SHARED_STATUS_META: Record<
   AgentPlaybookStatusLabel,
@@ -179,7 +170,7 @@ export default function SkillsPage() {
         setProjectSkills(projectRes.user_playbooks ?? []);
         setSharedSkills(sharedRes.agent_playbooks ?? []);
         setAppStats(statsRes.stats ?? []);
-        setRequestHosts(hostByRequestId(attribution.sessions));
+        setRequestHosts(hostsByRequestId(attribution.sessions));
         setAttributionUnavailable(attribution.failed);
         setError(null);
       } catch (e) {
@@ -428,6 +419,15 @@ export default function SkillsPage() {
                       <Badge variant="secondary" className="h-5 text-[10px]">
                         {p.kind === "project" ? "project-specific" : "shared"}
                       </Badge>
+                      {p.kind === "shared" && (
+                        <Badge
+                          variant="outline"
+                          className="h-5 max-w-56 truncate font-mono text-[10px]"
+                          title="Shared-skill applicability scope; not the source host."
+                        >
+                          Agent scope: {p.scopeId}
+                        </Badge>
+                      )}
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
                       <span className="text-[11px] text-muted-foreground">

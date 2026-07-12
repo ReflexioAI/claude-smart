@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { reflexio } from "@/lib/reflexio-client";
 import { formatTimestamp, truncateId } from "@/lib/format";
+import { hostsByRequestId } from "@/lib/host-attribution";
 import { cn } from "@/lib/utils";
 import { statusLabel } from "@/lib/status";
 import type { StatusLabel } from "@/lib/status";
@@ -93,13 +94,11 @@ export default function ProjectSkillDetailPage({
         setPlaybook(found);
         setForm(toForm(found));
         if (sessions === null) {
+          setSourceHost(null);
           setSourceUnavailable(true);
         } else {
-          setSourceHost(
-            sessions.find((session) =>
-              session.request_ids.includes(found.request_id),
-            )?.host ?? null,
-          );
+          setSourceUnavailable(false);
+          setSourceHost(hostsByRequestId(sessions).get(found.request_id) ?? null);
         }
       })
       .catch((e) => {
