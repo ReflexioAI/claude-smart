@@ -2,7 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, BookOpen, ChevronRight, Layers3 } from "lucide-react";
+import {
+  AlertTriangle,
+  BookOpen,
+  ChevronRight,
+  Layers3,
+  Sparkles,
+} from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { HostBadge } from "@/components/common/host-badge";
 import { EmptyState } from "@/components/common/empty-state";
@@ -71,7 +77,6 @@ const SHARED_STATUS_META: Record<
 interface SkillCard {
   kind: SkillKind;
   id: number;
-  agentVersion: string;
   createdAt: number;
   content: string;
   trigger: string | null;
@@ -79,7 +84,6 @@ interface SkillCard {
   status: SkillStatus;
   scopeId: string;
   host: Host | null;
-  hostUnavailable: boolean;
 }
 
 function projectSkill(
@@ -89,7 +93,6 @@ function projectSkill(
   return {
     kind: "project",
     id: p.user_playbook_id,
-    agentVersion: p.agent_version || "default",
     createdAt: p.created_at,
     content: p.content,
     trigger: p.trigger,
@@ -97,7 +100,6 @@ function projectSkill(
     status: statusLabel(p),
     scopeId: p.user_id || "unknown",
     host: requestHosts.get(p.request_id) ?? null,
-    hostUnavailable: false,
   };
 }
 
@@ -105,7 +107,6 @@ function sharedSkill(p: AgentPlaybook): SkillCard {
   return {
     kind: "shared",
     id: p.agent_playbook_id,
-    agentVersion: p.agent_version || "default",
     createdAt: p.created_at,
     content: p.content,
     trigger: p.trigger,
@@ -113,7 +114,6 @@ function sharedSkill(p: AgentPlaybook): SkillCard {
     status: agentPlaybookStatusLabel(p),
     scopeId: p.agent_version || "default",
     host: null,
-    hostUnavailable: true,
   };
 }
 
@@ -390,8 +390,8 @@ export default function SkillsPage() {
         {attributionUnavailable && !error && (
           <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
             <AlertTriangle className="h-4 w-4 shrink-0" />
-            Project skill host attribution is temporarily unavailable. Skills
-            remain available.
+            Skill source details are temporarily unavailable. Skills remain
+            available.
           </div>
         )}
 
@@ -423,20 +423,11 @@ export default function SkillsPage() {
                 >
                   <header className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      {p.kind === "shared" && (
-                        <Badge
-                          variant="outline"
-                          className="h-5 max-w-56 truncate font-mono text-[10px]"
-                        >
-                          {p.agentVersion}
-                        </Badge>
-                      )}
-                      <HostBadge host={p.host} unavailable={p.hostUnavailable} />
+                      <ApplicationStatBadge stat={stat} />
                       <StatusBadge kind={p.kind} status={p.status} />
                       <Badge variant="secondary" className="h-5 text-[10px]">
                         {p.kind === "project" ? "project-specific" : "shared"}
                       </Badge>
-                      <ApplicationStatBadge stat={stat} />
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
                       <span className="text-[11px] text-muted-foreground">
@@ -466,6 +457,11 @@ export default function SkillsPage() {
                       {p.rationale}
                     </p>
                   )}
+                  {p.kind === "project" && (
+                    <div className="mt-2">
+                      <HostBadge host={p.host} display="provenance" />
+                    </div>
+                  )}
                 </Link>
               );
             })}
@@ -491,10 +487,11 @@ function ApplicationStatBadge({ stat }: { stat: PlaybookApplicationStat | undefi
   const last = formatRelative(stat.last_applied_at);
   return (
     <Badge
-      variant="secondary"
-      className="h-5 text-[10px]"
+      variant="outline"
+      className="h-5 gap-1 border-amber-500/45 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300"
       title={`Last applied ${last}`}
     >
+      <Sparkles className="h-2.5 w-2.5 text-amber-500" />
       Applied {stat.applied_count}×{stat.last_applied_at ? ` · ${last}` : ""}
     </Badge>
   );

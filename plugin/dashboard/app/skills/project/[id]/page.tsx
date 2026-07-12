@@ -13,11 +13,11 @@ import {
   Check,
   BookMarked,
   Hash,
-  FolderGit2,
   Clock,
   FileText,
 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
+import { HostBadge } from "@/components/common/host-badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { DeleteLearningDangerZone } from "@/components/common/delete-learning-danger-zone";
 import { Button } from "@/components/ui/button";
@@ -29,7 +29,7 @@ import { formatTimestamp, truncateId } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { statusLabel } from "@/lib/status";
 import type { StatusLabel } from "@/lib/status";
-import type { UserPlaybook } from "@/lib/types";
+import type { Host, SessionSummary, UserPlaybook } from "@/lib/types";
 
 type FormState = { content: string; trigger: string; rationale: string };
 
@@ -56,6 +56,8 @@ export default function ProjectSkillDetailPage({
   const router = useRouter();
 
   const [playbook, setPlaybook] = useState<UserPlaybook | null>(null);
+  const [sourceHost, setSourceHost] = useState<Host | null>(null);
+  const [sourceUnavailable, setSourceUnavailable] = useState(false);
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -69,9 +71,17 @@ export default function ProjectSkillDetailPage({
 
   useEffect(() => {
     let cancelled = false;
-    reflexio
-      .getUserPlaybooks({})
-      .then((res) => {
+    Promise.all([
+      reflexio.getUserPlaybooks({}),
+      fetch("/api/sessions", { cache: "no-store" })
+        .then(async (response) => {
+          if (!response.ok) throw new Error(`sessions ${response.status}`);
+          const data = await response.json();
+          return (data.sessions ?? []) as SessionSummary[];
+        })
+        .catch(() => null),
+    ])
+      .then(([res, sessions]) => {
         if (cancelled) return;
         const found = (res.user_playbooks ?? []).find(
           (p) => String(p.user_playbook_id) === id,
@@ -82,6 +92,15 @@ export default function ProjectSkillDetailPage({
         }
         setPlaybook(found);
         setForm(toForm(found));
+        if (sessions === null) {
+          setSourceUnavailable(true);
+        } else {
+          setSourceHost(
+            sessions.find((session) =>
+              session.request_ids.includes(found.request_id),
+            )?.host ?? null,
+          );
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -229,10 +248,6 @@ export default function ProjectSkillDetailPage({
 
             {playbook && (
               <div className="flex items-center gap-2 flex-wrap">
-                <Badge variant="outline" className="gap-1.5">
-                  <FolderGit2 className="h-3 w-3" />
-                  {playbook.agent_version || "default"}
-                </Badge>
                 <StatusBadge status={status!} />
                 {displayName(playbook.playbook_name) && (
                   <Badge variant="secondary" className="font-mono text-[10px]">
@@ -332,7 +347,7 @@ export default function ProjectSkillDetailPage({
                     value={formatTimestamp(playbook.created_at)}
                   />
                   <Meta
-                    label="Project"
+                    label="Agent version"
                     value={playbook.agent_version || "default"}
                     mono
                   />
@@ -350,8 +365,18 @@ export default function ProjectSkillDetailPage({
                       display={truncateId(playbook.request_id, 8, 4)}
                     />
                   )}
+                  <Meta
+                    label="Origin"
+                    value={
+                      sourceUnavailable ? (
+                        <span className="text-muted-foreground">Unavailable</span>
+                      ) : (
+                        <HostBadge host={sourceHost} display="provenance" />
+                      )
+                    }
+                  />
                   {playbook.source && (
-                    <Meta label="Source" value={playbook.source} mono />
+                    <Meta label="Integration" value={playbook.source} mono />
                   )}
                 </dl>
               </div>
@@ -499,7 +524,7 @@ function Meta({
 }: {
   icon?: React.ComponentType<{ className?: string }>;
   label: string;
-  value: string;
+  value: React.ReactNode;
   mono?: boolean;
 }) {
   return (

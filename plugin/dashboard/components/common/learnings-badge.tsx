@@ -28,7 +28,7 @@ export function LearningsBadge({
           isSmall ? "h-2.5 w-2.5" : "h-3 w-3",
         )}
       />
-      {count} learning applied
+      {count} learning{count === 1 ? "" : "s"} applied
     </Badge>
   );
 }
