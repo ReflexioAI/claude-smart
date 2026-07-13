@@ -24,7 +24,13 @@ export function useRequestHostAttribution(): RequestHostAttribution | null {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/sessions", { cache: "no-store" })
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5_000);
+
+    fetch("/api/sessions", {
+      cache: "no-store",
+      signal: controller.signal,
+    })
       .then(async (response) => {
         if (!response.ok) throw new Error(`sessions ${response.status}`);
         const data = await response.json();
@@ -42,10 +48,13 @@ export function useRequestHostAttribution(): RequestHostAttribution | null {
         if (!cancelled) {
           setAttribution({ hosts: new Map(), unavailable: true });
         }
-      });
+      })
+      .finally(() => clearTimeout(timeout));
 
     return () => {
       cancelled = true;
+      controller.abort();
+      clearTimeout(timeout);
     };
   }, []);
 

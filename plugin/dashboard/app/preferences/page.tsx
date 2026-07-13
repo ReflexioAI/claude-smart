@@ -173,10 +173,7 @@ export default function PreferencesPage() {
                 >
                   <header className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <LearningApplicationBadge
-                        stat={stat}
-                        learningLabel="preference"
-                      />
+                      <LearningApplicationBadge stat={stat} />
                       <Badge variant="outline" className="h-5 font-mono text-[10px]">
                         {truncateId(p.user_id, 32, 8)}
                       </Badge>
@@ -197,16 +194,18 @@ export default function PreferencesPage() {
                     {p.content}
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-3">
-                    {attribution && !attribution.unavailable && (
-                      <HostBadge
-                        host={
-                          attribution.hosts.get(
-                            p.generated_from_request_id,
-                          ) ?? null
-                        }
-                        display="provenance"
-                      />
-                    )}
+                    {attribution &&
+                      !attribution.unavailable &&
+                      p.generated_from_request_id && (
+                        <HostBadge
+                          host={
+                            attribution.hosts.get(
+                              p.generated_from_request_id,
+                            ) ?? null
+                          }
+                          display="provenance"
+                        />
+                      )}
                     {p.source && (
                       <span className="text-[11px] text-muted-foreground font-mono">
                         Integration: {p.source}

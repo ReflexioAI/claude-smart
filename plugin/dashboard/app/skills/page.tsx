@@ -395,10 +395,7 @@ export default function SkillsPage() {
                 >
                   <header className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <LearningApplicationBadge
-                        stat={stat}
-                        learningLabel="skill"
-                      />
+                      <LearningApplicationBadge stat={stat} />
                       <StatusBadge kind={p.kind} status={p.status} />
                       <Badge variant="secondary" className="h-5 text-[10px]">
                         {p.kind === "project" ? "project-specific" : "shared"}

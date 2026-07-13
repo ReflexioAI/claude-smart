@@ -5,17 +5,15 @@ import type { PlaybookApplicationStat } from "@/lib/types";
 
 export function LearningApplicationBadge({
   stat,
-  learningLabel,
 }: {
   stat: PlaybookApplicationStat | undefined;
-  learningLabel: "skill" | "preference";
 }) {
   if (!stat || stat.applied_count === 0) {
     return (
       <Badge
         variant="outline"
         className="h-5 text-[10px] text-muted-foreground"
-        title={`No citations recorded yet for this ${learningLabel}. It will count once an assistant reply cites it.`}
+        title="No citations recorded yet for this learning. It will count once an assistant reply cites it."
       >
         Never applied
       </Badge>
