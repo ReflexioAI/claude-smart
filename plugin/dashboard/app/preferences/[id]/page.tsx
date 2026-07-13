@@ -341,7 +341,7 @@ export default function PreferenceDetailPage({
                       display={truncateId(profile.generated_from_request_id, 8, 4)}
                     />
                   )}
-                  {attribution && (
+                  {attribution && profile.generated_from_request_id && (
                     <Meta
                       label="Origin"
                       value={

@@ -348,7 +348,7 @@ export default function ProjectSkillDetailPage({
                       display={truncateId(playbook.request_id, 8, 4)}
                     />
                   )}
-                  {attribution && (
+                  {attribution && playbook.request_id && (
                     <Meta
                       label="Origin"
                       value={
