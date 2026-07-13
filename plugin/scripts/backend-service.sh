@@ -535,10 +535,18 @@ verify_bundled_reflexio_import() {
   python_bin="$1"
   pythonpath="$2"
   vendor_root_for_python="$3"
-  [ -d "$VENDORED_REFLEXIO/reflexio" ] || {
-    echo "bundled Reflexio package not found at $VENDORED_REFLEXIO" >&2
-    return 1
-  }
+  if [ ! -d "$VENDORED_REFLEXIO/reflexio" ]; then
+    PYTHONPATH="$pythonpath" "$python_bin" - <<'PY'
+import sys
+
+try:
+    import reflexio
+except Exception as exc:
+    print(f"failed to import installed reflexio: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+    return $?
+  fi
   PYTHONPATH="$pythonpath" "$python_bin" - "$vendor_root_for_python" <<'PY'
 from pathlib import Path
 import sys

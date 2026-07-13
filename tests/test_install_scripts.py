@@ -478,6 +478,46 @@ def test_backend_service_pins_reflexio_home_to_user_home() -> None:
     assert 'export REFLEXIO_LOG_DIR="${REFLEXIO_LOG_DIR:-$HOME}"' in service
 
 
+def test_backend_reflexio_preflight_accepts_venv_install_when_vendor_missing(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "plugin"
+    site_packages = plugin_root / ".venv" / "lib" / "python3.12" / "site-packages"
+    reflexio_pkg = site_packages / "reflexio"
+    reflexio_pkg.mkdir(parents=True)
+    (reflexio_pkg / "__init__.py").write_text("__version__ = '0.2.28'\n")
+
+    service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
+    match = re.search(
+        r"verify_bundled_reflexio_import\(\) \{.*?^\}",
+        service,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None
+
+    probe = tmp_path / "probe.sh"
+    probe.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        f"VENDORED_REFLEXIO={shlex.quote(str(plugin_root / 'vendor' / 'reflexio'))}\n"
+        f"{match.group(0)}\n"
+        "verify_bundled_reflexio_import "
+        f"{shlex.quote(sys.executable)} "
+        f"{shlex.quote(str(site_packages))} "
+        f"{shlex.quote(str(plugin_root / 'vendor' / 'reflexio'))}\n"
+    )
+    probe.chmod(0o755)
+
+    result = subprocess.run(
+        ["/bin/bash", str(probe)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_windows_detached_spawn_closes_hook_output_pipes() -> None:
     lib = LIB.read_text()
 
