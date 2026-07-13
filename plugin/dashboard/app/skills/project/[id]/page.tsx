@@ -13,11 +13,11 @@ import {
   Check,
   BookMarked,
   Hash,
-  FolderGit2,
   Clock,
   FileText,
 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
+import { LearningHostProvenance } from "@/components/common/host-badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { DeleteLearningDangerZone } from "@/components/common/delete-learning-danger-zone";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { reflexio } from "@/lib/reflexio-client";
 import { formatTimestamp, truncateId } from "@/lib/format";
+import { useRequestHostAttribution } from "@/lib/host-attribution";
 import { cn } from "@/lib/utils";
 import { statusLabel } from "@/lib/status";
 import type { StatusLabel } from "@/lib/status";
@@ -66,6 +67,7 @@ export default function ProjectSkillDetailPage({
     trigger: "",
     rationale: "",
   });
+  const attribution = useRequestHostAttribution();
 
   useEffect(() => {
     let cancelled = false;
@@ -229,10 +231,6 @@ export default function ProjectSkillDetailPage({
 
             {playbook && (
               <div className="flex items-center gap-2 flex-wrap">
-                <Badge variant="outline" className="gap-1.5">
-                  <FolderGit2 className="h-3 w-3" />
-                  {playbook.agent_version || "default"}
-                </Badge>
                 <StatusBadge status={status!} />
                 {displayName(playbook.playbook_name) && (
                   <Badge variant="secondary" className="font-mono text-[10px]">
@@ -332,7 +330,7 @@ export default function ProjectSkillDetailPage({
                     value={formatTimestamp(playbook.created_at)}
                   />
                   <Meta
-                    label="Project"
+                    label="Agent version"
                     value={playbook.agent_version || "default"}
                     mono
                   />
@@ -350,8 +348,19 @@ export default function ProjectSkillDetailPage({
                       display={truncateId(playbook.request_id, 8, 4)}
                     />
                   )}
+                  {attribution && playbook.request_id && (
+                    <Meta
+                      label="Origin"
+                      value={
+                        <LearningHostProvenance
+                          attribution={attribution}
+                          requestId={playbook.request_id}
+                        />
+                      }
+                    />
+                  )}
                   {playbook.source && (
-                    <Meta label="Source" value={playbook.source} mono />
+                    <Meta label="Integration" value={playbook.source} mono />
                   )}
                 </dl>
               </div>
@@ -499,7 +508,7 @@ function Meta({
 }: {
   icon?: React.ComponentType<{ className?: string }>;
   label: string;
-  value: string;
+  value: React.ReactNode;
   mono?: boolean;
 }) {
   return (

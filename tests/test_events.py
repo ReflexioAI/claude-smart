@@ -11,6 +11,17 @@ import pytest
 from claude_smart import state
 from claude_smart.events import post_tool, session_start, stop, user_prompt
 
+
+@pytest.fixture
+def isolated_runtime_host(monkeypatch):
+    """Keep host attribution mutations local to tests that exercise them."""
+    from claude_smart import runtime
+
+    monkeypatch.setattr(runtime, "_current_host", None)
+    monkeypatch.delenv(runtime.HOST_ENV, raising=False)
+    return runtime
+
+
 # -----------------------------------------------------------------------------
 # post_tool
 # -----------------------------------------------------------------------------
@@ -2054,3 +2065,80 @@ def test_session_end_without_session_id_returns_none(session_dir) -> None:
 
     result = session_end.handle({})
     assert result is None
+
+
+def test_user_prompt_stamps_unknown_for_unrecognized_host(
+    session_dir, monkeypatch, isolated_runtime_host
+) -> None:
+    from claude_smart.events import user_prompt
+
+    runtime = isolated_runtime_host
+    runtime.set_host("unsupported-host")
+    monkeypatch.setattr(user_prompt.context_inject, "emit_context", lambda **_k: None)
+    user_prompt.handle({"session_id": "s1", "prompt": "hi", "cwd": "/tmp/p"})
+
+    assert state.read_all("s1")[0]["host"] == runtime.HOST_UNKNOWN
+
+
+def test_post_tool_stamps_explicit_host(session_dir, isolated_runtime_host) -> None:
+    runtime = isolated_runtime_host
+    runtime.set_host(runtime.HOST_OPENCODE)
+    post_tool.handle(
+        {
+            "session_id": "s1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "tool_response": {"stdout": "ok"},
+        }
+    )
+
+    assert state.read_all("s1")[0]["host"] == runtime.HOST_OPENCODE
+
+
+def test_stop_stamps_host_on_user_and_assistant_records(
+    session_dir, monkeypatch, isolated_runtime_host
+) -> None:
+    from claude_smart.events import stop
+
+    runtime = isolated_runtime_host
+    runtime.set_host(runtime.HOST_CODEX)
+    monkeypatch.setattr(stop.publish, "publish_unpublished", lambda **_: ("ok", 0))
+    stop.handle(
+        {
+            "session_id": "s1",
+            "cwd": "/tmp/p",
+            "prompt": "hi",
+            "last_assistant_message": "hello",
+        }
+    )
+
+    records = state.read_all("s1")
+    assert [record["host"] for record in records] == [
+        runtime.HOST_CODEX,
+        runtime.HOST_CODEX,
+    ]
+
+
+def test_session_end_synthetic_anchor_stamps_host(
+    session_dir, monkeypatch, isolated_runtime_host
+) -> None:
+    from claude_smart.events import session_end
+
+    runtime = isolated_runtime_host
+    runtime.set_host(runtime.HOST_CODEX)
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished", lambda **_: ("ok", 0)
+    )
+    state.append(
+        "s1",
+        {"role": "Assistant_tool", "tool_name": "Bash", "tool_input": {}},
+    )
+    session_end.handle({"session_id": "s1", "cwd": "/tmp/p"})
+
+    synth = [
+        record
+        for record in state.read_all("s1")
+        if record.get("synthesised_by") == "session_end_anchor"
+    ]
+    assert len(synth) == 1
+    assert synth[0]["host"] == runtime.HOST_CODEX

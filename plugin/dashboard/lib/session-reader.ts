@@ -10,6 +10,7 @@ import path from "node:path";
 import os from "node:os";
 import type {
   CitedItem,
+  Host,
   PlaybookApplicationStat,
   SessionDetail,
   SessionSummary,
@@ -17,6 +18,18 @@ import type {
   ToolUsed,
   UserActionType,
 } from "./types";
+
+const VALID_HOSTS: ReadonlySet<Host> = new Set([
+  "claude-code",
+  "codex",
+  "opencode",
+  "unknown",
+]);
+
+function parseRecordedHost(value: unknown): Host | null {
+  if (typeof value !== "string") return null;
+  return VALID_HOSTS.has(value as Host) ? (value as Host) : null;
+}
 
 // Mirrors _TOOL_DATA_FIELD_MAX_LEN in plugin/src/claude_smart/state.py — we
 // truncate to the same length the publisher ships to reflexio so the
@@ -41,6 +54,8 @@ type RawRecord = {
   content?: string;
   ts?: number;
   user_id?: string;
+  host?: string;
+  request_id?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   tool_output?: string;
@@ -280,6 +295,8 @@ function foldTurns(records: RawRecord[]): {
   lastTs: number | null;
   firstTs: number | null;
   preview: string | null;
+  host: Host | null;
+  requestIds: string[];
 } {
   let published = 0;
   let pendingTools: ToolUsed[] = [];
@@ -288,9 +305,17 @@ function foldTurns(records: RawRecord[]): {
   let lastTs: number | null = null;
   let firstTs: number | null = null;
   let preview: string | null = null;
+  let host: Host | null = null;
+  const requestIds = new Set<string>();
 
   for (let idx = 0; idx < records.length; idx++) {
     const rec = records[idx];
+    if (host === null && rec.host !== undefined) {
+      host = parseRecordedHost(rec.host);
+    }
+    if (typeof rec.request_id === "string" && rec.request_id) {
+      requestIds.add(rec.request_id);
+    }
     if (typeof rec.published_up_to === "number") {
       published = rec.published_up_to;
       pendingTools = [];
@@ -366,6 +391,8 @@ function foldTurns(records: RawRecord[]): {
     lastTs,
     firstTs,
     preview,
+    host,
+    requestIds: Array.from(requestIds),
   };
 }
 
@@ -391,6 +418,8 @@ export async function listSessions(): Promise<SessionSummary[]> {
       lastTs,
       firstTs,
       preview,
+      host,
+      requestIds,
     } = foldTurns(records);
     summaries.push({
       session_id: entry.replace(/\.jsonl$/, ""),
@@ -401,6 +430,8 @@ export async function listSessions(): Promise<SessionSummary[]> {
       published_up_to: publishedUpTo,
       preview,
       source: "local",
+      host,
+      request_ids: requestIds,
     });
   }
   summaries.sort((a, b) => (b.last_activity ?? 0) - (a.last_activity ?? 0));
@@ -456,6 +487,13 @@ export async function readSession(
   } catch {
     return null;
   }
-  const { turns, publishedUpTo } = foldTurns(records);
-  return { session_id: sessionId, turns, published_up_to: publishedUpTo };
+  const { turns, publishedUpTo, learningInteractionCount, host } =
+    foldTurns(records);
+  return {
+    session_id: sessionId,
+    turns,
+    learning_interaction_count: learningInteractionCount,
+    published_up_to: publishedUpTo,
+    host,
+  };
 }

@@ -27,6 +27,7 @@ _ENV_API_KEY = "REFLEXIO_API_KEY"
 # in ``ids.py`` for short-lived hook HTTP calls.
 _HTTP_TIMEOUT_SECONDS = 5
 _SEARCH_MODE_HYBRID = "hybrid"  # reflexio.models.config_schema.SearchMode.HYBRID
+_SOURCE = "claude-smart"
 _UNIFIED_ENTITY_TYPES = ("profiles", "user_playbooks", "agent_playbooks")
 _AGENT_PLAYBOOK_APPROVAL_STATUSES = ("pending", "approved")
 _REJECTED_AGENT_PLAYBOOK_STATUS = "rejected"
@@ -50,13 +51,24 @@ def _configured_url() -> str:
     return url or _default_url()
 
 
+@dataclass(frozen=True)
+class PublishResult:
+    """Outcome and server-confirmed lineage for one publish call."""
+
+    ok: bool
+    request_id: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
 @dataclass
 class Adapter:
     """Wraps the reflexio client and absorbs connection errors.
 
-    All methods degrade to a neutral no-op return (empty list / False) on
-    connection failure so a missing or down reflexio server never crashes
-    a Claude Code hook.
+    All methods degrade to a neutral no-op result (an empty list or a falsey
+    result) on connection failure so a missing or down reflexio server never
+    crashes a host hook.
     """
 
     url: str = ""
@@ -114,62 +126,66 @@ class Adapter:
         force_extraction: bool = False,
         override_learning_stall: bool = False,
         skip_aggregation: bool = False,
-    ) -> bool:
-        """Publish buffered interactions to reflexio. Returns True on success."""
+    ) -> PublishResult:
+        """Publish interactions and return this call's confirmed request ID."""
         if not interactions:
-            return True
+            return PublishResult(True)
         client = self._get_client()
         if client is None:
-            return False
+            return PublishResult(False)
         try:
             interaction_list = list(interactions)
-            if _needs_raw_retrieved_learning_publish(interaction_list):
-                raw_request = getattr(client, "_make_request", None)
-                if request_id is not None and callable(raw_request):
-                    payload = {
-                        "request_id": request_id,
-                        "user_id": project_id,
-                        "interaction_data_list": interaction_list,
-                        "agent_version": runtime.agent_version(),
-                        "session_id": session_id,
-                        "skip_aggregation": skip_aggregation,
-                        "force_extraction": force_extraction,
-                        "evaluation_only": False,
-                        "override_learning_stall": override_learning_stall,
-                    }
-                    try:
-                        raw_request(
-                            "POST",
-                            "/api/publish_interaction",
-                            json=payload,
-                            params=None,
-                        )
-                        return True
-                    except Exception as exc:  # noqa: BLE001
-                        _LOGGER.warning(
-                            "Could not confirm retrieved-learning links; retrying "
-                            "the base interaction with the same request ID: %s",
-                            exc,
-                        )
-                        fallback_payload = {
-                            **payload,
-                            "interaction_data_list": _without_retrieved_learnings(
-                                interaction_list
-                            ),
-                        }
-                        raw_request(
-                            "POST",
-                            "/api/publish_interaction",
-                            json=fallback_payload,
-                            params=None,
-                        )
-                        return True
-                else:
-                    _LOGGER.warning(
-                        "Stable raw publishing is unavailable; publishing "
-                        "without optional retrieved-learning links"
+            raw_request = getattr(client, "_make_request", None)
+            supports_source = _supports_keyword(client.publish_interaction, "source")
+            if request_id is not None and callable(raw_request):
+                payload: dict[str, Any] = {
+                    "request_id": request_id,
+                    "user_id": project_id,
+                    "interaction_data_list": interaction_list,
+                    "agent_version": runtime.agent_version(),
+                    "session_id": session_id,
+                    "skip_aggregation": skip_aggregation,
+                    "force_extraction": force_extraction,
+                    "evaluation_only": False,
+                    "override_learning_stall": override_learning_stall,
+                }
+                if supports_source:
+                    payload["source"] = _SOURCE
+                try:
+                    raw_request(
+                        "POST",
+                        "/api/publish_interaction",
+                        json=payload,
+                        params=None,
                     )
-                    interaction_list = _without_retrieved_learnings(interaction_list)
+                    return PublishResult(True, request_id)
+                except Exception as exc:  # noqa: BLE001
+                    if not _needs_raw_retrieved_learning_publish(interaction_list):
+                        raise
+                    _LOGGER.warning(
+                        "Could not confirm retrieved-learning links; retrying "
+                        "the base interaction with the same request ID: %s",
+                        exc,
+                    )
+                    fallback_payload = {
+                        **payload,
+                        "interaction_data_list": _without_retrieved_learnings(
+                            interaction_list
+                        ),
+                    }
+                    raw_request(
+                        "POST",
+                        "/api/publish_interaction",
+                        json=fallback_payload,
+                        params=None,
+                    )
+                    return PublishResult(True, request_id)
+            if _needs_raw_retrieved_learning_publish(interaction_list):
+                _LOGGER.warning(
+                    "Stable raw publishing is unavailable; publishing "
+                    "without optional retrieved-learning links"
+                )
+                interaction_list = _without_retrieved_learnings(interaction_list)
             kwargs = {
                 "user_id": project_id,
                 "interactions": interaction_list,
@@ -179,17 +195,22 @@ class Adapter:
                 "force_extraction": force_extraction,
                 "skip_aggregation": skip_aggregation,
             }
+            if supports_source:
+                kwargs["source"] = _SOURCE
             if _supports_keyword(client.publish_interaction, "override_learning_stall"):
                 kwargs["override_learning_stall"] = override_learning_stall
             elif override_learning_stall:
                 _LOGGER.debug(
                     "publish_interaction client does not support override_learning_stall"
                 )
-            client.publish_interaction(**kwargs)
-            return True
+            response = client.publish_interaction(**kwargs)
+            response_request_id = getattr(response, "request_id", None)
+            if isinstance(response_request_id, str) and response_request_id:
+                return PublishResult(True, response_request_id)
+            return PublishResult(True)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("publish_interaction failed: %s", exc)
-            return False
+            return PublishResult(False)
 
     def apply_extraction_defaults(self, *, window_size: int, stride_size: int) -> bool:
         """Push claude-smart's preferred extraction defaults to the reflexio server.

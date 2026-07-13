@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from claude_smart import env_config, ids, publish, state
+from claude_smart import env_config, ids, publish, runtime, state
 from claude_smart.events.stop import (
     _read_transcript_entries,
     _scan_transcript_for_assistant_text,
@@ -119,6 +119,7 @@ def _maybe_synthesize_assistant_anchor(
             "content": assistant_text,
             "user_id": project_id,
             "synthesised_by": "session_end_anchor",
+            "host": runtime.attribution_host(),
         },
     )
     _LOGGER.info(

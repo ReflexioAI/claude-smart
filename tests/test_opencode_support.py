@@ -193,6 +193,21 @@ def test_runtime_accepts_opencode_host() -> None:
     assert runtime.agent_version() == "claude-code"
 
 
+def test_runtime_keeps_unknown_attribution_separate_from_compatibility_host() -> None:
+    assert runtime.set_host("unsupported-host") == runtime.HOST_CLAUDE_CODE
+    assert runtime.host() == runtime.HOST_CLAUDE_CODE
+    assert runtime.attribution_host() == runtime.HOST_UNKNOWN
+
+    assert runtime.set_host(None) == runtime.HOST_CLAUDE_CODE
+    assert runtime.host() == runtime.HOST_CLAUDE_CODE
+    assert runtime.attribution_host() == runtime.HOST_UNKNOWN
+
+
+def test_runtime_reports_explicit_host_for_attribution() -> None:
+    runtime.set_host(runtime.HOST_CODEX)
+    assert runtime.attribution_host() == runtime.HOST_CODEX
+
+
 def test_hook_entry_accepts_opencode_host() -> None:
     script = (REPO_ROOT / "plugin" / "scripts" / "hook_entry.sh").read_text()
 

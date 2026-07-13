@@ -7,16 +7,16 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from claude_smart import publish, state
-from claude_smart.reflexio_adapter import Adapter
+from claude_smart.reflexio_adapter import Adapter, PublishResult
 
 
 class _RecordingAdapter:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    def publish(self, **kwargs: Any) -> bool:
+    def publish(self, **kwargs: Any) -> PublishResult:
         self.calls.append(kwargs)
-        return True
+        return PublishResult(True, kwargs.get("request_id"))
 
 
 class _SequencedAdapter(_RecordingAdapter):
@@ -24,9 +24,10 @@ class _SequencedAdapter(_RecordingAdapter):
         super().__init__()
         self.results = iter(results)
 
-    def publish(self, **kwargs: Any) -> bool:
+    def publish(self, **kwargs: Any) -> PublishResult:
         self.calls.append(kwargs)
-        return next(self.results)
+        result = next(self.results)
+        return PublishResult(result, kwargs.get("request_id") if result else None)
 
 
 class _CallbackAdapter(_RecordingAdapter):
@@ -34,10 +35,10 @@ class _CallbackAdapter(_RecordingAdapter):
         super().__init__()
         self.callback = callback
 
-    def publish(self, **kwargs: Any) -> bool:
+    def publish(self, **kwargs: Any) -> PublishResult:
         self.calls.append(kwargs)
         self.callback()
-        return True
+        return PublishResult(True, kwargs.get("request_id"))
 
 
 def _append_assistant(session_id: str, ts: int, content: str = "done") -> None:
@@ -131,6 +132,36 @@ def test_retrieved_learnings_attach_once_across_publishes(session_dir) -> None:
         {"kind": "profile", "learning_id": "p2"}
     ]
     assert adapter.calls[0]["request_id"] != adapter.calls[1]["request_id"]
+
+
+def test_success_records_request_id_for_local_lineage(session_dir) -> None:
+    _append_assistant("s1", 10)
+    adapter = _RecordingAdapter()
+
+    assert _publish("s1", adapter) == ("ok", 1)
+
+    marker = state.read_all("s1")[-1]
+    assert marker["request_id"] == adapter.calls[0]["request_id"]
+    assert marker["published_up_to"] == 1
+
+
+def test_success_omits_unconfirmed_request_id_from_local_lineage(session_dir) -> None:
+    class UnconfirmedAdapter:
+        def publish(self, **_kwargs: Any) -> PublishResult:
+            return PublishResult(True)
+
+    _append_assistant("s1", 10)
+
+    assert publish.publish_unpublished(
+        session_id="s1",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=cast(Adapter, UnconfirmedAdapter()),
+    ) == ("ok", 1)
+
+    marker = state.read_all("s1")[-1]
+    assert marker == {"published_up_to": 1}
 
 
 def test_failed_publish_retries_frozen_batch_before_new_turns(session_dir) -> None:
@@ -255,11 +286,11 @@ def test_overlapping_publishers_adopt_one_frozen_batch(
     _append_assistant("s1", 4, "second")
 
     class BlockingAdapter(_RecordingAdapter):
-        def publish(self, **kwargs: Any) -> bool:
+        def publish(self, **kwargs: Any) -> PublishResult:
             self.calls.append(kwargs)
             second_request_ready.set()
             assert allow_second_request.wait(timeout=5)
-            return True
+            return PublishResult(True, kwargs.get("request_id"))
 
     second_adapter = BlockingAdapter()
     second_result: list[tuple[str, int]] = []

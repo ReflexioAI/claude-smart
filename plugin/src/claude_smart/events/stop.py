@@ -408,6 +408,7 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
                     "role": "User",
                     "content": decision_text,
                     "user_id": project_id,
+                    "host": runtime.attribution_host(),
                 },
             )
     elif prompt and not _has_unpublished_user_turn(session_id):
@@ -418,6 +419,7 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
                 "role": "User",
                 "content": prompt,
                 "user_id": project_id,
+                "host": runtime.attribution_host(),
             },
         )
 
@@ -426,6 +428,7 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
         "role": "Assistant",
         "content": assistant_text,
         "user_id": project_id,
+        "host": runtime.attribution_host(),
     }
     if cited_items:
         record["cited_items"] = cited_items

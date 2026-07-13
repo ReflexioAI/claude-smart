@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { DeleteAllButton } from "@/components/common/delete-all-button";
 import { LearningsBadge } from "@/components/common/learnings-badge";
+import { HostBadge } from "@/components/common/host-badge";
 import { Input } from "@/components/ui/input";
 import { dayBucket, formatRelative, truncateId } from "@/lib/format";
 import type { SessionSummary } from "@/lib/types";
@@ -153,6 +154,7 @@ export default function SessionsPage() {
                             count={s.learning_interaction_count}
                             size="sm"
                           />
+                          <HostBadge host={s.host} size="sm" />
                         </div>
                         <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-0.5">
                           <code className="font-mono">

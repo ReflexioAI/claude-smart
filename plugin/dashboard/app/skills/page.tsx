@@ -2,8 +2,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { BookOpen, ChevronRight, Layers3 } from "lucide-react";
+import {
+  AlertTriangle,
+  BookOpen,
+  ChevronRight,
+  Layers3,
+} from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
+import { HostBadge } from "@/components/common/host-badge";
+import { LearningApplicationBadge } from "@/components/common/learning-application-badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { DeleteAllButton } from "@/components/common/delete-all-button";
 import { PageTabs } from "@/components/common/page-tabs";
@@ -18,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { reflexio } from "@/lib/reflexio-client";
 import { formatRelative } from "@/lib/format";
+import { useRequestHostAttribution } from "@/lib/host-attribution";
 import { cn } from "@/lib/utils";
 import {
   agentPlaybookStatusLabel,
@@ -27,6 +35,7 @@ import {
 } from "@/lib/status";
 import type {
   AgentPlaybook,
+  Host,
   PlaybookApplicationStat,
   UserPlaybook,
 } from "@/lib/types";
@@ -58,24 +67,29 @@ const SHARED_STATUS_META: Record<
 interface SkillCard {
   kind: SkillKind;
   id: number;
-  agentVersion: string;
   createdAt: number;
   content: string;
   trigger: string | null;
   rationale: string | null;
   status: SkillStatus;
+  scopeId: string;
+  host: Host | null;
 }
 
-function projectSkill(p: UserPlaybook): SkillCard {
+function projectSkill(
+  p: UserPlaybook,
+  requestHosts?: ReadonlyMap<string, Host | null>,
+): SkillCard {
   return {
     kind: "project",
     id: p.user_playbook_id,
-    agentVersion: p.agent_version || "default",
     createdAt: p.created_at,
     content: p.content,
     trigger: p.trigger,
     rationale: p.rationale,
     status: statusLabel(p),
+    scopeId: p.user_id || "unknown",
+    host: requestHosts?.get(p.request_id) ?? null,
   };
 }
 
@@ -83,12 +97,13 @@ function sharedSkill(p: AgentPlaybook): SkillCard {
   return {
     kind: "shared",
     id: p.agent_playbook_id,
-    agentVersion: p.agent_version || "default",
     createdAt: p.created_at,
     content: p.content,
     trigger: p.trigger,
     rationale: p.rationale,
     status: agentPlaybookStatusLabel(p),
+    scopeId: p.agent_version || "default",
+    host: null,
   };
 }
 
@@ -106,10 +121,11 @@ export default function SkillsPage() {
   );
   const [error, setError] = useState<string | null>(null);
   const [activeKind, setActiveKind] = useState<SkillKind>("project");
-  const [agentVersion, setAgentVersion] = useState<string>("__all__");
+  const [scope, setScope] = useState<string>("__all__");
   const [statusFilter, setStatusFilter] = useState<string>("CURRENT");
   const [sortBy, setSortBy] = useState<SkillSort>("newest");
   const [search, setSearch] = useState("");
+  const attribution = useRequestHostAttribution();
 
   useEffect(() => {
     let cancelled = false;
@@ -158,24 +174,26 @@ export default function SkillsPage() {
 
   const activeSkills = useMemo(() => {
     return activeKind === "project"
-      ? (projectSkills ?? []).map(projectSkill)
+      ? (projectSkills ?? []).map((playbook) =>
+          projectSkill(playbook, attribution?.hosts),
+        )
       : (sharedSkills ?? []).map(sharedSkill);
-  }, [activeKind, projectSkills, sharedSkills]);
+  }, [activeKind, attribution, projectSkills, sharedSkills]);
 
-  const projects = useMemo(() => {
+  const scopes = useMemo(() => {
     const set = new Set<string>();
-    for (const p of activeSkills) set.add(p.agentVersion);
+    for (const p of activeSkills) set.add(p.scopeId);
     return Array.from(set).sort();
   }, [activeSkills]);
 
   const filtered = useMemo(() => {
     const matches = activeSkills.filter((p) => {
-      if (agentVersion !== "__all__" && p.agentVersion !== agentVersion)
+      if (scope !== "__all__" && p.scopeId !== scope)
         return false;
       if (statusFilter !== "__all__" && p.status !== statusFilter) return false;
       if (search) {
         const s = search.toLowerCase();
-        const hay = `${p.content} ${p.trigger ?? ""} ${p.rationale ?? ""}`.toLowerCase();
+        const hay = `${p.scopeId} ${p.content} ${p.trigger ?? ""} ${p.rationale ?? ""}`.toLowerCase();
         if (!hay.includes(s)) return false;
       }
       return true;
@@ -193,7 +211,7 @@ export default function SkillsPage() {
       }
       return b.createdAt - a.createdAt;
     });
-  }, [activeSkills, agentVersion, search, sortBy, statsByRule, statusFilter]);
+  }, [activeSkills, scope, search, sortBy, statsByRule, statusFilter]);
 
   const projectCount = projectSkills?.length ?? 0;
   const sharedCount = sharedSkills?.length ?? 0;
@@ -201,10 +219,12 @@ export default function SkillsPage() {
   const activeCount = activeKind === "project" ? projectCount : sharedCount;
   const loading = projectSkills === null || sharedSkills === null;
   const hasNoSharedSkills = activeKind === "shared" && sharedCount === 0;
+  const allScopesLabel =
+    activeKind === "project" ? "All user scopes" : "All agents";
 
   const switchKind = (kind: SkillKind) => {
     setActiveKind(kind);
-    setAgentVersion("__all__");
+    setScope("__all__");
     setStatusFilter(kind === "project" ? "CURRENT" : "__all__");
   };
 
@@ -216,15 +236,17 @@ export default function SkillsPage() {
         actions={
           <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
             <Select
-              value={agentVersion}
-              onValueChange={(v) => setAgentVersion(v ?? "__all__")}
+              value={scope}
+              onValueChange={(v) => setScope(v ?? "__all__")}
             >
               <SelectTrigger size="sm" className="w-40 text-xs bg-background/80">
-                <SelectValue placeholder="Project" />
+                <SelectValue>
+                  {scope === "__all__" ? allScopesLabel : scope}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__all__">All projects</SelectItem>
-                {projects.map((p) => (
+                <SelectItem value="__all__">{allScopesLabel}</SelectItem>
+                {scopes.map((p) => (
                   <SelectItem key={p} value={p}>
                     {p}
                   </SelectItem>
@@ -337,6 +359,13 @@ export default function SkillsPage() {
             {error}. Is reflexio running on the configured backend URL?
           </div>
         )}
+        {activeKind === "project" && attribution?.unavailable && !error && (
+          <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            Skill source details are temporarily unavailable. Skills remain
+            available.
+          </div>
+        )}
 
         {loading && !error ? (
           <div className="text-sm text-muted-foreground">Loading...</div>
@@ -366,17 +395,20 @@ export default function SkillsPage() {
                 >
                   <header className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <Badge
-                        variant="outline"
-                        className="h-5 max-w-56 truncate font-mono text-[10px]"
-                      >
-                        {p.agentVersion}
-                      </Badge>
+                      <LearningApplicationBadge stat={stat} />
                       <StatusBadge kind={p.kind} status={p.status} />
                       <Badge variant="secondary" className="h-5 text-[10px]">
                         {p.kind === "project" ? "project-specific" : "shared"}
                       </Badge>
-                      <ApplicationStatBadge stat={stat} />
+                      {p.kind === "shared" && (
+                        <Badge
+                          variant="outline"
+                          className="h-5 max-w-56 truncate font-mono text-[10px]"
+                          title="Shared-skill applicability scope; not the source host."
+                        >
+                          Agent scope: {p.scopeId}
+                        </Badge>
+                      )}
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
                       <span className="text-[11px] text-muted-foreground">
@@ -406,6 +438,13 @@ export default function SkillsPage() {
                       {p.rationale}
                     </p>
                   )}
+                  {p.kind === "project" &&
+                    attribution &&
+                    !attribution.unavailable && (
+                      <div className="mt-2">
+                        <HostBadge host={p.host} display="provenance" />
+                      </div>
+                    )}
                 </Link>
               );
             })}
@@ -413,30 +452,6 @@ export default function SkillsPage() {
         )}
       </div>
     </div>
-  );
-}
-
-function ApplicationStatBadge({ stat }: { stat: PlaybookApplicationStat | undefined }) {
-  if (!stat || stat.applied_count === 0) {
-    return (
-      <Badge
-        variant="outline"
-        className="h-5 text-[10px] text-muted-foreground"
-        title="No citations recorded yet for this rule. It will count once an assistant reply cites it."
-      >
-        Never applied
-      </Badge>
-    );
-  }
-  const last = formatRelative(stat.last_applied_at);
-  return (
-    <Badge
-      variant="secondary"
-      className="h-5 text-[10px]"
-      title={`Last applied ${last}`}
-    >
-      Applied {stat.applied_count}×{stat.last_applied_at ? ` · ${last}` : ""}
-    </Badge>
   );
 }
 

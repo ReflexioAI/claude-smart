@@ -11,6 +11,7 @@ import {
   Users,
 } from "lucide-react";
 import { LearningsBadge } from "@/components/common/learnings-badge";
+import { HostBadge } from "@/components/common/host-badge";
 import { PageHeader } from "@/components/common/page-header";
 import { StatCard } from "@/components/common/stat-card";
 import { EmptyState } from "@/components/common/empty-state";
@@ -217,7 +218,11 @@ export default function DashboardPage() {
                       <code className="font-mono text-xs truncate">
                         {truncateId(s.session_id, 10, 6)}
                       </code>
-                      <LearningsBadge count={s.learning_interaction_count} />
+                      <LearningsBadge
+                        count={s.learning_interaction_count}
+                        size="sm"
+                      />
+                      <HostBadge host={s.host} size="sm" />
                     </div>
                     <div className="flex w-full items-center justify-end gap-4 text-xs text-muted-foreground sm:w-auto sm:shrink-0">
                       <span>{s.turn_count} turns</span>

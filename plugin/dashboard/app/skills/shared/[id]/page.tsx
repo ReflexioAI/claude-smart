@@ -13,7 +13,6 @@ import {
   Check,
   BookMarked,
   Hash,
-  FolderGit2,
   Clock,
   FileText,
 } from "lucide-react";
@@ -298,10 +297,6 @@ export default function SharedSkillDetailPage({
 
             {playbook && (
               <div className="flex items-center gap-2 flex-wrap">
-                <Badge variant="outline" className="gap-1.5">
-                  <FolderGit2 className="h-3 w-3" />
-                  {playbook.agent_version || "default"}
-                </Badge>
                 {editing ? (
                   <ReviewStatusBadge
                     status={playbook.playbook_status}
@@ -472,7 +467,7 @@ export default function SharedSkillDetailPage({
                     value={formatTimestamp(playbook.created_at)}
                   />
                   <Meta
-                    label="Project"
+                    label="Agent version"
                     value={playbook.agent_version || "default"}
                     mono
                   />
