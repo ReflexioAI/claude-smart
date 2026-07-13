@@ -40,7 +40,8 @@
   },
   "scripts": {
     "build:opencode": "tsc -p plugin/opencode/tsconfig.json",
-    "prepack": "npm run build:opencode"
+    "prepack": "npm run gen:marketplace && npm run build:opencode",
+    "gen:marketplace": "node scripts/generate-marketplace.js"
   },
   "bin": {
     "claude-smart": "bin/claude-smart.js"

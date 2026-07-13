@@ -47,6 +47,13 @@ benchmarks/memory_comparison/results
 # Generated release vendor bundle
 /plugin/vendor/
 
+# Generated at pack time from .claude-plugin/marketplace.template.json.
+# Deliberately not committed: it is what makes this repo installable as a Claude
+# Code marketplace, and the plugin it advertises has no vendored Reflexio
+# runtime in git. Keeping it out means `claude plugin marketplace add
+# ReflexioAI/claude-smart` fails fast instead of installing a broken plugin.
+/.claude-plugin/marketplace.json
+
 # Scheduled tasks lock
 .claude/scheduled_tasks.lock
 .coverage

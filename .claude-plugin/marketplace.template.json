@@ -9,7 +9,6 @@
   "plugins": [
     {
       "name": "claude-smart",
-      "version": "0.2.49",
       "source": "./plugin",
       "description": "Turns corrections into Preferences, Project-specific skills, and Shared skills — uses Claude Code, Codex, or OpenCode as the LLM backend (no external API key required)"
     }
