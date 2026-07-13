@@ -4873,6 +4873,27 @@ def test_claude_marketplace_manifest_is_not_committed() -> None:
     assert template == ".claude-plugin/marketplace.template.json"
 
 
+def test_integration_harness_generates_marketplace_manifest_before_installing() -> None:
+    """Anything installing the checkout as a marketplace must generate the manifest.
+
+    The manifest is a pack-time artifact and is not committed, so the harness —
+    which registers REPO_ROOT as a marketplace — has to generate it itself, the
+    same way it already generates the vendor bundle. Without this it fails at
+    `claude plugin marketplace add` with "Marketplace file not found".
+    """
+    harness = (REPO_ROOT / "tests" / "integration" / "integration.sh").read_text()
+    assert "prepare_marketplace_manifest" in harness
+    assert "scripts/generate-marketplace.js" in harness
+
+    generate_at = harness.index("prepare_marketplace_manifest()")
+    call_at = harness.index("prepare_marketplace_manifest\n", generate_at)
+    add_at = harness.index("claude plugin marketplace add")
+    assert call_at < add_at, (
+        "the harness must generate the marketplace manifest before registering "
+        "the checkout as a marketplace"
+    )
+
+
 def test_package_tarball_ships_generated_marketplace_manifest(tmp_path: Path) -> None:
     """A real pack (prepack hook active) must ship a version-correct manifest.
 

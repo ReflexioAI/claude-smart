@@ -236,6 +236,21 @@ prepare_vendored_reflexio() {
     --write
 }
 
+# The Claude marketplace manifest is generated at pack time (npm prepack) and is
+# not committed, so that the GitHub repo cannot be installed as a marketplace
+# with no Reflexio runtime. This harness installs the checkout as a marketplace,
+# so it must generate the manifest itself — same as it does for the vendor
+# bundle above.
+prepare_marketplace_manifest() {
+  log "setup: generating .claude-plugin/marketplace.json"
+  if ! command -v node >/dev/null 2>&1; then
+    fail "node not on PATH — required to generate the marketplace manifest"
+  fi
+  if ! node "$REPO_ROOT/scripts/generate-marketplace.js"; then
+    fail "could not generate .claude-plugin/marketplace.json"
+  fi
+}
+
 stage_setup() {
   log "setup: sandbox HOME=$HOME"
   if ! command -v claude >/dev/null 2>&1; then
@@ -246,6 +261,7 @@ stage_setup() {
   export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-dummy-for-plugin-install}"
 
   prepare_vendored_reflexio
+  prepare_marketplace_manifest
 
   log "setup: claude plugin marketplace add $REPO_ROOT"
   if ! claude plugin marketplace add "$REPO_ROOT" >"$HOME/marketplace-add.log" 2>&1; then

@@ -223,9 +223,15 @@ unaffected. As a backstop, `smart-install.sh` fails Setup outright if a host
 plugin cache (`*/plugins/cache/*`) is missing the vendor bundle, since that can
 only mean a GitHub-marketplace install.
 
-Local development is unaffected: the integration harness runs from the checkout
-without registering a marketplace, and a tarball install goes through
-`make package`, which generates both artifacts.
+Anything that installs **the checkout itself** as a marketplace must generate the
+manifest first — exactly as it already generates `plugin/vendor/reflexio`. Both
+artifacts are pack-time products, and neither is in git:
+
+- `make package` / `npm pack` / `npm publish` — the `prepack` hook handles it.
+- `tests/integration/integration.sh` — `prepare_marketplace_manifest` handles it,
+  alongside `prepare_vendored_reflexio`.
+
+To generate it by hand: `npm run gen:marketplace`.
 
 ## Release flow
 
