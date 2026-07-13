@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Users, ChevronRight } from "lucide-react";
+import { AlertTriangle, Users, ChevronRight } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
+import { HostBadge } from "@/components/common/host-badge";
+import { LearningApplicationBadge } from "@/components/common/learning-application-badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { DeleteAllButton } from "@/components/common/delete-all-button";
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { reflexio } from "@/lib/reflexio-client";
 import { formatRelative, truncateId } from "@/lib/format";
+import { useRequestHostAttribution } from "@/lib/host-attribution";
 import type { PlaybookApplicationStat, UserProfile } from "@/lib/types";
 
 type PreferenceSort = "newest" | "applied";
@@ -33,6 +36,7 @@ export default function PreferencesPage() {
   const [error, setError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<PreferenceSort>("newest");
   const [filter, setFilter] = useState("");
+  const attribution = useRequestHostAttribution();
 
   useEffect(() => {
     let cancelled = false;
@@ -141,6 +145,13 @@ export default function PreferencesPage() {
             {error}. Is reflexio running on the configured backend URL?
           </div>
         )}
+        {attribution?.unavailable && !error && (
+          <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            Preference source details are temporarily unavailable. Preferences
+            remain available.
+          </div>
+        )}
 
         {profiles === null && !error ? (
           <div className="text-sm text-muted-foreground">Loading…</div>
@@ -162,6 +173,10 @@ export default function PreferencesPage() {
                 >
                   <header className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <LearningApplicationBadge
+                        stat={stat}
+                        learningLabel="preference"
+                      />
                       <Badge variant="outline" className="h-5 font-mono text-[10px]">
                         {truncateId(p.user_id, 32, 8)}
                       </Badge>
@@ -170,7 +185,6 @@ export default function PreferencesPage() {
                           {p.status}
                         </Badge>
                       )}
-                      <PreferenceApplicationStatBadge stat={stat} />
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       <span className="text-[11px] text-muted-foreground">
@@ -182,11 +196,23 @@ export default function PreferencesPage() {
                   <p className="max-w-5xl text-sm leading-relaxed line-clamp-3">
                     {p.content}
                   </p>
-                  {p.source && (
-                    <p className="text-[11px] text-muted-foreground mt-2 font-mono">
-                      source: {p.source}
-                    </p>
-                  )}
+                  <div className="mt-2 flex flex-wrap items-center gap-3">
+                    {attribution && !attribution.unavailable && (
+                      <HostBadge
+                        host={
+                          attribution.hosts.get(
+                            p.generated_from_request_id,
+                          ) ?? null
+                        }
+                        display="provenance"
+                      />
+                    )}
+                    {p.source && (
+                      <span className="text-[11px] text-muted-foreground font-mono">
+                        Integration: {p.source}
+                      </span>
+                    )}
+                  </div>
                 </Link>
               );
             })}
@@ -194,33 +220,5 @@ export default function PreferencesPage() {
         )}
       </div>
     </div>
-  );
-}
-
-function PreferenceApplicationStatBadge({
-  stat,
-}: {
-  stat: PlaybookApplicationStat | undefined;
-}) {
-  if (!stat || stat.applied_count === 0) {
-    return (
-      <Badge
-        variant="outline"
-        className="h-5 text-[10px] text-muted-foreground"
-        title="No citations recorded yet for this preference. It will count once an assistant reply cites it."
-      >
-        Never applied
-      </Badge>
-    );
-  }
-  const last = formatRelative(stat.last_applied_at);
-  return (
-    <Badge
-      variant="secondary"
-      className="h-5 text-[10px]"
-      title={`Last applied ${last}`}
-    >
-      Applied {stat.applied_count}×{stat.last_applied_at ? ` · ${last}` : ""}
-    </Badge>
   );
 }

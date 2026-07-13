@@ -21,6 +21,7 @@ import {
   FolderGit2,
 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
+import { LearningHostProvenance } from "@/components/common/host-badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { DeleteLearningDangerZone } from "@/components/common/delete-learning-danger-zone";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { reflexio } from "@/lib/reflexio-client";
 import { formatTimestamp, truncateId } from "@/lib/format";
+import { useRequestHostAttribution } from "@/lib/host-attribution";
 import { cn } from "@/lib/utils";
 import { statusLabel as status } from "@/lib/status";
 import type { UserProfile } from "@/lib/types";
@@ -49,6 +51,7 @@ export default function PreferenceDetailPage({
   const [deleting, setDeleting] = useState(false);
   const [editing, setEditing] = useState(false);
   const [content, setContent] = useState("");
+  const attribution = useRequestHostAttribution();
 
   useEffect(() => {
     let cancelled = false;
@@ -205,11 +208,6 @@ export default function PreferenceDetailPage({
                   <FolderGit2 className="h-3 w-3" />
                   {truncateId(profile.user_id, 32, 8)}
                 </Badge>
-                {profile.source && (
-                  <Badge variant="secondary" className="font-mono text-[10px]">
-                    {profile.source}
-                  </Badge>
-                )}
                 {dirty && (
                   <Badge variant="destructive" className="gap-1.5">
                     unsaved changes
@@ -343,6 +341,20 @@ export default function PreferenceDetailPage({
                       display={truncateId(profile.generated_from_request_id, 8, 4)}
                     />
                   )}
+                  {attribution && (
+                    <Meta
+                      label="Origin"
+                      value={
+                        <LearningHostProvenance
+                          attribution={attribution}
+                          requestId={profile.generated_from_request_id}
+                        />
+                      }
+                    />
+                  )}
+                  {profile.source && (
+                    <Meta label="Integration" value={profile.source} mono />
+                  )}
                 </dl>
               </div>
             </aside>
@@ -428,7 +440,7 @@ function Meta({
 }: {
   icon?: React.ComponentType<{ className?: string }>;
   label: string;
-  value: string;
+  value: React.ReactNode;
   mono?: boolean;
 }) {
   return (

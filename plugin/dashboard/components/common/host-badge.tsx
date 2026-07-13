@@ -1,5 +1,6 @@
 import { Terminal } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import type { RequestHostAttribution } from "@/lib/host-attribution";
 import { cn } from "@/lib/utils";
 import type { Host } from "@/lib/types";
 
@@ -51,11 +52,11 @@ export function HostBadge({
         )}
         title={
           knownHost
-            ? `This skill was learned from a ${label} session; it is not limited to that host.`
-            : "The session host that produced this skill was not recorded."
+            ? `This learning was generated from a ${label} session; it is not limited to that host.`
+            : "The session host for this learning's generation request was not recorded."
         }
       >
-        <span>Learned via</span>
+        <span>Generated via</span>
         <span
           aria-hidden="true"
           className={cn(
@@ -94,5 +95,24 @@ export function HostBadge({
       />
       {badgeLabel}
     </Badge>
+  );
+}
+
+export function LearningHostProvenance({
+  attribution,
+  requestId,
+}: {
+  attribution: RequestHostAttribution;
+  requestId: string;
+}) {
+  if (attribution.unavailable) {
+    return <span className="text-muted-foreground">Unavailable</span>;
+  }
+
+  return (
+    <HostBadge
+      host={attribution.hosts.get(requestId) ?? null}
+      display="provenance"
+    />
   );
 }

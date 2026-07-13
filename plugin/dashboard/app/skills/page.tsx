@@ -7,10 +7,10 @@ import {
   BookOpen,
   ChevronRight,
   Layers3,
-  Sparkles,
 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { HostBadge } from "@/components/common/host-badge";
+import { LearningApplicationBadge } from "@/components/common/learning-application-badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { DeleteAllButton } from "@/components/common/delete-all-button";
 import { PageTabs } from "@/components/common/page-tabs";
@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select";
 import { reflexio } from "@/lib/reflexio-client";
 import { formatRelative } from "@/lib/format";
-import { hostsByRequestId } from "@/lib/host-attribution";
+import { useRequestHostAttribution } from "@/lib/host-attribution";
 import { cn } from "@/lib/utils";
 import {
   agentPlaybookStatusLabel,
@@ -37,7 +37,6 @@ import type {
   AgentPlaybook,
   Host,
   PlaybookApplicationStat,
-  SessionSummary,
   UserPlaybook,
 } from "@/lib/types";
 
@@ -79,7 +78,7 @@ interface SkillCard {
 
 function projectSkill(
   p: UserPlaybook,
-  requestHosts: Map<string, Host | null>,
+  requestHosts?: ReadonlyMap<string, Host | null>,
 ): SkillCard {
   return {
     kind: "project",
@@ -90,7 +89,7 @@ function projectSkill(
     rationale: p.rationale,
     status: statusLabel(p),
     scopeId: p.user_id || "unknown",
-    host: requestHosts.get(p.request_id) ?? null,
+    host: requestHosts?.get(p.request_id) ?? null,
   };
 }
 
@@ -120,22 +119,19 @@ export default function SkillsPage() {
   const [appStats, setAppStats] = useState<PlaybookApplicationStat[] | null>(
     null,
   );
-  const [requestHosts, setRequestHosts] = useState<Map<string, Host | null>>(
-    () => new Map(),
-  );
   const [error, setError] = useState<string | null>(null);
-  const [attributionUnavailable, setAttributionUnavailable] = useState(false);
   const [activeKind, setActiveKind] = useState<SkillKind>("project");
   const [scope, setScope] = useState<string>("__all__");
   const [statusFilter, setStatusFilter] = useState<string>("CURRENT");
   const [sortBy, setSortBy] = useState<SkillSort>("newest");
   const [search, setSearch] = useState("");
+  const attribution = useRequestHostAttribution();
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
-        const [projectRes, sharedRes, statsRes, attribution] = await Promise.all([
+        const [projectRes, sharedRes, statsRes] = await Promise.all([
           reflexio.getUserPlaybooks({
             limit: 500,
             statusFilter: ALL_LIFECYCLE_STATUSES,
@@ -152,26 +148,11 @@ export default function SkillsPage() {
               success: false,
               stats: [] as PlaybookApplicationStat[],
             })),
-          fetch("/api/sessions", { cache: "no-store" })
-            .then(async (response) => {
-              if (!response.ok) throw new Error(`sessions ${response.status}`);
-              const data = await response.json();
-              return {
-                sessions: (data.sessions ?? []) as SessionSummary[],
-                failed: false,
-              };
-            })
-            .catch(() => ({
-              sessions: [] as SessionSummary[],
-              failed: true,
-            })),
         ]);
         if (cancelled) return;
         setProjectSkills(projectRes.user_playbooks ?? []);
         setSharedSkills(sharedRes.agent_playbooks ?? []);
         setAppStats(statsRes.stats ?? []);
-        setRequestHosts(hostsByRequestId(attribution.sessions));
-        setAttributionUnavailable(attribution.failed);
         setError(null);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -194,10 +175,10 @@ export default function SkillsPage() {
   const activeSkills = useMemo(() => {
     return activeKind === "project"
       ? (projectSkills ?? []).map((playbook) =>
-          projectSkill(playbook, requestHosts),
+          projectSkill(playbook, attribution?.hosts),
         )
       : (sharedSkills ?? []).map(sharedSkill);
-  }, [activeKind, projectSkills, requestHosts, sharedSkills]);
+  }, [activeKind, attribution, projectSkills, sharedSkills]);
 
   const scopes = useMemo(() => {
     const set = new Set<string>();
@@ -378,7 +359,7 @@ export default function SkillsPage() {
             {error}. Is reflexio running on the configured backend URL?
           </div>
         )}
-        {attributionUnavailable && !error && (
+        {activeKind === "project" && attribution?.unavailable && !error && (
           <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
             <AlertTriangle className="h-4 w-4 shrink-0" />
             Skill source details are temporarily unavailable. Skills remain
@@ -414,7 +395,10 @@ export default function SkillsPage() {
                 >
                   <header className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <ApplicationStatBadge stat={stat} />
+                      <LearningApplicationBadge
+                        stat={stat}
+                        learningLabel="skill"
+                      />
                       <StatusBadge kind={p.kind} status={p.status} />
                       <Badge variant="secondary" className="h-5 text-[10px]">
                         {p.kind === "project" ? "project-specific" : "shared"}
@@ -457,11 +441,13 @@ export default function SkillsPage() {
                       {p.rationale}
                     </p>
                   )}
-                  {p.kind === "project" && (
-                    <div className="mt-2">
-                      <HostBadge host={p.host} display="provenance" />
-                    </div>
-                  )}
+                  {p.kind === "project" &&
+                    attribution &&
+                    !attribution.unavailable && (
+                      <div className="mt-2">
+                        <HostBadge host={p.host} display="provenance" />
+                      </div>
+                    )}
                 </Link>
               );
             })}
@@ -469,31 +455,6 @@ export default function SkillsPage() {
         )}
       </div>
     </div>
-  );
-}
-
-function ApplicationStatBadge({ stat }: { stat: PlaybookApplicationStat | undefined }) {
-  if (!stat || stat.applied_count === 0) {
-    return (
-      <Badge
-        variant="outline"
-        className="h-5 text-[10px] text-muted-foreground"
-        title="No citations recorded yet for this rule. It will count once an assistant reply cites it."
-      >
-        Never applied
-      </Badge>
-    );
-  }
-  const last = formatRelative(stat.last_applied_at);
-  return (
-    <Badge
-      variant="outline"
-      className="h-5 gap-1 border-amber-500/45 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300"
-      title={`Last applied ${last}`}
-    >
-      <Sparkles className="h-2.5 w-2.5 text-amber-500" />
-      Applied {stat.applied_count}×{stat.last_applied_at ? ` · ${last}` : ""}
-    </Badge>
   );
 }
 

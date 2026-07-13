@@ -17,7 +17,7 @@ import {
   FileText,
 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
-import { HostBadge } from "@/components/common/host-badge";
+import { LearningHostProvenance } from "@/components/common/host-badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { DeleteLearningDangerZone } from "@/components/common/delete-learning-danger-zone";
 import { Button } from "@/components/ui/button";
@@ -26,11 +26,11 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { reflexio } from "@/lib/reflexio-client";
 import { formatTimestamp, truncateId } from "@/lib/format";
-import { hostsByRequestId } from "@/lib/host-attribution";
+import { useRequestHostAttribution } from "@/lib/host-attribution";
 import { cn } from "@/lib/utils";
 import { statusLabel } from "@/lib/status";
 import type { StatusLabel } from "@/lib/status";
-import type { Host, SessionSummary, UserPlaybook } from "@/lib/types";
+import type { UserPlaybook } from "@/lib/types";
 
 type FormState = { content: string; trigger: string; rationale: string };
 
@@ -57,10 +57,6 @@ export default function ProjectSkillDetailPage({
   const router = useRouter();
 
   const [playbook, setPlaybook] = useState<UserPlaybook | null>(null);
-  const [sourceAttribution, setSourceAttribution] = useState<{
-    host: Host | null;
-    unavailable: boolean;
-  } | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -71,17 +67,10 @@ export default function ProjectSkillDetailPage({
     trigger: "",
     rationale: "",
   });
+  const attribution = useRequestHostAttribution();
 
   useEffect(() => {
     let cancelled = false;
-    const sessionsRequest = fetch("/api/sessions", { cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`sessions ${response.status}`);
-        const data = await response.json();
-        return (data.sessions ?? []) as SessionSummary[];
-      })
-      .catch(() => null);
-
     reflexio
       .getUserPlaybooks({})
       .then((res) => {
@@ -95,18 +84,6 @@ export default function ProjectSkillDetailPage({
         }
         setPlaybook(found);
         setForm(toForm(found));
-        setSourceAttribution(null);
-        void sessionsRequest.then((sessions) => {
-          if (cancelled) return;
-          if (sessions === null) {
-            setSourceAttribution({ host: null, unavailable: true });
-            return;
-          }
-          setSourceAttribution({
-            host: hostsByRequestId(sessions).get(found.request_id) ?? null,
-            unavailable: false,
-          });
-        });
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -371,20 +348,14 @@ export default function ProjectSkillDetailPage({
                       display={truncateId(playbook.request_id, 8, 4)}
                     />
                   )}
-                  {sourceAttribution && (
+                  {attribution && (
                     <Meta
                       label="Origin"
                       value={
-                        sourceAttribution.unavailable ? (
-                          <span className="text-muted-foreground">
-                            Unavailable
-                          </span>
-                        ) : (
-                          <HostBadge
-                            host={sourceAttribution.host}
-                            display="provenance"
-                          />
-                        )
+                        <LearningHostProvenance
+                          attribution={attribution}
+                          requestId={playbook.request_id}
+                        />
                       }
                     />
                   )}
