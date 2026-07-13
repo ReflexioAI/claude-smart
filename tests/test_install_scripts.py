@@ -1076,7 +1076,8 @@ def test_node_install_reads_managed_env_and_bootstraps_latest_cache(
 
     old_root = cache_root / "0.2.31"
     new_root = cache_root / "0.2.32"
-    shutil.copytree(REPO_ROOT / "plugin" / "vendor", new_root / "vendor")
+    # No vendor payload needed: neither cached version matches this package's
+    # version, and the cache repair only ever inspects its own version's dir.
     old_mtime = new_root.stat().st_mtime + 100
     os.utime(old_root, (old_mtime, old_mtime))
 
@@ -1140,7 +1141,14 @@ def test_npx_install_reads_managed_env(tmp_path: Path) -> None:
         '[ "$REFLEXIO_API_KEY" = "rflx-test-secret" ] || exit 42\n'
     )
     install.chmod(install.stat().st_mode | stat.S_IXUSR)
-    shutil.copytree(REPO_ROOT / "plugin" / "vendor", cache_root / "vendor")
+    # This cache dir matches the package version, so the repair inspects it.
+    # Give it the same vendor payload the source has, so it is seen as healthy
+    # and no reinstall is triggered. plugin/vendor is a pack-time artifact: when
+    # the checkout has none, the repair is skipped anyway and there is nothing
+    # to mirror.
+    repo_vendor = REPO_ROOT / "plugin" / "vendor"
+    if repo_vendor.is_dir():
+        shutil.copytree(repo_vendor, cache_root / "vendor")
 
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
@@ -4672,6 +4680,12 @@ def test_claude_code_fresh_tarball_install_prepares_matching_cache(
     node = shutil.which("node")
     if not node or not shutil.which("npm"):
         pytest.skip("node and npm are required for package install smoke tests")
+    if not (REPO_ROOT / "plugin" / "vendor" / "reflexio").is_dir():
+        # A tarball packed from an unvendored checkout is not a release
+        # artifact: it installs a plugin with no Reflexio runtime, whose backend
+        # cannot start, and Setup rejects it by design. Vendor first (CI does;
+        # locally run `make package`) to smoke-test what users actually install.
+        pytest.skip("plugin/vendor/reflexio is required; run `make package` first")
 
     tarball = _pack_claude_smart_tarball(tmp_path)
     home = tmp_path / "home"

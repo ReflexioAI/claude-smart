@@ -53,6 +53,20 @@ jobs:
       - name: Install test dependencies
         run: uv sync --project plugin --group dev --python 3.12 --locked
 
+      # plugin/vendor/reflexio is a pack-time artifact and is gitignored, so a
+      # fresh checkout has none. The install-flow tests need it: a tarball
+      # without the vendored runtime installs a plugin whose backend cannot
+      # start, which Setup now correctly rejects. Vendor the locked commit so
+      # those tests exercise what users actually receive.
+      - name: Vendor locked Reflexio (install-flow tests need the release bundle)
+        run: |
+          repo=$(python3 -c "import json;print(json.load(open('reflexio.lock.json'))['repo'])")
+          commit=$(python3 -c "import json;print(json.load(open('reflexio.lock.json'))['commit'])")
+          git clone --quiet "$repo" "$RUNNER_TEMP/reflexio-src"
+          git -C "$RUNNER_TEMP/reflexio-src" checkout --quiet "$commit"
+          python3 scripts/vendor-reflexio.py \
+            --reflexio-path "$RUNNER_TEMP/reflexio-src" --bundle-only --write
+
       - name: Run pytest suite
         run: uv --project plugin run pytest tests -q
 
