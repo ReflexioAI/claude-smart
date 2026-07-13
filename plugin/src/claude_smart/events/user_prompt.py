@@ -9,17 +9,9 @@ Two responsibilities, in order:
    skills and emit the top hits as ``hookSpecificOutput.additionalContext``
    so Claude sees relevant rules before planning the response.
 
-The PreToolUse hook does similar retrieval keyed to tool-call text; this
-hook covers the gap where a prompt-only turn (e.g. a question answered
-from context without edits) never fires PreToolUse and so would otherwise
-see no injected context at all. The shared pipeline lives in
-``context_inject.emit_context``.
-
 Retrieval is best-effort: any failure from search (reflexio unreachable,
 HTTP timeout, unexpected shape) is caught so the buffered-prompt
-behaviour is always preserved. PreToolUse does not wrap — a tool-call
-injection failure is invisible to the user, whereas a failed user-turn
-would silently lose the prompt.
+behaviour is always preserved.
 """
 
 from __future__ import annotations

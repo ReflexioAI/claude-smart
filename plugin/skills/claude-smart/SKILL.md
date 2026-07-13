@@ -3,13 +3,22 @@ name: claude-smart
 description: Codex-only — use when the user asks to run claude-smart commands in Codex, including claude-smart show, learn, restart, dashboard, clear-all, or slash-like requests such as /claude-smart:learn. In Claude Code the native plugin slash commands handle these; do not invoke this skill there.
 ---
 
-# claude-smart Commands In Codex
+# claude-smart In Codex
 
 Codex does not currently support plugin-provided slash commands. When the user
 asks for a claude-smart command, run the equivalent shell command through the
 active plugin root. This skill is Codex-specific; under Claude Code the native
 `/claude-smart:*` slash commands already exist, so do not fall back to the
 shell commands there.
+
+## Learning Search
+
+Before non-trivial coding, debugging, planning, or repository work, use the
+`search_learnings` MCP tool when it is available. Rewrite the query to describe
+the actual task or execution path you need help with, and pass the active
+repo/workspace absolute path as `cwd` so project-scoped memory is searched.
+Skip this only for trivial one-shot questions. If the tool is unavailable,
+continue with the automatic hook-injected context.
 
 ## Command Map
 

@@ -53,6 +53,8 @@
     "plugin",
     "!plugin/**/__pycache__",
     "!plugin/**/*.py[cod]",
+    "!plugin/.coverage",
+    "!plugin/htmlcov",
     "!plugin/**/.pytest_cache",
     "!plugin/**/.ruff_cache",
     "!plugin/**/.mypy_cache",

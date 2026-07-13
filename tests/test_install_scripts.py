@@ -1086,6 +1086,20 @@ def test_node_install_reads_managed_env_and_bootstraps_latest_cache(
         '#!/bin/sh\nprintf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\nexit 0\n'
     )
     claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
+    bash = fake_bin / "bash"
+    bash.write_text(
+        "#!/bin/sh\n"
+        'printf \'bash %s\\n\' "$*" >> "$HOME/bash.log"\n'
+        'case "$1" in\n'
+        '  */smart-install.sh)\n'
+        '    [ "$CLAUDE_SMART_MANAGED_SETUP" = "1" ] || exit 41\n'
+        '    [ "$REFLEXIO_API_KEY" = "rflx-test-secret" ] || exit 42\n'
+        '    printf "bootstrapped %s\\n" "$PWD"\n'
+        "    ;;\n"
+        "esac\n"
+        "exit 0\n"
+    )
+    bash.chmod(bash.stat().st_mode | stat.S_IXUSR)
     env = _isolated_env(tmp_path)
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env_path = tmp_path / ".reflexio" / ".env"
@@ -1104,12 +1118,14 @@ def test_node_install_reads_managed_env_and_bootstraps_latest_cache(
 
     assert result.returncode == 0, result.stderr
     assert "Using managed Reflexio" in result.stdout
-    assert f"Prepared claude-smart runtime at {new_root}" in result.stdout
+    package_info = json.loads((REPO_ROOT / "package.json").read_text())
+    package_root = cache_root / package_info["version"]
+    assert f"Prepared claude-smart runtime at {package_root}" in result.stdout
     env_text = env_path.read_text()
     assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in env_text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in env_text
     assert "REFLEXIO_USER_ID=" not in env_text
-    assert (tmp_path / ".reflexio" / "plugin-root").resolve() == new_root
+    assert (tmp_path / ".reflexio" / "plugin-root").resolve() == package_root
 
 
 def test_npx_install_reads_managed_env(tmp_path: Path) -> None:
@@ -1145,6 +1161,18 @@ def test_npx_install_reads_managed_env(tmp_path: Path) -> None:
     claude = fake_bin / "claude"
     claude.write_text("#!/bin/sh\nexit 0\n")
     claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
+    bash = fake_bin / "bash"
+    bash.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        '  */smart-install.sh)\n'
+        '    [ "$CLAUDE_SMART_MANAGED_SETUP" = "1" ] || exit 41\n'
+        '    [ "$REFLEXIO_API_KEY" = "rflx-test-secret" ] || exit 42\n'
+        "    ;;\n"
+        "esac\n"
+        "exit 0\n"
+    )
+    bash.chmod(bash.stat().st_mode | stat.S_IXUSR)
 
     pack_dir = tmp_path / "pack"
     pack_dir.mkdir()
@@ -1281,12 +1309,333 @@ def test_node_update_retries_install_after_uninstall(tmp_path: Path) -> None:
     assert "retrying after uninstalling claude-smart@reflexioai" in result.stderr
     assert (tmp_path / "install-count").read_text().strip() == "2"
     claude_log = (tmp_path / "claude.log").read_text().splitlines()
-    assert claude_log == [
+    assert claude_log[:4] == [
         f"claude plugin marketplace add {REPO_ROOT}",
         "claude plugin install claude-smart@reflexioai",
         "claude plugin uninstall claude-smart@reflexioai",
         "claude plugin install claude-smart@reflexioai",
     ]
+    assert claude_log[4] == "claude mcp remove learnings --scope user"
+    assert claude_log[5].startswith(
+        "claude mcp add-json --scope user learnings "
+    )
+
+
+def test_node_install_refreshes_claude_cache_and_registers_learnings_mcp(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    claude = fake_bin / "claude"
+    claude.write_text(_fake_claude_install_script())
+    claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
+    bash = fake_bin / "bash"
+    bash.write_text(
+        '#!/bin/sh\nprintf \'bash %s\\n\' "$*" >> "$HOME/bash.log"\nexit 0\n'
+    )
+    bash.chmod(bash.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "install"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    package_info = json.loads((REPO_ROOT / "package.json").read_text())
+    cache_root = (
+        tmp_path
+        / ".claude"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / package_info["version"]
+    )
+    assert (cache_root / "scripts" / "mcp-server.sh").is_file()
+    assert (cache_root / "src" / "claude_smart" / "mcp_server.py").is_file()
+    assert (cache_root / "src" / "claude_smart" / "learnings_search.py").is_file()
+    assert (tmp_path / ".reflexio" / "plugin-root").resolve() == cache_root
+    cached_mcp = json.loads((cache_root / ".mcp.json").read_text())
+    cached_server = cached_mcp["mcpServers"]["learnings"]
+    assert cached_server["command"] == str(bash)
+    assert "CLAUDE_SMART_BASH=$_B" in " ".join(cached_server["args"])
+
+    claude_log = (tmp_path / "claude.log").read_text()
+    assert f"claude plugin marketplace add {REPO_ROOT}" in claude_log
+    assert "claude plugin install claude-smart@reflexioai" in claude_log
+    assert "claude mcp remove learnings --scope user" in claude_log
+    assert "claude mcp add-json --scope user learnings " in claude_log
+    assert "mcp-server.sh" in claude_log
+    assert "search_learnings MCP tool" in result.stdout
+
+    install_log = (tmp_path / ".claude-smart" / "install.log").read_text()
+    assert "installed Claude Code plugin cache from local package" in install_log
+    assert "registered Claude Code learnings MCP" in install_log
+
+
+def test_node_claude_mcp_config_uses_git_bash_on_windows(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+
+    system32 = tmp_path / "Windows" / "System32"
+    git_bin = tmp_path / "Git" / "bin"
+    system32.mkdir(parents=True)
+    git_bin.mkdir(parents=True)
+    system_bash = system32 / "bash.exe"
+    git_bash = git_bin / "bash.exe"
+    for bash in (system_bash, git_bash):
+        bash.write_text("#!/bin/sh\nexit 0\n")
+        bash.chmod(bash.stat().st_mode | stat.S_IXUSR)
+
+    script = (
+        "process.env.CLAUDE_SMART_TEST_PLATFORM = 'win32';"
+        f"process.env.PATH = {json.dumps(str(system32) + ';' + str(git_bin))};"
+        f"const mod = require({json.dumps(str(NODE_INSTALLER))});"
+        "const config = mod.claudeCodeLearningsMcpConfig("
+        r"'C:\\Users\\Yi Lu\\.claude\\plugins\\cache\\reflexioai\\claude-smart\\0.2.49'"
+        ");"
+        "console.log(JSON.stringify(config));"
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    config = json.loads(result.stdout)
+    assert config["command"] == str(git_bash)
+    command = " ".join(config["args"])
+    assert str(system_bash) not in command
+    assert "C:/Users/Yi Lu/.claude/plugins/cache/reflexioai/claude-smart/0.2.49" in command
+    assert "CLAUDE_SMART_BASH=$_B" in command
+
+
+def test_mcp_server_redirects_unprepared_root_to_prepared_cache(
+    tmp_path: Path,
+) -> None:
+    global_root = tmp_path / "npm-global" / "lib" / "node_modules" / "claude-smart" / "plugin"
+    prepared_root = (
+        tmp_path
+        / ".claude"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.49"
+    )
+    for root in (global_root, prepared_root):
+        scripts = root / "scripts"
+        scripts.mkdir(parents=True)
+        shutil.copy2(REPO_ROOT / "plugin" / "scripts" / "mcp-server.sh", scripts / "mcp-server.sh")
+        shutil.copy2(LIB, scripts / "_lib.sh")
+        (root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+
+    python = prepared_root / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$HOME/python.log"\n'
+        "exit 0\n"
+    )
+    python.chmod(python.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS"] = "0"
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(global_root / "scripts" / "mcp-server.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "redirecting MCP server from unprepared plugin root" in result.stderr
+    assert str(prepared_root) in result.stderr
+    assert "-m claude_smart.mcp_server" in (tmp_path / "python.log").read_text()
+
+
+def test_mcp_server_uses_plugin_root_txt_fallback_for_prepared_cache(
+    tmp_path: Path,
+) -> None:
+    global_root = tmp_path / "npm-global" / "lib" / "node_modules" / "claude-smart" / "plugin"
+    prepared_root = tmp_path / "prepared-cache"
+    for root in (global_root, prepared_root):
+        scripts = root / "scripts"
+        scripts.mkdir(parents=True)
+        shutil.copy2(REPO_ROOT / "plugin" / "scripts" / "mcp-server.sh", scripts / "mcp-server.sh")
+        shutil.copy2(LIB, scripts / "_lib.sh")
+        (root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+
+    python = prepared_root / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$HOME/python.log"\n'
+        "exit 0\n"
+    )
+    python.chmod(python.stat().st_mode | stat.S_IXUSR)
+    reflexio = tmp_path / ".reflexio"
+    reflexio.mkdir()
+    (reflexio / "plugin-root.txt").write_text(str(prepared_root))
+
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS"] = "0"
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(global_root / "scripts" / "mcp-server.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert str(prepared_root) in result.stderr
+    assert "-m claude_smart.mcp_server" in (tmp_path / "python.log").read_text()
+
+
+def test_mcp_server_runs_prepared_root_directly(tmp_path: Path) -> None:
+    prepared_root = (
+        tmp_path
+        / ".claude"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.49"
+    )
+    scripts = prepared_root / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "plugin" / "scripts" / "mcp-server.sh", scripts / "mcp-server.sh")
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    (prepared_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+
+    python = prepared_root / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$HOME/python.log"\n'
+        "exit 0\n"
+    )
+    python.chmod(python.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS"] = "0"
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(scripts / "mcp-server.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "redirecting MCP server" not in result.stderr
+    assert "-m claude_smart.mcp_server" in (tmp_path / "python.log").read_text()
+
+
+def test_mcp_server_fails_loud_without_any_prepared_venv(tmp_path: Path) -> None:
+    root = tmp_path / "unprepared-plugin"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "plugin" / "scripts" / "mcp-server.sh", scripts / "mcp-server.sh")
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    (root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS"] = "0"
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(scripts / "mcp-server.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "MCP server cannot start" in result.stderr
+
+
+def test_node_uninstall_removes_learnings_mcp_registration(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    claude = fake_bin / "claude"
+    claude.write_text(_fake_claude_install_script())
+    claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
+    bash = fake_bin / "bash"
+    bash.write_text(
+        '#!/bin/sh\nprintf \'bash %s\\n\' "$*" >> "$HOME/bash.log"\nexit 0\n'
+    )
+    bash.chmod(bash.stat().st_mode | stat.S_IXUSR)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "uninstall"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    claude_log = (tmp_path / "claude.log").read_text().splitlines()
+    uninstall_index = claude_log.index("claude plugin uninstall claude-smart@reflexioai")
+    assert "claude mcp remove learnings --scope user" in claude_log[uninstall_index:]
+
+
+def test_npm_pack_ignore_scripts_includes_learnings_mcp_files(
+    tmp_path: Path,
+) -> None:
+    npm = shutil.which("npm")
+    if not npm:
+        pytest.skip("npm is required for npm pack test")
+
+    result = subprocess.run(
+        [
+            npm,
+            "pack",
+            "--ignore-scripts",
+            "--dry-run",
+            "--json",
+            "--pack-destination",
+            str(tmp_path),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    packed = json.loads(result.stdout)[0]
+    files = {entry["path"] for entry in packed["files"]}
+    assert "plugin/.mcp.json" in files
+    assert "plugin/hooks/codex-mcp.json" in files
+    assert "plugin/scripts/mcp-server.sh" in files
+    assert "plugin/src/claude_smart/mcp_server.py" in files
+    assert "plugin/src/claude_smart/learnings_search.py" in files
+    assert "plugin/.coverage" not in files
+    assert not any(path.startswith("plugin/htmlcov/") for path in files)
 
 
 def test_dashboard_service_loads_reflexio_env_for_managed_proxy() -> None:
@@ -4392,6 +4741,19 @@ def test_package_tarball_ships_fresh_uv_lock(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_package_tarball_ships_mcp_data_plane_files(tmp_path: Path) -> None:
+    tarball = _pack_claude_smart_tarball(tmp_path)
+
+    with tarfile.open(tarball) as archive:
+        names = set(archive.getnames())
+
+    assert "package/plugin/.mcp.json" in names
+    assert "package/plugin/hooks/codex-mcp.json" in names
+    assert "package/plugin/scripts/mcp-server.sh" in names
+    assert "package/plugin/src/claude_smart/mcp_server.py" in names
+    assert "package/plugin/src/claude_smart/learnings_search.py" in names
 
 
 def test_opencode_fresh_tarball_install_uses_local_file_plugin(

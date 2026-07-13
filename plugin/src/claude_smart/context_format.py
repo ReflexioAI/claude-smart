@@ -197,6 +197,73 @@ def render_inline_with_registry(
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
 
 
+def render_learnings_plain(
+    *,
+    project_id: str,
+    user_playbooks: Iterable[Any],
+    agent_playbooks: Iterable[Any],
+    profiles: Iterable[Any],
+) -> str:
+    """Render skills + preferences for model-requested (MCP) search results.
+
+    Unlike ``render_inline_with_registry`` this emits no ``[cs:…]`` ids, no
+    rank-based ``/rules/`` URLs, and no citation instruction: MCP tool output
+    never reaches the per-session citation registry (the MCP server has no
+    ``session_id``), so rank ids emitted here could never be resolved by the
+    Stop hook. Dashboard links use the stable real-id routes instead.
+
+    Args:
+        project_id (str): Reserved for future use; currently unused.
+        user_playbooks (Iterable[Any]): Relevance-ranked project-scoped hits.
+        agent_playbooks (Iterable[Any]): Relevance-ranked global hits.
+        profiles (Iterable[Any]): Relevance-ranked preference hits.
+
+    Returns:
+        str: Markdown with ``### Relevant project-specific skills`` and/or
+            ``### Relevant project preferences`` sub-sections, or ``""``
+            when all inputs are empty.
+    """
+    del project_id  # kept for symmetry with ``render_inline_with_registry``.
+    skill_lines: list[str] = []
+    for playbooks, id_field, source_kind in (
+        (agent_playbooks, "agent_playbook_id", "agent_playbook"),
+        (user_playbooks, "user_playbook_id", "user_playbook"),
+    ):
+        for pb in playbooks:
+            content = _first_nonempty(_field(pb, "content"))
+            if not content:
+                continue
+            bullet = f"- {content}"
+            if trigger := _first_nonempty(_field(pb, "trigger")):
+                bullet += f" _(when: {trigger})_"
+            if rationale := _first_nonempty(_field(pb, "rationale")):
+                bullet += f" — *why:* {rationale}"
+            if url := _dashboard_url("playbook", _field(pb, id_field), source_kind):
+                bullet += f" _(open: {url})_"
+            skill_lines.append(bullet)
+
+    profile_lines: list[str] = []
+    for p in profiles:
+        content = _first_nonempty(_field(p, "content"))
+        if not content:
+            continue
+        bullet = f"- {content}"
+        if url := _dashboard_url("profile", _field(p, "profile_id")):
+            bullet += f" _(open: {url})_"
+        profile_lines.append(bullet)
+
+    if not skill_lines and not profile_lines:
+        return ""
+    sections: list[str] = []
+    if skill_lines:
+        sections.append("### Relevant project-specific skills")
+        sections.extend(skill_lines)
+    if profile_lines:
+        sections.append("### Relevant project preferences")
+        sections.extend(profile_lines)
+    return "\n".join(sections) + "\n"
+
+
 def render_inline_compact_with_registry(
     *,
     project_id: str,
