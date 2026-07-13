@@ -57,8 +57,10 @@ export default function ProjectSkillDetailPage({
   const router = useRouter();
 
   const [playbook, setPlaybook] = useState<UserPlaybook | null>(null);
-  const [sourceHost, setSourceHost] = useState<Host | null>(null);
-  const [sourceUnavailable, setSourceUnavailable] = useState(false);
+  const [sourceAttribution, setSourceAttribution] = useState<{
+    host: Host | null;
+    unavailable: boolean;
+  } | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -72,17 +74,17 @@ export default function ProjectSkillDetailPage({
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      reflexio.getUserPlaybooks({}),
-      fetch("/api/sessions", { cache: "no-store" })
-        .then(async (response) => {
-          if (!response.ok) throw new Error(`sessions ${response.status}`);
-          const data = await response.json();
-          return (data.sessions ?? []) as SessionSummary[];
-        })
-        .catch(() => null),
-    ])
-      .then(([res, sessions]) => {
+    const sessionsRequest = fetch("/api/sessions", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`sessions ${response.status}`);
+        const data = await response.json();
+        return (data.sessions ?? []) as SessionSummary[];
+      })
+      .catch(() => null);
+
+    reflexio
+      .getUserPlaybooks({})
+      .then((res) => {
         if (cancelled) return;
         const found = (res.user_playbooks ?? []).find(
           (p) => String(p.user_playbook_id) === id,
@@ -93,13 +95,18 @@ export default function ProjectSkillDetailPage({
         }
         setPlaybook(found);
         setForm(toForm(found));
-        if (sessions === null) {
-          setSourceHost(null);
-          setSourceUnavailable(true);
-        } else {
-          setSourceUnavailable(false);
-          setSourceHost(hostsByRequestId(sessions).get(found.request_id) ?? null);
-        }
+        setSourceAttribution(null);
+        void sessionsRequest.then((sessions) => {
+          if (cancelled) return;
+          if (sessions === null) {
+            setSourceAttribution({ host: null, unavailable: true });
+            return;
+          }
+          setSourceAttribution({
+            host: hostsByRequestId(sessions).get(found.request_id) ?? null,
+            unavailable: false,
+          });
+        });
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -364,16 +371,23 @@ export default function ProjectSkillDetailPage({
                       display={truncateId(playbook.request_id, 8, 4)}
                     />
                   )}
-                  <Meta
-                    label="Origin"
-                    value={
-                      sourceUnavailable ? (
-                        <span className="text-muted-foreground">Unavailable</span>
-                      ) : (
-                        <HostBadge host={sourceHost} display="provenance" />
-                      )
-                    }
-                  />
+                  {sourceAttribution && (
+                    <Meta
+                      label="Origin"
+                      value={
+                        sourceAttribution.unavailable ? (
+                          <span className="text-muted-foreground">
+                            Unavailable
+                          </span>
+                        ) : (
+                          <HostBadge
+                            host={sourceAttribution.host}
+                            display="provenance"
+                          />
+                        )
+                      }
+                    />
+                  )}
                   {playbook.source && (
                     <Meta label="Integration" value={playbook.source} mono />
                   )}

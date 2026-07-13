@@ -26,9 +26,9 @@ const VALID_HOSTS: ReadonlySet<Host> = new Set([
   "unknown",
 ]);
 
-function normalizeHost(value: unknown): Host | null {
+function parseRecordedHost(value: unknown): Host | null {
   if (typeof value !== "string") return null;
-  return VALID_HOSTS.has(value as Host) ? (value as Host) : "unknown";
+  return VALID_HOSTS.has(value as Host) ? (value as Host) : null;
 }
 
 // Mirrors _TOOL_DATA_FIELD_MAX_LEN in plugin/src/claude_smart/state.py — we
@@ -311,7 +311,7 @@ function foldTurns(records: RawRecord[]): {
   for (let idx = 0; idx < records.length; idx++) {
     const rec = records[idx];
     if (host === null && rec.host !== undefined) {
-      host = normalizeHost(rec.host);
+      host = parseRecordedHost(rec.host);
     }
     if (typeof rec.request_id === "string" && rec.request_id) {
       requestIds.add(rec.request_id);

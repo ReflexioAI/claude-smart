@@ -300,18 +300,21 @@ def test_unpublished_slice_includes_truncated_tool_output() -> None:
     assert tools[1]["tool_data"] == {"input": {"command": "echo ok"}}
 
 
-def test_unpublished_slice_strips_cited_items(session_dir) -> None:
-    """``cited_items`` is local-only — never lands on the wire under that key."""
+def test_unpublished_slice_excludes_local_keys_from_wire_turns(session_dir) -> None:
+    """Raw host and cited_items keys never land in Reflexio wire turns."""
     records = [
-        {"role": "User", "content": "hi"},
+        {"role": "User", "content": "hi", "host": "codex"},
         {
             "role": "Assistant",
             "content": "ok",
+            "host": "codex",
             "cited_items": [{"id": "s1-ab12", "kind": "playbook", "title": "t"}],
         },
     ]
     _, turns = state.unpublished_slice(records)
-    assert "cited_items" not in turns[-1]
+    for turn in turns:
+        assert "host" not in turn
+        assert "cited_items" not in turn
 
 
 def test_unpublished_slice_maps_cited_items_to_citations() -> None:
