@@ -24,6 +24,26 @@ The default local semantic search uses `onnxruntime`, which loads Microsoft nati
 **Install reports `install-failed`.**
 `~/.claude-smart/install-failed` is reserved for core setup failures such as `uv` installation or `uv sync --locked --python 3.12`. Fix the reported issue, delete the marker, then restart Claude Code so Setup can retry. Dashboard-only issues should appear in `~/.claude-smart/dashboard-unavailable` instead.
 
+**Backend log repeats `bundled Reflexio import preflight failed`.**
+This means claude-smart was installed from the GitHub marketplace, whose
+checkout intentionally excludes the generated Reflexio runtime bundle. Current
+releases make that install impossible (`claude plugin marketplace add
+ReflexioAI/claude-smart` now fails with `Marketplace file not found`), but an
+install from an older release can still be in this state. Repair the cache from
+the packaged npm artifact:
+
+```bash
+npx claude-smart update
+```
+
+The installer replaces an incomplete cache for the version it is installing.
+Restart Claude Code afterward. Do not use `claude plugin marketplace add
+ReflexioAI/claude-smart`; use the npm command for installation and updates.
+
+`/claude-smart:restart` cannot repair this — it preflights the same missing
+bundle and deliberately leaves your running services alone rather than stopping
+a backend it cannot replace. Use `npx claude-smart update`.
+
 **Where are private install tools stored?**
 `uv` is installed into the standard Astral locations (`~/.local/bin` or `~/.cargo/bin`). The private dashboard runtime is at `~/.claude-smart/node/current`. Set `CLAUDE_SMART_NODE_LTS_MAJOR=22` to choose the Node LTS major used by the private bootstrap.
 

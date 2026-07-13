@@ -4,6 +4,8 @@
 # so the SessionStart hook doesn't block the session.
 #
 # Subcommands:
+#   preflight     verify that this plugin can import its bundled Reflexio
+#                 runtime without changing any running service.
 #   start         probe /health; if nothing we recognize is on the port,
 #                 spawn the prepared venv's `reflexio services start --only
 #                 backend --no-reload` detached. Polls /health briefly so first
@@ -136,14 +138,19 @@ claude_smart_trim_log_file "$LOG_FILE" "$LOG_MAX_BYTES"
 
 emit_ok() { claude_smart_emit_continue; }
 
+# Reason string for a failed bundled-Reflexio preflight. Shared by every site
+# that reports it so the remedy text in emit_start_failure stays in sync.
+VENDOR_PREFLIGHT_FAILURE="bundled Reflexio import preflight failed"
+
 emit_start_failure() {
   reason="$1"
   if py=$(claude_smart_resolve_python 2>/dev/null); then
-    "$py" - "$reason" <<'PY'
+    "$py" - "$reason" "$VENDOR_PREFLIGHT_FAILURE" <<'PY'
 import json
 import sys
 
 reason = sys.argv[1].strip()
+vendor_preflight_failure = sys.argv[2]
 message = (
     "> **claude-smart learning backend is not running.** "
     "Interactions are being buffered locally, but learning will not publish "
@@ -151,11 +158,19 @@ message = (
 )
 if reason:
     message += f">\n> Last startup error: `{reason}`\n"
-message += (
-    ">\n> Make sure the local model provider is available: Claude Code needs "
-    "`claude`, Codex needs `codex`, and OpenCode needs `opencode`. "
-    "Then run `/claude-smart:restart`."
-)
+if reason == vendor_preflight_failure:
+    # /claude-smart:restart cannot repair this: the bundled Reflexio runtime
+    # only ships in the npm artifact, so the cache has to be replaced.
+    message += (
+        ">\n> The bundled Reflexio runtime is missing or unusable. Repair it "
+        "with `npx claude-smart update`, then restart Claude Code."
+    )
+else:
+    message += (
+        ">\n> Make sure the local model provider is available: Claude Code needs "
+        "`claude`, Codex needs `codex`, and OpenCode needs `opencode`. "
+        "Then run `/claude-smart:restart`."
+    )
 print(json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "SessionStart",
@@ -562,6 +577,31 @@ except ValueError:
 PY
 }
 
+prepare_backend_import_context() {
+  backend_pythonpath="${PYTHONPATH:-}"
+  if [ -d "$VENDORED_REFLEXIO/reflexio" ]; then
+    vendor_pythonpath="$VENDORED_REFLEXIO"
+    pythonpath_sep=":"
+    if claude_smart_is_windows; then
+      # Native Windows Python expects ;-separated Windows-style paths in
+      # PYTHONPATH; MSYS does not auto-convert arbitrary env vars.
+      pythonpath_sep=";"
+      vendor_pythonpath="$VENDORED_REFLEXIO_FOR_PYTHON"
+    fi
+    backend_pythonpath="$vendor_pythonpath${backend_pythonpath:+$pythonpath_sep$backend_pythonpath}"
+  fi
+  backend_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
+}
+
+# Repair the vendored install if its version drifted, then prove this plugin
+# can import its own bundled Reflexio. Callers run this before any action that
+# would stop or replace a running service.
+preflight_bundled_reflexio_runtime() {
+  ensure_vendored_reflexio_active || return 1
+  prepare_backend_import_context
+  verify_bundled_reflexio_import "$backend_python" "$backend_pythonpath" "$VENDORED_REFLEXIO_FOR_PYTHON"
+}
+
 # True only if the recorded PID is alive, /health responds, and the listener
 # process is using this package's bundled Reflexio import path.
 is_our_backend_running() {
@@ -778,6 +818,19 @@ full_stop() {
 }
 
 case "$CMD" in
+  preflight)
+    if claude_smart_reflexio_url_is_remote \
+      || [ "${CLAUDE_SMART_BACKEND_AUTOSTART:-1}" = "0" ]; then
+      exit 0
+    fi
+    if ! preflight_bundled_reflexio_runtime; then
+      echo "claude-smart backend preflight failed ($VENDOR_PREFLIGHT_FAILURE);" \
+        "existing services were not changed" >&2
+      echo "Repair the bundled runtime with: npx claude-smart update" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
   start)
     if claude_smart_is_internal_invocation_env; then
       emit_ok; exit 0
@@ -828,6 +881,28 @@ case "$CMD" in
         "[claude-smart] backend: recorded backend process is still running but not healthy yet; skipping duplicate start"
       emit_ok; exit 0
     fi
+    # Everything above only accepts an existing healthy backend; everything
+    # below stops or replaces one. The bundled-runtime checks sit on that
+    # boundary: if this plugin cannot run its own backend, report that without
+    # tearing down a backend that is currently serving.
+    if ! command -v uv >/dev/null 2>&1; then
+      if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
+        claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: uv not on PATH; starting installer in background"
+        CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+          bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
+          >>"$STATE_DIR/install.log" 2>&1 || true
+      fi
+      if ! command -v uv >/dev/null 2>&1; then
+        claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: uv not on PATH; installer recovery scheduled; skipping"
+        emit_ok; exit 0
+      fi
+    fi
+    if ! preflight_bundled_reflexio_runtime; then
+      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
+        "[claude-smart] backend: $VENDOR_PREFLIGHT_FAILURE; existing services were not changed"
+      emit_start_failure "$VENDOR_PREFLIGHT_FAILURE"
+      exit 0
+    fi
     if recorded_backend_pid_alive; then
       claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
         "[claude-smart] backend: recorded backend process exceeded startup grace without health; restarting"
@@ -850,20 +925,7 @@ case "$CMD" in
       echo "Free port $PORT (or stop the process above) and run /claude-smart:restart again." >&2
       emit_ok; exit 0
     fi
-    if ! command -v uv >/dev/null 2>&1; then
-      if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
-        claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: uv not on PATH; starting installer in background"
-        CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
-          bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
-          >>"$STATE_DIR/install.log" 2>&1 || true
-      fi
-      if ! command -v uv >/dev/null 2>&1; then
-        claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: uv not on PATH; installer recovery scheduled; skipping"
-        emit_ok; exit 0
-      fi
-    fi
     cd "$PLUGIN_ROOT"
-    ensure_vendored_reflexio_active
 
     # Cap local interaction history to keep the SQLite store small for
     # claude-smart users. Reflexio's library defaults are much higher
@@ -887,19 +949,6 @@ case "$CMD" in
     # without touching the file on disk.
     export REFLEXIO_STORAGE="sqlite"
 
-    backend_pythonpath="${PYTHONPATH:-}"
-    if [ -d "$VENDORED_REFLEXIO/reflexio" ]; then
-      vendor_pythonpath="$VENDORED_REFLEXIO"
-      pythonpath_sep=":"
-      if claude_smart_is_windows; then
-        # Native Windows Python expects ;-separated Windows-style paths in
-        # PYTHONPATH; MSYS does not auto-convert arbitrary env vars.
-        pythonpath_sep=";"
-        vendor_pythonpath="$VENDORED_REFLEXIO_FOR_PYTHON"
-      fi
-      backend_pythonpath="$vendor_pythonpath${backend_pythonpath:+$pythonpath_sep$backend_pythonpath}"
-    fi
-
     # (nohup; no process groups). backend-log-runner.sh owns stdout/stderr
     # capture so process output cannot grow backend.log past its cap.
     #
@@ -911,13 +960,10 @@ case "$CMD" in
     # CLAUDE_SMART_BACKEND_WORKERS for power users running concurrent
     # Claude Code sessions or wanting zero-downtime recycling.
     workers="${CLAUDE_SMART_BACKEND_WORKERS:-1}"
-    backend_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
-    if ! verify_bundled_reflexio_import "$backend_python" "$backend_pythonpath" "$VENDORED_REFLEXIO_FOR_PYTHON"; then
-      reason="bundled Reflexio import preflight failed"
-      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: $reason"
-      emit_start_failure "$reason"
-      exit 0
-    fi
+    # Sets backend_python / backend_pythonpath for the spawn below. Already run
+    # by the preflight above; repeated here so the spawn does not depend on a
+    # side effect of an earlier, reorderable step.
+    prepare_backend_import_context
     # Record the spawned pid, not a pgid sampled with ps. On POSIX,
     # setsid/python os.setsid make this pid the new process group leader;
     # sampling immediately can race and capture the caller's pgid instead.

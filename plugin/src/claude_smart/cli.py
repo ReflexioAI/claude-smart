@@ -2185,6 +2185,20 @@ def cmd_restart(args: argparse.Namespace) -> int:
         return 0
 
     if do_backend:
+        # Preparing the replacement can reinstall the vendored Reflexio if its
+        # version drifted, so this both validates and repairs. It must succeed
+        # before we stop anything: a backend we cannot replace is better left
+        # running.
+        sys.stdout.write("Preparing reflexio backend replacement…\n")
+        preflight_rc = _run_service(_BACKEND_SCRIPT, "preflight")
+        if preflight_rc != 0:
+            sys.stderr.write(
+                "error: reflexio backend replacement failed preflight; "
+                "existing services were not changed.\n"
+                "Repair the bundled runtime with: npx claude-smart update\n"
+            )
+            return preflight_rc
+
         sys.stdout.write("Stopping reflexio backend…\n")
         _run_service(_BACKEND_SCRIPT, "stop")
     if do_dashboard:

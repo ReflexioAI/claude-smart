@@ -13,7 +13,9 @@ Internal notes for maintainers of `claude-smart`. End-user install instructions 
 | `bin/claude-smart.js` | Node wrapper so `npx claude-smart install` works |
 | `package.json` | npm manifest — ships `bin/`, marketplace metadata, `plugin/`, `README.md`, and `LICENSE` |
 | `plugin/.claude-plugin/plugin.json` | Plugin metadata read by Claude Code |
-| `.claude-plugin/marketplace.json` | Marketplace entry — `claude plugin marketplace add` reads this |
+| `.claude-plugin/marketplace.template.json` | Source of the marketplace entry, minus the version |
+| `.claude-plugin/marketplace.json` | Marketplace entry `claude plugin marketplace add` reads — **generated at pack time, gitignored** (see below) |
+| `scripts/generate-marketplace.js` | Builds the marketplace entry from the template + `package.json` version; runs via npm's `prepack` |
 | `reflexio.lock.json` | Reflexio provenance — records the PyPI baseline or generated vendor bundle commit |
 | `plugin/vendor/reflexio/` | Generated release-only Reflexio bundle for npm artifacts; gitignored, not committed |
 | `plugin/dashboard/` | Next.js management UI for interactions, preferences, skills, configuration |
@@ -99,14 +101,21 @@ Condensed install/uninstall commands live in the [README Quick Start](./README.m
 
 ### Claude Code
 
-`npx claude-smart install` registers the bundled package as a marketplace and installs the plugin. The manual marketplace equivalent:
+`npx claude-smart install` registers the bundled npm package as a local
+marketplace and installs the plugin.
 
-```bash
-claude plugin marketplace add ReflexioAI/claude-smart
-claude plugin install claude-smart@reflexioai
-```
+`ReflexioAI/claude-smart` cannot be installed as a GitHub marketplace: the
+generated `plugin/vendor/reflexio` runtime is gitignored and exists only in
+packaged npm artifacts, so the marketplace manifest is generated at pack time
+rather than committed (see [Versioning](#versioning)). `claude plugin
+marketplace add ReflexioAI/claude-smart` therefore fails with `Marketplace file
+not found` instead of installing a plugin whose backend can never start.
 
-If installed via the marketplace, uninstall with `claude plugin uninstall claude-smart@reflexioai` instead of `npx claude-smart uninstall`.
+For anyone already in that state from an earlier release, the npm installer
+repairs it: it detects a Claude cache for the version it is installing that is
+missing the vendor bundle and replaces it before preparing or restarting
+services. It only ever inspects the cache directory matching its own version —
+other cached versions vendor a different Reflexio and are left alone.
 
 ### Codex
 
@@ -187,12 +196,36 @@ mismatches in `claude plugin list` vs. `npm view claude-smart version`.
 | `plugin/pyproject.toml` | `project.version` |
 | `plugin/.claude-plugin/plugin.json` | `.version` |
 | `plugin/.codex-plugin/plugin.json` | `.version` |
-| `.claude-plugin/marketplace.json` | `.plugins[0].version` |
 | `package-lock.json` | root package version |
 | `plugin/uv.lock` | `claude-smart` package version |
 | `README.md` | version badge |
 
 Don't edit these by hand — use `make bump`.
+
+`.claude-plugin/marketplace.json` is deliberately absent from this table: it does
+not exist in the repo. It is generated at pack time by
+`scripts/generate-marketplace.js` (npm's `prepack` hook), which stamps it with
+`package.json`'s version — so it cannot drift, and there is nothing to bump.
+
+### Why the marketplace entry is generated, not committed
+
+The manifest is what makes a directory installable as a Claude Code marketplace.
+The plugin it advertises is **incomplete in git**: `plugin/vendor/reflexio` is
+generated at pack time and gitignored. If the manifest were committed,
+`claude plugin marketplace add ReflexioAI/claude-smart` would install a plugin
+with no Reflexio runtime — one that can never start its backend.
+
+With the manifest absent from the repo, that command fails immediately
+(`Marketplace file not found`), and the only way in is the npm package, which
+carries both the manifest and the vendor bundle. `npx claude-smart install`
+registers the npm package root as the marketplace, so the supported path is
+unaffected. As a backstop, `smart-install.sh` fails Setup outright if a host
+plugin cache (`*/plugins/cache/*`) is missing the vendor bundle, since that can
+only mean a GitHub-marketplace install.
+
+Local development is unaffected: the integration harness runs from the checkout
+without registering a marketplace, and a tarball install goes through
+`make package`, which generates both artifacts.
 
 ## Release flow
 
@@ -339,13 +372,17 @@ make publish-dry
 
 ### How users pick up the new release
 
-Once published, end users update to the latest version with either:
+Once published, end users update to the latest version with:
 
 ```bash
 npx claude-smart update
 ```
 
-Both wrap `claude plugin update claude-smart@reflexioai`. Users restart Claude Code to apply. Codex users rerun `npx claude-smart install --host codex`, then restart Codex after `/plugins` has upgraded the installed plugin.
+The command re-registers the bundled npm package, repairs an incomplete Claude
+cache for that version when necessary, and reinstalls the plugin. Users
+restart Claude Code to apply. Codex users rerun
+`npx claude-smart install --host codex`, then restart Codex after `/plugins` has
+upgraded the installed plugin.
 
 ## Pre-release checklist
 

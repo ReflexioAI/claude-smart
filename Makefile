@@ -23,9 +23,12 @@
         check-vendor-reflexio \
         check-locked-project-version check-standalone-lock relock unskip-worktree
 
+# .claude-plugin/marketplace.json is intentionally absent: it is generated at
+# pack time from package.json's version by scripts/generate-marketplace.js (via
+# npm's prepack hook), so there is nothing here to bump.
 VERSION_FILES := package.json plugin/pyproject.toml \
                  plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
-                 .claude-plugin/marketplace.json README.md
+                 README.md
 LOCK_FILES    := package-lock.json plugin/uv.lock reflexio.lock.json
 PYPROJECT     := plugin/pyproject.toml
 
@@ -100,14 +103,13 @@ relock: unskip-worktree ## Regenerate plugin/uv.lock as a standalone lockfile (r
 bump: check-version unskip-worktree ## Rewrite version in all release manifests
 	@echo "→ bumping to $(VERSION)"
 	@sed -i.bak -E 's/"version": "[^"]+"/"version": "$(VERSION)"/' \
-	    package.json plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
-	    .claude-plugin/marketplace.json
+	    package.json plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json
 	@sed -i.bak -E 's/^version = "[^"]+"/version = "$(VERSION)"/' plugin/pyproject.toml
 	@python3 -c 'import json, pathlib; p=pathlib.Path("package-lock.json"); data=json.loads(p.read_text()); data["version"]="$(VERSION)"; data["packages"][""]["version"]="$(VERSION)"; p.write_text(json.dumps(data, indent=2) + "\n")'
 	@sed -i.bak -E 's|badge/version-[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?-green\.svg|badge/version-$(VERSION)-green.svg|' README.md
 	@rm -f package.json.bak plugin/pyproject.toml.bak \
 	       plugin/.claude-plugin/plugin.json.bak plugin/.codex-plugin/plugin.json.bak \
-	       .claude-plugin/marketplace.json.bak README.md.bak
+	       README.md.bak
 	@echo "→ regenerating standalone plugin/uv.lock (resolves reflexio-ai from PyPI)"
 	@# plugin/ is a member of the enterprise uv workspace, so `uv lock --project
 	@# plugin` writes the PARENT lockfile and leaves plugin/uv.lock's dependency

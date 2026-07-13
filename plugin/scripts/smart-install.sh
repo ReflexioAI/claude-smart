@@ -149,7 +149,21 @@ install_vendored_reflexio() {
   local VENDORED_REFLEXIO PLUGIN_PYTHON
 
   VENDORED_REFLEXIO="$PLUGIN_ROOT/vendor/reflexio"
-  [ -f "$VENDORED_REFLEXIO/pyproject.toml" ] || return 0
+  if [ ! -f "$VENDORED_REFLEXIO/pyproject.toml" ]; then
+    # A host plugin cache (~/.claude/plugins/cache/..., ~/.codex/plugins/cache/...)
+    # is only ever populated from the npm package, which always carries the
+    # vendored runtime. Missing it there means the plugin was installed straight
+    # from the GitHub marketplace, where the bundle is gitignored — the backend
+    # could never start. Fail here, at Setup, rather than at first session.
+    case "$PLUGIN_ROOT" in
+      */plugins/cache/*)
+        write_failure "bundled Reflexio runtime is missing from $VENDORED_REFLEXIO. This happens when claude-smart is installed from the GitHub marketplace, which does not carry the generated runtime. Install with: npx claude-smart install"
+        ;;
+    esac
+    # A source checkout legitimately has no vendor bundle (it is generated at
+    # pack time); reflexio comes from the plugin venv instead.
+    return 0
+  fi
 
   if claude_smart_is_windows; then
     PLUGIN_PYTHON="$PLUGIN_ROOT/.venv/Scripts/python.exe"

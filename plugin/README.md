@@ -9,13 +9,14 @@ This directory is the Claude Code/Codex/OpenCode plugin payload shipped through 
 ### Claude Code
 
 ```bash
-claude plugin marketplace add ReflexioAI/claude-smart
-claude plugin install claude-smart@reflexioai
+npx claude-smart install
 ```
 
 The Setup hook bootstraps `uv`, Python 3.12, and a private Node.js/npm runtime
 under `~/.claude-smart/` when they are missing. If Node.js is already installed,
-`npx claude-smart install` is equivalent.
+the npm installer also supplies the generated Reflexio runtime bundle that is
+not committed to the GitHub repository. Installing this repository directly as
+a Claude Code marketplace is therefore unsupported.
 
 Add `--read-only` to either install command to skip hooks that publish
 interactions for learning.

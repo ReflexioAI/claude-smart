@@ -149,7 +149,7 @@ def test_restart_skips_rebuild_when_npm_missing(
     # stop backend, stop dashboard, start backend, start dashboard
     # (trailing status calls for the status-line are not part of the contract).
     lifecycle = [sub for _name, sub in service_calls if sub != "status"]
-    assert lifecycle == ["stop", "stop", "start", "start"]
+    assert lifecycle == ["preflight", "stop", "stop", "start", "start"]
     err = capsys.readouterr().err
     assert "npm not on PATH" in err
 
@@ -191,7 +191,7 @@ def test_restart_starts_backend_even_when_dashboard_build_fails(
         for name, sub in service_calls
         if name == "dashboard-service.sh" and sub != "status"
     ]
-    assert subs == ["stop", "start"]
+    assert subs == ["preflight", "stop", "start"]
     assert dash_subs == ["stop"]
     out = capsys.readouterr()
     assert "dashboard build failed" in out.err
@@ -233,7 +233,7 @@ def test_restart_starts_backend_when_dashboard_build_launch_fails(
         for name, sub in service_calls
         if name == "dashboard-service.sh" and sub != "status"
     ]
-    assert subs == ["stop", "start"]
+    assert subs == ["preflight", "stop", "start"]
     assert dash_subs == ["stop"]
     out = capsys.readouterr()
     assert "dashboard build failed" in out.err
@@ -245,6 +245,30 @@ def test_restart_no_rebuild_flag_skips_npm(fake_services) -> None:
     rc = cli.cmd_restart(_make_args(no_rebuild=True))
     assert rc == 0
     assert build_calls == []
+
+
+def test_restart_failed_backend_preflight_preserves_services(
+    fake_services, monkeypatch, capsys
+) -> None:
+    service_calls, build_calls = fake_services
+
+    def fake_run(cmd, cwd=None, check=False, capture_output=False, text=False):
+        argv = [str(c) for c in cmd]
+        if argv[-1] == "preflight":
+            service_calls.append(("backend-service.sh", "preflight"))
+            raise subprocess.CalledProcessError(1, argv)
+        raise AssertionError(f"unexpected command after failed preflight: {argv}")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    rc = cli.cmd_restart(_make_args())
+
+    assert rc == 1
+    assert service_calls == [("backend-service.sh", "preflight")]
+    assert build_calls == []
+    output = capsys.readouterr()
+    assert "existing services were not changed" in output.err
+    assert "Stopping" not in output.out
 
 
 def test_restart_uses_npm_ci_when_lockfile_exists(fake_services) -> None:

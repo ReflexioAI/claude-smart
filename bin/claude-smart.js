@@ -816,6 +816,66 @@ function fileSha256(path) {
   return crypto.createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+function claudeCodeCacheRoot() {
+  return join(homedir(), ".claude", "plugins", "cache", CODEX_MARKETPLACE_NAME, "claude-smart");
+}
+
+// Version of the plugin this npm package ships. The Claude Code cache is keyed
+// by this version, and each version vendors a different Reflexio — so the
+// vendor payload may only ever be compared against the cache dir for *this*
+// version. Comparing against some other version's cache reports a spurious
+// mismatch (its vendor legitimately differs) and would force a pointless
+// reinstall.
+function claudeCodePackageVersion(sourceRoot = join(PACKAGE_ROOT, "plugin")) {
+  try {
+    const manifest = JSON.parse(
+      readFileSync(join(sourceRoot, ".claude-plugin", "plugin.json"), "utf8"),
+    );
+    if (typeof manifest.version === "string" && manifest.version) return manifest.version;
+  } catch {
+    // Fall through to pyproject.toml.
+  }
+  try {
+    const match = readFileSync(join(sourceRoot, "pyproject.toml"), "utf8").match(
+      /^version\s*=\s*"([^"]+)"/m,
+    );
+    if (match) return match[1];
+  } catch {
+    // No readable version.
+  }
+  return null;
+}
+
+function claudeCodeVendorPayloadMismatch(
+  pluginRoot,
+  sourceRoot = join(PACKAGE_ROOT, "plugin"),
+) {
+  // A sentinel pair, not a full tree hash: it catches the failure this exists
+  // for (a cache with no vendor bundle at all, or one from a different build),
+  // not a vendor tree that is individually corrupt past these two files.
+  const vendorFiles = [
+    "vendor/reflexio/pyproject.toml",
+    "vendor/reflexio/reflexio/__init__.py",
+  ];
+  // A git checkout gitignores the generated vendor bundle, so a source tree
+  // without one is a dev install, not a broken cache. Nothing to compare.
+  const sourceHasVendor = vendorFiles.some((rel) =>
+    existsSync(join(sourceRoot, rel)),
+  );
+  if (!sourceHasVendor) return null;
+
+  for (const rel of vendorFiles) {
+    const source = join(sourceRoot, rel);
+    const cached = join(pluginRoot, rel);
+    if (!existsSync(source)) {
+      throw new Error(`installed claude-smart package is missing ${rel}`);
+    }
+    if (!existsSync(cached)) return rel;
+    if (fileSha256(source) !== fileSha256(cached)) return rel;
+  }
+  return null;
+}
+
 function verifyOpenCodePluginPackage(packageRoot) {
   const sourceScript = join(PACKAGE_ROOT, "plugin", "scripts", "smart-install.sh");
   const copiedScript = join(packageRoot, "plugin", "scripts", "smart-install.sh");
@@ -948,6 +1008,48 @@ async function bootstrapClaudeCodeInstall() {
     throw new Error(`smart-install.sh failed in ${pluginRoot}`);
   }
   throwIfInstallFailureMarker();
+  return pluginRoot;
+}
+
+async function refreshClaudeCodeCacheIfVendorMissing() {
+  const version = claudeCodePackageVersion();
+  if (!version) return null;
+  // Only ever inspect and repair the cache dir for the version we are
+  // installing. Other version dirs coexist in the cache and are not ours to
+  // judge — `findClaudeCodePluginRoot()` returns the highest one, which is a
+  // different plugin build whenever this package is a downgrade.
+  const pluginRoot = join(claudeCodeCacheRoot(), version);
+  if (!existsSync(pluginRoot)) return null;
+
+  const mismatch = claudeCodeVendorPayloadMismatch(pluginRoot);
+  if (!mismatch) return pluginRoot;
+
+  process.stderr.write(
+    `warning: cached claude-smart plugin is missing or has stale ${mismatch}; reinstalling from the bundled npm package.\n`,
+  );
+  let code = await runClaude(["plugin", "uninstall", PLUGIN_SPEC], {
+    spinnerLabel: "Removing stale claude-smart cache…",
+  });
+  if (code !== 0) {
+    throw new Error(`could not remove stale ${PLUGIN_SPEC} cache (exit ${code})`);
+  }
+  code = await runClaude(["plugin", "install", PLUGIN_SPEC], {
+    spinnerLabel: "Refreshing claude-smart cache…",
+  });
+  if (code !== 0) {
+    throw new Error(`could not reinstall ${PLUGIN_SPEC} from the bundled package (exit ${code})`);
+  }
+
+  if (!existsSync(pluginRoot)) {
+    throw new Error(`Claude Code did not recreate the claude-smart plugin cache at ${pluginRoot}`);
+  }
+  const remainingMismatch = claudeCodeVendorPayloadMismatch(pluginRoot);
+  if (remainingMismatch) {
+    throw new Error(
+      `refreshed claude-smart cache still does not match the bundled npm package: ${remainingMismatch}`,
+    );
+  }
+  process.stdout.write("Refreshed stale claude-smart plugin cache from the bundled npm package.\n");
   return pluginRoot;
 }
 
@@ -2181,6 +2283,7 @@ async function runInstall(args, options = {}) {
   }
 
   try {
+    await refreshClaudeCodeCacheIfVendorMissing();
     const pluginRoot = await bootstrapClaudeCodeInstall();
     restorePublishHooksFromSource(pluginRoot);
     if (readOnly) {
@@ -2492,6 +2595,8 @@ if (require.main === module) {
 module.exports = {
   assertSupportedRuntimePlatform,
   bootstrapPluginRuntime,
+  claudeCodePackageVersion,
+  claudeCodeVendorPayloadMismatch,
   codexMarketplacePluginRoot,
   copyCodexMarketplace,
   ensurePrivateNode,
