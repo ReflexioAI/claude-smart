@@ -126,9 +126,16 @@ spawn_dashboard() {
   fi
   cd "$DASHBOARD_DIR"
   export CLAUDE_SMART_DASHBOARD_WORKSPACE="$WORKSPACE_CWD"
-  # Invoke Next directly so custom DASHBOARD_PORT/PORT values are honored
-  # without relying on package.json's fixed start script.
-  CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached "$NEXT_BIN" start -p "$PORT" -H 127.0.0.1 >>"$LOG_FILE" 2>&1
+  # Run next-server under dashboard-supervise.sh so a later silent death (crash,
+  # or a macOS jetsam pressure-kill of next-server) self-heals within seconds
+  # instead of waiting for the next SessionStart hook to notice a dead marker.
+  # The supervisor is the detached session leader and is what we record in
+  # dashboard.pid, so `stop`'s process-group kill takes it and its next-server
+  # child down together — an intentional stop never triggers a respawn. Next is
+  # still invoked directly (inside the supervisor) so custom DASHBOARD_PORT/PORT
+  # values are honored without relying on package.json's fixed start script.
+  CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached \
+    bash "$HERE/dashboard-supervise.sh" "$NEXT_BIN" "$PORT" >>"$LOG_FILE" 2>&1
   dash_pid=$!
   echo "$dash_pid" > "$PID_FILE"
 }
@@ -214,28 +221,13 @@ case "$CMD" in
     fi
     if wait_for_dashboard_marker 5; then
       claude_smart_clear_dashboard_unavailable
-      emit_ok; exit 0
-    fi
-    if ! kill -0 "$dash_pid" 2>/dev/null; then
-      sleep 2
-      if port_occupied; then
-        if marker_responds; then
-          claude_smart_clear_dashboard_unavailable
-        else
-          claude_smart_write_dashboard_unavailable "dashboard process exited and port $PORT is now held by a non-claude-smart listener; see $LOG_FILE"
-        fi
-      else
-        echo "[claude-smart] dashboard: first start exited before readiness; retrying once" >>"$LOG_FILE"
-        if spawn_dashboard; then
-          if wait_for_dashboard_marker 5; then
-            claude_smart_clear_dashboard_unavailable
-          else
-            claude_smart_write_dashboard_unavailable "dashboard process spawned but did not respond on http://127.0.0.1:$PORT within 5s; see $LOG_FILE"
-          fi
-        fi
-      fi
     else
-      claude_smart_write_dashboard_unavailable "dashboard process spawned but did not respond on http://127.0.0.1:$PORT within 5s; see $LOG_FILE"
+      # next-server did not answer within 5s. The supervisor keeps retrying it
+      # in the background (bounded by its crash-loop guard), so surface a soft
+      # "unavailable" marker for now; a later SessionStart clears it once the
+      # marker responds. We do NOT re-spawn here — that would start a second
+      # supervisor racing for the port.
+      claude_smart_write_dashboard_unavailable "dashboard is still starting or did not respond on http://127.0.0.1:$PORT within 5s; see $LOG_FILE"
     fi
     emit_ok
     ;;

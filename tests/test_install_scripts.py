@@ -534,9 +534,11 @@ def test_detached_spawns_with_log_redirection_preserve_output_on_windows() -> No
         "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env "
         "CLAUDE_SMART_BOOTSTRAPPING=1"
     ) in dashboard
+    # The dashboard is now spawned under the respawn supervisor, but still with
+    # output preserved and redirected to the shared dashboard log.
+    assert "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached" in dashboard
     assert (
-        "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached "
-        '"$NEXT_BIN" start -p "$PORT" -H 127.0.0.1 >>"$LOG_FILE" 2>&1'
+        'bash "$HERE/dashboard-supervise.sh" "$NEXT_BIN" "$PORT" >>"$LOG_FILE" 2>&1'
         in dashboard
     )
 
@@ -5767,6 +5769,123 @@ def test_dashboard_build_writes_marker_when_npm_missing(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert marker.is_file()
     assert "npm is not on PATH" in marker.read_text()
+
+
+def test_dashboard_service_supervises_next_for_self_heal() -> None:
+    """dashboard-service.sh runs next-server under the respawn supervisor."""
+    service = (REPO_ROOT / "plugin" / "scripts" / "dashboard-service.sh").read_text()
+    assert "dashboard-supervise.sh" in service
+
+    supervise = (
+        REPO_ROOT / "plugin" / "scripts" / "dashboard-supervise.sh"
+    ).read_text()
+    # Clean stop: a TERM/INT trap must break the loop so `stop`'s group-kill
+    # never triggers a respawn.
+    assert "trap" in supervise
+    assert "TERM" in supervise and "INT" in supervise
+    # Crash-loop guard must be present and tunable.
+    assert "CLAUDE_SMART_DASHBOARD_MAX_FAILS" in supervise
+    assert "CLAUDE_SMART_DASHBOARD_HEALTHY_SECS" in supervise
+    # Must not resurrect a dashboard that was intentionally stopped (child
+    # SIGTERM == 143) — only crashes/SIGKILL are respawned.
+    assert "143" in supervise
+
+
+def test_dashboard_supervisor_exits_on_intentional_stop_signal(
+    tmp_path: Path,
+) -> None:
+    """When next-server exits via SIGTERM (143) — i.e. a `stop`/reinstall port
+    reap — the supervisor exits without respawning, rather than fighting it."""
+    next_bin = tmp_path / "next"
+    _write_executable(next_bin, '#!/bin/sh\necho x >> "$HOME/calls"\nexit 143\n')
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(tmp_path, "date", "sleep")
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            str(REPO_ROOT / "plugin" / "scripts" / "dashboard-supervise.sh"),
+            str(next_bin),
+            "3999",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "calls").read_text().count("x") == 1
+    assert "intentional stop" in result.stdout
+
+
+def test_dashboard_supervisor_respawns_then_gives_up_on_crash_loop(
+    tmp_path: Path,
+) -> None:
+    """A next-server that keeps dying fast is respawned up to MAX_FAILS, then
+    the supervisor gives up (exit 1) instead of tight-looping forever."""
+    next_bin = tmp_path / "next"
+    _write_executable(next_bin, '#!/bin/sh\necho x >> "$HOME/calls"\nexit 1\n')
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(tmp_path, "date", "sleep")
+    env["CLAUDE_SMART_DASHBOARD_RESPAWN_DELAY"] = "0"
+    env["CLAUDE_SMART_DASHBOARD_HEALTHY_SECS"] = "5"
+    env["CLAUDE_SMART_DASHBOARD_MAX_FAILS"] = "3"
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            str(REPO_ROOT / "plugin" / "scripts" / "dashboard-supervise.sh"),
+            str(next_bin),
+            "3999",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 1, result.stderr
+    calls = (tmp_path / "calls").read_text().count("x")
+    assert calls == 3, f"expected 3 spawns before giving up, got {calls}"
+    assert "giving up" in result.stdout
+
+
+def test_ensure_plugin_root_syncs_stale_txt_to_valid_link(tmp_path: Path) -> None:
+    """A valid symlink with a stale plugin-root.txt (the observed multi-host
+    drift) must reconcile .txt to the link so the file-based readers agree."""
+    target = tmp_path / "plugin"
+    (target / "scripts").mkdir(parents=True)
+    (target / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    reflexio = tmp_path / ".reflexio"
+    reflexio.mkdir()
+    link = reflexio / "plugin-root"
+    link.symlink_to(target)
+    stale = reflexio / "plugin-root.txt"
+    stale.write_text("/nonexistent/claude-smart/0.2.50\n")
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(
+        tmp_path, "dirname", "uname", "cat", "readlink", "mkdir", "ln"
+    )
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            str(REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh"),
+            str(target),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert stale.read_text().strip() == str(target.resolve())
+    assert link.resolve() == target.resolve()
 
 
 def test_codex_claude_compat_translates_claude_contract(tmp_path: Path) -> None:

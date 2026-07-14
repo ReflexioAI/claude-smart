@@ -84,6 +84,19 @@ write_plugin_root_metadata() {
     printf '%s\n' "$TARGET" >"$HOME/.reflexio/plugin-root.txt"
 }
 
+# Keep plugin-root.txt in sync with the symlink for the file-based readers
+# (OpenCode server.mts fallback, Codex/Windows-junction consumers) even on the
+# paths where we leave an already-valid link untouched. Without this the file
+# drifts: the symlink is refreshed every SessionStart but plugin-root.txt was
+# only ever written at install time, so after a version change it can point at a
+# stale (even deleted) root while the symlink is correct.
+reconcile_metadata_from_link() {
+    [ -L "$LINK" ] || return 0
+    linked="$(cd "$LINK" 2>/dev/null && pwd -P || true)"
+    [ -n "$linked" ] || return 0
+    printf '%s\n' "$linked" >"$HOME/.reflexio/plugin-root.txt"
+}
+
 write_plugin_root_link() {
     reason="$1"
     if claude_smart_is_windows; then
@@ -115,6 +128,7 @@ write_plugin_root_link() {
     fi
 
     ln -sfn "$TARGET" "$LINK"
+    write_plugin_root_metadata
     echo "[claude-smart] plugin-root → $TARGET${reason:+ ($reason)}" >&2
 }
 
@@ -162,6 +176,8 @@ if [ -n "$CURRENT" ]; then
             TARGET_NORM="${TARGET%/}"
             if [ "$CURRENT_NORM" != "$TARGET_NORM" ]; then
                 write_plugin_root_link "cache-tracking, was $CURRENT"
+            else
+                reconcile_metadata_from_link
             fi
             exit 0
             ;;
@@ -171,6 +187,7 @@ fi
 # Self-heal path: only rewrite the link if it's missing or its target is
 # gone/invalid.
 if [ -f "$LINK/pyproject.toml" ]; then
+    reconcile_metadata_from_link
     exit 0
 fi
 
