@@ -50,19 +50,60 @@ if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
   exit 1
 fi
 
+# Collapse the PATH before invoking npm. In the detached SessionStart hook the
+# PATH is ~7-9KB: prepend_node_bins pushes a (nonexistent) private-node dir to
+# the front and repeated login-shell sourcing duplicates the whole list 3-4x.
+# When npm's node process spawns a cmd.exe grandchild for a lifecycle/run script
+# (`node -e ...`, `next build`), that oversized environment is truncated for the
+# child, dropping the entries the script needs — nodejs and npm-appended
+# node_modules/.bin — so bare `node`/`next` resolve to "not found" and the build
+# aborts. Deduplicating (order-preserving) shrinks it back under the threshold;
+# an identical small PATH is what makes an interactive build succeed. Anchor
+# nodejs at the front too, so node survives even a residual truncation.
+NPM_DIR=$(CDPATH= cd -- "$(dirname -- "$NPM_BIN")" && pwd)
+PATH=$(printf '%s' "$NPM_DIR:$PATH" | awk -v RS=: -v ORS=: '!seen[$0]++')
+export PATH="${PATH%:}"
+
 # Atomic single-flight: mkdir is a single atomic syscall, so two concurrent
 # builds (e.g., smart-install.sh and a SessionStart-driven dashboard-service.sh
 # firing within milliseconds on first install) cannot both pass this check.
 # BUILD_PID_FILE remains as status metadata for dashboard-open.sh and
 # dashboard-service.sh to probe — it is written only after the lock is held
 # and removed only by the lock holder.
+# The pid file is written (below) only AFTER mkdir acquires the lock, so
+# there is a brief window where the lock dir exists but the pid file does
+# not. A peer arriving in that window must NOT treat the missing pid as a
+# stale lock and steal it — doing so lets two builds run `npm ci` in the
+# same dir, and each failure path wipes node_modules, clobbering the other
+# (repeated "npm ci failed" across sessions, dashboard never builds).
+# Disambiguate the two causes of "missing pid" by the lock dir's age:
+#   - young lock, no pid  -> peer is mid-acquire; back off
+#   - aged lock,  no pid  -> holder crashed before writing pid; reclaim
+# LOCK_ACQUIRE_GRACE must exceed the mkdir->pid-write gap but stay well
+# below a real build, so a genuinely crashed holder is still reclaimed.
+LOCK_ACQUIRE_GRACE=30
 if ! mkdir "$BUILD_LOCK_DIR" 2>/dev/null; then
   if claude_smart_pid_alive_file "$BUILD_PID_FILE"; then
     log "dashboard build: already in progress; skipping"
     exit 0
   fi
-  # Stale lock from a crashed build (lock dir survived but owner is gone).
-  # Reclaim it; if another process beats us to the reclaim, defer to them.
+  if [ ! -s "$BUILD_PID_FILE" ]; then
+    # Pid missing/empty: either a peer just acquired the lock and hasn't
+    # written its pid yet, or a holder crashed in that window. Tell them
+    # apart by how long the lock dir has existed.
+    lock_now=$(date +%s 2>/dev/null || echo 0)
+    # stat -c is GNU (Linux, Git Bash); stat -f is BSD (macOS). Try both.
+    lock_born=$(stat -c %Y "$BUILD_LOCK_DIR" 2>/dev/null \
+      || stat -f %m "$BUILD_LOCK_DIR" 2>/dev/null \
+      || echo "$lock_now")
+    if [ "$((lock_now - lock_born))" -lt "$LOCK_ACQUIRE_GRACE" ]; then
+      log "dashboard build: peer acquiring lock; backing off"
+      exit 0
+    fi
+    log "dashboard build: lock aged with no pid; reclaiming crashed holder"
+  fi
+  # Stale lock: pid present but dead, or an aged pid-less crash. Reclaim it;
+  # if another process beats us to the reclaim, defer to them.
   rm -rf "$BUILD_LOCK_DIR"
   rm -f "$BUILD_PID_FILE"
   if ! mkdir "$BUILD_LOCK_DIR" 2>/dev/null; then
@@ -110,7 +151,19 @@ if [ "$needs_install" = "1" ]; then
     install_cmd="install"
   fi
   log "dashboard build: running npm $install_cmd..."
-  if ! "$NPM_BIN" "$install_cmd" --silent --no-fund --no-audit >>"$LOG_FILE" 2>&1; then
+  # --ignore-scripts: skip dependency lifecycle (pre/post)install scripts.
+  # Some deps' postinstalls shell out to bare `node` (e.g. msw:
+  # `node -e ...`), which fails with "node: not found" in the detached
+  # SessionStart hook — npm.cmd runs (it finds node via its own %~dp0) but the
+  # PATH it hands the cmd.exe grandchild doesn't reliably carry the nodejs dir,
+  # so the script's bare `node` isn't resolvable and the whole `npm ci` aborts.
+  # The dashboard builds and runs correctly without these scripts (sharp etc.
+  # resolve via their prebuilt platform packages), so skipping them is both the
+  # fix and a defensible hardening. npm's own newer default already blocks
+  # unlisted install scripts; this makes that behaviour explicit and portable.
+  # No --silent: on failure npm's real error must land in $LOG_FILE, otherwise
+  # the dashboard-unavailable reason is useless and the failure is undiagnosable.
+  if ! "$NPM_BIN" "$install_cmd" --ignore-scripts --no-fund --no-audit >>"$LOG_FILE" 2>&1; then
     rm -rf "$DASHBOARD_DIR/node_modules"
     reason="npm $install_cmd failed; removed partial node_modules; see $LOG_FILE"
     log "dashboard build: $reason"
