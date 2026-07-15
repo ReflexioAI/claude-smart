@@ -37,7 +37,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from claude_smart import context_format, cs_cite, env_config, ids, publish, runtime, state
+from claude_smart import (
+    context_format,
+    cs_cite,
+    env_config,
+    ids,
+    publish,
+    runtime,
+    state,
+)
 from claude_smart.reflexio_adapter import Adapter
 
 _HOST_CLAUDE_CODE = runtime.HOST_CLAUDE_CODE
@@ -987,7 +995,9 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
         os.environ.pop("CLAUDE_SMART_MANAGED_SETUP", None)
         added = env_config.ensure_local_env_defaults(_CLAUDE_SMART_ENV_PATH, host=host)
         if added:
-            sys.stdout.write(f"Seeded {_CLAUDE_SMART_ENV_PATH} with {', '.join(added)}.\n")
+            sys.stdout.write(
+                f"Seeded {_CLAUDE_SMART_ENV_PATH} with {', '.join(added)}.\n"
+            )
     return read_only
 
 
@@ -1071,7 +1081,9 @@ def _opencode_global_config_dir() -> Path:
     return base / "opencode"
 
 
-def _opencode_config_path(*, global_config: bool = False, cwd: Path | None = None) -> Path:
+def _opencode_config_path(
+    *, global_config: bool = False, cwd: Path | None = None
+) -> Path:
     if global_config:
         config_dir = _opencode_global_config_dir()
         for name in _OPENCODE_CONFIG_NAMES:
@@ -1108,9 +1120,9 @@ def _is_default_opencode_package_path(package_path: Path) -> bool:
     if _same_real_path(package_path, _OPENCODE_LOCAL_PACKAGE_DIR):
         return True
     try:
-        return package_path.resolve(strict=False) == _OPENCODE_LOCAL_PACKAGE_DIR.resolve(
+        return package_path.resolve(
             strict=False
-        )
+        ) == _OPENCODE_LOCAL_PACKAGE_DIR.resolve(strict=False)
     except OSError:
         return False
 
@@ -1192,7 +1204,9 @@ def _has_extraction_provider() -> bool:
         resolved = Path(cli_path).expanduser()
         if resolved.is_file() and os.access(resolved, os.X_OK):
             return True
-    return bool(shutil.which("claude") or shutil.which("codex") or _resolve_opencode_path())
+    return bool(
+        shutil.which("claude") or shutil.which("codex") or _resolve_opencode_path()
+    )
 
 
 def _extraction_provider_error() -> str:
@@ -1221,7 +1235,9 @@ def _persist_opencode_path() -> list[str]:
     if not resolved:
         return []
     os.environ[_OPENCODE_PATH_ENV] = resolved
-    return env_config.set_env_vars(_CLAUDE_SMART_ENV_PATH, {_OPENCODE_PATH_ENV: resolved})
+    return env_config.set_env_vars(
+        _CLAUDE_SMART_ENV_PATH, {_OPENCODE_PATH_ENV: resolved}
+    )
 
 
 def _opencode_prerequisite_error() -> str | None:
@@ -1358,7 +1374,9 @@ def _bootstrap_opencode_install(read_only: bool) -> tuple[bool, str]:
     if not bash:
         return False, "bash is required to bootstrap claude-smart dependencies"
     scripts_dir = plugin_root / "scripts"
-    result = subprocess.run([bash, str(scripts_dir / "smart-install.sh")], cwd=plugin_root)
+    result = subprocess.run(
+        [bash, str(scripts_dir / "smart-install.sh")], cwd=plugin_root
+    )
     if result.returncode != 0:
         return False, f"smart-install.sh failed in {plugin_root}"
     if _INSTALL_FAILURE_MARKER.is_file():
@@ -1572,10 +1590,22 @@ def cmd_install(args: argparse.Namespace) -> int:
             sys.stderr.write(f"error: {' '.join(cmd)} failed (exit {exc.returncode})\n")
             return exc.returncode or 1
 
+    rc = _finish_claude_code_install(read_only=read_only, action="installed")
+    if rc != 0:
+        return rc
+
+    sys.stdout.write(
+        "\nclaude-smart installed and dependencies are prepared. "
+        "Restart Claude Code in your project.\n"
+    )
+    return 0
+
+
+def _finish_claude_code_install(*, read_only: bool, action: str) -> int:
     bootstrapped, message = _bootstrap_claude_code_install()
     if not bootstrapped:
         sys.stderr.write(
-            f"error: claude-smart installed, but dependency bootstrap failed: {message}\n"
+            f"error: claude-smart {action}, but dependency bootstrap failed: {message}\n"
         )
         sys.stderr.write(
             "Fix the issue above, then run /claude-smart:restart or restart Claude Code to retry.\n"
@@ -1588,20 +1618,11 @@ def cmd_install(args: argparse.Namespace) -> int:
             "Installed read-only hook manifest; publish interactions hooks are disabled.\n"
         )
     sys.stdout.write(f"Prepared claude-smart runtime at {message}.\n")
-
-    sys.stdout.write(
-        "\nclaude-smart installed and dependencies are prepared. "
-        "Restart Claude Code in your project.\n"
-    )
     return 0
 
 
 def cmd_update(args: argparse.Namespace) -> int:
-    """Update claude-smart by reinstalling from this package.
-
-    The simplified install path registers the bundled package root as the
-    marketplace, so update is a stop + reinstall instead of
-    ``claude plugin update``.
+    """Update claude-smart through Claude Code's plugin update path.
 
     Args:
         args (argparse.Namespace): Parsed CLI args.
@@ -1614,12 +1635,44 @@ def cmd_update(args: argparse.Namespace) -> int:
     if getattr(args, "host", _HOST_CLAUDE_CODE) == _HOST_OPENCODE:
         return cmd_update_opencode(args)
 
+    if not shutil.which("claude"):
+        sys.stderr.write(
+            "error: 'claude' CLI not found on PATH. "
+            "Install Claude Code first: https://claude.com/claude-code\n"
+        )
+        return 1
+
     _run_service(_DASHBOARD_SCRIPT, "stop")
     _run_service(_BACKEND_SCRIPT, "stop")
-    sys.stdout.write("Updating claude-smart by reinstalling from this package...\n")
-    install_args = argparse.Namespace(**vars(args), refresh_existing=True)
-    install_args.host = _HOST_CLAUDE_CODE
-    return cmd_install(install_args)
+    read_only = _configure_reflexio_setup(host=_HOST_CLAUDE_CODE)
+
+    sys.stdout.write("Updating claude-smart from this package...\n")
+    for cmd in (
+        ["claude", "plugin", "marketplace", "add", str(_REPO_ROOT)],
+        ["claude", "plugin", "update", _PLUGIN_SPEC],
+    ):
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as exc:
+            if cmd[1:3] == ["plugin", "update"]:
+                sys.stderr.write(
+                    f"warning: {' '.join(cmd)} failed (exit {exc.returncode}); "
+                    "falling back to reinstall.\n"
+                )
+                install_args = argparse.Namespace(**vars(args), refresh_existing=True)
+                install_args.host = _HOST_CLAUDE_CODE
+                return cmd_install(install_args)
+            sys.stderr.write(f"error: {' '.join(cmd)} failed (exit {exc.returncode})\n")
+            return exc.returncode or 1
+
+    rc = _finish_claude_code_install(read_only=read_only, action="updated")
+    if rc != 0:
+        return rc
+    sys.stdout.write(
+        "\nclaude-smart updated and dependencies are prepared. "
+        "Restart Claude Code in your project.\n"
+    )
+    return 0
 
 
 def cmd_update_codex(_args: argparse.Namespace) -> int:
@@ -1750,13 +1803,12 @@ def cmd_uninstall_opencode(args: argparse.Namespace) -> int:
     except OSError:
         pass
     if changed:
-        sys.stdout.write(f"Removed claude-smart OpenCode plugin entries from {config_path}.\n")
+        sys.stdout.write(
+            f"Removed claude-smart OpenCode plugin entries from {config_path}.\n"
+        )
     else:
         sys.stdout.write("OpenCode config did not include claude-smart.\n")
-    sys.stdout.write(
-        "Restart OpenCode to apply. "
-        f"{_LOCAL_DATA_NOTICE}"
-    )
+    sys.stdout.write(f"Restart OpenCode to apply. {_LOCAL_DATA_NOTICE}")
     return 0
 
 
