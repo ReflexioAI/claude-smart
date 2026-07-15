@@ -6,7 +6,6 @@ Exists so hook handlers (a) don't import reflexio directly at module scope
 
 from __future__ import annotations
 
-import inspect
 import logging
 import os
 from collections.abc import Sequence
@@ -95,18 +94,11 @@ class Adapter:
             _LOGGER.debug("reflexio not importable: %s", exc)
             return None
         try:
-            try:
-                self._client = ReflexioClient(
-                    url_endpoint=self.url,
-                    api_key=self.api_key,
-                    timeout=_HTTP_TIMEOUT_SECONDS,
-                )
-            except TypeError:
-                # Pre-0.2.x reflexio releases didn't accept ``timeout``;
-                # fall back so hooks still work against older pinned clients.
-                self._client = ReflexioClient(
-                    url_endpoint=self.url, api_key=self.api_key
-                )
+            self._client = ReflexioClient(
+                url_endpoint=self.url,
+                api_key=self.api_key,
+                timeout=_HTTP_TIMEOUT_SECONDS,
+            )
         except Exception as exc:  # noqa: BLE001 — adapter must never raise.
             _LOGGER.warning("Failed to construct ReflexioClient: %s", exc)
             return None
@@ -136,7 +128,6 @@ class Adapter:
         try:
             interaction_list = list(interactions)
             raw_request = getattr(client, "_make_request", None)
-            supports_source = _supports_keyword(client.publish_interaction, "source")
             if request_id is not None and callable(raw_request):
                 payload: dict[str, Any] = {
                     "request_id": request_id,
@@ -148,9 +139,8 @@ class Adapter:
                     "force_extraction": force_extraction,
                     "evaluation_only": False,
                     "override_learning_stall": override_learning_stall,
+                    "source": _SOURCE,
                 }
-                if supports_source:
-                    payload["source"] = _SOURCE
                 try:
                     raw_request(
                         "POST",
@@ -194,15 +184,9 @@ class Adapter:
                 "wait_for_response": False,
                 "force_extraction": force_extraction,
                 "skip_aggregation": skip_aggregation,
+                "source": _SOURCE,
+                "override_learning_stall": override_learning_stall,
             }
-            if supports_source:
-                kwargs["source"] = _SOURCE
-            if _supports_keyword(client.publish_interaction, "override_learning_stall"):
-                kwargs["override_learning_stall"] = override_learning_stall
-            elif override_learning_stall:
-                _LOGGER.debug(
-                    "publish_interaction client does not support override_learning_stall"
-                )
             response = client.publish_interaction(**kwargs)
             response_request_id = getattr(response, "request_id", None)
             if isinstance(response_request_id, str) and response_request_id:
@@ -352,18 +336,11 @@ class Adapter:
         if client is None:
             return []
         try:
-            if hasattr(client, "get_user_playbooks"):
-                response = client.get_user_playbooks(
-                    user_id=project_id,
-                    status_filter=[None],  # None => CURRENT in reflexio's filter API
-                    limit=top_k,
-                )
-            else:
-                response = client.search_user_playbooks(
-                    user_id=project_id,
-                    status_filter=[None],
-                    top_k=top_k,
-                )
+            response = client.get_user_playbooks(
+                user_id=project_id,
+                status_filter=[None],  # None => CURRENT in reflexio's filter API
+                limit=top_k,
+            )
         except Exception as exc:  # noqa: BLE001
             self._record_read_error("fetch_user_playbooks", exc)
             return []
@@ -387,18 +364,11 @@ class Adapter:
         if client is None:
             return []
         try:
-            if hasattr(client, "get_agent_playbooks"):
-                response = client.get_agent_playbooks(
-                    agent_version=runtime.agent_version(),
-                    status_filter=[None],
-                    limit=top_k,
-                )
-            else:
-                response = client.search_agent_playbooks(
-                    agent_version=runtime.agent_version(),
-                    status_filter=[None],
-                    top_k=top_k,
-                )
+            response = client.get_agent_playbooks(
+                agent_version=runtime.agent_version(),
+                status_filter=[None],
+                limit=top_k,
+            )
         except Exception as exc:  # noqa: BLE001
             self._record_read_error("fetch_agent_playbooks", exc)
             return []
@@ -533,17 +503,6 @@ def _extract_items(response: Any, field: str) -> list[Any]:
     else:
         value = getattr(response, field, None)
     return list(value) if value else []
-
-
-def _supports_keyword(callable_obj: Any, keyword: str) -> bool:
-    try:
-        signature = inspect.signature(callable_obj)
-    except (TypeError, ValueError):
-        return False
-    for parameter in signature.parameters.values():
-        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
-            return True
-    return keyword in signature.parameters
 
 
 def _needs_raw_retrieved_learning_publish(
