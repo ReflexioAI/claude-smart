@@ -1,6 +1,6 @@
 {
   "name": "claude-smart",
-  "version": "0.2.49",
+  "version": "0.2.50",
   "description": "Self-improving coding assistant plugin — learns from corrections across sessions via reflexio",
   "author": {
     "name": "Yi Lu"

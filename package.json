@@ -1,6 +1,6 @@
 {
   "name": "claude-smart",
-  "version": "0.2.49",
+  "version": "0.2.50",
   "description": "Self-improving Claude Code, Codex, and OpenCode plugin that turns corrections into Preferences, Project-specific skills, and Shared skills",
   "keywords": [
     "claude",
