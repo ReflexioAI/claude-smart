@@ -8,7 +8,7 @@ import sys
 from typing import Any
 
 import pytest
-from claude_smart import state
+from claude_smart import cs_cite, state
 from claude_smart.events import post_tool, session_start, stop, user_prompt
 
 
@@ -1084,12 +1084,15 @@ def test_user_prompt_injects_compact_context_for_codex(
     assert "Run uv sync after pyproject edits: Run uv sync" not in markdown
     assert "prefers anyio over asyncio" in markdown
     assert "✨ claude-smart rule applied:" in markdown
-    assert "copy this final marker exactly with markdown links" in markdown
+    assert "copy this final marker exactly with markdown links" not in markdown
     assert (
         "✨ claude-smart rule applied: "
         "[Run uv sync after pyproject edits](http://localhost:3001/rules/s1) | "
         "[prefers anyio over asyncio](http://localhost:3001/rules/p1)"
-    ) in markdown
+    ) not in markdown
+    assert cs_cite.MARKDOWN_EXAMPLE_ONE in markdown
+    assert "for each memory you actually used" in markdown
+    assert "visible ` | ` separator" in markdown
     assert "\x1b]8;;" not in markdown
 
 

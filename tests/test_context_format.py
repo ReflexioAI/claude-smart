@@ -283,15 +283,41 @@ def test_render_inline_compact_with_registry_is_one_logical_line(
     assert "prefers concise answers" in md
     assert "✨ claude-smart rule applied:" in md
     assert md.count("✨ claude-smart rule applied:") == 1
-    assert "copy this final marker exactly with markdown links" in md
+    assert "copy this final marker exactly with markdown links" not in md
     assert (
         "✨ claude-smart rule applied: "
         "[Run uv sync after pyproject edits](http://localhost:3001/rules/s1-17) | "
         "[prefers concise answers](http://localhost:3001/rules/p1-pref)"
-    ) in md
+    ) not in md
+    assert cs_cite.MARKDOWN_EXAMPLE_ONE in md
+    assert "for each memory you actually used" in md
     assert "visible ` | ` separator" in md
     assert "\x1b]8;;" not in md
     assert {entry["id"] for entry in registry} == {"s1-17", "p1-pref"}
+
+
+def test_render_inline_compact_with_registry_does_not_prebuild_all_markdown_citations(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
+
+    md, registry = context_format.render_inline_compact_with_registry(
+        project_id="demo",
+        user_playbooks=[
+            {"content": "used rule", "user_playbook_id": 1},
+            {"content": "unused rule", "user_playbook_id": 2},
+        ],
+        agent_playbooks=[],
+        profiles=[],
+    )
+
+    assert {entry["id"] for entry in registry} == {"s1-1", "s2-2"}
+    assert "copy this final marker exactly" not in md
+    assert "[used rule](http://localhost:3001/rules/s1-1)" not in md
+    assert "[unused rule](http://localhost:3001/rules/s2-2)" not in md
+    assert cs_cite.MARKDOWN_EXAMPLE_ONE in md
+    assert "shown rule URL for each memory you actually used" in md
+    assert "visible ` | ` separator" in md
 
 
 def test_render_inline_compact_with_registry_can_emit_osc8_when_requested(
@@ -313,9 +339,12 @@ def test_render_inline_compact_with_registry_can_emit_osc8_when_requested(
         profiles=[{"content": "prefers concise answers", "profile_id": "pref"}],
     )
 
+    assert "\x1b]8;;http://localhost:3001/rules/s1-123\x1b\\" in md
     assert "\x1b]8;;http://localhost:3001/rules/s1-17\x1b\\" in md
     assert "\x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\" in md
-    assert "preserving its hidden OSC 8 terminal link" in md
+    assert "final marker like" in md
+    assert "for each memory you actually used" in md
+    assert "preserve hidden OSC 8 terminal links" in md
     assert "open: http://localhost:3001/rules/s1-17" not in md
     assert {entry["id"] for entry in registry} == {"s1-17", "p1-pref"}
 
@@ -414,16 +443,16 @@ def test_render_inline_compact_uses_remote_reflexio_item_pages(monkeypatch) -> N
         profiles=[{"content": "prefers concise answers", "profile_id": "pref/one"}],
     )
 
+    assert "use shared flow (title: use shared flow; open: https://www.reflexio.ai/playbooks?agent_playbook_id=42)" in md
     assert (
-        "[use shared flow](https://www.reflexio.ai/playbooks?agent_playbook_id=42)"
-    ) in md
-    assert (
-        "[use safe git flow](https://www.reflexio.ai/playbooks?"
+        "use safe git flow (title: use safe git flow; open: https://www.reflexio.ai/playbooks?"
         "resource=user_playbook&user_playbook_id=17)"
     ) in md
     assert (
-        "[prefers concise answers](https://www.reflexio.ai/profiles?profile_id=pref%2Fone)"
+        "prefers concise answers (title: prefers concise answers; open: "
+        "https://www.reflexio.ai/profiles?profile_id=pref%2Fone)"
     ) in md
+    assert "[use shared flow](https://www.reflexio.ai/playbooks?agent_playbook_id=42)" not in md
     assert "http://localhost:3001/rules/" not in md
 
 

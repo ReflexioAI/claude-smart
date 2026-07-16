@@ -264,42 +264,24 @@ def render_inline_compact_with_registry(
 
 
 def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
+    del marker_parts  # compact guidance must not scale with injected memory count.
     if os.environ.get("CLAUDE_SMART_CITATIONS", "on") == "off":
         return ""
     gate = cs_cite.WHEN_TO_CITE_COMPACT
     link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
-    if link_style == "osc8" and marker_parts:
-        marker = cs_cite.build_marker(" | ".join(marker_parts), "osc8")
-        separator_instruction = (
-            " Separate multiple linked memories with the visible ` | ` separator."
-            if len(marker_parts) > 1
-            else ""
-        )
-        return _remoteize_citation_instruction(
-            f"{gate} If you do, copy this final marker exactly, preserving its "
-            f"hidden OSC 8 terminal link: `{marker}`.{separator_instruction}"
-        )
     if link_style == "osc8":
         return _remoteize_citation_instruction(
-            f"{gate} If you do, end with `{cs_cite.MARKER_PREFIX}` "
-            "followed by the same linked memory text, then "
-            f"`{cs_cite.marker_attribution('osc8')}` linking to the reflexio "
-            "repo; keep the links, but do not show the URL."
-        )
-    if marker_parts:
-        marker = cs_cite.build_marker(" | ".join(marker_parts), "markdown")
-        separator_instruction = (
-            " Separate multiple linked memories with the visible ` | ` separator."
-            if len(marker_parts) > 1
-            else ""
-        )
-        return _remoteize_citation_instruction(
-            f"{gate} If you do, copy this final marker exactly with markdown "
-            f"links: `{marker}`.{separator_instruction}"
+            f"{gate} If you do, end with a final marker like "
+            f"`{cs_cite.build_marker(_osc8_link('http://localhost:3001/rules/s1-123', 'verify process state'), 'osc8')}` "
+            "using the linked title and shown rule URL for each memory you actually used; "
+            "preserve hidden OSC 8 terminal links, do not show raw URLs, and separate multiple "
+            "linked memories with the visible ` | ` separator."
         )
     return _remoteize_citation_instruction(
-        f"{gate} If you do, end with one final marker like "
-        f"`{cs_cite.MARKDOWN_EXAMPLE_ONE}` using the shown rule URL."
+        f"{gate} If you do, end with a final marker like "
+        f"`{cs_cite.MARKDOWN_EXAMPLE_ONE}` using the title and shown rule URL "
+        "for each memory you actually used; separate multiple linked memories "
+        "with the visible ` | ` separator."
     )
 
 
