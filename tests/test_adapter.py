@@ -39,10 +39,10 @@ class _FakeClient:
         if not self._publish_ok:
             raise RuntimeError("reflexio unreachable")
 
-    def search_user_playbooks(self, **_kw):
+    def get_user_playbooks(self, **_kw):
         return self._user_playbook_resp
 
-    def search_agent_playbooks(self, **_kw):
+    def get_agent_playbooks(self, **_kw):
         return self._agent_playbook_resp
 
     def get_profiles(self, **_kw):
@@ -69,7 +69,7 @@ def test_adapter_constructs_client_with_env_url_and_api_key(
     seen: dict[str, str] = {}
 
     class FakeReflexioClient:
-        def __init__(self, *, url_endpoint: str, api_key: str):
+        def __init__(self, *, url_endpoint: str, api_key: str, timeout: int):
             seen["url_endpoint"] = url_endpoint
             seen["api_key"] = api_key
 
@@ -113,31 +113,6 @@ def test_adapter_passes_short_http_timeout_to_client(monkeypatch, tmp_path) -> N
     assert 0 < reflexio_adapter._HTTP_TIMEOUT_SECONDS <= 30
 
 
-def test_adapter_falls_back_when_client_rejects_timeout_kwarg(
-    monkeypatch, tmp_path
-) -> None:
-    """Older reflexio releases lack ``timeout``; constructor must still succeed."""
-    monkeypatch.setattr(
-        reflexio_adapter.env_config, "CLAUDE_SMART_ENV_PATH", tmp_path / "missing.env"
-    )
-    monkeypatch.setenv("REFLEXIO_URL", "https://x.example/")
-    monkeypatch.setenv("REFLEXIO_API_KEY", "k")
-    call_count = {"n": 0}
-
-    class FakeReflexioClient:
-        def __init__(self, *, url_endpoint: str, api_key: str):
-            call_count["n"] += 1
-
-    monkeypatch.setitem(
-        sys.modules,
-        "reflexio",
-        SimpleNamespace(ReflexioClient=FakeReflexioClient),
-    )
-
-    assert reflexio_adapter.Adapter()._get_client() is not None
-    assert call_count["n"] == 1
-
-
 def test_adapter_process_env_overrides_reflexio_env(monkeypatch, tmp_path) -> None:
     env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
@@ -150,7 +125,7 @@ def test_adapter_process_env_overrides_reflexio_env(monkeypatch, tmp_path) -> No
     seen: dict[str, str] = {}
 
     class FakeReflexioClient:
-        def __init__(self, *, url_endpoint: str, api_key: str):
+        def __init__(self, *, url_endpoint: str, api_key: str, timeout: int):
             seen["url_endpoint"] = url_endpoint
             seen["api_key"] = api_key
 
@@ -179,7 +154,7 @@ def test_adapter_default_url_follows_backend_port(monkeypatch, tmp_path) -> None
     seen: dict[str, str] = {}
 
     class FakeReflexioClient:
-        def __init__(self, *, url_endpoint: str, api_key: str):
+        def __init__(self, *, url_endpoint: str, api_key: str, timeout: int):
             seen["url_endpoint"] = url_endpoint
             seen["api_key"] = api_key
 
@@ -204,7 +179,7 @@ def test_adapter_local_default_file_url_follows_backend_port(monkeypatch, tmp_pa
     seen: dict[str, str] = {}
 
     class FakeReflexioClient:
-        def __init__(self, *, url_endpoint: str, api_key: str):
+        def __init__(self, *, url_endpoint: str, api_key: str, timeout: int):
             seen["url_endpoint"] = url_endpoint
             seen["api_key"] = api_key
 
@@ -238,50 +213,6 @@ def test_publish_returns_true_on_success() -> None:
     assert client.published_kwargs["wait_for_response"] is False
     assert client.published_kwargs["force_extraction"] is True
     assert client.published_kwargs["override_learning_stall"] is True
-
-
-def test_publish_omits_override_learning_stall_when_client_lacks_keyword() -> None:
-    class OldPublishClient:
-        def __init__(self) -> None:
-            self.published_kwargs: dict[str, Any] = {}
-
-        def publish_interaction(
-            self,
-            *,
-            user_id,
-            interactions,
-            agent_version,
-            session_id,
-            wait_for_response,
-            force_extraction,
-            skip_aggregation,
-        ):
-            self.published_kwargs = {
-                "user_id": user_id,
-                "interactions": interactions,
-                "agent_version": agent_version,
-                "session_id": session_id,
-                "wait_for_response": wait_for_response,
-                "force_extraction": force_extraction,
-                "skip_aggregation": skip_aggregation,
-            }
-
-    client = OldPublishClient()
-    a = _adapter_with(client)
-
-    ok = a.publish(
-        session_id="s1",
-        project_id="p1",
-        interactions=[{"role": "User", "content": "hi"}],
-        force_extraction=True,
-        override_learning_stall=True,
-    )
-
-    assert ok.ok is True
-    assert client.published_kwargs["user_id"] == "p1"
-    assert client.published_kwargs["force_extraction"] is True
-    assert "override_learning_stall" not in client.published_kwargs
-    assert "source" not in client.published_kwargs
 
 
 def test_link_publish_uses_stable_raw_request() -> None:
@@ -368,39 +299,6 @@ def test_publish_confirmation_is_scoped_to_each_shared_adapter_call() -> None:
         "request-1": "request-1",
         "request-2": "request-2",
     }
-
-
-def test_raw_publish_omits_source_for_older_client_contract() -> None:
-    class OldRawClient:
-        def __init__(self) -> None:
-            self.raw_payload = None
-
-        def publish_interaction(
-            self,
-            *,
-            user_id,
-            interactions,
-            agent_version,
-            session_id,
-            wait_for_response,
-            force_extraction,
-            skip_aggregation,
-        ):
-            raise AssertionError("stable request IDs use the raw path")
-
-        def _make_request(self, _method, _path, **kwargs):
-            self.raw_payload = kwargs["json"]
-
-    client = OldRawClient()
-    result = _adapter_with(client).publish(
-        session_id="s1",
-        project_id="p1",
-        request_id="request-1",
-        interactions=[{"role": "User", "content": "hi"}],
-    )
-
-    assert result.request_id == "request-1"
-    assert "source" not in client.raw_payload
 
 
 def test_public_publish_records_server_generated_request_id() -> None:
@@ -641,11 +539,11 @@ class _RecordingClient:
         self.search_call_count += 1
         return self._unified_resp
 
-    def search_user_playbooks(self, **kwargs):
+    def get_user_playbooks(self, **kwargs):
         self.user_playbook_kwargs = kwargs
         return self._user_playbook_resp
 
-    def search_agent_playbooks(self, **kwargs):
+    def get_agent_playbooks(self, **kwargs):
         self.agent_playbook_kwargs = kwargs
         return self._agent_playbook_resp
 
@@ -765,11 +663,11 @@ def test_fetch_all_runs_legs_in_parallel() -> None:
     """Serial would be ~0.6s across three legs; parallel should stay near 0.2s."""
 
     class SlowClient:
-        def search_user_playbooks(self, **_kw):
+        def get_user_playbooks(self, **_kw):
             time.sleep(0.2)
             return SimpleNamespace(user_playbooks=[])
 
-        def search_agent_playbooks(self, **_kw):
+        def get_agent_playbooks(self, **_kw):
             time.sleep(0.2)
             return SimpleNamespace(agent_playbooks=[])
 
@@ -786,10 +684,10 @@ def test_fetch_all_runs_legs_in_parallel() -> None:
 
 def test_fetch_all_absorbs_per_leg_failure() -> None:
     class HalfBroken:
-        def search_user_playbooks(self, **_kw):
+        def get_user_playbooks(self, **_kw):
             raise RuntimeError("user playbook search down")
 
-        def search_agent_playbooks(self, **_kw):
+        def get_agent_playbooks(self, **_kw):
             return SimpleNamespace(agent_playbooks=[{"content": "a"}])
 
         def get_profiles(self, **_kw):
@@ -856,7 +754,7 @@ def test_fetch_user_playbooks_passes_project_id_and_default_top_k() -> None:
     a = _adapter_with(client)
     a.fetch_user_playbooks(project_id="proj")
     assert client.user_playbook_kwargs["user_id"] == "proj"
-    assert client.user_playbook_kwargs["top_k"] == 10
+    assert client.user_playbook_kwargs["limit"] == 10
     assert client.user_playbook_kwargs["status_filter"] == [None]
 
 
@@ -867,7 +765,7 @@ def test_fetch_agent_playbooks_is_global() -> None:
     assert "user_id" not in client.agent_playbook_kwargs
     assert client.agent_playbook_kwargs["agent_version"] == "claude-code"
     assert client.agent_playbook_kwargs["status_filter"] == [None]
-    assert client.agent_playbook_kwargs["top_k"] == 10
+    assert client.agent_playbook_kwargs["limit"] == 10
 
 
 def test_search_all_filters_rejected_locally() -> None:
@@ -896,7 +794,7 @@ def test_fetch_agent_playbooks_filters_rejected_locally() -> None:
     """Same defensive filter on the no-query /show path."""
 
     class StubClient:
-        def search_agent_playbooks(self, **_kw):
+        def get_agent_playbooks(self, **_kw):
             return SimpleNamespace(
                 agent_playbooks=[
                     {"content": "approved", "playbook_status": "approved"},
