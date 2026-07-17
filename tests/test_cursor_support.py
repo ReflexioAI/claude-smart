@@ -142,13 +142,16 @@ def test_resolve_hook_host_uses_layered_cursor_signals(
     assert runtime.resolve_hook_host("claude-code", payload) == expected
 
 
-def test_explicit_non_claude_host_is_not_reclassified_as_cursor(
+@pytest.mark.parametrize("host", ["codex", "opencode"])
+def test_explicit_non_claude_hosts_are_not_reclassified_as_cursor(
+    host: str,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Explicit non-Claude hosts remain authoritative under Cursor signals."""
-    monkeypatch.setenv("CURSOR_TRANSCRIPT_PATH", "/tmp/cursor.jsonl")
+    monkeypatch.setenv("CURSOR_TRANSCRIPT_PATH", str(tmp_path / "cursor.jsonl"))
 
-    assert runtime.resolve_hook_host("opencode", {}) == "opencode"
+    assert runtime.resolve_hook_host(host, {}) == host
 
 
 def test_cursor_shares_learnings_without_losing_attribution() -> None:
