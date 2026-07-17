@@ -22,6 +22,7 @@ import type {
 const VALID_HOSTS: ReadonlySet<Host> = new Set([
   "claude-code",
   "codex",
+  "cursor",
   "opencode",
   "unknown",
 ]);

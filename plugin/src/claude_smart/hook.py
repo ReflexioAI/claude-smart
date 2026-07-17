@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from collections.abc import Callable
 from contextlib import redirect_stdout
@@ -111,15 +112,22 @@ def _parse_args(argv: list[str]) -> tuple[str, str]:
 def main(argv: list[str] | None = None) -> int:
     """Entry point used by ``python -m claude_smart.hook`` and the console script."""
     argv = argv if argv is not None else sys.argv[1:]
-    host, event = _parse_args(argv)
-    runtime.set_host(host)
-    env_config.load_reflexio_env()
+    declared_host, event = _parse_args(argv)
     if not event:
+        runtime.set_host(declared_host)
+        env_config.load_reflexio_env()
         _LOGGER.warning("hook dispatcher called with no event name")
         emit_continue()
         return 0
 
     payload = _read_stdin_json()
+    host = runtime.resolve_hook_host(declared_host, payload)
+    runtime.set_host(host)
+    if host == runtime.HOST_CURSOR and not payload.get("cwd"):
+        cursor_project_dir = os.environ.get("CURSOR_PROJECT_DIR")
+        if cursor_project_dir:
+            payload["cwd"] = cursor_project_dir
+    env_config.load_reflexio_env()
 
     # Self-feedback guard: when this hook fires inside reflexio's own
     # `claude -p` subprocess (the claude-code LLM provider), skip all

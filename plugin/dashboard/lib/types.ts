@@ -41,7 +41,7 @@ export interface Interaction {
   tools_used: ToolUsed[];
 }
 
-export type Host = "claude-code" | "codex" | "opencode" | "unknown";
+export type Host = "claude-code" | "codex" | "cursor" | "opencode" | "unknown";
 
 export interface UserPlaybook {
   user_playbook_id: number;
