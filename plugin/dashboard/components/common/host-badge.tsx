@@ -5,7 +5,8 @@ import { cn } from "@/lib/utils";
 import type { Host } from "@/lib/types";
 
 // Exact product colors from the current official app assets. Label colors meet
-// WCAG AA for the badge's small text: Claude 5.65:1, Codex 5.39:1, OpenCode 18.93:1.
+// WCAG AA for small text: Claude 5.65:1, Codex 5.39:1, Cursor 10.48:1,
+// OpenCode 18.93:1.
 const HOST_META: Record<
   Exclude<Host, "unknown">,
   { label: string; badgeClass: string; dotClass: string }
@@ -19,6 +20,11 @@ const HOST_META: Record<
     label: "Codex",
     badgeClass: "border-[#0169CC] bg-[#0169CC] text-white",
     dotClass: "bg-[#0169CC]",
+  },
+  cursor: {
+    label: "Cursor",
+    badgeClass: "border-[#72716D] bg-[#D6D5D2] text-[#26251E]",
+    dotClass: "bg-[#72716D]",
   },
   opencode: {
     label: "OpenCode",
