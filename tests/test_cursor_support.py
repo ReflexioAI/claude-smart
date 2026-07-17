@@ -17,7 +17,6 @@ def _clear_cursor_detection_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "CLAUDE_CODE_ENTRYPOINT",
         "CURSOR_PROJECT_DIR",
         "CURSOR_TRANSCRIPT_PATH",
-        "CURSOR_USER_EMAIL",
         "CURSOR_VERSION",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -136,6 +135,7 @@ def test_resolve_hook_host_uses_layered_cursor_signals(
     expected: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Layered Cursor signals refine only ambiguous Claude Code hooks."""
     for name, value in env.items():
         monkeypatch.setenv(name, value)
 
@@ -145,12 +145,14 @@ def test_resolve_hook_host_uses_layered_cursor_signals(
 def test_explicit_non_claude_host_is_not_reclassified_as_cursor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Explicit non-Claude hosts remain authoritative under Cursor signals."""
     monkeypatch.setenv("CURSOR_TRANSCRIPT_PATH", "/tmp/cursor.jsonl")
 
     assert runtime.resolve_hook_host("opencode", {}) == "opencode"
 
 
 def test_cursor_shares_learnings_without_losing_attribution() -> None:
+    """Cursor keeps local attribution while sharing the learning namespace."""
     assert runtime.set_host("cursor") == "cursor"
     assert runtime.host() == "cursor"
     assert runtime.attribution_host() == "cursor"
