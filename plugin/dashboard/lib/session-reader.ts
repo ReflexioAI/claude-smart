@@ -64,6 +64,7 @@ type RawRecord = {
   user_action?: UserActionType;
   user_action_description?: string;
   cited_items?: CitedItem[];
+  unresolved_citations?: string[];
   published_up_to?: number;
 };
 
@@ -375,6 +376,15 @@ function foldTurns(records: RawRecord[]): {
       turn.cited_items = rec.cited_items;
     }
     if (
+      role === "Assistant" &&
+      Array.isArray(rec.unresolved_citations) &&
+      rec.unresolved_citations.length > 0
+    ) {
+      turn.unresolved_citations = rec.unresolved_citations.filter(
+        (id): id is string => typeof id === "string" && id.length > 0,
+      );
+    }
+    if (
       preview === null &&
       role === "User" &&
       typeof turn.content === "string" &&
@@ -397,6 +407,19 @@ function foldTurns(records: RawRecord[]): {
   };
 }
 
+async function countUniqueInjected(sessionId: string): Promise<number> {
+  const records = await readInjectedJsonl(
+    path.join(stateDir(), `${sessionId}.injected.jsonl`),
+  ).catch(() => []);
+  const ids = new Set<string>();
+  for (const entry of records) {
+    if (typeof entry.id === "string" && entry.id.length > 0) {
+      ids.add(entry.id);
+    }
+  }
+  return ids.size;
+}
+
 export async function listSessions(): Promise<SessionSummary[]> {
   const dir = stateDir();
   let entries: string[];
@@ -411,6 +434,7 @@ export async function listSessions(): Promise<SessionSummary[]> {
     if (!entry.endsWith(".jsonl")) continue;
     if (entry.endsWith(".injected.jsonl")) continue;
     const fullPath = path.join(dir, entry);
+    const sessionId = entry.replace(/\.jsonl$/, "");
     const records = await readJsonl(fullPath).catch(() => []);
     const {
       turns,
@@ -422,10 +446,12 @@ export async function listSessions(): Promise<SessionSummary[]> {
       host,
       requestIds,
     } = foldTurns(records);
+    const injectedLearningCount = await countUniqueInjected(sessionId);
     summaries.push({
-      session_id: entry.replace(/\.jsonl$/, ""),
+      session_id: sessionId,
       turn_count: turns.length,
       learning_interaction_count: learningInteractionCount,
+      injected_learning_count: injectedLearningCount,
       last_activity: lastTs,
       first_activity: firstTs,
       published_up_to: publishedUpTo,
@@ -490,10 +516,12 @@ export async function readSession(
   }
   const { turns, publishedUpTo, learningInteractionCount, host } =
     foldTurns(records);
+  const injectedLearningCount = await countUniqueInjected(sessionId);
   return {
     session_id: sessionId,
     turns,
     learning_interaction_count: learningInteractionCount,
+    injected_learning_count: injectedLearningCount,
     published_up_to: publishedUpTo,
     host,
   };

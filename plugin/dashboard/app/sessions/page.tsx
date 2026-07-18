@@ -6,6 +6,7 @@ import { MessageSquare, Search } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { DeleteAllButton } from "@/components/common/delete-all-button";
+import { InjectedBadge } from "@/components/common/injected-badge";
 import { LearningsBadge } from "@/components/common/learnings-badge";
 import { HostBadge } from "@/components/common/host-badge";
 import { Input } from "@/components/ui/input";
@@ -150,6 +151,10 @@ export default function SessionsPage() {
                               </span>
                             )}
                           </p>
+                          <InjectedBadge
+                            count={s.injected_learning_count}
+                            size="sm"
+                          />
                           <LearningsBadge
                             count={s.learning_interaction_count}
                             size="sm"

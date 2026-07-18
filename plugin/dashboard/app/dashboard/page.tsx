@@ -10,6 +10,7 @@ import {
   ExternalLink,
   Users,
 } from "lucide-react";
+import { InjectedBadge } from "@/components/common/injected-badge";
 import { LearningsBadge } from "@/components/common/learnings-badge";
 import { HostBadge } from "@/components/common/host-badge";
 import { PageHeader } from "@/components/common/page-header";
@@ -218,6 +219,10 @@ export default function DashboardPage() {
                       <code className="font-mono text-xs truncate">
                         {truncateId(s.session_id, 10, 6)}
                       </code>
+                      <InjectedBadge
+                        count={s.injected_learning_count}
+                        size="sm"
+                      />
                       <LearningsBadge
                         count={s.learning_interaction_count}
                         size="sm"

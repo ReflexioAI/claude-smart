@@ -267,38 +267,46 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
     if os.environ.get("CLAUDE_SMART_CITATIONS", "on") == "off":
         return ""
     gate = cs_cite.WHEN_TO_CITE_COMPACT
+    only_used = (
+        "Include only memories that met that bar; omit the rest. "
+        "Do not cite every listed memory by default."
+    )
     link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
     if link_style == "osc8" and marker_parts:
-        marker = cs_cite.build_marker(" | ".join(marker_parts), "osc8")
-        separator_instruction = (
-            " Separate multiple linked memories with the visible ` | ` separator."
+        example = cs_cite.build_marker(marker_parts[0], "osc8")
+        multi = (
+            " For multiple qualifying items, join their linked titles with the "
+            "visible ` | ` separator."
             if len(marker_parts) > 1
             else ""
         )
         return _remoteize_citation_instruction(
-            f"{gate} If you do, copy this final marker exactly, preserving its "
-            f"hidden OSC 8 terminal link: `{marker}`.{separator_instruction}"
+            f"{gate} {only_used} If you do, end with one final marker in this "
+            f"format, preserving hidden OSC 8 terminal links: `{example}`."
+            f"{multi}"
         )
     if link_style == "osc8":
         return _remoteize_citation_instruction(
-            f"{gate} If you do, end with `{cs_cite.MARKER_PREFIX}` "
-            "followed by the same linked memory text, then "
+            f"{gate} {only_used} If you do, end with `{cs_cite.MARKER_PREFIX}` "
+            "followed by the linked memory text for only the qualifying items, "
+            "then "
             f"`{cs_cite.marker_attribution('osc8')}` linking to the reflexio "
             "repo; keep the links, but do not show the URL."
         )
     if marker_parts:
-        marker = cs_cite.build_marker(" | ".join(marker_parts), "markdown")
-        separator_instruction = (
-            " Separate multiple linked memories with the visible ` | ` separator."
+        example = cs_cite.build_marker(marker_parts[0], "markdown")
+        multi = (
+            " For multiple qualifying items, join their markdown links with the "
+            "visible ` | ` separator."
             if len(marker_parts) > 1
             else ""
         )
         return _remoteize_citation_instruction(
-            f"{gate} If you do, copy this final marker exactly with markdown "
-            f"links: `{marker}`.{separator_instruction}"
+            f"{gate} {only_used} If you do, end with one final marker like "
+            f"`{example}` using each item's shown rule URL.{multi}"
         )
     return _remoteize_citation_instruction(
-        f"{gate} If you do, end with one final marker like "
+        f"{gate} {only_used} If you do, end with one final marker like "
         f"`{cs_cite.MARKDOWN_EXAMPLE_ONE}` using the shown rule URL."
     )
 
@@ -337,11 +345,26 @@ def _exact_osc8_marker_instruction(entries: list[dict[str, Any]]) -> str:
     if not marker_parts:
         return ""
 
-    marker = cs_cite.build_marker(" | ".join(marker_parts), "osc8")
+    example = cs_cite.build_marker(marker_parts[0], "osc8")
+    if len(marker_parts) == 1:
+        available = ""
+        multi = ""
+    else:
+        available = (
+            " Qualifying linked titles: "
+            + " · ".join(marker_parts)
+            + "."
+        )
+        multi = (
+            " For multiple qualifying items, join only those linked titles with "
+            "the visible ` | ` separator."
+        )
     return (
-        "If any listed memory above was used, copy this exact final marker, "
-        f"preserving its hidden OSC 8 terminal links: `{marker}`. "
-        "Do not rename, summarize, or regroup the linked titles."
+        "If a listed memory above materially changed your response, end with one "
+        "final marker in this OSC 8 format (include only qualifying items; omit "
+        f"the rest): `{example}`.{available}{multi} Preserve hidden OSC 8 "
+        "terminal links and use each item's linked title as shown — do not invent "
+        "URLs."
     )
 
 

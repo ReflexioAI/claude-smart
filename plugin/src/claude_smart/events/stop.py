@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -282,26 +283,30 @@ def _has_unpublished_user_turn(session_id: str) -> bool:
     return any(item.get("role") == "User" for item in interactions)
 
 
-def _resolve_cited_items(session_id: str, cited_ids: list[str]) -> list[dict[str, Any]]:
-    """Map citation ids to ``{id, kind, title}`` entries via the session registry.
+def _resolve_cited_items(
+    session_id: str, cited_ids: list[str]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Map citation ids to registry entries; return unresolved tokens separately.
 
-    Unknown ids (Claude hallucinations, or items injected in a newer
-    session than this hook can see) are dropped. Duplicate ids within
-    one turn collapse to a single entry — the user-facing badge row
-    doesn't need the multiplicity.
+    Duplicate ids within one turn collapse to a single entry — the
+    user-facing badge row doesn't need the multiplicity. Unknown ids are
+    not promoted to ``cited_items``; callers may persist them as
+    ``unresolved_citations`` for local diagnostics.
     """
     if not cited_ids:
-        return []
+        return [], []
     registry = state.read_injected(session_id)
     seen: set[str] = set()
     resolved: list[dict[str, Any]] = []
+    unresolved: list[str] = []
     for cid in cited_ids:
         if cid in seen:
             continue
+        seen.add(cid)
         entry = _registry_entry_for_citation(registry, cid)
         if not entry:
+            unresolved.append(cid)
             continue
-        seen.add(cid)
         item: dict[str, Any] = {
             "id": entry.get("id", cid),
             "kind": entry.get("kind", ""),
@@ -314,15 +319,42 @@ def _resolve_cited_items(session_id: str, cited_ids: list[str]) -> list[dict[str
         if isinstance(source_kind, str) and source_kind:
             item["source_kind"] = source_kind
         resolved.append(item)
-    return resolved
+    return resolved, unresolved
+
+
+_RANK_ID_RE = re.compile(r"^(?P<rank>[ps]\d+)(?:-(?P<fp>[a-z0-9]{1,8}))?$", re.I)
 
 
 def _registry_entry_for_citation(
     registry: dict[str, dict[str, Any]], citation: str
 ) -> dict[str, Any] | None:
-    """Resolve a legacy rank id or a dashboard-route citation token."""
+    """Resolve a legacy rank id or a dashboard-route citation token.
+
+    Rank ids may drift fingerprints across re-injections (``s4-1068`` vs
+    ``s4-1006``). When the exact id is missing, accept a unique match on
+    the rank prefix alone; ambiguous or empty matches stay unresolved so
+    we never invent credit.
+    """
     if not citation.startswith("route:"):
-        return registry.get(citation)
+        entry = registry.get(citation)
+        if entry is not None:
+            return entry
+        lowered = {key.lower(): value for key, value in registry.items()}
+        entry = lowered.get(citation.lower())
+        if entry is not None:
+            return entry
+        match = _RANK_ID_RE.fullmatch(citation.strip())
+        if not match:
+            return None
+        rank = match.group("rank").lower()
+        candidates = [
+            value
+            for key, value in registry.items()
+            if key.lower() == rank or key.lower().startswith(f"{rank}-")
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
     try:
         _, kind, source_kind, real_id = citation.split(":", 3)
     except ValueError:
@@ -395,7 +427,9 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
     if os.environ.get("CLAUDE_SMART_CITATIONS", "on") == "off":
         assistant_text = cs_cite.strip_marker_lines(assistant_text)
     text_cited_ids = cs_cite.parse_text_citations(assistant_text)
-    cited_items = _resolve_cited_items(session_id, text_cited_ids)
+    cited_items, unresolved_citations = _resolve_cited_items(
+        session_id, text_cited_ids
+    )
     plan_decisions = _scan_transcript_for_plan_decisions(entries)
 
     now = int(time.time())
@@ -432,6 +466,8 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
     }
     if cited_items:
         record["cited_items"] = cited_items
+    if unresolved_citations:
+        record["unresolved_citations"] = unresolved_citations
     state.append(session_id, record)
     if env_config.env_truthy(env_config.CLAUDE_SMART_READ_ONLY_ENV):
         state.mark_all_published(session_id)

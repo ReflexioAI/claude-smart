@@ -407,7 +407,13 @@ def unpublished_slice(
         turn = {
             key: value
             for key, value in record.items()
-            if key not in {"role", "ts", "cited_items", "host"}
+            if key not in {
+                "role",
+                "ts",
+                "cited_items",
+                "unresolved_citations",
+                "host",
+            }
         }
         turn["role"] = role
         if role == "Assistant":

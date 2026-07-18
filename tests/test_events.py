@@ -1084,12 +1084,17 @@ def test_user_prompt_injects_compact_context_for_codex(
     assert "Run uv sync after pyproject edits: Run uv sync" not in markdown
     assert "prefers anyio over asyncio" in markdown
     assert "✨ claude-smart rule applied:" in markdown
-    assert "copy this final marker exactly with markdown links" in markdown
+    assert "Do not cite every listed memory by default." in markdown
+    assert "end with one final marker like" in markdown
+    assert (
+        "✨ claude-smart rule applied: "
+        "[Run uv sync after pyproject edits](http://localhost:3001/rules/s1)"
+    ) in markdown
     assert (
         "✨ claude-smart rule applied: "
         "[Run uv sync after pyproject edits](http://localhost:3001/rules/s1) | "
         "[prefers anyio over asyncio](http://localhost:3001/rules/p1)"
-    ) in markdown
+    ) not in markdown
     assert "\x1b]8;;" not in markdown
 
 
@@ -1363,7 +1368,7 @@ def test_stop_omits_cited_items_when_no_citation_marker(
 def test_stop_drops_unknown_text_citation_ids(
     session_dir, tmp_path, monkeypatch
 ) -> None:
-    """Ids not present in the session registry are silently dropped."""
+    """Ids not present in the session registry are not counted as applied."""
     _prime_injected_registry("s1")
     transcript = _write_transcript(
         tmp_path,
@@ -1394,6 +1399,116 @@ def test_stop_drops_unknown_text_citation_ids(
     assert cited == [
         {"id": "s1-42", "kind": "playbook", "title": "use pathlib", "real_id": "42"},
     ]
+    assert records[-1].get("unresolved_citations") == ["s9-ffff"]
+
+
+def test_stop_resolves_unique_rank_fingerprint_drift(
+    session_dir, tmp_path, monkeypatch
+) -> None:
+    """Stale rank fingerprints still resolve when the rank prefix is unique."""
+    state.append_injected(
+        "s1",
+        [
+            {
+                "id": "s4-1006",
+                "kind": "playbook",
+                "title": "snapshot safety",
+                "content": "snapshot safety",
+                "real_id": "1006",
+                "ts": 0,
+            }
+        ],
+    )
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            {"type": "user", "message": {"content": "hi"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Done.\n\n"
+                                "✨ claude-smart rule applied: "
+                                "[snapshot safety](http://localhost:3001/rules/s4-1068)"
+                            ),
+                        }
+                    ]
+                },
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
+    )
+    stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
+    records = state.read_all("s1")
+    assert records[-1].get("cited_items") == [
+        {
+            "id": "s4-1006",
+            "kind": "playbook",
+            "title": "snapshot safety",
+            "real_id": "1006",
+        }
+    ]
+    assert "unresolved_citations" not in records[-1]
+
+
+def test_stop_keeps_ambiguous_rank_ids_unresolved(
+    session_dir, tmp_path, monkeypatch
+) -> None:
+    """Ambiguous rank prefixes must not invent applied credit."""
+    state.append_injected(
+        "s1",
+        [
+            {
+                "id": "s4-1006",
+                "kind": "playbook",
+                "title": "one",
+                "content": "one",
+                "real_id": "1006",
+                "ts": 0,
+            },
+            {
+                "id": "s4-aaaa",
+                "kind": "playbook",
+                "title": "two",
+                "content": "two",
+                "real_id": "aaaa",
+                "ts": 0,
+            },
+        ],
+    )
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            {"type": "user", "message": {"content": "hi"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Done.\n\n"
+                                "✨ claude-smart rule applied: "
+                                "[mystery](http://localhost:3001/rules/s4-zzzz)"
+                            ),
+                        }
+                    ]
+                },
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished", lambda **_: ("nothing", 0)
+    )
+    stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
+    records = state.read_all("s1")
+    assert "cited_items" not in records[-1]
+    assert records[-1].get("unresolved_citations") == ["s4-zzzz"]
 
 
 def test_stop_handles_missing_transcript_file(session_dir, monkeypatch) -> None:
@@ -1437,6 +1552,7 @@ def test_stop_citation_without_prior_registry_drops_all_ids(
     stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
     records = state.read_all("s1")
     assert "cited_items" not in records[-1]
+    assert records[-1].get("unresolved_citations") == ["s1-42"]
 
 
 # -----------------------------------------------------------------------------

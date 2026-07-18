@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { HostBadge } from "@/components/common/host-badge";
+import { InjectedBadge } from "@/components/common/injected-badge";
 import { LearningsBadge } from "@/components/common/learnings-badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { Badge } from "@/components/ui/badge";
@@ -82,6 +83,10 @@ export default function InteractionDetailPage({
             <span>{sessionId}</span>
             {detail && (
               <>
+                <InjectedBadge
+                  count={detail.injected_learning_count}
+                  size="sm"
+                />
                 <LearningsBadge
                   count={detail.learning_interaction_count}
                   size="sm"
@@ -232,6 +237,12 @@ export default function InteractionDetailPage({
                   {turn.cited_items && turn.cited_items.length > 0 && (
                     <CitedItemsRow items={turn.cited_items} />
                   )}
+                  {turn.unresolved_citations &&
+                    turn.unresolved_citations.length > 0 && (
+                      <UnresolvedCitationsRow
+                        ids={turn.unresolved_citations}
+                      />
+                    )}
                   <TurnMeta ts={turn.ts} userId={turn.user_id} />
                 </article>
               );
@@ -308,6 +319,31 @@ function CitedItemsRow({ items }: { items: CitedItem[] }) {
             </Link>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function UnresolvedCitationsRow({ ids }: { ids: string[] }) {
+  return (
+    <div className="mt-2 flex items-start gap-2 text-[11px]">
+      <AlertTriangle className="h-3.5 w-3.5 mt-0.5 text-muted-foreground shrink-0" />
+      <div className="flex items-center gap-1 flex-wrap">
+        <span
+          className="text-muted-foreground"
+          title="Marker ids that could not be matched to this session's injection registry. Not counted as applied."
+        >
+          Unresolved marker
+        </span>
+        {ids.map((id) => (
+          <Badge
+            key={id}
+            variant="outline"
+            className="h-5 gap-1 text-[10px] text-muted-foreground"
+          >
+            {id}
+          </Badge>
+        ))}
       </div>
     </div>
   );

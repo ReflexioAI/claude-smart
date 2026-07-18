@@ -92,6 +92,7 @@ export interface SessionTurn {
   user_id?: string;
   tools_used?: ToolUsed[];
   cited_items?: CitedItem[];
+  unresolved_citations?: string[];
   user_action?: UserActionType;
   user_action_description?: string;
 }
@@ -100,6 +101,8 @@ export interface SessionSummary {
   session_id: string;
   turn_count: number;
   learning_interaction_count: number;
+  /** Unique learning ids recorded in the session injection registry. */
+  injected_learning_count: number;
   last_activity: number | null;
   first_activity: number | null;
   published_up_to: number;
@@ -113,6 +116,8 @@ export interface SessionDetail {
   session_id: string;
   turns: SessionTurn[];
   learning_interaction_count: number;
+  /** Unique learning ids recorded in the session injection registry. */
+  injected_learning_count: number;
   published_up_to: number;
   host: Host | null;
 }
