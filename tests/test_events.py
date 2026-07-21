@@ -1084,11 +1084,12 @@ def test_user_prompt_injects_compact_context_for_codex(
     assert "Run uv sync after pyproject edits: Run uv sync" not in markdown
     assert "prefers anyio over asyncio" in markdown
     assert "✨ claude-smart rule applied:" in markdown
-    assert "copy this final marker exactly with markdown links" in markdown
+    assert (
+        "Include only memories that materially changed the response." in markdown
+    )
     assert (
         "✨ claude-smart rule applied: "
-        "[Run uv sync after pyproject edits](http://localhost:3001/rules/s1) | "
-        "[prefers anyio over asyncio](http://localhost:3001/rules/p1)"
+        "[Run uv sync after pyproject edits](http://localhost:3001/rules/s1)"
     ) in markdown
     assert "\x1b]8;;" not in markdown
 

@@ -269,15 +269,13 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
     gate = cs_cite.WHEN_TO_CITE_COMPACT
     link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
     if link_style == "osc8" and marker_parts:
-        marker = cs_cite.build_marker(" | ".join(marker_parts), "osc8")
-        separator_instruction = (
-            " Separate multiple linked memories with the visible ` | ` separator."
-            if len(marker_parts) > 1
-            else ""
-        )
+        example = cs_cite.build_marker(marker_parts[0], "osc8")
+        available = " · ".join(marker_parts)
         return _remoteize_citation_instruction(
-            f"{gate} If you do, copy this final marker exactly, preserving its "
-            f"hidden OSC 8 terminal link: `{marker}`.{separator_instruction}"
+            f"{gate} If you do, use this final marker format, preserving its "
+            f"hidden OSC 8 terminal link: `{example}`. Include only memories "
+            f"that materially changed the response. Available linked titles: {available}. "
+            "Separate multiple linked memories with the visible ` | ` separator."
         )
     if link_style == "osc8":
         return _remoteize_citation_instruction(
@@ -287,15 +285,12 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
             "repo; keep the links, but do not show the URL."
         )
     if marker_parts:
-        marker = cs_cite.build_marker(" | ".join(marker_parts), "markdown")
-        separator_instruction = (
-            " Separate multiple linked memories with the visible ` | ` separator."
-            if len(marker_parts) > 1
-            else ""
-        )
+        example = cs_cite.build_marker(marker_parts[0], "markdown")
         return _remoteize_citation_instruction(
-            f"{gate} If you do, copy this final marker exactly with markdown "
-            f"links: `{marker}`.{separator_instruction}"
+            f"{gate} If you do, use this final marker format with markdown "
+            f"links: `{example}`. Include only memories that materially changed "
+            "the response. "
+            "Separate multiple linked memories with the visible ` | ` separator."
         )
     return _remoteize_citation_instruction(
         f"{gate} If you do, end with one final marker like "
@@ -337,11 +332,14 @@ def _exact_osc8_marker_instruction(entries: list[dict[str, Any]]) -> str:
     if not marker_parts:
         return ""
 
-    marker = cs_cite.build_marker(" | ".join(marker_parts), "osc8")
+    example = cs_cite.build_marker(marker_parts[0], "osc8")
+    available = " · ".join(marker_parts)
     return (
-        "If any listed memory above was used, copy this exact final marker, "
-        f"preserving its hidden OSC 8 terminal links: `{marker}`. "
-        "Do not rename, summarize, or regroup the linked titles."
+        "If any listed memory above was used, use this final marker format, "
+        f"preserving its hidden OSC 8 terminal link: `{example}`. Include only "
+        f"memories that materially changed the response. Available linked titles: "
+        f"{available}. "
+        "Separate multiple linked memories with the visible ` | ` separator."
     )
 
 
