@@ -55,6 +55,8 @@ export default function ProjectSkillDetailPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
+  const userPlaybookId = Number(id);
+  const invalidId = !Number.isSafeInteger(userPlaybookId) || userPlaybookId <= 0;
 
   const [playbook, setPlaybook] = useState<UserPlaybook | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -71,13 +73,12 @@ export default function ProjectSkillDetailPage({
 
   useEffect(() => {
     let cancelled = false;
+    if (invalidId) return;
     reflexio
-      .getUserPlaybooks({})
+      .getUserPlaybooks({ userPlaybookId, limit: 1 })
       .then((res) => {
         if (cancelled) return;
-        const found = (res.user_playbooks ?? []).find(
-          (p) => String(p.user_playbook_id) === id,
-        );
+        const found = res.user_playbooks?.[0];
         if (!found) {
           setNotFound(true);
           return;
@@ -91,7 +92,7 @@ export default function ProjectSkillDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [invalidId, userPlaybookId]);
 
   const dirty = useMemo(() => {
     if (!playbook) return false;
@@ -147,7 +148,7 @@ export default function ProjectSkillDetailPage({
     setEditing(false);
   };
 
-  if (notFound) {
+  if (notFound || invalidId) {
     return (
       <div className="flex-1 overflow-auto">
         <PageHeader title="Project-specific skill not found" />
