@@ -46,6 +46,7 @@ export const reflexio = {
   /** POST /api/get_user_playbooks — all filters are optional. */
   async getUserPlaybooks(
     opts: {
+      userPlaybookId?: number;
       userId?: string;
       agentVersion?: string;
       playbookName?: string;
@@ -54,6 +55,8 @@ export const reflexio = {
     },
   ): Promise<{ user_playbooks: UserPlaybook[] }> {
     const body: Json = { limit: opts.limit ?? 100 };
+    if (opts.userPlaybookId !== undefined)
+      body.user_playbook_id = opts.userPlaybookId;
     if (opts.userId) body.user_id = opts.userId;
     if (opts.agentVersion) body.agent_version = opts.agentVersion;
     if (opts.playbookName) body.playbook_name = opts.playbookName;
