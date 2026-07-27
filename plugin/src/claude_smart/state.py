@@ -62,6 +62,16 @@ _INTERACTION_DATA_FIELDS = frozenset(
     }
 )
 
+# Fields actually put on the wire. `created_at` is a real InteractionData field
+# — so it must stay in the set above, which is pinned against the model — but it
+# must NOT be emitted. Sending a buffered event time backdates the interaction,
+# and the extractor's bookmark is keyed on `created_at` (`created_at >= ?`), so a
+# batch recovered after the bookmark moved is stored and then never extracted:
+# permanent, silent loss of learning data on exactly the offline-recovery path
+# this buffer exists for. Letting the server stamp its own time is the lesser
+# evil until ingest ordering stops depending on caller-supplied event time.
+_WIRE_FIELDS = _INTERACTION_DATA_FIELDS - {"created_at"}
+
 _VALID_CITATION_KINDS = frozenset(
     {"playbook", "profile", "user_playbook", "agent_playbook"}
 )
@@ -436,9 +446,7 @@ def unpublished_slice(
         # turn that rot into a publish failure this plugin's adapter swallows
         # without advancing its watermark.
         turn = {
-            key: value
-            for key, value in record.items()
-            if key in _INTERACTION_DATA_FIELDS
+            key: value for key, value in record.items() if key in _WIRE_FIELDS
         }
         turn["role"] = role
         # NOTE: deliberately does NOT send `created_at`. Carrying the buffer's

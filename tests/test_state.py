@@ -544,6 +544,24 @@ class TestWirePayloadContract:
             " the slicer would silently drop them"
         )
 
+    def test_created_at_is_never_emitted_even_when_present(self):
+        """A literal `created_at` in the buffer must not reach the wire.
+
+        The field is in the model-contract set (it is a real InteractionData
+        field), so filtering on that set alone let it through. Only `ts` was
+        tested, which could not catch this. Backdating an interaction hides it
+        from the extractor permanently — see `_WIRE_FIELDS`.
+        """
+        _, turns = state.unpublished_slice(
+            [{"ts": 1, "role": "User", "content": "x", "created_at": 999}]
+        )
+        assert "created_at" not in turns[0], turns[0]
+
+    def test_wire_fields_excludes_created_at_but_contract_set_keeps_it(self):
+        assert "created_at" in state._INTERACTION_DATA_FIELDS
+        assert "created_at" not in state._WIRE_FIELDS
+        assert state._WIRE_FIELDS < state._INTERACTION_DATA_FIELDS
+
     def test_buffer_timestamp_is_not_sent(self):
         """`created_at` must stay off the wire.
 
