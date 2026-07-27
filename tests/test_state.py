@@ -6,6 +6,8 @@ import json
 import multiprocessing as mp
 import os
 
+import pytest
+
 from claude_smart import state
 
 
@@ -487,3 +489,72 @@ def test_append_concurrent_writes_do_not_corrupt_jsonl(session_dir) -> None:
     for line in raw_lines:
         record = json.loads(line)  # must parse — no interleaving
         assert record == {"role": "User", "content": big}
+
+
+class TestWirePayloadContract:
+    """The wire dict must contain only fields the server's model accepts.
+
+    ``unpublished_slice`` used to build the payload with a denylist, so buffer
+    bookkeeping rode along. ``user_id`` was harmless (the server treats it as a
+    benign request-level key and does not warn), but ``synthesised_by`` was
+    reported, and a denylist rots every time a hook adds a record key.
+    """
+
+    def test_bookkeeping_keys_never_reach_the_wire(self):
+        _, turns = state.unpublished_slice(
+            [
+                {
+                    "ts": 1,
+                    "role": "User",
+                    "content": "x",
+                    "user_id": "p",
+                    "host": "h",
+                    "synthesised_by": "s",
+                }
+            ]
+        )
+        assert turns, "expected one wire turn"
+        # Assert a LITERAL set, not `<= _INTERACTION_DATA_FIELDS`: that is the
+        # same constant the slicer filters by, so it could never fail while the
+        # comprehension exists. Proven tautological by runtime mutation.
+        assert set(turns[0]) == {"role", "content"}, turns[0]
+        assert turns[0]["content"] == "x"
+
+    def test_allowlist_covers_every_installed_model_field(self):
+        """The allowlist must not be MISSING anything the model declares.
+
+        Subset, not equality. The plugin is deliberately forward-compatible:
+        it talks to a deployed server that can be newer than the pinned
+        ``reflexio-ai`` release, so knowing a field the installed library has
+        not caught up to yet is correct — the server accepts it, and an older
+        server merely reports it as unrecognised.
+
+        Equality broke CI for exactly that reason: the pinned PyPI 0.2.28 has
+        no ``retrieved_learnings``, which this plugin has been sending (and the
+        server accepting) for some time. What would be a real bug is the other
+        direction — a field the installed model declares that the allowlist
+        omits, because the slicer would then silently drop it.
+        """
+        interaction_data = pytest.importorskip(
+            "reflexio.models.api_schema.domain.entities"
+        ).InteractionData
+        missing = set(interaction_data.model_fields) - state._INTERACTION_DATA_FIELDS
+        assert not missing, (
+            f"allowlist omits InteractionData field(s) {sorted(missing)};"
+            " the slicer would silently drop them"
+        )
+
+    def test_buffer_timestamp_is_not_sent(self):
+        """`created_at` must stay off the wire.
+
+        Carrying the buffer's `ts` across was implemented and reverted: the
+        extractor bookmark is keyed on interaction `created_at`, so a batch
+        recovered after the bookmark moved was stored and then never extracted
+        — permanent silent loss of learning data on the offline-recovery path
+        this buffer exists for. The server stamping drain time is the lesser
+        evil until ingest ordering stops depending on caller-supplied time.
+        """
+        _, turns = state.unpublished_slice(
+            [{"ts": 1700000000, "role": "User", "content": "x", "user_id": "p"}]
+        )
+        assert "created_at" not in turns[0], turns[0]

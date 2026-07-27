@@ -206,7 +206,9 @@ def test_success_does_not_hide_turn_appended_during_publish(session_dir) -> None
         {
             "role": "Assistant",
             "content": "second",
-            "user_id": "user",
+            # `user_id` is buffer bookkeeping and is no longer put on the
+            # wire (it is sent once at the request level). `created_at` is
+            # deliberately not sent either — see state.unpublished_slice.
             "retrieved_learnings": [
                 {"kind": "profile", "learning_id": "p2"}
             ],

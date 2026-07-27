@@ -40,6 +40,28 @@ _DEFAULT_STATE_DIR = Path.home() / ".claude-smart" / "sessions"
 
 _TOOL_DATA_FIELD_MAX_LEN = 256
 
+# Fields the server's ``InteractionData`` accepts. Declared literally rather
+# than imported so this module keeps no runtime dependency on ``reflexio``;
+# ``tests/test_state.py`` pins it against the real model when that package is
+# installed. Anything not listed here is buffer-internal bookkeeping and must
+# not reach the wire.
+_INTERACTION_DATA_FIELDS = frozenset(
+    {
+        "created_at",
+        "role",
+        "content",
+        "shadow_content",
+        "expert_content",
+        "user_action",
+        "user_action_description",
+        "interacted_image_url",
+        "image_encoding",
+        "tools_used",
+        "citations",
+        "retrieved_learnings",
+    }
+)
+
 _VALID_CITATION_KINDS = frozenset(
     {"playbook", "profile", "user_playbook", "agent_playbook"}
 )
@@ -404,12 +426,31 @@ def unpublished_slice(
         if role not in {"User", "Assistant"}:
             continue
 
+        # Allowlist, not denylist. This used to drop four known keys and pass
+        # everything else through, so buffer-internal bookkeeping (``user_id``,
+        # ``synthesised_by``, ``id``, ``kind``, ...) rode along onto the wire.
+        # The server discards unknown keys, and now reports them: it treats
+        # `user_id` as a benign request-level key, but `synthesised_by` was
+        # warned about on every session-end anchor. More importantly a denylist
+        # rots every time a hook adds a record key, and a stricter server would
+        # turn that rot into a publish failure this plugin's adapter swallows
+        # without advancing its watermark.
         turn = {
             key: value
             for key, value in record.items()
-            if key not in {"role", "ts", "cited_items", "host"}
+            if key in _INTERACTION_DATA_FIELDS
         }
         turn["role"] = role
+        # NOTE: deliberately does NOT send `created_at`. Carrying the buffer's
+        # `ts` across looks like an obvious improvement — the server otherwise
+        # stamps drain time — but the extractor's bookmark is keyed on
+        # interaction `created_at` (`last_processed_timestamp`, compared with
+        # `created_at >= ?`). A batch recovered after the bookmark has moved
+        # would be stored and then never seen by the extractor: reproduced as
+        # permanent, silent loss of learning data on exactly the offline path
+        # this buffer exists to protect. Cosmetic timestamps are the lesser
+        # problem. Revisit only once ingest ordering no longer depends on a
+        # caller-supplied event time.
         if role == "Assistant":
             citations = _to_wire_citations(record.get("cited_items"))
             if citations:
