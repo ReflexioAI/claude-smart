@@ -101,6 +101,7 @@ function pickBestRow(rows: LineageRow[]): LineageRow | null {
 }
 
 function openReadonlyDb(dbPath: string): DatabaseSync {
+  // node:sqlite DatabaseSync readOnly requires Node >=22.18 / >=24.4.
   return new DatabaseSync(dbPath, { readOnly: true });
 }
 
@@ -134,7 +135,9 @@ export function getLearningModelProvenance(
     return emptyProvenance(entityType, entityId, true, "missing entityId");
   }
   if (!fs.existsSync(dbPath)) {
-    return emptyProvenance(entityType, entityId, true, `db missing: ${dbPath}`);
+    // Keep host path details server-side only; UI gets a stable public reason.
+    console.error(`[model-lineage] database unavailable at ${dbPath}`);
+    return emptyProvenance(entityType, entityId, true, "database unavailable");
   }
 
   let db: DatabaseSync | null = null;
@@ -145,7 +148,7 @@ export function getLearningModelProvenance(
       return emptyProvenance(
         entityType,
         entityId,
-        false,
+        true,
         "lineage_event table not present",
       );
     }
@@ -206,7 +209,14 @@ export function getLearningModelProvenance(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return emptyProvenance(entityType, entityId, true, message);
+    // Keep SQLite diagnostics server-side only.
+    console.error(`[model-lineage] provenance query failed: ${message}`);
+    return emptyProvenance(
+      entityType,
+      entityId,
+      true,
+      "provenance query failed",
+    );
   } finally {
     try {
       db?.close();
