@@ -2,14 +2,9 @@ import { Cpu } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LearningModelProvenance } from "@/lib/model-lineage";
 
-function formatObservedModel(
-  provider: string | null,
-  modelName: string | null,
-): string | null {
+function label(provider: string | null, modelName: string | null): string | null {
   if (provider && modelName) return `${provider}/${modelName}`;
-  if (modelName) return modelName;
-  if (provider) return provider;
-  return null;
+  return modelName || provider;
 }
 
 export function LearningModelProvenanceView({
@@ -22,7 +17,6 @@ export function LearningModelProvenanceView({
   if (!provenance) {
     return <span className={cn("text-muted-foreground", className)}>Loading…</span>;
   }
-
   if (provenance.unavailable) {
     return (
       <span
@@ -34,21 +28,14 @@ export function LearningModelProvenanceView({
     );
   }
 
-  const observed = formatObservedModel(provenance.provider, provenance.modelName);
-  const titleParts = [
-    observed ? `observed=${observed}` : null,
-    provenance.op ? `op=${provenance.op}` : null,
-    provenance.actor ? `actor=${provenance.actor}` : null,
-    provenance.reason || null,
-  ].filter(Boolean);
-
+  const observed = label(provenance.provider, provenance.modelName);
   return (
     <span
       className={cn(
         "inline-flex max-w-full items-center justify-end gap-1.5 text-right",
         className,
       )}
-      title={titleParts.join(" · ")}
+      title={observed ?? provenance.reason ?? "Observed model not recorded"}
     >
       <Cpu
         className={cn(

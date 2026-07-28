@@ -20,9 +20,7 @@ export function useLearningModelProvenance(
     entityId !== "";
 
   useEffect(() => {
-    if (!ready || !entityType) {
-      return;
-    }
+    if (!ready || !entityType) return;
 
     let cancelled = false;
     const controller = new AbortController();
@@ -51,10 +49,6 @@ export function useLearningModelProvenance(
             entityId: String(entityId),
             modelName: null,
             provider: null,
-            op: null,
-            actor: null,
-            eventId: null,
-            createdAt: null,
             unavailable: true,
             reason: "failed to load model provenance",
           });

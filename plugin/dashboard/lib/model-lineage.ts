@@ -1,10 +1,6 @@
 /**
- * Direct SQLite reader for observed model/provider lineage on generated
- * learnings. Reads ~/.reflexio/data/reflexio.db (or CLAUDE_SMART_REFLEXIO_DB)
- * without going through the Reflexio HTTP API.
- *
- * Contract: only observed model_name/provider are supported going forward.
- * Historical rows may lack these columns/values; treat them as unrecorded.
+ * Read observed model/provider from local Reflexio SQLite lineage.
+ * Direct DB access only — not the Reflexio HTTP API.
  */
 
 import fs from "node:fs";
@@ -22,23 +18,11 @@ export interface LearningModelProvenance {
   entityId: string;
   modelName: string | null;
   provider: string | null;
-  op: string | null;
-  actor: string | null;
-  eventId: number | null;
-  createdAt: number | null;
   unavailable: boolean;
   reason?: string;
 }
 
-const CONTENT_OPS = new Set(["create", "revise", "merge", "aggregate"]);
-
-export function defaultReflexioDbPath(): string {
-  const override = process.env.CLAUDE_SMART_REFLEXIO_DB;
-  if (override && override.trim()) return override.trim();
-  return path.join(os.homedir(), ".reflexio", "data", "reflexio.db");
-}
-
-function emptyProvenance(
+function empty(
   entityType: LearningEntityType,
   entityId: string,
   unavailable: boolean,
@@ -49,133 +33,84 @@ function emptyProvenance(
     entityId,
     modelName: null,
     provider: null,
-    op: null,
-    actor: null,
-    eventId: null,
-    createdAt: null,
     unavailable,
     reason,
   };
 }
 
-function normalizeEntityType(value: string): LearningEntityType | null {
-  if (
-    value === "profile" ||
-    value === "user_playbook" ||
-    value === "agent_playbook"
-  ) {
-    return value;
-  }
-  return null;
+function dbPath(): string {
+  const override = process.env.CLAUDE_SMART_REFLEXIO_DB?.trim();
+  if (override) return override;
+  return path.join(os.homedir(), ".reflexio", "data", "reflexio.db");
 }
 
-type LineageRow = {
-  event_id: number;
-  op: string | null;
-  actor: string | null;
-  model_name: string | null;
-  provider: string | null;
-  created_at: number | null;
-};
-
-function pickBestRow(rows: LineageRow[]): LineageRow | null {
-  if (rows.length === 0) return null;
-
-  const withModel = rows.filter(
-    (row) =>
-      (typeof row.model_name === "string" && row.model_name.trim() !== "") ||
-      (typeof row.provider === "string" && row.provider.trim() !== ""),
-  );
-  const pool = withModel.length > 0 ? withModel : rows;
-
-  const ranked = [...pool].sort((a, b) => {
-    const aContent = CONTENT_OPS.has(a.op ?? "") ? 1 : 0;
-    const bContent = CONTENT_OPS.has(b.op ?? "") ? 1 : 0;
-    if (aContent !== bContent) return bContent - aContent;
-    const aTs = typeof a.created_at === "number" ? a.created_at : 0;
-    const bTs = typeof b.created_at === "number" ? b.created_at : 0;
-    if (aTs !== bTs) return bTs - aTs;
-    return (b.event_id ?? 0) - (a.event_id ?? 0);
-  });
-  return ranked[0] ?? null;
-}
-
-function openReadonlyDb(dbPath: string): DatabaseSync {
-  // node:sqlite DatabaseSync readOnly requires Node >=22.18 / >=24.4.
-  return new DatabaseSync(dbPath, { readOnly: true });
-}
-
-function tableColumns(db: DatabaseSync, table: string): Set<string> {
+function columns(db: DatabaseSync, table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
     name?: string;
   }>;
   return new Set(
-    rows
-      .map((row) => (typeof row.name === "string" ? row.name : ""))
-      .filter(Boolean),
+    rows.map((row) => row.name).filter((name): name is string => !!name),
   );
+}
+
+function nonEmpty(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 export function getLearningModelProvenance(
   entityTypeRaw: string,
   entityIdRaw: string,
-  dbPath: string = defaultReflexioDbPath(),
+  sqlitePath: string = dbPath(),
 ): LearningModelProvenance {
-  const entityType = normalizeEntityType(entityTypeRaw);
+  const entityType = entityTypeRaw as LearningEntityType;
   const entityId = String(entityIdRaw ?? "").trim();
-  if (!entityType) {
-    return emptyProvenance(
-      "profile",
-      entityId,
-      true,
-      `unsupported entityType: ${entityTypeRaw}`,
-    );
+  if (
+    entityType !== "profile" &&
+    entityType !== "user_playbook" &&
+    entityType !== "agent_playbook"
+  ) {
+    return empty("profile", entityId, true, "unsupported entityType");
   }
   if (!entityId) {
-    return emptyProvenance(entityType, entityId, true, "missing entityId");
+    return empty(entityType, entityId, true, "missing entityId");
   }
-  if (!fs.existsSync(dbPath)) {
-    // Keep host path details server-side only; UI gets a stable public reason.
-    console.error(`[model-lineage] database unavailable at ${dbPath}`);
-    return emptyProvenance(entityType, entityId, true, "database unavailable");
+  if (!fs.existsSync(sqlitePath)) {
+    console.error(`[model-lineage] database unavailable at ${sqlitePath}`);
+    return empty(entityType, entityId, true, "database unavailable");
   }
 
   let db: DatabaseSync | null = null;
   try {
-    db = openReadonlyDb(dbPath);
-    const columns = tableColumns(db, "lineage_event");
-    if (columns.size === 0) {
-      return emptyProvenance(
-        entityType,
-        entityId,
-        true,
-        "lineage_event table not present",
-      );
+    // node:sqlite DatabaseSync readOnly requires Node >=22.18 / >=24.4.
+    db = new DatabaseSync(sqlitePath, { readOnly: true });
+    const cols = columns(db, "lineage_event");
+    if (cols.size === 0) {
+      return empty(entityType, entityId, true, "lineage_event table not present");
     }
 
-    const hasModelName = columns.has("model_name");
-    const hasProvider = columns.has("provider");
-    const selectParts = [
-      "event_id",
-      "op",
-      "actor",
-      "created_at",
-      hasModelName ? "model_name" : "NULL AS model_name",
-      hasProvider ? "provider" : "NULL AS provider",
-    ];
+    const modelExpr = cols.has("model_name") ? "model_name" : "NULL";
+    const providerExpr = cols.has("provider") ? "provider" : "NULL";
+    const row = db
+      .prepare(
+        `SELECT ${modelExpr} AS model_name, ${providerExpr} AS provider
+           FROM lineage_event
+          WHERE entity_type = ?
+            AND entity_id = ?
+          ORDER BY
+            CASE
+              WHEN COALESCE(${modelExpr}, '') != '' OR COALESCE(${providerExpr}, '') != ''
+              THEN 0 ELSE 1
+            END,
+            created_at DESC,
+            event_id DESC
+          LIMIT 1`,
+      )
+      .get(entityType, entityId) as
+      | { model_name?: unknown; provider?: unknown }
+      | undefined;
 
-    const stmt = db.prepare(
-      `SELECT ${selectParts.join(", ")}
-         FROM lineage_event
-        WHERE entity_type = ?
-          AND entity_id = ?
-        ORDER BY created_at DESC, event_id DESC
-        LIMIT 50`,
-    );
-    const rows = stmt.all(entityType, entityId) as LineageRow[];
-    const best = pickBestRow(rows);
-    if (!best) {
-      return emptyProvenance(
+    if (!row) {
+      return empty(
         entityType,
         entityId,
         false,
@@ -183,24 +118,13 @@ export function getLearningModelProvenance(
       );
     }
 
-    const modelName =
-      typeof best.model_name === "string" && best.model_name.trim()
-        ? best.model_name.trim()
-        : null;
-    const provider =
-      typeof best.provider === "string" && best.provider.trim()
-        ? best.provider.trim()
-        : null;
-
+    const modelName = nonEmpty(row.model_name);
+    const provider = nonEmpty(row.provider);
     return {
       entityType,
       entityId,
       modelName,
       provider,
-      op: best.op ?? null,
-      actor: best.actor ?? null,
-      eventId: typeof best.event_id === "number" ? best.event_id : null,
-      createdAt: typeof best.created_at === "number" ? best.created_at : null,
       unavailable: false,
       reason:
         modelName || provider
@@ -209,14 +133,8 @@ export function getLearningModelProvenance(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    // Keep SQLite diagnostics server-side only.
     console.error(`[model-lineage] provenance query failed: ${message}`);
-    return emptyProvenance(
-      entityType,
-      entityId,
-      true,
-      "provenance query failed",
-    );
+    return empty(entityType, entityId, true, "provenance query failed");
   } finally {
     try {
       db?.close();
