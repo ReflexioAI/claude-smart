@@ -2,6 +2,9 @@
  * Direct SQLite reader for observed model/provider lineage on generated
  * learnings. Reads ~/.reflexio/data/reflexio.db (or CLAUDE_SMART_REFLEXIO_DB)
  * without going through the Reflexio HTTP API.
+ *
+ * Contract: only observed model_name/provider are supported going forward.
+ * Historical rows may lack these columns/values; treat them as unrecorded.
  */
 
 import fs from "node:fs";
@@ -19,8 +22,6 @@ export interface LearningModelProvenance {
   entityId: string;
   modelName: string | null;
   provider: string | null;
-  requestedModel: string | null;
-  credentialLabel: string | null;
   op: string | null;
   actor: string | null;
   eventId: number | null;
@@ -48,8 +49,6 @@ function emptyProvenance(
     entityId,
     modelName: null,
     provider: null,
-    requestedModel: null,
-    credentialLabel: null,
     op: null,
     actor: null,
     eventId: null,
@@ -76,8 +75,6 @@ type LineageRow = {
   actor: string | null;
   model_name: string | null;
   provider: string | null;
-  requested_model: string | null;
-  credential_label: string | null;
   created_at: number | null;
 };
 
@@ -104,9 +101,18 @@ function pickBestRow(rows: LineageRow[]): LineageRow | null {
 }
 
 function openReadonlyDb(dbPath: string): DatabaseSync {
-  // node:sqlite accepts the path string; open read-only to avoid locking the
-  // live Reflexio backend writer.
   return new DatabaseSync(dbPath, { readOnly: true });
+}
+
+function tableColumns(db: DatabaseSync, table: string): Set<string> {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name?: string;
+  }>;
+  return new Set(
+    rows
+      .map((row) => (typeof row.name === "string" ? row.name : ""))
+      .filter(Boolean),
+  );
 }
 
 export function getLearningModelProvenance(
@@ -134,10 +140,29 @@ export function getLearningModelProvenance(
   let db: DatabaseSync | null = null;
   try {
     db = openReadonlyDb(dbPath);
-    // Prefer content-shaping events that actually recorded model/provider.
+    const columns = tableColumns(db, "lineage_event");
+    if (columns.size === 0) {
+      return emptyProvenance(
+        entityType,
+        entityId,
+        false,
+        "lineage_event table not present",
+      );
+    }
+
+    const hasModelName = columns.has("model_name");
+    const hasProvider = columns.has("provider");
+    const selectParts = [
+      "event_id",
+      "op",
+      "actor",
+      "created_at",
+      hasModelName ? "model_name" : "NULL AS model_name",
+      hasProvider ? "provider" : "NULL AS provider",
+    ];
+
     const stmt = db.prepare(
-      `SELECT event_id, op, actor, model_name, provider, requested_model,
-              credential_label, created_at
+      `SELECT ${selectParts.join(", ")}
          FROM lineage_event
         WHERE entity_type = ?
           AND entity_id = ?
@@ -154,6 +179,7 @@ export function getLearningModelProvenance(
         "no lineage events for this learning",
       );
     }
+
     const modelName =
       typeof best.model_name === "string" && best.model_name.trim()
         ? best.model_name.trim()
@@ -162,21 +188,12 @@ export function getLearningModelProvenance(
       typeof best.provider === "string" && best.provider.trim()
         ? best.provider.trim()
         : null;
-    const requestedModel =
-      typeof best.requested_model === "string" && best.requested_model.trim()
-        ? best.requested_model.trim()
-        : null;
-    const credentialLabel =
-      typeof best.credential_label === "string" && best.credential_label.trim()
-        ? best.credential_label.trim()
-        : null;
+
     return {
       entityType,
       entityId,
       modelName,
       provider,
-      requestedModel,
-      credentialLabel,
       op: best.op ?? null,
       actor: best.actor ?? null,
       eventId: typeof best.event_id === "number" ? best.event_id : null,
@@ -185,7 +202,7 @@ export function getLearningModelProvenance(
       reason:
         modelName || provider
           ? undefined
-          : "lineage present but model/provider not recorded",
+          : "lineage present but observed model/provider not recorded",
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

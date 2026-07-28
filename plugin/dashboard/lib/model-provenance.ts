@@ -51,8 +51,6 @@ export function useLearningModelProvenance(
             entityId: String(entityId),
             modelName: null,
             provider: null,
-            requestedModel: null,
-            credentialLabel: null,
             op: null,
             actor: null,
             eventId: null,
