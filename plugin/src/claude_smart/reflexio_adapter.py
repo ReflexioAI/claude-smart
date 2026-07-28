@@ -125,6 +125,47 @@ class Adapter:
         client = self._get_client()
         if client is None:
             return PublishResult(False)
+        result, response = self._attempt_publish(
+            client,
+            session_id=session_id,
+            project_id=project_id,
+            request_id=request_id,
+            interactions=interactions,
+            force_extraction=force_extraction,
+            override_learning_stall=override_learning_stall,
+            skip_aggregation=skip_aggregation,
+        )
+        if result.ok:
+            # Deliberately outside `_attempt_publish` and every try inside it.
+            # The publish has already been accepted, and `publish_unpublished`
+            # advances the buffer watermark only on a truthy result — so a raise
+            # while reading diagnostics would report a *successful* publish as
+            # failed and re-send the same batch on every later hook. The nested
+            # guard covers the logging handler too, not just the extraction.
+            try:
+                for warning in _publish_warnings(response):
+                    _LOGGER.warning("reflexio dropped part of the payload: %s", warning)
+            except Exception as exc:  # noqa: BLE001 — diagnostics must never fail a publish.
+                _LOGGER.debug("could not read publish warnings: %s", exc)
+        return result
+
+    def _attempt_publish(
+        self,
+        client: Any,
+        *,
+        session_id: str,
+        project_id: str,
+        request_id: str | None,
+        interactions: Sequence[dict[str, Any]],
+        force_extraction: bool,
+        override_learning_stall: bool,
+        skip_aggregation: bool,
+    ) -> tuple[PublishResult, Any]:
+        """Run the publish and return ``(result, raw response)``.
+
+        Split out of ``publish`` so the warning read has somewhere to live that
+        is outside this method's ``except`` — see the caller.
+        """
         try:
             interaction_list = list(interactions)
             raw_request = getattr(client, "_make_request", None)
@@ -142,13 +183,13 @@ class Adapter:
                     "source": _SOURCE,
                 }
                 try:
-                    raw_request(
+                    raw_response = raw_request(
                         "POST",
                         "/api/publish_interaction",
                         json=payload,
                         params=None,
                     )
-                    return PublishResult(True, request_id)
+                    return PublishResult(True, request_id), raw_response
                 except Exception as exc:  # noqa: BLE001
                     if not _needs_raw_retrieved_learning_publish(interaction_list):
                         raise
@@ -163,13 +204,13 @@ class Adapter:
                             interaction_list
                         ),
                     }
-                    raw_request(
+                    fallback_response = raw_request(
                         "POST",
                         "/api/publish_interaction",
                         json=fallback_payload,
                         params=None,
                     )
-                    return PublishResult(True, request_id)
+                    return PublishResult(True, request_id), fallback_response
             if _needs_raw_retrieved_learning_publish(interaction_list):
                 _LOGGER.warning(
                     "Stable raw publishing is unavailable; publishing "
@@ -190,11 +231,11 @@ class Adapter:
             response = client.publish_interaction(**kwargs)
             response_request_id = getattr(response, "request_id", None)
             if isinstance(response_request_id, str) and response_request_id:
-                return PublishResult(True, response_request_id)
-            return PublishResult(True)
+                return PublishResult(True, response_request_id), response
+            return PublishResult(True), response
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("publish_interaction failed: %s", exc)
-            return PublishResult(False)
+            return PublishResult(False), None
 
     def apply_extraction_defaults(self, *, window_size: int, stride_size: int) -> bool:
         """Push claude-smart's preferred extraction defaults to the reflexio server.
@@ -492,6 +533,27 @@ class Adapter:
         message = f"{operation}: {exc}"
         self.read_errors.append(message)
         _LOGGER.debug("%s failed: %s", operation, exc)
+
+
+def _publish_warnings(response: Any) -> list[str]:
+    """Pull ``warnings`` off a publish response, tolerating any shape.
+
+    Defensive rather than total: ``getattr`` swallows only ``AttributeError``,
+    a mapping can override ``get``, and ``str`` runs a caller-supplied
+    ``__str__``. The caller wraps this so those cannot fail an accepted
+    publish. ``_extract_items`` is not reused because its ``list(value)``
+    raises on a non-iterable.
+
+    Both publish paths land here: the raw ``_make_request`` path returns a
+    parsed JSON dict, the client path a response object.
+    """
+    if isinstance(response, dict):
+        value = response.get("warnings")
+    else:
+        value = getattr(response, "warnings", None)
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item) for item in value]
 
 
 def _extract_items(response: Any, field: str) -> list[Any]:
