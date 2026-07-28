@@ -4,8 +4,6 @@ import {
   type LearningEntityType,
 } from "@/lib/model-lineage";
 
-export const dynamic = "force-dynamic";
-
 const VALID_TYPES = new Set<LearningEntityType>([
   "profile",
   "user_playbook",

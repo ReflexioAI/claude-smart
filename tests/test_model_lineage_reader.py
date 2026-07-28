@@ -7,7 +7,6 @@ import os
 import shutil
 import sqlite3
 import subprocess
-import sys
 from pathlib import Path
 
 
@@ -24,25 +23,17 @@ def _require_node() -> str:
 
 def _run_reader(db_path: Path | None, entity_type: str, entity_id: str) -> dict:
     node = _require_node()
-    # Pass db path as third arg to getLearningModelProvenance.
-    db_arg = "null" if db_path is None else json.dumps(str(db_path))
+    sqlite_path = (
+        str(db_path)
+        if db_path is not None
+        else "/tmp/definitely-missing-reflexio-model-lineage.db"
+    )
     script = f"""
 import {{ getLearningModelProvenance }} from {json.dumps(READER.as_uri())};
 const result = getLearningModelProvenance(
   {json.dumps(entity_type)},
   {json.dumps(entity_id)},
-  {db_arg if db_path is not None else "undefined"},
-);
-process.stdout.write(JSON.stringify(result));
-"""
-    # When db_path is None we want default path behavior; keep explicit path always in tests.
-    if db_path is None:
-        script = f"""
-import {{ getLearningModelProvenance }} from {json.dumps(READER.as_uri())};
-const result = getLearningModelProvenance(
-  {json.dumps(entity_type)},
-  {json.dumps(entity_id)},
-  "/tmp/definitely-missing-reflexio-model-lineage.db",
+  {json.dumps(sqlite_path)},
 );
 process.stdout.write(JSON.stringify(result));
 """
