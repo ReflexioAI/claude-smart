@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import time
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from claude_smart import reflexio_adapter
 
@@ -1009,3 +1012,128 @@ def test_mark_stall_notified_calls_through(monkeypatch):
     monkeypatch.setattr(adapter, "_get_client", lambda: stub)
     adapter.mark_stall_notified()
     assert stub.notified_called is True
+
+
+_ADAPTER_LOGGER = "claude_smart.reflexio_adapter"
+
+
+class _WarningClient(_FakeClient):
+    """Fake whose publish paths echo a server ``warnings`` payload."""
+
+    def __init__(self, *, response: Any = None, raw_response: Any = None) -> None:
+        super().__init__()
+        self._response = response
+        self._raw_response = raw_response
+
+    def publish_interaction(self, **kwargs):
+        self.published_kwargs = kwargs
+        return self._response
+
+    def _make_request(self, method, path, **kwargs):
+        self.raw_request = {"method": method, "path": path, **kwargs}
+        return self._raw_response
+
+
+class _WarningsPropertyRaises:
+    """``getattr(obj, "warnings", None)`` absorbs only ``AttributeError``."""
+
+    @property
+    def warnings(self) -> list[str]:
+        raise RuntimeError("warnings unavailable")
+
+
+class _MappingGetRaises(dict):
+    """``isinstance(response, dict)`` holds, but the override is what runs."""
+
+    def get(self, *_args, **_kwargs):
+        raise KeyError("boom")
+
+
+class _Unprintable:
+    def __str__(self) -> str:
+        raise ValueError("cannot render")
+
+
+class TestPublishWarnings:
+    """The server reports fields it could not bind; the hook log must show them.
+
+    Silent field-dropping is the defect this channel exists for: a publish of
+    50 mis-keyed interactions returned 200 and stored 50 empty rows. This
+    plugin's raw ``_make_request`` path matters most — it posts the payload
+    directly, so unknown keys really do reach the server rather than being
+    stripped client-side first.
+    """
+
+    @staticmethod
+    def _adapter_records(caplog):
+        return [r for r in caplog.records if r.name == _ADAPTER_LOGGER]
+
+    def test_client_path_logs_server_warnings(self, caplog) -> None:
+        client = _WarningClient(
+            response=SimpleNamespace(
+                warnings=["interaction_data_list[0]: ignored unrecognised field(s) Content"],
+                request_id="r1",
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger=_ADAPTER_LOGGER):
+            result = _adapter_with(client).publish(
+                session_id="s1",
+                project_id="p1",
+                interactions=[{"role": "User", "content": "hi"}],
+            )
+        assert result.ok is True
+        assert "unrecognised field(s) Content" in caplog.text
+
+    def test_raw_request_path_logs_server_warnings(self, caplog) -> None:
+        """The pinned-request_id path returns parsed JSON, not a model."""
+        client = _WarningClient(raw_response={"warnings": ["dropped foo"]})
+        with caplog.at_level(logging.WARNING, logger=_ADAPTER_LOGGER):
+            result = _adapter_with(client).publish(
+                session_id="s1",
+                project_id="p1",
+                request_id="request-1",
+                interactions=[{"role": "User", "content": "hi"}],
+            )
+        assert result.ok is True
+        assert result.request_id == "request-1"
+        assert "dropped foo" in caplog.text
+
+    def test_quiet_when_there_is_nothing_to_report(self, caplog) -> None:
+        client = _WarningClient(response=SimpleNamespace(warnings=[]))
+        with caplog.at_level(logging.WARNING, logger=_ADAPTER_LOGGER):
+            result = _adapter_with(client).publish(
+                session_id="s1",
+                project_id="p1",
+                interactions=[{"role": "User", "content": "hi"}],
+            )
+        assert result.ok is True
+        assert self._adapter_records(caplog) == []
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            None,
+            SimpleNamespace(),
+            {"warnings": None},
+            {"warnings": 5},
+            _WarningsPropertyRaises(),
+            _MappingGetRaises(),
+            {"warnings": [_Unprintable()]},
+        ],
+    )
+    def test_hostile_response_shapes_still_report_success(self, response) -> None:
+        """A publish the server ACCEPTED must never be reported as failed.
+
+        ``publish_unpublished`` advances the buffer watermark only on a truthy
+        result, so raising while reading diagnostics would re-send an accepted
+        batch on every subsequent hook — duplicates forever, caused purely by
+        the code meant to improve observability. The last three shapes are the
+        ones that actually escape the helper's isinstance guard.
+        """
+        client = _WarningClient(response=response, raw_response=response)
+        result = _adapter_with(client).publish(
+            session_id="s1",
+            project_id="p1",
+            interactions=[{"role": "User", "content": "hi"}],
+        )
+        assert result.ok is True

@@ -378,3 +378,47 @@ def test_publish_keeps_first_links_at_request_cap(session_dir) -> None:
     assert len(retrieved) == 1000
     assert retrieved[0]["learning_id"] == "0"
     assert retrieved[-1]["learning_id"] == "999"
+
+
+class _HostileWarningsClient:
+    """A server response whose ``warnings`` blows up on access.
+
+    Not contrived: a computed pydantic field or a lazy client wrapper that
+    re-reads the socket on attribute access has exactly this shape, and
+    ``getattr(obj, "warnings", None)`` absorbs only ``AttributeError``.
+    """
+
+    @property
+    def warnings(self) -> list[str]:
+        raise RuntimeError("warnings unavailable")
+
+    def publish_interaction(self, **_kwargs: Any) -> Any:
+        return self
+
+    def _make_request(self, _method: str, _path: str, **_kwargs: Any) -> Any:
+        return self
+
+
+def test_watermark_advances_even_if_reading_warnings_blows_up(session_dir) -> None:
+    """A publish the server accepted must be marked published.
+
+    This is the whole reason the adapter reads warnings outside the try that
+    guards the publish call. If a diagnostic read could surface as a failed
+    publish, the watermark would never advance and the next hook would re-send
+    the same accepted batch — duplicates forever, caused by the observability
+    code. Goes through the real Adapter rather than a fake so the guard itself
+    is under test.
+    """
+    _append_assistant("s1", 10)
+    adapter = Adapter()
+    adapter._client = _HostileWarningsClient()  # bypass lazy construction
+
+    assert publish.publish_unpublished(
+        session_id="s1",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=adapter,
+    ) == ("ok", 1)
+
+    assert state.read_all("s1")[-1]["published_up_to"] == 1
