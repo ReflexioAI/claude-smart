@@ -12,6 +12,8 @@ const VALID_TYPES = new Set<LearningEntityType>([
   "agent_playbook",
 ]);
 
+// Local dashboard data route (same pattern as /api/sessions): server reads
+// filesystem-local state and returns JSON to client components.
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const entityType = (url.searchParams.get("entityType") || "").trim();

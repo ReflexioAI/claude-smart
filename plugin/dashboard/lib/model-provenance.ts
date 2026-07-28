@@ -30,7 +30,7 @@ export function useLearningModelProvenance(
       entityId: String(entityId),
     });
 
-    fetch(`/api/learning-model-provenance?${params.toString()}`, {
+    fetch(`/api/model-provenance?${params.toString()}`, {
       cache: "no-store",
       signal: controller.signal,
     })
