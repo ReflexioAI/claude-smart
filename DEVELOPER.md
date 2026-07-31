@@ -390,6 +390,40 @@ restart Claude Code to apply. Codex users rerun
 `npx claude-smart install --host codex`, then restart Codex after `/plugins` has
 upgraded the installed plugin.
 
+### Desktop app (claude.ai) — manual plugin upload
+
+The Claude **desktop app** (Cowork / "local agent mode") installs plugins from a
+claude.ai marketplace, and a marketplace can only sync from **git**. This repo is
+deliberately non-installable from git — the vendored Reflexio runtime
+(`plugin/vendor/reflexio`) and the marketplace manifest are gitignored and produced
+only at pack time (see [Why the marketplace entry is generated, not
+committed](#why-the-marketplace-entry-is-generated-not-committed)). So the desktop
+app **cannot track the npm release automatically**; it has its own plugin store,
+separate from the CLI (`npx claude-smart`) and from npm. Update it by uploading a
+built plugin bundle:
+
+```bash
+# Builds a fresh npm tarball, then zips its plugin payload for upload.
+make package-desktop
+# → dist/claude-smart-desktop-<version>.zip
+```
+
+`make package-desktop` derives the zip from the npm tarball's file set, so it
+matches what npm ships (no `.venv` / `node_modules` / build caches). The underlying
+`scripts/build-desktop-plugin.sh` also runs standalone (`--skip-build` reuses the
+newest existing tarball, `--output PATH` overrides the destination).
+
+Then, in the Claude desktop app:
+
+1. **Settings → Customize → Plugins → Add ▾ → Upload plugin**
+2. Drop `dist/claude-smart-desktop-<version>.zip` → **Upload**
+3. Uninstall any older **Claude smart** plugin (and, under **Directory → Personal**,
+   `⋯` → **Remove** a stale git-synced `claude-smart` marketplace), then **restart
+   the desktop app**.
+
+This step is manual per release — there is no auto-update path for the desktop app
+as long as the git repo stays npm-only by design.
+
 ## Pre-release checklist
 
 Before running `make release`:
@@ -403,6 +437,7 @@ Before running `make release`:
 - [ ] `python scripts/check-reflexio-lock.py` passes.
 - [ ] `npm pack --dry-run --json` includes the root wrapper, marketplace metadata, plugin payload, dashboard sources, README, and LICENSE, and excludes `.venv`, `node_modules`, `.next/cache`, and Python caches.
 - [ ] If you touched `pyproject.toml` dependencies, `uv build` succeeds locally and the wheel's `METADATA` does not carry any local path dependency.
+- [ ] If the Claude desktop app needs this release, run `make package-desktop` and re-upload the zip (see [Desktop app (claude.ai) — manual plugin upload](#desktop-app-claudeai--manual-plugin-upload)).
 
 ## Common failures and fixes
 

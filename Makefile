@@ -18,7 +18,8 @@
 #   - uv (for standalone lockfile resolution + the plugin venv)
 #   - git (for the release flow)
 
-.PHONY: help bump release release-npm publish publish-npm publish-dry package vendor-release \
+.PHONY: help bump release release-npm publish publish-npm publish-dry package package-desktop \
+        vendor-release \
         check-version check-clean check-npm-auth check-reflexio-pin check-reflexio-lock \
         check-vendor-reflexio \
         check-locked-project-version check-standalone-lock relock unskip-worktree
@@ -148,6 +149,9 @@ package: check-locked-project-version check-standalone-lock ## Build the npm tar
 	  echo "  npx --package=$$abs -- claude-smart install"; \
 	  echo "  npx --package=$$abs -- claude-smart install --host codex"; \
 	  echo "  npx --package=$$abs -- claude-smart install --host opencode"
+
+package-desktop: package ## Build the claude.ai desktop-uploadable plugin zip (Settings -> Plugins -> Upload plugin)
+	@bash scripts/build-desktop-plugin.sh --skip-build
 
 publish: publish-npm ## Publish the current version to npm (claude-smart is npm-only)
 
