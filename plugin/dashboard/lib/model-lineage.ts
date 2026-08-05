@@ -4,9 +4,9 @@
  */
 
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 export type LearningEntityType =
   | "profile"
@@ -21,6 +21,16 @@ export interface LearningModelProvenance {
   unavailable: boolean;
   reason?: string;
 }
+
+type SqliteDatabase = {
+  prepare: (sql: string) => {
+    all: (...params: unknown[]) => unknown[];
+    get: (...params: unknown[]) => unknown;
+  };
+  close: () => void;
+};
+
+const require = createRequire(import.meta.url);
 
 function empty(
   entityType: LearningEntityType,
@@ -44,7 +54,24 @@ function dbPath(): string {
   return path.join(os.homedir(), ".reflexio", "data", "reflexio.db");
 }
 
-function columns(db: DatabaseSync, table: string): Set<string> {
+function openDatabase(sqlitePath: string): SqliteDatabase {
+  // Lazy-load so module evaluation stays safe on Node versions that cannot
+  // import node:sqlite at top level during install/build matrices.
+  const sqlite = require("node:sqlite") as {
+    DatabaseSync: new (
+      filename: string,
+      options?: { readOnly?: boolean },
+    ) => SqliteDatabase;
+  };
+  try {
+    return new sqlite.DatabaseSync(sqlitePath, { readOnly: true });
+  } catch {
+    // Older Node builds may lack the readOnly option; fall back to default open.
+    return new sqlite.DatabaseSync(sqlitePath);
+  }
+}
+
+function columns(db: SqliteDatabase, table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
     name?: string;
   }>;
@@ -79,10 +106,9 @@ export function getLearningModelProvenance(
     return empty(entityType, entityId, true, "database unavailable");
   }
 
-  let db: DatabaseSync | null = null;
+  let db: SqliteDatabase | null = null;
   try {
-    // node:sqlite DatabaseSync readOnly requires Node >=22.18 / >=24.4.
-    db = new DatabaseSync(sqlitePath, { readOnly: true });
+    db = openDatabase(sqlitePath);
     const cols = columns(db, "lineage_event");
     if (cols.size === 0) {
       return empty(entityType, entityId, true, "lineage_event table not present");
