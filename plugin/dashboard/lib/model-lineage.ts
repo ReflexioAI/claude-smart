@@ -30,8 +30,6 @@ type SqliteDatabase = {
   close: () => void;
 };
 
-const require = createRequire(import.meta.url);
-
 function empty(
   entityType: LearningEntityType,
   entityId: string,
@@ -57,7 +55,10 @@ function dbPath(): string {
 function openDatabase(sqlitePath: string): SqliteDatabase {
   // Lazy-load so module evaluation stays safe on Node versions that cannot
   // import node:sqlite at top level during install/build matrices.
-  const sqlite = require("node:sqlite") as {
+  // Use a real filesystem path for createRequire: Next may rewrite
+  // import.meta.url into a URL object that breaks CommonJS resolution.
+  const req = createRequire(path.join(process.cwd(), "package.json"));
+  const sqlite = req("node:sqlite") as {
     DatabaseSync: new (
       filename: string,
       options?: { readOnly?: boolean },
