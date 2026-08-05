@@ -18,9 +18,10 @@ export function useLearningModelProvenance(
     entityId !== null &&
     entityId !== undefined &&
     entityId !== "";
+  const requestKey = ready ? `${entityType}:${String(entityId)}` : null;
 
   useEffect(() => {
-    if (!ready || !entityType) return;
+    if (!requestKey || !entityType) return;
 
     let cancelled = false;
     const controller = new AbortController();
@@ -61,7 +62,16 @@ export function useLearningModelProvenance(
       controller.abort();
       clearTimeout(timeout);
     };
-  }, [ready, entityType, entityId]);
+  }, [requestKey, entityType, entityId]);
 
-  return ready ? provenance : null;
+  // Drop stale results immediately when the target entity changes so the UI
+  // shows Loading… instead of the previous learning's model.
+  if (!requestKey) return null;
+  if (
+    provenance &&
+    `${provenance.entityType}:${provenance.entityId}` !== requestKey
+  ) {
+    return null;
+  }
+  return provenance;
 }

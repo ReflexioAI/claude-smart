@@ -191,3 +191,12 @@ def test_reader_missing_database_is_unavailable() -> None:
     result = _run_reader(None, "profile", "pref-1")
     assert result["unavailable"] is True
     assert result["reason"] == "database unavailable"
+
+
+def test_reader_missing_lineage_table_is_unavailable(tmp_path: Path) -> None:
+    db = tmp_path / "reflexio.db"
+    sqlite3.connect(db).close()
+
+    result = _run_reader(db, "profile", "pref-1")
+    assert result["unavailable"] is True
+    assert result["reason"] == "lineage_event table not present"
