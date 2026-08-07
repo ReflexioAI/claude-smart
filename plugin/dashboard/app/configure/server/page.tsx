@@ -229,9 +229,10 @@ export default function ConfigureServerPage() {
               <div className="min-w-0">
                 <Label htmlFor="search-reranker">Search reranker</Label>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Use the local cross-encoder relevance floor for injected
-                  memory search. The first enabled search loads the model into
-                  the backend process.
+                  Use the shared-service cross-encoder relevance floor for
+                  injected memory search. The bundled claude-smart backend
+                  disables this model; the toggle applies to connected
+                  deployments that enable reranking.
                 </p>
               </div>
               <Switch
