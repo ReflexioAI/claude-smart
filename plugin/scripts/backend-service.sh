@@ -51,6 +51,11 @@ export REFLEXIO_DEFAULT_ORG_ID="claude-smart"
 # the source path in _lib.sh (claude_smart_source_reflexio_env).
 export REFLEXIO_ENV_FILE="$HOME/.claude-smart/.env"
 
+# claude-smart does not use the cross-encoder reranker. Hard-disable the whole
+# feature so its shared local inference service does not load or prewarm the
+# reranker model, even if a shared Reflexio env file enables it.
+export REFLEXIO_RERANK_ENABLED=false
+
 # Default: route extraction through the active host CLI + ONNX embedder
 # so claude-smart works without any LLM API key. Users can opt out by
 # pre-exporting these to 0.

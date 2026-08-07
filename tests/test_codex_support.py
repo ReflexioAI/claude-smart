@@ -73,6 +73,7 @@ def test_codex_hook_loads_managed_reflexio_env_and_skips_backend_start() -> None
     assert "backend-service.sh" in script
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
     assert "remote REFLEXIO_URL configured; skipping local backend start" in backend
+    assert "export REFLEXIO_RERANK_ENABLED=false" in backend
 
 
 def test_codex_marketplace_points_at_plugin_root() -> None:
