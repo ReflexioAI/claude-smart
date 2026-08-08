@@ -254,6 +254,26 @@ def _fake_claude_install_script() -> str:
     return '#!/bin/sh\nprintf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\nexit 0\n'
 
 
+def test_node_setup_help_prints_usage_without_side_effects(tmp_path: Path) -> None:
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(tmp_path, "node", "bash", "dirname", "mkdir")
+
+    result = subprocess.run(
+        ["node", str(CLAUDE_SMART_BIN), "setup", "--help"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert "Host (1=Claude Code" not in result.stderr
+    assert result.returncode == 0
+    assert "Usage:" in result.stdout
+    assert "npx claude-smart setup" in result.stdout
+    assert not (tmp_path / ".reflexio").exists()
+    assert not (tmp_path / ".claude-smart").exists()
+
+
 def _node_platform() -> str:
     uname_s = subprocess.check_output(["uname", "-s"], text=True).strip()
     uname_m = subprocess.check_output(["uname", "-m"], text=True).strip()
