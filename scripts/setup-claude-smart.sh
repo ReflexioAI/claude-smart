@@ -126,7 +126,7 @@ ensure_local_env_defaults() {
     append_env_raw CLAUDE_SMART_USE_LOCAL_CLI "1"
   fi
   if ! get_env_value CLAUDE_SMART_USE_LOCAL_EMBEDDING >/dev/null 2>&1; then
-    printf '# Use the in-process ONNX embedder (chromadb) - no API key for semantic search\n' >> "$REFLEXIO_ENV"
+    printf '# Use the in-process ONNX embedder (ONNX Runtime) - no API key for semantic search\n' >> "$REFLEXIO_ENV"
     append_env_raw CLAUDE_SMART_USE_LOCAL_EMBEDDING "1"
   fi
   if ! get_env_value CLAUDE_SMART_READ_ONLY >/dev/null 2>&1; then
