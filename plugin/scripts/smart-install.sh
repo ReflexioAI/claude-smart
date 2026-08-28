@@ -649,7 +649,7 @@ claude_smart_ensure_local_env_defaults() {
     echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_CLI=$local_cli_default to $REFLEXIO_ENV" >&2
   fi
   if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
-    printf '# Use the in-process ONNX embedder (chromadb) - no API key for semantic search\n' >> "$REFLEXIO_ENV"
+    printf '# Use the in-process ONNX embedder (ONNX Runtime) - no API key for semantic search\n' >> "$REFLEXIO_ENV"
     claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_EMBEDDING "$local_embedding_default"
     echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=$local_embedding_default to $REFLEXIO_ENV" >&2
   fi

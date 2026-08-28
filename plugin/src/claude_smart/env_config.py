@@ -37,7 +37,7 @@ _LOCAL_DEFAULT_ENTRIES = (
         "1",
     ),
     (
-        "# Use the in-process ONNX embedder (chromadb) - no API key for semantic search",
+        "# Use the in-process ONNX embedder (ONNX Runtime) - no API key for semantic search",
         CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV,
         "1",
     ),
