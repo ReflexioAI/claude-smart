@@ -2570,7 +2570,16 @@ async function main() {
   }
 
   if (cmd === "setup") {
-    await runSetup(args.slice(1));
+    const setupArgs = args.slice(1);
+    if (
+      setupArgs.includes("--help") ||
+      setupArgs.includes("-h") ||
+      setupArgs[0] === "help"
+    ) {
+      printHelp();
+      return;
+    }
+    await runSetup(setupArgs);
     return;
   }
 
