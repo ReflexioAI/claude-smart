@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { LearningHostProvenance } from "@/components/common/host-badge";
+import { LearningModelProvenanceView } from "@/components/common/model-provenance";
 import { EmptyState } from "@/components/common/empty-state";
 import { DeleteLearningDangerZone } from "@/components/common/delete-learning-danger-zone";
 import { Button } from "@/components/ui/button";
@@ -31,6 +32,7 @@ import { Separator } from "@/components/ui/separator";
 import { reflexio } from "@/lib/reflexio-client";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import { useRequestHostAttribution } from "@/lib/host-attribution";
+import { useLearningModelProvenance } from "@/lib/model-provenance";
 import { cn } from "@/lib/utils";
 import { statusLabel as status } from "@/lib/status";
 import type { UserProfile } from "@/lib/types";
@@ -52,6 +54,10 @@ export default function PreferenceDetailPage({
   const [editing, setEditing] = useState(false);
   const [content, setContent] = useState("");
   const attribution = useRequestHostAttribution();
+  const modelProvenance = useLearningModelProvenance(
+    "profile",
+    profile?.profile_id ?? id,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -352,6 +358,12 @@ export default function PreferenceDetailPage({
                       }
                     />
                   )}
+                  <Meta
+                    label="Model"
+                    value={
+                      <LearningModelProvenanceView provenance={modelProvenance} />
+                    }
+                  />
                   {profile.source && (
                     <Meta label="Integration" value={profile.source} mono />
                   )}
