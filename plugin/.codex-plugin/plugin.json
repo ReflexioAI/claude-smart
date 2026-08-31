@@ -1,7 +1,7 @@
 {
   "name": "claude-smart",
   "version": "0.2.50",
-  "description": "Self-improving Claude Code, Codex, and OpenCode plugin that turns corrections into Preferences, Project-specific skills, and Shared skills",
+  "description": "Self-improving Claude Code, Codex, and OpenCode plugin that turns corrections and successful workflows into Preferences, Project-specific skills, and Shared skills",
   "author": {
     "name": "Yi Lu"
   },
@@ -18,10 +18,14 @@
     "opencode-plugin",
     "memory",
     "agent-memory",
+    "persistent-memory",
+    "local-memory",
+    "ai-agent-memory",
     "plugin",
     "reflexio",
     "self-improvement",
     "self-improving-agents",
+    "agent-learning",
     "skills",
     "learning"
   ],
