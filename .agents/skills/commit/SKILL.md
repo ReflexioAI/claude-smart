@@ -29,14 +29,18 @@ Create a git commit with automatic precommit hook handling, test fixing, README 
       ```bash
       git diff --cached --name-only --diff-filter=ACMR -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mts'
       ```
-      If no TS/JS files are staged, skip steps 5g-5i entirely.
-   g. **Biome auto-fix**: Run `npx biome check --write <files>` from the relevant project root
-      (`reflexio/website/` or `reflexio/public_docs/` depending on file path).
+      If no TS/JS files are staged, skip steps 5g-5j entirely.
+   g. **Resolve each file's project root**: walk up from the staged file to the
+      nearest ancestor directory containing a `package.json` (ignoring any
+      `node_modules/`). That directory is the project root for the steps below —
+      do not assume a fixed path, as it differs per repository. Group the staged
+      files by resolved root and run h-j once per group.
+   h. **Biome auto-fix**: Run `npx biome check --write <files>` from that root.
       Re-stage any modified files with `git add <files>`.
-   h. **Biome remaining errors**: Run `npx biome check <files>`.
+   i. **Biome remaining errors**: Run `npx biome check <files>`.
       If any errors remain that Biome could not auto-fix, **read each error, understand the issue,
       and fix the code yourself**. Re-stage fixes. Do NOT proceed with unfixed Biome errors.
-   i. **TypeScript type check**: Run `npx tsc --noEmit` from the relevant project root.
+   j. **TypeScript type check**: Run `npx tsc --noEmit` from that same root.
       If any type errors are reported, **read each error, understand the type issue,
       and fix the code yourself**. Re-stage fixes. Do NOT proceed with unfixed tsc errors.
 6. **Attempt commit** - Run `git commit` which triggers precommit hooks
