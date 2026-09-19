@@ -12,11 +12,10 @@ Create a git commit with automatic precommit hook handling, test fixing, README 
 ## Workflow
 
 1. **Check git status** - Run `git status` and `git diff --cached --name-only` to see staged/unstaged changes
-2. **Sync AI instruction files (only if CLAUDE.md changed)** — Run `git diff --cached --name-only` and check if `CLAUDE.md` is in the staged changeset. If yes, copy CLAUDE.md content to GEMINI.md and AGENTS.md, then stage them. If CLAUDE.md is NOT staged, skip this step entirely — do not overwrite other instruction files that may have been intentionally edited independently.
-3. **Stage files** - Add relevant untracked/modified files if needed. Do not modify or change gitignored files, such as `.env`. Never change `.env` file even if it is modified.
-4. **Check README updates** - Run through the README Update Guidelines checklist below. If ANY criteria match, update README files before proceeding.
-5. **Update API Reference docs (Reflexio-specific)** — If the files `reflexio/reflexio_client/reflexio/client.py` or `reflexio/reflexio_commons/reflexio_commons/api_schema/service_schemas.py` exist AND are in the staged changeset, update `reflexio/public_docs/api-reference/` (see API Reference Update Guidelines below). Otherwise skip.
-6. **Run lint and type checks on staged Python files**
+2. **Stage files** - Add relevant untracked/modified files if needed. Do not modify or change gitignored files, such as `.env`. Never change `.env` file even if it is modified.
+3. **Check README updates** - Run through the README Update Guidelines checklist below. If ANY criteria match, update README files before proceeding.
+4. **Update API Reference docs (Reflexio-specific)** — If the files `reflexio/reflexio_client/reflexio/client.py` or `reflexio/reflexio_commons/reflexio_commons/api_schema/service_schemas.py` exist AND are in the staged changeset, update `reflexio/public_docs/api-reference/` (see API Reference Update Guidelines below). Otherwise skip.
+5. **Run lint and type checks on staged Python files**
    a. Get the list of staged Python files:
       ```bash
       git diff --cached --name-only --diff-filter=ACMR -- '*.py'
@@ -40,12 +39,12 @@ Create a git commit with automatic precommit hook handling, test fixing, README 
    i. **TypeScript type check**: Run `npx tsc --noEmit` from the relevant project root.
       If any type errors are reported, **read each error, understand the type issue,
       and fix the code yourself**. Re-stage fixes. Do NOT proceed with unfixed tsc errors.
-7. **Attempt commit** - Run `git commit` which triggers precommit hooks
-8. **Handle hook results**:
+6. **Attempt commit** - Run `git commit` which triggers precommit hooks
+7. **Handle hook results**:
    - If hooks **modify files** (formatting, linting): Stage the modified files with `git add -u` and retry commit
    - If **unit tests fail**: Fix the failing tests, stage fixes, and retry commit
    - If hooks **pass**: Commit succeeds
-9. **Do NOT push** - Only commit locally
+8. **Do NOT push** - Only commit locally
 
 ## README Update Guidelines
 
