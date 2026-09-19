@@ -7,7 +7,7 @@ description: Git commit workflow with precommit hook handling, lint/type checkin
 
 Create a git commit with automatic precommit hook handling, test fixing, README updates, and API reference updates.
 
-**Note:** Steps 5 and the API Reference Update Guidelines are specific to the Reflexio project. They are skipped automatically when the referenced paths do not exist.
+**Note:** Step 4 and the API Reference Update Guidelines are specific to the Reflexio project. They are skipped automatically when the referenced paths do not exist.
 
 ## Workflow
 
@@ -29,7 +29,7 @@ Create a git commit with automatic precommit hook handling, test fixing, README 
       ```bash
       git diff --cached --name-only --diff-filter=ACMR -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mts'
       ```
-      If no TS/JS files are staged, skip steps 6g-6i entirely.
+      If no TS/JS files are staged, skip steps 5g-5i entirely.
    g. **Biome auto-fix**: Run `npx biome check --write <files>` from the relevant project root
       (`reflexio/website/` or `reflexio/public_docs/` depending on file path).
       Re-stage any modified files with `git add <files>`.
