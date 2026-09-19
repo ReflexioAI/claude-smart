@@ -32,8 +32,9 @@ apply to Claude Code only.
 
 **Windows contributors:** `.claude/skills` and `.claude/rules` are Git symlinks. A
 checkout with `core.symlinks=false` -- the default on Windows without Developer Mode
-or an elevated shell -- materializes them as plain text files containing
-`../.agents/skills`, and Claude Code then finds no project config. Clone with
+or an elevated shell -- materializes them as plain text files: `.claude/skills`
+holding the literal text `../.agents/skills`, `.claude/rules` holding
+`../.agents/rules`. Claude Code then finds no project config. Clone with
 `git clone -c core.symlinks=true`, or run `git config core.symlinks true` followed by
 `git checkout -- .claude` in an existing checkout. This affects a repo checkout only;
 the published npm package ships neither directory.
