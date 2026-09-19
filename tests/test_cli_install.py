@@ -513,6 +513,13 @@ def test_cmd_update_reads_managed_reflexio_env(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    # cmd_update -> cmd_install -> _bootstrap_claude_code_install resolves the
+    # plugin root and rewrites ~/.reflexio/plugin-root. Without an isolated HOME
+    # that runs against the developer's real home directory: it fails outright
+    # when a real ~/.reflexio/plugin-root directory exists, and where it does
+    # "pass" it does so by replacing a symlink in the user's own home.
+    _installed_plugin(tmp_path)
+    _isolate_home(monkeypatch, tmp_path)
     env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text(
