@@ -2417,7 +2417,7 @@ def test_opencode_dist_matches_typescript_sources(tmp_path: Path) -> None:
     import shutil
 
     if shutil.which("npx") is None:
-        return
+        pytest.skip("npx is required to recompile the opencode TypeScript sources")
     out_dir = tmp_path / "dist"
     result = subprocess.run(
         [
@@ -2432,7 +2432,14 @@ def test_opencode_dist_matches_typescript_sources(tmp_path: Path) -> None:
         capture_output=True,
         check=False,
     )
-    assert result.returncode == 0, result.stderr
+    # tsc writes diagnostics to stdout, not stderr, so reporting stderr alone
+    # produces an empty message. Surface both, and name the usual cause: the
+    # devDependencies (@types/node, typescript) were never installed.
+    assert result.returncode == 0, (
+        f"npx tsc failed (exit {result.returncode}); "
+        f"run `npm ci` if @types/node is missing.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
     for filename in ("assistant-buffer.js", "internal.js", "payload.js", "server.mjs"):
         expected = REPO_ROOT / "plugin" / "opencode" / "dist" / filename
         generated = out_dir / filename
