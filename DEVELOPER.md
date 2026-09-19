@@ -20,6 +20,24 @@ Internal notes for maintainers of `claude-smart`. End-user install instructions 
 | `plugin/vendor/reflexio/` | Generated release-only Reflexio bundle for npm artifacts; gitignored, not committed |
 | `plugin/dashboard/` | Next.js management UI for interactions, preferences, skills, configuration |
 | `Makefile` | Release automation |
+| `.agents/skills/`, `.agents/rules/` | Repo-local agent config -- the single stored copy |
+| `.agents/plugins/marketplace.json` | Codex marketplace manifest read by `bin/claude-smart.js` and the CLI -- **not** agent config |
+| `.claude/skills`, `.claude/rules` | Symlinks into `.agents/`, so there is one stored copy |
+
+Codex reads the skills directly from `.agents/skills`. It does **not** read
+`.agents/rules`: Codex takes durable repository guidance from a root
+`AGENTS.md`, and this repo deliberately keeps that file untracked
+(`.gitignore` lists `/AGENTS.md` under local settings), so the Python rules
+apply to Claude Code only.
+
+**Windows contributors:** `.claude/skills` and `.claude/rules` are Git symlinks. A
+checkout with `core.symlinks=false` -- the default on Windows without Developer Mode
+or an elevated shell -- materializes them as plain text files: `.claude/skills`
+holding the literal text `../.agents/skills`, `.claude/rules` holding
+`../.agents/rules`. Claude Code then finds no project config. Clone with
+`git clone -c core.symlinks=true`, or run `git config core.symlinks true` followed by
+`git checkout -- .claude` in an existing checkout. This affects a repo checkout only;
+the published npm package ships neither directory.
 
 ## Environment variables
 

@@ -15,7 +15,7 @@ Push follow-up changes to an existing PR and update its description to reflect t
 
 1. **Verify GitHub CLI authentication** — run `gh api user --jq '.login'` to confirm the CLI is authenticated. If this fails, the user needs to run `gh auth login` first.
 2. **Find the existing PR** — run `gh pr view --json number,title,body,url,baseRefName,state` to find the PR for the current branch. If no PR exists, abort and suggest using `/create-pr` instead. Check the `state` field — if it is not `OPEN`, abort and inform the user that the PR is already merged or closed.
-3. **Verify clean git state** — run `git status` to ensure no uncommitted changes. If there are uncommitted changes, run the `/commit` skill first to commit them.
+3. **Verify clean git state** — run `git status` to ensure no uncommitted changes. If there are uncommitted changes, commit them **directly** — do NOT delegate to another skill or tell the user to commit first.
 4. **Sync submodules** — check if `.gitmodules` exists first. If it does, run `git submodule update --init --recursive`. If not, skip this step.
 
 ### Step 2: Sync with Base Branch
