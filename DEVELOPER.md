@@ -22,7 +22,13 @@ Internal notes for maintainers of `claude-smart`. End-user install instructions 
 | `Makefile` | Release automation |
 | `.agents/skills/`, `.agents/rules/` | Repo-local agent config -- the single stored copy |
 | `.agents/plugins/marketplace.json` | Codex marketplace manifest read by `bin/claude-smart.js` and the CLI -- **not** agent config |
-| `.claude/skills`, `.claude/rules` | Symlinks into `.agents/`, so Claude Code and Codex read one copy |
+| `.claude/skills`, `.claude/rules` | Symlinks into `.agents/`, so there is one stored copy |
+
+Codex reads the skills directly from `.agents/skills`. It does **not** read
+`.agents/rules`: Codex takes durable repository guidance from a root
+`AGENTS.md`, and this repo deliberately keeps that file untracked
+(`.gitignore` lists `/AGENTS.md` under local settings), so the Python rules
+apply to Claude Code only.
 
 **Windows contributors:** `.claude/skills` and `.claude/rules` are Git symlinks. A
 checkout with `core.symlinks=false` -- the default on Windows without Developer Mode
