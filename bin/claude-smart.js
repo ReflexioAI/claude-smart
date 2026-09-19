@@ -1710,7 +1710,7 @@ function printHelp() {
       "  4. Restart OpenCode.",
       "",
       "Update:",
-      "  npx claude-smart update                        Reinstall Claude Code support from this package",
+      "  npx claude-smart update                        Update Claude Code support from this package",
       "  npx claude-smart update --host codex           Reinstall Codex support from this package",
       "  npx claude-smart update --host opencode        Reinstall OpenCode support from this package",
       "  npx claude-smart setup                         Configure managed/read-only/global setup",
@@ -2155,12 +2155,52 @@ async function runUpdate(args) {
     return;
   }
 
+  if (!hasClaudeCli()) {
+    process.stderr.write(
+      "error: 'claude' CLI not found on PATH. " +
+        "Install Claude Code first: https://claude.com/claude-code\n",
+    );
+    process.exit(1);
+  }
+
   const pluginRoot = findClaudeCodePluginRoot();
   if (pluginRoot) {
     stopClaudeSmartServices(pluginRoot);
   }
-  process.stdout.write("Updating claude-smart by reinstalling from this package...\n");
-  await runInstall(args, { retryInstallAfterUninstall: true });
+
+  const setup = configureReflexioSetup(HOST_CLAUDE_CODE);
+  process.stdout.write("Updating claude-smart from this package...\n");
+  let code = await runClaude(["plugin", "marketplace", "add", PACKAGE_ROOT], {
+    spinnerLabel: "Adding marketplace…",
+  });
+  if (code !== 0) {
+    process.stderr.write(
+      `error: \`claude plugin marketplace add ${PACKAGE_ROOT}\` failed (exit ${code})\n`,
+    );
+    process.exit(code);
+  }
+
+  code = await runClaude(["plugin", "update", PLUGIN_SPEC], {
+    spinnerLabel: "Updating claude-smart…",
+  });
+  if (code !== 0) {
+    process.stderr.write(
+      `warning: \`claude plugin update ${PLUGIN_SPEC}\` failed (exit ${code}); falling back to reinstall.\n`,
+    );
+    await runInstall(args, { retryInstallAfterUninstall: true });
+    return;
+  }
+
+  await bootstrapClaudeCodeRuntime(setup.readOnly, "updated");
+  process.stdout.write(
+    [
+      "",
+      "claude-smart updated and dependencies are prepared. Restart Claude Code in your project.",
+      "The reflexio backend and dashboard auto-start on session start.",
+      "Opt out with CLAUDE_SMART_BACKEND_AUTOSTART=0 or CLAUDE_SMART_DASHBOARD_AUTOSTART=0.",
+      "",
+    ].join("\n"),
+  );
 }
 
 async function runUpdateCodex(args) {
@@ -2282,6 +2322,20 @@ async function runInstall(args, options = {}) {
     }
   }
 
+  await bootstrapClaudeCodeRuntime(readOnly, "installed");
+
+  process.stdout.write(
+    [
+      "",
+      "claude-smart installed and dependencies are prepared. Restart Claude Code in your project.",
+      "The reflexio backend and dashboard auto-start on session start.",
+      "Opt out with CLAUDE_SMART_BACKEND_AUTOSTART=0 or CLAUDE_SMART_DASHBOARD_AUTOSTART=0.",
+      "",
+    ].join("\n"),
+  );
+}
+
+async function bootstrapClaudeCodeRuntime(readOnly, action) {
   try {
     await refreshClaudeCodeCacheIfVendorMissing();
     const pluginRoot = await bootstrapClaudeCodeInstall();
@@ -2299,23 +2353,13 @@ async function runInstall(args, options = {}) {
     }
   } catch (err) {
     process.stderr.write(
-      `error: claude-smart installed, but dependency bootstrap failed: ${err && err.message ? err.message : err}\n`,
+      `error: claude-smart ${action}, but dependency bootstrap failed: ${err && err.message ? err.message : err}\n`,
     );
     process.stderr.write(
       "Fix the issue above, then run /claude-smart:restart or restart Claude Code to retry.\n",
     );
     process.exit(1);
   }
-
-  process.stdout.write(
-    [
-      "",
-      "claude-smart installed and dependencies are prepared. Restart Claude Code in your project.",
-      "The reflexio backend and dashboard auto-start on session start.",
-      "Opt out with CLAUDE_SMART_BACKEND_AUTOSTART=0 or CLAUDE_SMART_DASHBOARD_AUTOSTART=0.",
-      "",
-    ].join("\n"),
-  );
 }
 
 async function runInstallCodex(args) {

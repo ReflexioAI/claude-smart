@@ -215,11 +215,7 @@ def test_install_setup_updates_existing_host_and_local_defaults(
 ) -> None:
     env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
-    env_path.write_text(
-        "# keep\n"
-        "CLAUDE_SMART_HOST=codex\n"
-        'CLAUDE_SMART_READ_ONLY="1"\n'
-    )
+    env_path.write_text('# keep\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_READ_ONLY="1"\n')
     monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
     monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "0")
 
@@ -235,7 +231,9 @@ def test_install_setup_updates_existing_host_and_local_defaults(
     assert 'CLAUDE_SMART_READ_ONLY="1"' in text
 
 
-def test_opencode_install_persists_resolved_cli_path(monkeypatch, tmp_path: Path) -> None:
+def test_opencode_install_persists_resolved_cli_path(
+    monkeypatch, tmp_path: Path
+) -> None:
     runtime_env_path = tmp_path / ".claude-smart" / ".env"
     opencode = tmp_path / "bin" / "opencode"
     opencode.parent.mkdir()
@@ -453,12 +451,54 @@ def test_update_parser_accepts_host_codex() -> None:
     assert args.host == "codex"
 
 
-def test_cmd_update_claude_code_stops_services_then_installs(monkeypatch) -> None:
+def test_cmd_update_claude_code_stops_services_then_updates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str] | list[str]] = []
+
+    def fake_run_service(script, subcmd):
+        calls.append((script.name, subcmd))
+        return 0
+
+    def fake_run(cmd, check=False):
+        calls.append([str(part) for part in cmd])
+        return argparse.Namespace(returncode=0)
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(cli, "_configure_reflexio_setup", lambda **_kwargs: False)
+    monkeypatch.setattr(cli, "_run_service", fake_run_service)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        cli, "_bootstrap_claude_code_install", lambda: (True, str(tmp_path / "plugin"))
+    )
+    monkeypatch.setattr(cli, "_restore_publish_hooks_from_source", lambda _root: None)
+
+    rc = cli.cmd_update(argparse.Namespace(host="claude-code", marker="kept"))
+
+    assert rc == 0
+    assert calls == [
+        ("dashboard-service.sh", "stop"),
+        ("backend-service.sh", "stop"),
+        ["claude", "plugin", "marketplace", "add", str(cli._REPO_ROOT)],
+        ["claude", "plugin", "update", cli._PLUGIN_SPEC],
+    ]
+
+
+def test_cmd_update_claude_code_falls_back_to_install(
+    monkeypatch,
+) -> None:
     calls: list[tuple[str, str]] = []
 
     def fake_run_service(script, subcmd):
         calls.append((script.name, subcmd))
         return 0
+
+    def fake_run(cmd, check=False):
+        command = [str(part) for part in cmd]
+        if command[1:3] == ["plugin", "update"]:
+            raise subprocess.CalledProcessError(returncode=17, cmd=command)
+        return argparse.Namespace(returncode=0)
 
     def fake_install(args):
         calls.append(("install", args.host))
@@ -466,7 +506,10 @@ def test_cmd_update_claude_code_stops_services_then_installs(monkeypatch) -> Non
         assert args.marker == "kept"
         return 0
 
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(cli, "_configure_reflexio_setup", lambda **_kwargs: False)
     monkeypatch.setattr(cli, "_run_service", fake_run_service)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
     monkeypatch.setattr(cli, "cmd_install", fake_install)
 
     rc = cli.cmd_update(argparse.Namespace(host="claude-code", marker="kept"))

@@ -536,8 +536,7 @@ def test_detached_spawns_with_log_redirection_preserve_output_on_windows() -> No
     ) in dashboard
     assert (
         "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached "
-        '"$NEXT_BIN" start -p "$PORT" -H 127.0.0.1 >>"$LOG_FILE" 2>&1'
-        in dashboard
+        '"$NEXT_BIN" start -p "$PORT" -H 127.0.0.1 >>"$LOG_FILE" 2>&1' in dashboard
     )
 
 
@@ -1234,13 +1233,13 @@ def test_node_update_reads_managed_env(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Updating claude-smart by reinstalling from this package" in result.stdout
-    assert "claude-smart installed and dependencies are prepared" in result.stdout
+    assert "Updating claude-smart from this package" in result.stdout
+    assert "claude-smart updated and dependencies are prepared" in result.stdout
     assert "Using managed Reflexio" in result.stdout
     claude_log = (tmp_path / "claude.log").read_text()
     assert "claude plugin marketplace add" in claude_log
-    assert "claude plugin install claude-smart@reflexioai" in claude_log
-    assert "claude plugin update" not in claude_log
+    assert "claude plugin update claude-smart@reflexioai" in claude_log
+    assert "claude plugin install claude-smart@reflexioai" not in claude_log
     env_text = env_path.read_text()
     assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in env_text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in env_text
@@ -1259,6 +1258,9 @@ def test_node_update_retries_install_after_uninstall(tmp_path: Path) -> None:
     claude.write_text(
         "#!/bin/sh\n"
         'printf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\n'
+        'if [ "$1 $2 $3" = "plugin update claude-smart@reflexioai" ]; then\n'
+        "  exit 19\n"
+        "fi\n"
         'if [ "$1 $2 $3" = "plugin install claude-smart@reflexioai" ]; then\n'
         '  count_file="$HOME/install-count"\n'
         "  count=0\n"
@@ -1288,10 +1290,13 @@ def test_node_update_retries_install_after_uninstall(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
+    assert "falling back to reinstall" in result.stderr
     assert "retrying after uninstalling claude-smart@reflexioai" in result.stderr
     assert (tmp_path / "install-count").read_text().strip() == "2"
     claude_log = (tmp_path / "claude.log").read_text().splitlines()
     assert claude_log == [
+        f"claude plugin marketplace add {REPO_ROOT}",
+        "claude plugin update claude-smart@reflexioai",
         f"claude plugin marketplace add {REPO_ROOT}",
         "claude plugin install claude-smart@reflexioai",
         "claude plugin uninstall claude-smart@reflexioai",
@@ -1321,9 +1326,7 @@ def test_node_install_refreshes_same_version_cache_missing_vendor(
     (vendor / "pyproject.toml").write_text(
         '[project]\nname = "reflexio-ai"\nversion = "0.2.28"\n'
     )
-    (vendor / "reflexio" / "__init__.py").write_text(
-        '__version__ = "0.2.28"\n'
-    )
+    (vendor / "reflexio" / "__init__.py").write_text('__version__ = "0.2.28"\n')
 
     cache = (
         tmp_path
@@ -1348,7 +1351,7 @@ def test_node_install_refreshes_same_version_cache_missing_vendor(
         'if [ "$1 $2" = "plugin uninstall" ]; then rm -rf "$dest"; exit 0; fi\n'
         'if [ "$1 $2" = "plugin install" ] && [ ! -d "$dest" ]; then\n'
         '  mkdir -p "$(dirname "$dest")"\n'
-        f"  cp -R {shlex.quote(str(plugin_source))} \"$dest\"\n"
+        f'  cp -R {shlex.quote(str(plugin_source))} "$dest"\n'
         "fi\n"
         "exit 0\n",
     )
@@ -1417,7 +1420,9 @@ def test_node_install_ignores_cache_version_other_than_package_version(
 
     # A newer 0.2.49 is already cached and perfectly healthy — it has its own
     # (different) vendor bundle. Old version dirs persist in the real cache.
-    cache_root = tmp_path / ".claude" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    cache_root = (
+        tmp_path / ".claude" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    )
     newer = cache_root / "0.2.49"
     (newer / "scripts").mkdir(parents=True)
     (newer / "pyproject.toml").write_text(
@@ -1436,12 +1441,12 @@ def test_node_install_ignores_cache_version_other_than_package_version(
     _write_executable(
         fake_bin / "claude",
         "#!/bin/sh\n"
-        "printf 'claude %s\\n' \"$*\" >> \"$HOME/claude.log\"\n"
+        'printf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\n'
         'dest="$HOME/.claude/plugins/cache/reflexioai/claude-smart/0.2.48"\n'
         'if [ "$1 $2" = "plugin uninstall" ]; then rm -rf "$dest"; exit 0; fi\n'
         'if [ "$1 $2" = "plugin install" ] && [ ! -d "$dest" ]; then\n'
         '  mkdir -p "$(dirname "$dest")"\n'
-        f"  cp -R {shlex.quote(str(plugin_source))} \"$dest\"\n"
+        f'  cp -R {shlex.quote(str(plugin_source))} "$dest"\n'
         "fi\n"
         "exit 0\n",
     )
@@ -1575,7 +1580,9 @@ def test_backend_service_verifies_bundled_reflexio_runtime_identity() -> None:
     assert "--claude-smart-backend=1" in backend
     assert '"--claude-smart-plugin-root=$PLUGIN_ROOT_CANONICAL"' in backend
     assert '"--claude-smart-version=$PLUGIN_VERSION"' in backend
-    assert '"--claude-smart-reflexio-vendor-root=$VENDORED_REFLEXIO_FOR_PYTHON"' in backend
+    assert (
+        '"--claude-smart-reflexio-vendor-root=$VENDORED_REFLEXIO_FOR_PYTHON"' in backend
+    )
     assert "CLAUDE_SMART_BACKEND=1" in backend
     assert 'CLAUDE_SMART_PLUGIN_ROOT="$PLUGIN_ROOT_CANONICAL"' in backend
     assert 'CLAUDE_SMART_VERSION="$PLUGIN_VERSION"' in backend
@@ -1688,11 +1695,9 @@ def test_node_update_reinstalls_by_host() -> None:
     assert "await runUpdateCodex(args)" in node_installer
     assert "async function runUpdateCodex(args)" in node_installer
     assert 'findCodexPluginRoot() || join(PACKAGE_ROOT, "plugin")' in node_installer
-    assert (
-        "await runInstall(args, { retryInstallAfterUninstall: true })" in node_installer
-    )
+    assert 'runClaude(["plugin", "update", PLUGIN_SPEC]' in node_installer
+    assert "falling back to reinstall" in node_installer
     assert "await runInstallCodex(args)" in node_installer
-    assert 'runClaude(["plugin", "update", PLUGIN_SPEC]' not in node_installer
     assert "update --host codex" in node_installer
 
 
@@ -1921,7 +1926,10 @@ def test_integration_harness_defaults_to_isolated_runtime() -> None:
     assert 'BACKEND_PORT="${BACKEND_PORT:-18071}"' in integration
     assert 'EMBEDDING_PORT="${EMBEDDING_PORT:-18072}"' in integration
     assert 'DASHBOARD_PORT="${DASHBOARD_PORT:-13001}"' in integration
-    assert 'EMBEDDING_HEALTH_TIMEOUT_SECONDS="${EMBEDDING_HEALTH_TIMEOUT_SECONDS:-240}"' in integration
+    assert (
+        'EMBEDDING_HEALTH_TIMEOUT_SECONDS="${EMBEDDING_HEALTH_TIMEOUT_SECONDS:-240}"'
+        in integration
+    )
     assert "within ${EMBEDDING_HEALTH_TIMEOUT_SECONDS}s" in integration
     assert "CLAUDE_SMART_INTEGRATION_ALLOW_PROD_PORTS" in integration
     assert "refusing to use production claude-smart port" in integration
@@ -1959,7 +1967,11 @@ def test_integration_harness_rejects_production_ports_without_opt_in(
     env = _isolated_env(tmp_path)
     env[env_key] = port
     result = subprocess.run(
-        ["bash", str(REPO_ROOT / "tests" / "integration" / "integration.sh"), "cleanup"],
+        [
+            "bash",
+            str(REPO_ROOT / "tests" / "integration" / "integration.sh"),
+            "cleanup",
+        ],
         env=env,
         text=True,
         capture_output=True,
@@ -1980,7 +1992,11 @@ def test_integration_harness_rejects_non_numeric_ports(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path)
     env["BACKEND_PORT"] = "8071abc"
     result = subprocess.run(
-        ["bash", str(REPO_ROOT / "tests" / "integration" / "integration.sh"), "cleanup"],
+        [
+            "bash",
+            str(REPO_ROOT / "tests" / "integration" / "integration.sh"),
+            "cleanup",
+        ],
         env=env,
         text=True,
         capture_output=True,
@@ -2019,7 +2035,11 @@ def test_integration_harness_sanitizes_reused_managed_env(
     env["CLAUDE_SMART_INTEG_HOME"] = str(home)
     env_file.chmod(0o644)
     result = subprocess.run(
-        ["bash", str(REPO_ROOT / "tests" / "integration" / "integration.sh"), "cleanup"],
+        [
+            "bash",
+            str(REPO_ROOT / "tests" / "integration" / "integration.sh"),
+            "cleanup",
+        ],
         env=env,
         text=True,
         capture_output=True,
@@ -2333,7 +2353,13 @@ def test_smart_install_fails_loudly_when_host_cache_has_no_vendor(
     succeeding and leaving the failure to the first session start.
     """
     cache_root = (
-        tmp_path / ".claude" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.49"
+        tmp_path
+        / ".claude"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.49"
     )
     _plugin_root, smart_install, env = _prepare_smart_install_sync_fixture(
         tmp_path, mode="fresh", plugin_root=cache_root
@@ -2806,7 +2832,7 @@ def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
         )
         _write_executable(
             bin_dir / "sleep",
-            "#!/bin/sh\nrm -f \"$HOME/stale-listener\"\nexit 0\n",
+            '#!/bin/sh\nrm -f "$HOME/stale-listener"\nexit 0\n',
         )
         env = _backend_service_env(
             tmp_path,
@@ -2833,9 +2859,10 @@ def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
         assert result.stdout.strip() == '{"continue":true}'
         stale.wait(timeout=5)
         assert "spawned backend" in (tmp_path / "python.log").read_text()
-        assert "older than plugin" in (
-            tmp_path / ".claude-smart" / "backend.log"
-        ).read_text()
+        assert (
+            "older than plugin"
+            in (tmp_path / ".claude-smart" / "backend.log").read_text()
+        )
     finally:
         if stale.poll() is None:
             stale.terminate()
@@ -3375,9 +3402,7 @@ def test_backend_start_waits_for_existing_service_lock_without_spawn(
         (lock_dir / "pid").write_text(f"{locker.pid}\n")
         _write_fake_plugin_python(
             plugin_root,
-            "#!/bin/sh\n"
-            'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
-            "exit 0\n",
+            '#!/bin/sh\nprintf "python %s\\n" "$*" >> "$HOME/python.log"\nexit 0\n',
         )
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
@@ -3427,9 +3452,7 @@ def test_backend_start_honors_startup_grace_for_recorded_pid(
         )
         _write_fake_plugin_python(
             plugin_root,
-            "#!/bin/sh\n"
-            'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
-            "exit 0\n",
+            '#!/bin/sh\nprintf "python %s\\n" "$*" >> "$HOME/python.log"\nexit 0\n',
         )
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
@@ -3467,9 +3490,10 @@ def test_backend_start_honors_startup_grace_for_recorded_pid(
         assert "spawned backend" not in (
             python_log.read_text() if python_log.exists() else ""
         )
-        assert "recorded backend process is still running but not healthy yet" in (
-            state_dir / "backend.log"
-        ).read_text()
+        assert (
+            "recorded backend process is still running but not healthy yet"
+            in (state_dir / "backend.log").read_text()
+        )
     finally:
         if warming.poll() is None:
             warming.terminate()
@@ -3494,7 +3518,7 @@ def test_service_lock_recovers_dead_stale_lock(tmp_path: Path) -> None:
             (
                 f'. "{LIB}"; '
                 "CLAUDE_SMART_SERVICE_LOCK_STALE_SECONDS=60 "
-                "claude_smart_service_lock backend; cat \"$HOME/.claude-smart/backend.start.lock/pid\""
+                'claude_smart_service_lock backend; cat "$HOME/.claude-smart/backend.start.lock/pid"'
             ),
         ],
         env=env,
@@ -3641,9 +3665,10 @@ def test_backend_service_preflight_rejects_non_bundled_reflexio(
     assert "hookSpecificOutput" in result.stdout
     python_log = (tmp_path / "python.log").read_text()
     assert "spawned backend" not in python_log
-    assert "bundled Reflexio import preflight failed" in (
-        tmp_path / ".claude-smart" / "backend.log"
-    ).read_text()
+    assert (
+        "bundled Reflexio import preflight failed"
+        in (tmp_path / ".claude-smart" / "backend.log").read_text()
+    )
 
 
 def test_backend_service_preflight_missing_vendor_preserves_services(
@@ -3864,7 +3889,9 @@ def test_codex_hook_recovers_missing_dependencies_without_cli_command() -> None:
     assert "function runServiceScript(root, scriptName, action, logName)" in script
     assert 'path.join(root, "scripts", scriptName)' in script
     assert "[script, action]" in script
-    assert 'runServiceScript(root, "backend-service.sh", "start", "backend.log")' in script
+    assert (
+        'runServiceScript(root, "backend-service.sh", "start", "backend.log")' in script
+    )
     assert (
         'runServiceScript(root, "dashboard-service.sh", "start", "dashboard.log")'
         in script
@@ -4937,7 +4964,9 @@ def test_package_tarball_ships_generated_marketplace_manifest(tmp_path: Path) ->
         archive.extractall(extract_dir)
 
     manifest_path = extract_dir / "package" / ".claude-plugin" / "marketplace.json"
-    assert manifest_path.is_file(), "npm tarball is missing the Claude marketplace manifest"
+    assert manifest_path.is_file(), (
+        "npm tarball is missing the Claude marketplace manifest"
+    )
 
     manifest = json.loads(manifest_path.read_text())
     expected = json.loads((REPO_ROOT / "package.json").read_text())["version"]
