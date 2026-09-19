@@ -30,11 +30,18 @@ Create a git commit with automatic precommit hook handling, test fixing, README 
       git diff --cached --name-only --diff-filter=ACMR -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mts'
       ```
       If no TS/JS files are staged, skip steps 5g-5j entirely.
-   g. **Resolve each file's project root**: walk up from the staged file to the
-      nearest ancestor directory containing a `package.json` (ignoring any
-      `node_modules/`). That directory is the project root for the steps below —
-      do not assume a fixed path, as it differs per repository. Group the staged
-      files by resolved root and run h-j once per group.
+   g. **Resolve each file's project root and rebase its path**: walk up from the
+      staged file to the nearest ancestor directory containing a `package.json`
+      (ignoring any `node_modules/`). That directory is the project root for the
+      steps below — do not assume a fixed path, as it differs per repository.
+      Group the staged files by resolved root, and within each group convert the
+      paths to **project-root-relative** form, because h-j run with that root as
+      the working directory. Keep the original repo-relative paths for `git add`.
+      Passing a repo-relative path to a tool running inside the project root
+      silently checks NOTHING: from a root `<root>/`, a staged
+      `<root>/lib/x.ts` passed verbatim resolves to `<root>/<root>/lib/x.ts`,
+      which Biome reports as "ignored" while exiting 1 — a lint step that
+      checked no files. Pass `lib/x.ts`. Run h-j once per group.
    h. **Biome auto-fix**: Run `npx biome check --write <files>` from that root.
       Re-stage any modified files with `git add <files>`.
    i. **Biome remaining errors**: Run `npx biome check <files>`.
