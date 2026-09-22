@@ -62,6 +62,14 @@ def emit_context(
         # Scopes server-side dedup: rules already injected into this session
         # are not returned again; next-best matches backfill instead.
         session_id=session_id or None,
+        # The id the NEXT publish will use, so the exposure events this search
+        # records can be joined to the session that follows. session_id alone
+        # is not enough: the offline tuner resolves a trajectory only through
+        # request_id against the retained request, and the server now refuses
+        # to record an exposure that carries neither.
+        request_id=(
+            state.request_id_for_next_publish(session_id) if session_id else None
+        ),
     )
     renderer = (
         context_format.render_inline_compact_with_registry

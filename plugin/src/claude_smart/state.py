@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -302,6 +303,38 @@ def _to_wire_citations(cited_items: Any) -> list[dict[str, str]]:
             }
         )
     return out
+
+
+def pending_request_id(session_id: str, start: int) -> str:
+    """The request ID the next publish from ``start`` will use.
+
+    KEYED ON THE RANGE START ALONE, and that is the point. The search hook must
+    send the SAME ``request_id`` the publish will later use, or the exposure
+    events that search records can never be joined to a session: the offline
+    tuner resolves a trajectory only through ``request_id`` against the retained
+    request, and there is no reverse lookup from a session. The server now
+    refuses an exposure carrying neither id, so a search that cannot name its
+    request contributes nothing at all.
+
+    ``end`` used to be part of the key, which made the id unknowable at search
+    time -- the range has not finished when the hook runs. ``start`` is known
+    then, and is enough: the watermark only advances on a SUCCESSFUL publish,
+    so two publishes share a start only when the first failed. Reusing the id
+    across that retry is correct rather than a collision -- it is the same
+    logical batch.
+
+    Lives in ``state`` rather than ``publish`` because it is a property of the
+    session buffer and both the search and publish paths need it. Reaching it
+    through ``publish`` would drag the reflexio client into the search hook's
+    import graph, which breaks the hook outright.
+    """
+    name = f"claude-smart:{session_id}:{start}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
+
+
+def request_id_for_next_publish(session_id: str) -> str:
+    """The id a search should send now, so the next publish binds to it."""
+    return pending_request_id(session_id, published_record_offset(read_all(session_id)))
 
 
 def published_record_offset(records: list[dict[str, Any]]) -> int:

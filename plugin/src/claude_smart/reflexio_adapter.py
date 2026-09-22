@@ -444,6 +444,7 @@ class Adapter:
         query: str,
         top_k: int = 5,
         session_id: str | None = None,
+        request_id: str | None = None,
     ) -> tuple[list[Any], list[Any], list[Any]]:
         """Unified hybrid search → ``(user_playbooks, agent_playbooks, preferences)``.
 
@@ -482,6 +483,7 @@ class Adapter:
                 top_k=top_k,
                 search_mode=_SEARCH_MODE_HYBRID,
                 session_id=session_id,
+                request_id=request_id,
             )
         except Exception as exc:  # noqa: BLE001
             self._record_read_error("unified search", exc)
