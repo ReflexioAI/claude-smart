@@ -911,47 +911,50 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
         env_text = _CLAUDE_SMART_ENV_PATH.read_text()
     except OSError:
         env_text = ""
-    read_only_value = ""
-    file_api_key = ""
-    file_url = ""
+    file_values: dict[str, str] = {}
     for line in env_text.splitlines():
         parsed = env_config.parse_env_line(line)
-        if parsed is None:
-            continue
-        key, value = parsed
-        if key == env_config.REFLEXIO_API_KEY_ENV:
-            file_api_key = value
-        elif key == env_config.REFLEXIO_URL_ENV:
-            file_url = value
-        elif key == "REFLEXIO_USER_ID":
-            os.environ[key] = value
-        elif key == env_config.CLAUDE_SMART_READ_ONLY_ENV:
-            read_only_value = value
-    api_key = (
-        file_api_key or os.environ.get(env_config.REFLEXIO_API_KEY_ENV, "")
-    ).strip()
-    read_only = read_only_value.strip().lower() in {"1", "true", "yes", "on"}
-    if api_key:
-        reflexio_url = (
-            file_url
-            or os.environ.get(env_config.REFLEXIO_URL_ENV, _MANAGED_REFLEXIO_URL)
-        ).strip()
+        if parsed is not None:
+            file_values[parsed[0]] = parsed[1]
+    if "REFLEXIO_USER_ID" in file_values:
+        os.environ["REFLEXIO_USER_ID"] = file_values["REFLEXIO_USER_ID"]
+    read_only = file_values.get(
+        env_config.CLAUDE_SMART_READ_ONLY_ENV, ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+    # Same precedence as claude_smart_source_reflexio_env (and the Node
+    # installer): a key present in the file wins, even when empty, otherwise
+    # the inherited environment.
+    def resolved(key: str) -> str:
+        if key in file_values:
+            return file_values[key]
+        return os.environ.get(key, "")
+
+    api_key = resolved(env_config.REFLEXIO_API_KEY_ENV).strip()
+    reflexio_url = resolved(env_config.REFLEXIO_URL_ENV)
+    updates: dict[str, str] = {}
+    if (
+        api_key
+        and env_config.REFLEXIO_API_KEY_ENV in file_values
+        and not file_values.get(env_config.REFLEXIO_URL_ENV, "").strip()
+    ):
+        # The runtime treats a file key with no file URL as local mode, so the
+        # URL chosen here must be written where the runtime will read it. A
+        # shell-only key persists nothing: a URL without its key would outlive
+        # the export and send later sessions remote with no credentials.
+        if not reflexio_url.strip():
+            reflexio_url = _MANAGED_REFLEXIO_URL
+        updates[env_config.REFLEXIO_URL_ENV] = reflexio_url
+    if api_key and reflexio_url.strip():
         os.environ[env_config.REFLEXIO_URL_ENV] = reflexio_url
         os.environ[env_config.REFLEXIO_API_KEY_ENV] = api_key
         os.environ["CLAUDE_SMART_MANAGED_SETUP"] = "1"
         # The host follows the install in managed mode too
-        # (ensure_local_env_defaults does it for local mode), and the URL is
-        # persisted because the runtime falls back to the local backend when
-        # the file has a key but no URL.
-        updates = {env_config.CLAUDE_SMART_HOST_ENV: host}
-        if not file_url:
-            updates[env_config.REFLEXIO_URL_ENV] = reflexio_url
+        # (ensure_local_env_defaults does it for local mode).
+        updates[env_config.CLAUDE_SMART_HOST_ENV] = host
         env_config.set_env_vars(_CLAUDE_SMART_ENV_PATH, updates)
-        sys.stdout.write(
-            f"Using managed Reflexio at {reflexio_url} "
-            f"(API key {env_config.mask_secret(api_key)}).\n"
-        )
     else:
+        reflexio_url = ""
         os.environ.pop(env_config.REFLEXIO_URL_ENV, None)
         os.environ.pop(env_config.REFLEXIO_API_KEY_ENV, None)
         os.environ.pop("REFLEXIO_USER_ID", None)
@@ -959,6 +962,18 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
         added = env_config.ensure_local_env_defaults(_CLAUDE_SMART_ENV_PATH, host=host)
         if added:
             sys.stdout.write(f"Seeded {_CLAUDE_SMART_ENV_PATH} with {', '.join(added)}.\n")
+    # The runtime picks its mode from the URL alone
+    # (claude_smart_reflexio_url_is_remote), so the summary does too.
+    if env_config.reflexio_url_is_remote(reflexio_url):
+        sys.stdout.write(
+            f"Using managed Reflexio at {reflexio_url} "
+            f"(API key {env_config.mask_secret(api_key)}).\n"
+        )
+    else:
+        port = os.environ.get("BACKEND_PORT", "").strip() or "8071"
+        sys.stdout.write(
+            f"Using local Reflexio backend at {reflexio_url or f'http://localhost:{port}/'}.\n"
+        )
     return read_only
 
 

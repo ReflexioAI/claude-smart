@@ -734,6 +734,12 @@ def test_reflexio_env_loader_exports_host_flag(tmp_path: Path) -> None:
 _MODE_SCENARIOS = {
     "file managed": ('REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-a"\n', {}),
     "file key, no url": ('REFLEXIO_API_KEY="rflx-a"\n', {}),
+    # The runtime ignores the exported URL once that shell is gone, so install
+    # must persist it next to the file key.
+    "file key, shell remote url": (
+        'REFLEXIO_API_KEY="rflx-a"\n',
+        {"REFLEXIO_URL": "https://managed.example/"},
+    ),
     "shell key only": ("", {"REFLEXIO_API_KEY": "rflx-shell"}),
     "empty file key beats shell key": (
         'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY=\n',
@@ -749,12 +755,17 @@ _MODE_SCENARIOS = {
 }
 
 
+@pytest.mark.parametrize("installer_kind", ["node", "python"])
 @pytest.mark.parametrize("scenario", sorted(_MODE_SCENARIOS))
-def test_installer_mode_matches_runtime_resolution(tmp_path: Path, scenario: str) -> None:
+def test_installer_mode_matches_runtime_resolution(
+    tmp_path: Path, scenario: str, installer_kind: str
+) -> None:
     """Core invariant: the mode install prints is the mode the hooks resolve
-    from ~/.claude-smart/.env (as install left it) plus the inherited env."""
+    from ~/.claude-smart/.env (as install left it) plus the inherited env.
+    Both installers are held to it: the npx one and the source-checkout
+    ``claude_smart.cli`` one."""
     node = shutil.which("node")
-    if not node:
+    if installer_kind == "node" and not node:
         pytest.skip("node is required for Node installer test")
     file_text, exported = _MODE_SCENARIOS[scenario]
     runtime_env = tmp_path / ".claude-smart" / ".env"
@@ -765,45 +776,60 @@ def test_installer_mode_matches_runtime_resolution(tmp_path: Path, scenario: str
         env.pop(key, None)
     env.update(exported)
 
-    installer = subprocess.run(
-        [
+    if installer_kind == "node":
+        command = [
             node,
             "-e",
             f"const i = require({json.dumps(str(NODE_INSTALLER))});"
             "process.stdout.write('\\nMANAGED=' + i.configureReflexioSetup('claude-code').managed);",
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
+        ]
+    else:
+        command = [
+            sys.executable,
+            "-c",
+            "from claude_smart import cli; cli._configure_reflexio_setup(host='claude-code')",
+        ]
+    installer = subprocess.run(
+        command, env=env, text=True, capture_output=True, check=False
     )
     assert installer.returncode == 0, installer.stderr
-    installer_managed = installer.stdout.rsplit("MANAGED=", 1)[1] == "true"
-    assert ("Using managed Reflexio" in installer.stdout) is installer_managed
+    installer_managed = "Using managed Reflexio" in installer.stdout
+    assert installer_managed or "Using local Reflexio backend" in installer.stdout
+    if installer_kind == "node":
+        assert (installer.stdout.rsplit("MANAGED=", 1)[1] == "true") is installer_managed
 
-    runtime = subprocess.run(
-        [
-            "/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            f'. "{LIB}"; claude_smart_source_reflexio_env; '
-            "if claude_smart_reflexio_url_is_remote; then echo remote; else echo local; fi; "
-            'echo "key=${REFLEXIO_API_KEY:+set}"',
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert runtime.returncode == 0, runtime.stderr
-    mode, key = runtime.stdout.split()
+    def resolve_runtime(runtime_env_vars: dict[str, str]) -> tuple[str, str]:
+        runtime = subprocess.run(
+            [
+                "/bin/bash",
+                "--noprofile",
+                "--norc",
+                "-c",
+                f'. "{LIB}"; claude_smart_source_reflexio_env; '
+                "if claude_smart_reflexio_url_is_remote; then echo remote; else echo local; fi; "
+                'echo "key=${REFLEXIO_API_KEY:+set}"',
+            ],
+            env=runtime_env_vars,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert runtime.returncode == 0, runtime.stderr
+        mode, key = runtime.stdout.split()
+        return mode, key
+
     context = (installer.stdout, runtime_env.read_text())
-    assert (mode == "remote") is installer_managed, context
-    # Install only reports managed mode with a (masked) API key; the hooks
-    # must actually end up holding one.
-    if installer_managed:
-        assert key == "key=set", context
+    # Hooks in a Claude Code started from the install shell, and hooks in any
+    # later session where those exports are gone: both must resolve the mode
+    # install printed, from the file install left behind.
+    fresh_env = {k: v for k, v in env.items() if k not in exported}
+    for runtime_env_vars in (env, fresh_env):
+        mode, key = resolve_runtime(runtime_env_vars)
+        assert (mode == "remote") is installer_managed, context
+        # Install only reports managed mode with a (masked) API key; the hooks
+        # must actually end up holding one.
+        if installer_managed:
+            assert key == "key=set", context
     # A URL written by install must come with a key in the same file; a URL
     # persisted for a shell-only key outlives that export (later sessions
     # would go remote with no key).
@@ -1393,6 +1419,79 @@ def test_node_install_migrates_pre_split_managed_env(tmp_path: Path) -> None:
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in runtime_text
     assert 'CLAUDE_SMART_READ_ONLY="1"' in runtime_text
     assert "REFLEXIO_STORAGE" not in runtime_text
+
+
+def test_node_install_migrates_legacy_env_once_and_honors_setup_local(
+    tmp_path: Path,
+) -> None:
+    """A user who picks local mode in setup must stay local: install must not
+    re-import the managed settings still sitting in ~/.reflexio/.env."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    legacy_env = tmp_path / ".reflexio" / ".env"
+    legacy_env.parent.mkdir()
+    legacy_env.write_text(
+        'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-legacy"\n'
+    )
+    env = _isolated_env(tmp_path)
+    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY", "REFLEXIO_USER_ID"):
+        env.pop(key, None)
+    configure = [
+        node,
+        "-e",
+        f"require({json.dumps(str(NODE_INSTALLER))}).configureReflexioSetup('claude-code');",
+    ]
+
+    first = subprocess.run(configure, env=env, text=True, capture_output=True, check=False)
+    assert first.returncode == 0, first.stderr
+    assert "Migrated managed Reflexio settings" in first.stdout
+    assert "Using managed Reflexio" in first.stdout
+
+    setup = _run_setup_script(tmp_path, "claude-code\nlocal\n")
+    assert setup.returncode == 0, setup.stderr
+
+    for _ in range(2):
+        again = subprocess.run(configure, env=env, text=True, capture_output=True, check=False)
+        assert again.returncode == 0, again.stderr
+        assert "Migrated" not in again.stdout
+        assert "Using local Reflexio backend" in again.stdout
+    assert "REFLEXIO_API_KEY" not in (tmp_path / ".claude-smart" / ".env").read_text()
+
+
+def test_setup_local_choice_blocks_first_legacy_migration(tmp_path: Path) -> None:
+    # Setup's local mode runs install afterwards; if that install is the first
+    # one on this release, it must not migrate the legacy settings either, and
+    # a rerun of setup must not prefill them as managed defaults.
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    legacy_env = tmp_path / ".reflexio" / ".env"
+    legacy_env.parent.mkdir()
+    legacy_env.write_text(
+        'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-legacy"\n'
+    )
+    setup = _run_setup_script(tmp_path, "claude-code\nlocal\n")
+    assert setup.returncode == 0, setup.stderr
+
+    env = _isolated_env(tmp_path)
+    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY", "REFLEXIO_USER_ID"):
+        env.pop(key, None)
+    result = subprocess.run(
+        [node, "-e", f"require({json.dumps(str(NODE_INSTALLER))}).configureReflexioSetup('claude-code');"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Migrated" not in result.stdout
+    assert "Using local Reflexio backend" in result.stdout
+
+    rerun = _run_setup_script(tmp_path, "claude-code\nlocal\n")
+    assert rerun.returncode == 0, rerun.stderr
+    assert "as defaults" not in rerun.stderr
+    assert "REFLEXIO_API_KEY" not in (tmp_path / ".claude-smart" / ".env").read_text()
 
 
 def test_npx_install_reads_managed_env(tmp_path: Path) -> None:

@@ -68,6 +68,10 @@ const DEFAULT_CLAUDE_SMART_HOST = HOST_CLAUDE_CODE;
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const INSTALL_FAILURE_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-failed");
+// Written the first time install considers ~/.reflexio/.env, whatever the
+// outcome, so the migration runs once and a later local-mode choice sticks.
+// scripts/setup-claude-smart.sh writes the same path before a local install.
+const LEGACY_ENV_MIGRATION_MARKER = join(CLAUDE_SMART_STATE_DIR, "legacy-reflexio-env-checked");
 const OPENCODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "opencode", "claude-smart");
 // Claude Code loads plugins from a local-directory marketplace in place
 // (<marketplace>/plugin), so this copy IS the runtime root, not a staging area.
@@ -415,6 +419,9 @@ function localBackendUrl() {
 // runtime env file. A loopback URL there belongs to some other local Reflexio
 // server (e.g. a dev backend), not to claude-smart, so it is left alone.
 function migrateLegacyManagedEnv() {
+  if (existsSync(LEGACY_ENV_MIGRATION_MARKER)) return;
+  mkdirSync(CLAUDE_SMART_STATE_DIR, { recursive: true });
+  writeFileSync(LEGACY_ENV_MIGRATION_MARKER, "");
   if ((readEnvFile(CLAUDE_SMART_ENV_PATH).get("REFLEXIO_API_KEY") || "").trim()) return;
   const legacy = readEnvFile(LEGACY_REFLEXIO_ENV_PATH);
   const apiKey = (legacy.get("REFLEXIO_API_KEY") || "").trim();
@@ -444,10 +451,11 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
   const apiKey = resolved("REFLEXIO_API_KEY").trim();
   let url = resolved("REFLEXIO_URL");
   const updates = {};
-  if (apiKey && fileEnv.has("REFLEXIO_API_KEY") && !url.trim()) {
-    // The runtime treats a key with no URL as local mode, so the managed
-    // default chosen here must be written where the runtime will read it.
-    url = MANAGED_REFLEXIO_URL;
+  if (apiKey && fileEnv.has("REFLEXIO_API_KEY") && !(fileEnv.get("REFLEXIO_URL") || "").trim()) {
+    // The runtime treats a file key with no file URL as local mode, so the URL
+    // chosen here (an exported one, else the managed default) must be written
+    // where the runtime will read it once that export is gone.
+    if (!url.trim()) url = MANAGED_REFLEXIO_URL;
     updates.REFLEXIO_URL = url;
   }
   if (apiKey && url.trim()) {

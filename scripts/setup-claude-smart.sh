@@ -14,6 +14,9 @@ REPO_ROOT="$(cd "$HERE/.." && pwd)"
 INSTALLER="$REPO_ROOT/bin/claude-smart.js"
 REFLEXIO_ENV="${REFLEXIO_ENV_PATH:-$HOME/.claude-smart/.env}"
 LEGACY_REFLEXIO_ENV="${LEGACY_REFLEXIO_ENV_PATH:-$HOME/.reflexio/.env}"
+# Same path as LEGACY_ENV_MIGRATION_MARKER in bin/claude-smart.js: once it
+# exists, neither the installer nor this wizard reads the legacy file again.
+LEGACY_MIGRATION_MARKER="$HOME/.claude-smart/legacy-reflexio-env-checked"
 MANAGED_REFLEXIO_URL="https://www.reflexio.ai/"
 GLOBAL_USER_ID="global_user"
 
@@ -302,7 +305,7 @@ main() {
   existing_url="$(get_env_value REFLEXIO_URL || true)"
   existing_user_id="$(get_env_value REFLEXIO_USER_ID || true)"
   existing_read_only="$(get_env_value CLAUDE_SMART_READ_ONLY || true)"
-  if [ -z "$existing_api_key" ] && [ -f "$LEGACY_REFLEXIO_ENV" ]; then
+  if [ -z "$existing_api_key" ] && [ -f "$LEGACY_REFLEXIO_ENV" ] && [ ! -e "$LEGACY_MIGRATION_MARKER" ]; then
     local legacy_api_key legacy_url
     legacy_api_key="$(REFLEXIO_ENV="$LEGACY_REFLEXIO_ENV" get_env_value REFLEXIO_API_KEY || true)"
     legacy_url="$(REFLEXIO_ENV="$LEGACY_REFLEXIO_ENV" get_env_value REFLEXIO_URL || true)"
@@ -339,6 +342,10 @@ main() {
       log "removed managed Reflexio settings from $REFLEXIO_ENV"
     fi
     ensure_local_env_defaults
+    # Stop the installer from migrating ~/.reflexio/.env managed settings
+    # straight back after the user chose local mode.
+    mkdir -p "$(dirname "$LEGACY_MIGRATION_MARKER")"
+    : > "$LEGACY_MIGRATION_MARKER"
     log "configured local Reflexio defaults in $REFLEXIO_ENV"
     install_for_host "$host"
     return 0

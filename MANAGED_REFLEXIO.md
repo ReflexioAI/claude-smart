@@ -27,7 +27,10 @@ Older releases kept managed settings in `~/.reflexio/.env`. On the next
 `npx claude-smart install` or `update`, a managed setup found there is copied
 into `~/.claude-smart/.env` once, and the installer prints
 `Migrated managed Reflexio settings from …`. A loopback `REFLEXIO_URL` there is
-treated as another local Reflexio server's config and is not migrated.
+treated as another local Reflexio server's config and is not migrated. The
+installer records that it has checked (`~/.claude-smart/legacy-reflexio-env-checked`)
+and never reads the legacy file again, so choosing local mode in
+`npx claude-smart setup` stays local.
 
 The installer's summary comes from the same file: it prints either
 `Using managed Reflexio at <url>` or `Using local Reflexio backend at <url>`,

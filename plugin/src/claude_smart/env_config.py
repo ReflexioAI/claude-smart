@@ -11,6 +11,7 @@ must stay in sync with the ``REFLEXIO_ENV_FILE`` export in
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from claude_smart import runtime
@@ -53,6 +54,21 @@ _LOCAL_MODE_PRUNE_KEYS = {
     REFLEXIO_API_KEY_ENV,
     "REFLEXIO_USER_ID",
 }
+
+
+_LOCAL_REFLEXIO_URL_RE = re.compile(
+    r"http://(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(/?|:.*)"
+)
+
+
+def reflexio_url_is_remote(url: str) -> bool:
+    """Mirror ``claude_smart_reflexio_url_is_remote`` in ``scripts/_lib.sh``.
+
+    The runtime starts a local backend unless this is true, so installer
+    summaries must use the same rule. The URL is deliberately not stripped:
+    the shell helper matches the raw value too.
+    """
+    return bool(url) and _LOCAL_REFLEXIO_URL_RE.fullmatch(url) is None
 
 
 def parse_env_line(line: str) -> tuple[str, str] | None:
