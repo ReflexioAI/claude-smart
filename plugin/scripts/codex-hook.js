@@ -236,8 +236,11 @@ function unquoteEnvValue(value) {
   return trimmed;
 }
 
+// Same file and precedence as claude_smart_source_reflexio_env in _lib.sh:
+// managed keys in the file win, local flags only fill unset values.
+// ~/.reflexio/.env belongs to other Reflexio tools and is never read here.
 function loadReflexioEnv() {
-  const file = path.join(REFLEXIO_DIR, ".env");
+  const file = path.join(STATE_DIR, ".env");
   let text;
   try {
     text = fs.readFileSync(file, "utf8");

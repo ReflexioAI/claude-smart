@@ -248,45 +248,6 @@ def _installed_plugin_sort_key(path: Path) -> tuple[int, int, int, int, float]:
     return (0, 0, 0, 0, path.stat().st_mtime)
 
 
-def _find_claude_code_plugin_root() -> Path | None:
-    """Locate the installed Claude Code plugin root after native install."""
-    cache_root = (
-        Path.home()
-        / ".claude"
-        / "plugins"
-        / "cache"
-        / _CODEX_MARKETPLACE_NAME
-        / "claude-smart"
-    )
-    candidates: list[Path] = []
-    if cache_root.is_dir():
-        for child in cache_root.iterdir():
-            if (
-                child.is_dir()
-                and (child / "pyproject.toml").is_file()
-                and (child / "scripts" / "smart-install.sh").is_file()
-            ):
-                candidates.append(child)
-    candidates.sort(key=_installed_plugin_sort_key, reverse=True)
-    candidates.extend(
-        [
-            Path.home()
-            / ".claude"
-            / "plugins"
-            / "marketplaces"
-            / _CODEX_MARKETPLACE_NAME
-            / "plugin",
-            _PLUGIN_ROOT,
-        ]
-    )
-    for candidate in candidates:
-        if (candidate / "pyproject.toml").is_file() and (
-            candidate / "scripts" / "smart-install.sh"
-        ).is_file():
-            return candidate
-    return None
-
-
 def _force_plugin_root(plugin_root: Path) -> None:
     """Point ~/.reflexio/plugin-root at the installed plugin root."""
     _REFLEXIO_DIR.mkdir(parents=True, exist_ok=True)
@@ -303,11 +264,13 @@ def _force_plugin_root(plugin_root: Path) -> None:
         (_REFLEXIO_DIR / "plugin-root.txt").write_text(f"{plugin_root}\n")
 
 
-def _bootstrap_claude_code_install() -> tuple[bool, str]:
-    """Run smart-install immediately for the installed Claude Code plugin."""
-    plugin_root = _find_claude_code_plugin_root()
-    if plugin_root is None:
-        return False, "could not locate installed Claude Code plugin root after install"
+def _bootstrap_claude_code_install(plugin_root: Path) -> tuple[bool, str]:
+    """Run smart-install for the plugin root Claude Code will load.
+
+    Claude Code runs a plugin from a local-directory marketplace in place
+    (``<marketplace>/plugin``), not from ``~/.claude/plugins/cache``, so the
+    caller passes the marketplace's own plugin dir.
+    """
     try:
         _force_plugin_root(plugin_root)
     except OSError as exc:
@@ -976,6 +939,14 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
         os.environ[env_config.REFLEXIO_URL_ENV] = reflexio_url
         os.environ[env_config.REFLEXIO_API_KEY_ENV] = api_key
         os.environ["CLAUDE_SMART_MANAGED_SETUP"] = "1"
+        # The host follows the install in managed mode too
+        # (ensure_local_env_defaults does it for local mode), and the URL is
+        # persisted because the runtime falls back to the local backend when
+        # the file has a key but no URL.
+        updates = {env_config.CLAUDE_SMART_HOST_ENV: host}
+        if not file_url:
+            updates[env_config.REFLEXIO_URL_ENV] = reflexio_url
+        env_config.set_env_vars(_CLAUDE_SMART_ENV_PATH, updates)
         sys.stdout.write(
             f"Using managed Reflexio at {reflexio_url} "
             f"(API key {env_config.mask_secret(api_key)}).\n"
@@ -1572,7 +1543,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             sys.stderr.write(f"error: {' '.join(cmd)} failed (exit {exc.returncode})\n")
             return exc.returncode or 1
 
-    bootstrapped, message = _bootstrap_claude_code_install()
+    bootstrapped, message = _bootstrap_claude_code_install(_PLUGIN_ROOT)
     if not bootstrapped:
         sys.stderr.write(
             f"error: claude-smart installed, but dependency bootstrap failed: {message}\n"

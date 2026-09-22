@@ -50,7 +50,7 @@ def test_bootstrap_claude_code_install_runs_installed_smart_install(
     plugin_root = _installed_plugin(tmp_path)
     _isolate_home(monkeypatch, tmp_path)
 
-    ok, message = cli._bootstrap_claude_code_install()
+    ok, message = cli._bootstrap_claude_code_install(plugin_root)
 
     assert ok, message
     assert message == str(plugin_root)
@@ -73,7 +73,7 @@ def test_bootstrap_claude_code_install_runs_smart_install_via_resolved_bash(
     monkeypatch.setattr(cli, "_resolve_bash", lambda: "/bin/bash")
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
-    ok, message = cli._bootstrap_claude_code_install()
+    ok, message = cli._bootstrap_claude_code_install(plugin_root)
 
     assert ok, message
     assert message == str(plugin_root)
@@ -83,25 +83,6 @@ def test_bootstrap_claude_code_install_runs_smart_install_via_resolved_bash(
             plugin_root,
         )
     ]
-
-
-def test_bootstrap_claude_code_install_prefers_highest_cache_version(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    old_root = _installed_plugin(tmp_path, "0.2.31")
-    new_root = _installed_plugin(tmp_path, "0.2.32")
-    old_mtime = new_root.stat().st_mtime + 100
-    old_root.touch()
-    os.utime(old_root, (old_mtime, old_mtime))
-    _isolate_home(monkeypatch, tmp_path)
-
-    ok, message = cli._bootstrap_claude_code_install()
-
-    assert ok, message
-    assert message == str(new_root)
-    assert (tmp_path / "bootstrap-ran").read_text().strip() == str(new_root)
-    assert (tmp_path / ".reflexio" / "plugin-root").resolve() == new_root
 
 
 def test_bootstrap_claude_code_install_reports_failure_marker(
@@ -118,7 +99,7 @@ def test_bootstrap_claude_code_install_reports_failure_marker(
     install.chmod(install.stat().st_mode | stat.S_IXUSR)
     _isolate_home(monkeypatch, tmp_path)
 
-    ok, message = cli._bootstrap_claude_code_install()
+    ok, message = cli._bootstrap_claude_code_install(plugin_root)
 
     assert not ok
     assert message == "network unavailable"
@@ -128,14 +109,14 @@ def test_bootstrap_claude_code_install_refuses_real_plugin_root_directory(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    _installed_plugin(tmp_path)
+    plugin_root = _installed_plugin(tmp_path)
     _isolate_home(monkeypatch, tmp_path)
     real_dir = tmp_path / ".reflexio" / "plugin-root"
     real_dir.mkdir(parents=True)
     sentinel = real_dir / "keep.txt"
     sentinel.write_text("do not delete")
 
-    ok, message = cli._bootstrap_claude_code_install()
+    ok, message = cli._bootstrap_claude_code_install(plugin_root)
 
     assert not ok
     assert "refusing to replace non-symlink plugin-root" in message
@@ -152,7 +133,7 @@ def test_cmd_install_fails_when_dependency_bootstrap_fails(
         cli.subprocess, "run", lambda *a, **kw: argparse.Namespace(returncode=0)
     )
     monkeypatch.setattr(
-        cli, "_bootstrap_claude_code_install", lambda: (False, "uv failed")
+        cli, "_bootstrap_claude_code_install", lambda _root: (False, "uv failed")
     )
 
     rc = cli.cmd_install(argparse.Namespace(host="claude-code", source="unused"))
@@ -180,7 +161,7 @@ def test_cmd_install_refresh_existing_uninstalls_and_retries(
     monkeypatch.setattr(cli, "_configure_reflexio_setup", lambda **_kwargs: False)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     monkeypatch.setattr(
-        cli, "_bootstrap_claude_code_install", lambda: (True, str(tmp_path / "plugin"))
+        cli, "_bootstrap_claude_code_install", lambda _root: (True, str(tmp_path / "plugin"))
     )
     monkeypatch.setattr(cli, "_restore_publish_hooks_from_source", lambda _root: None)
 
@@ -279,6 +260,27 @@ def test_install_setup_reads_managed_reflexio_from_env(
     out = capsys.readouterr().out
     assert "rflx-****cret" in out
     assert "rflx-test-secret" not in out
+
+
+def test_install_setup_managed_key_without_url_persists_host_and_url(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # The runtime treats a key with no URL as local mode, so an installer that
+    # reports managed mode must write the URL it chose, and the host it is
+    # installing for, into the file the runtime reads.
+    env_path = tmp_path / ".claude-smart" / ".env"
+    env_path.parent.mkdir()
+    env_path.write_text('REFLEXIO_API_KEY="rflx-test-secret"\nCLAUDE_SMART_HOST=codex\n')
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
+    monkeypatch.delenv("REFLEXIO_URL", raising=False)
+
+    cli._configure_reflexio_setup(host="claude-code")
+
+    text = env_path.read_text()
+    assert f'REFLEXIO_URL="{cli._MANAGED_REFLEXIO_URL}"' in text
+    assert 'CLAUDE_SMART_HOST="claude-code"' in text
+    assert "codex" not in text
 
 
 def test_install_setup_reads_read_only_from_env(

@@ -17,6 +17,22 @@ local mode.
 npx claude-smart setup
 ```
 
+## Where the Settings Live
+
+Setup and install read and write `~/.claude-smart/.env`, the same file the
+claude-smart hooks and backend read. `~/.reflexio/.env` belongs to Reflexio
+itself (and any other Reflexio tool on the machine) and is never written.
+
+Older releases kept managed settings in `~/.reflexio/.env`. On the next
+`npx claude-smart install` or `update`, a managed setup found there is copied
+into `~/.claude-smart/.env` once, and the installer prints
+`Migrated managed Reflexio settings from …`. A loopback `REFLEXIO_URL` there is
+treated as another local Reflexio server's config and is not migrated.
+
+The installer's summary comes from the same file: it prints either
+`Using managed Reflexio at <url>` or `Using local Reflexio backend at <url>`,
+and only reports a backend or dashboard as running after an HTTP probe answers.
+
 ## When to Use Managed Mode
 
 Use managed mode when you want:
@@ -50,7 +66,7 @@ The script prompts for:
   `global` to share skills across projects.
 
 After collecting those values, setup rewrites the claude-smart entries in
-`~/.reflexio/.env` and then installs or updates the selected host. Restart
+`~/.claude-smart/.env` and then installs or updates the selected host. Restart
 Claude Code or fully quit and reopen Codex so the installed hooks reload.
 
 Do not pass managed options to `npx claude-smart install`; install reads the
@@ -65,13 +81,13 @@ written.
 
 Choose `Claude Code` when you use Anthropic's local Claude Code app and want the
 Claude Code plugin installed or updated. Setup runs the normal Claude Code
-install path after writing `~/.reflexio/.env`.
+install path after writing `~/.claude-smart/.env`.
 
 Choose `Codex` when you use Codex locally and want the Codex plugin installed
 or updated. Setup runs the Codex install path and prepares Codex hooks.
 
 Choose `both` when you use both hosts on the same machine. Both hosts read the
-same `~/.reflexio/.env`, so one managed configuration applies to both Claude
+same `~/.claude-smart/.env`, so one managed configuration applies to both Claude
 Code and Codex.
 
 ### Mode
@@ -81,9 +97,8 @@ Choose `managed Reflexio` for non-local setup. Managed mode writes a remote
 flags, and makes hooks read and publish through the managed Reflexio service.
 
 Choose `local` only when you want to switch back to local storage and local
-backend behavior. Local mode does not create `~/.reflexio/.env`; if the file
-already exists, setup removes managed keys and deletes the file if nothing is
-left.
+backend behavior. Local mode removes the managed keys from
+`~/.claude-smart/.env` and writes the local-provider defaults.
 
 ### Reflexio API Key
 
@@ -116,7 +131,7 @@ project skills, and shared skills.
 
 Choose `no` when this machine should both read from managed Reflexio and publish
 new learning data back to it. Setup removes `CLAUDE_SMART_READ_ONLY` from
-`~/.reflexio/.env`.
+`~/.claude-smart/.env`.
 
 ### Sharing Scope
 
@@ -141,7 +156,7 @@ across projects if you teach them while global sharing is enabled.
 ## What Setup Writes
 
 Managed setup cleans any previous claude-smart local or managed entries, then
-writes the current remote settings to `~/.reflexio/.env`:
+writes the current remote settings to `~/.claude-smart/.env`:
 
 ```env
 REFLEXIO_URL="https://www.reflexio.ai/"
@@ -165,11 +180,11 @@ CLAUDE_SMART_USE_LOCAL_CLI=...
 CLAUDE_SMART_USE_LOCAL_EMBEDDING=...
 ```
 
-If an existing `REFLEXIO_URL` points at localhost, setup replaces it with the
-managed Reflexio URL.
+If an existing `REFLEXIO_URL` points at a loopback host (`localhost`,
+`127.0.0.1`, `0.0.0.0`, `[::1]`, over `http` or `https`), setup replaces it
+with the managed Reflexio URL.
 
-Local setup does not create `~/.reflexio/.env`. If the file already exists,
-local setup removes managed keys:
+Local setup removes managed keys from `~/.claude-smart/.env`:
 
 ```env
 REFLEXIO_URL=...
@@ -178,12 +193,10 @@ REFLEXIO_USER_ID=...
 CLAUDE_SMART_READ_ONLY=...
 ```
 
-If the file becomes empty after cleanup, setup deletes it.
-
 ## Re-Run Behavior
 
 `npx claude-smart setup` is safe to rerun. It reads the current
-`~/.reflexio/.env`, uses existing values as prompt defaults, and masks existing
+`~/.claude-smart/.env`, uses existing values as prompt defaults, and masks existing
 API keys by showing only the last four characters.
 
 Press Enter to keep an existing value. Switching from managed to local removes
@@ -277,12 +290,13 @@ The help output should include:
 npx claude-smart setup
 ```
 
-The old wrapper may also have left local flags in `~/.reflexio/.env`; rerunning
-setup in managed mode removes those local-only entries.
+Local flags an older wrapper left in `~/.reflexio/.env` no longer affect
+claude-smart. Rerunning setup in managed mode removes local-only entries from
+`~/.claude-smart/.env`.
 
 If managed learning does not appear:
 
-- Confirm `REFLEXIO_API_KEY` is present in `~/.reflexio/.env`.
+- Confirm `REFLEXIO_API_KEY` is present in `~/.claude-smart/.env`.
 - Confirm `REFLEXIO_URL` points at `https://www.reflexio.ai/`.
 - Run the `curl` command above and check for HTTP 200.
 - Restart Claude Code or Codex after changing `.env`.

@@ -1,5 +1,6 @@
 /**
- * Read/write ~/.reflexio/.env — preserving unknown keys, comments, and blank
+ * Read/write ~/.claude-smart/.env — the env file claude-smart's hooks and
+ * backend read — preserving unknown keys, comments, and blank
  * lines. Used by the Configure page.
  */
 
@@ -32,7 +33,7 @@ function defaultReflexioUrl(): string {
 }
 
 function envPath(): string {
-  return path.join(os.homedir(), ".reflexio", ".env");
+  return path.join(os.homedir(), ".claude-smart", ".env");
 }
 
 function parseLine(line: string): { key: string; value: string } | null {

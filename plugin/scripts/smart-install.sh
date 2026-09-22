@@ -754,5 +754,5 @@ fi
 start_backend_service
 
 write_success_marker
-echo "[claude-smart] install complete. Backend started; dashboard auto-starts on session start." >&2
+echo "[claude-smart] install complete. Backend is starting in the background; dashboard auto-starts on session start." >&2
 claude_smart_emit_continue
