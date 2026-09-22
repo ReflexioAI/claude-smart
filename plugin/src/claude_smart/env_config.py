@@ -151,6 +151,8 @@ def set_env_vars(path: Path, values: dict[str, str]) -> list[str]:
 def ensure_local_env_defaults(
     path: Path | None = None,
     host: str = DEFAULT_CLAUDE_SMART_HOST,
+    *,
+    prune: bool = True,
 ) -> list[str]:
     """Create or augment ``~/.claude-smart/.env`` for claude-smart local mode.
 
@@ -176,7 +178,7 @@ def ensure_local_env_defaults(
         parsed = parse_env_line(line)
         if parsed is not None:
             key, _value = parsed
-            if key in _LOCAL_MODE_PRUNE_KEYS:
+            if prune and key in _LOCAL_MODE_PRUNE_KEYS:
                 pruned = True
                 continue
             if key == CLAUDE_SMART_HOST_ENV:

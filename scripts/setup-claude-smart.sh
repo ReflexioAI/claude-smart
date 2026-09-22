@@ -305,6 +305,11 @@ main() {
   existing_url="$(get_env_value REFLEXIO_URL || true)"
   existing_user_id="$(get_env_value REFLEXIO_USER_ID || true)"
   existing_read_only="$(get_env_value CLAUDE_SMART_READ_ONLY || true)"
+  # A key next to a loopback URL belongs to that local server. Offering it as
+  # the managed default would send it to the managed service on Enter.
+  if [ -n "$existing_url" ] && is_local_url "$existing_url"; then
+    existing_api_key=""
+  fi
   if [ -z "$existing_api_key" ] && [ -f "$LEGACY_REFLEXIO_ENV" ] && [ ! -e "$LEGACY_MIGRATION_MARKER" ]; then
     local legacy_api_key legacy_url
     legacy_api_key="$(REFLEXIO_ENV="$LEGACY_REFLEXIO_ENV" get_env_value REFLEXIO_API_KEY || true)"

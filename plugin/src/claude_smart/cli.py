@@ -953,6 +953,16 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
         # (ensure_local_env_defaults does it for local mode).
         updates[env_config.CLAUDE_SMART_HOST_ENV] = host
         env_config.set_env_vars(_CLAUDE_SMART_ENV_PATH, updates)
+        if not env_config.reflexio_url_is_remote(reflexio_url):
+            # A key next to a plain http loopback URL is still local mode at
+            # runtime, and the local backend needs the local provider defaults.
+            added = env_config.ensure_local_env_defaults(
+                _CLAUDE_SMART_ENV_PATH, host=host, prune=False
+            )
+            if added:
+                sys.stdout.write(
+                    f"Seeded {_CLAUDE_SMART_ENV_PATH} with {', '.join(added)}.\n"
+                )
     else:
         reflexio_url = ""
         os.environ.pop(env_config.REFLEXIO_URL_ENV, None)

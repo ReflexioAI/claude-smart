@@ -607,6 +607,63 @@ def test_smart_install_repairs_local_env_defaults() -> None:
     assert "REFLEXIO_USER_ID" in lib
 
 
+def _smart_install_functions(*names: str) -> str:
+    lines = SMART_INSTALL.read_text().splitlines()
+    out: list[str] = []
+    for name in names:
+        start = lines.index(f"{name}() {{")
+        end = lines.index("}", start)
+        out.extend(lines[start : end + 1])
+    return "\n".join(out)
+
+
+@pytest.mark.parametrize(
+    ("file_text", "local"),
+    [
+        ('REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="k"\n', False),
+        ('REFLEXIO_URL="http://localhost:9000/"\nREFLEXIO_API_KEY="k"\n', True),
+        ('REFLEXIO_URL="https://www.reflexio.ai/"\n', True),
+    ],
+)
+def test_smart_install_seeds_local_defaults_whenever_runtime_is_local(
+    tmp_path: Path, file_text: str, local: bool
+) -> None:
+    # The runtime picks local vs managed from the URL, so a keyed loopback URL
+    # is local mode and its backend needs the local provider defaults too.
+    env_file = tmp_path / ".claude-smart" / ".env"
+    env_file.parent.mkdir()
+    env_file.write_text(file_text)
+    functions = _smart_install_functions(
+        "claude_smart_managed_env_active",
+        "claude_smart_env_quote",
+        "claude_smart_env_value",
+        "claude_smart_env_upsert",
+        "claude_smart_env_append_raw_if_missing",
+        "claude_smart_prune_managed_env_keys_for_local",
+        "claude_smart_ensure_local_env_defaults",
+    )
+    script = (
+        f'. "{LIB}"\nREFLEXIO_ENV="$HOME/.claude-smart/.env"\n{functions}\n'
+        "claude_smart_source_reflexio_env\nclaude_smart_ensure_local_env_defaults\n"
+    )
+    env = _isolated_env(tmp_path)
+    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY", "CLAUDE_SMART_USE_LOCAL_CLI"):
+        env.pop(key, None)
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    text = env_file.read_text()
+    assert ("CLAUDE_SMART_USE_LOCAL_CLI=" in text) is local
+    # Local setups keep a keyed loopback URL; only a keyless one is pruned.
+    if "REFLEXIO_API_KEY" in file_text:
+        assert 'REFLEXIO_API_KEY="k"' in text
+
+
 def test_python_import_probe_uses_plugin_python(tmp_path: Path) -> None:
     python_path = tmp_path / ".venv" / "Scripts" / "python.exe"
     python_path.parent.mkdir(parents=True)
@@ -751,6 +808,8 @@ _MODE_SCENARIOS = {
     ),
     "quoted whitespace url": ('REFLEXIO_URL=" http://localhost:8071/"\nREFLEXIO_API_KEY="k"\n', {}),
     "https loopback": ('REFLEXIO_URL="https://localhost:8081"\nREFLEXIO_API_KEY="k"\n', {}),
+    # A keyed plain-http loopback URL is local mode; it keeps its URL.
+    "file local url + key": ('REFLEXIO_URL="http://localhost:9000/"\nREFLEXIO_API_KEY="k"\n', {}),
     "nothing": ("", {}),
 }
 
@@ -834,6 +893,10 @@ def test_installer_mode_matches_runtime_resolution(
     # persisted for a shell-only key outlives that export (later sessions
     # would go remote with no key).
     final_text = runtime_env.read_text()
+    # A local report must leave the local backend its provider defaults.
+    if not installer_managed:
+        assert "CLAUDE_SMART_USE_LOCAL_CLI=" in final_text, context
+        assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=" in final_text, context
     if "REFLEXIO_URL" in final_text and "REFLEXIO_URL" not in file_text:
         assert re.search(r'^REFLEXIO_API_KEY="?[^"\s]', final_text, re.M), context
 
@@ -1456,6 +1519,29 @@ def test_node_install_reports_dashboard_only_when_marker_answers(
     assert ("without the claude-smart dashboard marker" in result.stdout) is not marker
 
 
+def test_setup_script_never_offers_a_loopback_key_as_managed_default(
+    tmp_path: Path,
+) -> None:
+    # Enter at every prompt must not ship a local server's key to the managed
+    # service: the mode defaults to local, and an explicit managed choice
+    # does not prefill that key.
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    runtime_env.parent.mkdir()
+    runtime_env.write_text('REFLEXIO_URL="http://localhost:8081/"\nREFLEXIO_API_KEY="rflx-dev"\n')
+
+    result = _run_setup_script(tmp_path, "claude-code\n\n")
+    assert result.returncode == 0, result.stderr
+    assert "Setup mode (1=local, 2=managed Reflexio) [local]" in result.stderr
+
+    runtime_env.write_text('REFLEXIO_URL="http://localhost:8081/"\nREFLEXIO_API_KEY="rflx-dev"\n')
+    result = _run_setup_script(tmp_path, "claude-code\nmanaged\nrflx-new\nno\nproject\n")
+    assert result.returncode == 0, result.stderr
+    assert "press Enter to keep" not in result.stderr
+    text = runtime_env.read_text()
+    assert 'REFLEXIO_API_KEY="rflx-new"' in text
+    assert "rflx-dev" not in text
+
+
 def test_setup_script_defaults_to_local_for_loopback_url(tmp_path: Path) -> None:
     # The dashboard's Configure page saves its displayed default
     # REFLEXIO_URL=http://localhost:8071/; that is still a local setup.
@@ -1468,6 +1554,34 @@ def test_setup_script_defaults_to_local_for_loopback_url(tmp_path: Path) -> None
     assert result.returncode == 0, result.stderr
     assert "Setup mode (1=local, 2=managed Reflexio) [local]" in result.stderr
     assert "configured local Reflexio defaults" in result.stderr
+
+
+@pytest.mark.parametrize("bootstrap_ok", [False, True])
+def test_node_install_keeps_previous_stable_copy_until_install_succeeds(
+    tmp_path: Path, bootstrap_ok: bool
+) -> None:
+    # An update replaces the stable copy before the Claude CLI steps and the
+    # dependency bootstrap run; the copy filter skips .venv. A failure after
+    # that must put the prepared previous copy back, not leave Claude Code
+    # pointed at an unprepared directory.
+    package_root = _fake_claude_code_package(
+        tmp_path, "#!/bin/sh\nexit 0\n" if bootstrap_ok else "#!/bin/sh\nexit 7\n"
+    )
+    stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
+    (stable / "plugin" / ".venv").mkdir(parents=True)
+    (stable / "plugin" / ".venv" / "prepared").write_text("old runtime\n")
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {})
+
+    assert (result.returncode == 0) is bootstrap_ok, result.stderr
+    prepared = stable / "plugin" / ".venv" / "prepared"
+    if bootstrap_ok:
+        assert not prepared.exists()
+        assert (stable / "plugin" / "scripts" / "smart-install.sh").exists()
+    else:
+        assert prepared.read_text() == "old runtime\n"
+        assert "restored the previous claude-smart package" in result.stderr
+    assert sorted(p.name for p in stable.parent.iterdir()) == ["claude-smart"]
 
 
 def test_node_install_migrates_pre_split_managed_env(tmp_path: Path) -> None:

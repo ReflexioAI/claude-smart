@@ -119,13 +119,19 @@ install_fingerprint() {
   claude_smart_install_fingerprint "$PLUGIN_ROOT" "$HERE"
 }
 
+# Managed means a key AND a remote URL, as the runtime decides it
+# (claude_smart_reflexio_url_is_remote); a keyed loopback URL is local mode.
+claude_smart_managed_env_active() {
+  [ -n "${REFLEXIO_API_KEY:-}" ] && claude_smart_reflexio_url_is_remote
+}
+
 install_complete() {
   [ -f "$SUCCESS_MARKER" ] || return 1
   [ "$(cat "$SUCCESS_MARKER" 2>/dev/null || true)" = "$(install_fingerprint)" ] || return 1
   command -v uv >/dev/null 2>&1 || return 1
   [ -d "$PLUGIN_ROOT/.venv" ] || return 1
   claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook || return 1
-  if [ -z "${REFLEXIO_API_KEY:-}" ]; then
+  if ! claude_smart_managed_env_active; then
     [ -f "$HOME/.claude-smart/.env" ] || return 1
     grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$HOME/.claude-smart/.env" || return 1
     grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$HOME/.claude-smart/.env" || return 1
@@ -637,12 +643,16 @@ claude_smart_ensure_local_env_defaults() {
   local local_cli_default local_embedding_default
   local_cli_default="${CLAUDE_SMART_USE_LOCAL_CLI:-1}"
   local_embedding_default="${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}"
-  [ -z "${REFLEXIO_API_KEY:-}" ] || return 0
+  claude_smart_managed_env_active && return 0
   mkdir -p "$(dirname "$REFLEXIO_ENV")"
   touch "$REFLEXIO_ENV"
   chmod 600 "$REFLEXIO_ENV"
-  claude_smart_prune_managed_env_keys_for_local
-  unset REFLEXIO_URL REFLEXIO_API_KEY REFLEXIO_USER_ID CLAUDE_SMART_MANAGED_SETUP
+  # A key next to a plain http loopback URL is local mode that keeps its URL;
+  # only a keyless setup has managed keys to prune.
+  if [ -z "${REFLEXIO_API_KEY:-}" ]; then
+    claude_smart_prune_managed_env_keys_for_local
+    unset REFLEXIO_URL REFLEXIO_API_KEY REFLEXIO_USER_ID CLAUDE_SMART_MANAGED_SETUP
+  fi
   if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
     printf '# Route reflexio generation through the configured local host CLI\n' >> "$REFLEXIO_ENV"
     claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_CLI "$local_cli_default"

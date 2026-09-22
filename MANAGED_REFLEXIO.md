@@ -185,7 +185,9 @@ CLAUDE_SMART_USE_LOCAL_EMBEDDING=...
 
 If an existing `REFLEXIO_URL` points at a loopback host (`localhost`,
 `127.0.0.1`, `0.0.0.0`, `[::1]`, over `http` or `https`), setup replaces it
-with the managed Reflexio URL.
+with the managed Reflexio URL. A key stored next to such a URL belongs to that
+local server, so setup defaults to local mode and does not offer that key as
+the managed default.
 
 Local setup removes managed keys from `~/.claude-smart/.env`:
 

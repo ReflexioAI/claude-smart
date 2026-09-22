@@ -289,7 +289,9 @@ function resolveLocalEnvDefault(key, fallback, installHost) {
   return fallback;
 }
 
-function ensureLocalEnvFile(path, installHost) {
+// prune=false keeps REFLEXIO_URL / REFLEXIO_API_KEY: a keyed loopback URL is
+// a local setup whose URL the runtime still honors.
+function ensureLocalEnvFile(path, installHost, { prune = true } = {}) {
   mkdirSync(dirname(path), { recursive: true });
   const existing = existsSync(path)
     ? readFileSync(path, "utf8")
@@ -302,7 +304,7 @@ function ensureLocalEnvFile(path, installHost) {
   for (const line of existing.split(/\r?\n/)) {
     const parsed = parseEnvLine(line);
     if (parsed) {
-      if (LOCAL_MODE_PRUNE_KEYS.has(parsed.key)) {
+      if (prune && LOCAL_MODE_PRUNE_KEYS.has(parsed.key)) {
         pruned = true;
         continue;
       }
@@ -466,6 +468,14 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
     // for local mode).
     updates[CLAUDE_SMART_HOST_ENV] = installHost;
     setEnvVars(CLAUDE_SMART_ENV_PATH, updates);
+    if (!isRemoteReflexioUrl(url)) {
+      // A key next to a plain http loopback URL is still local mode at
+      // runtime, and the local backend needs the local provider defaults.
+      const added = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, installHost, { prune: false });
+      if (added.length > 0) {
+        process.stdout.write(`Seeded ${CLAUDE_SMART_ENV_PATH} with ${added.join(", ")}.\n`);
+      }
+    }
   } else {
     const exportedUrl = process.env.REFLEXIO_URL || "";
     delete process.env.REFLEXIO_URL;
@@ -930,6 +940,38 @@ function uniquePackagePath(packageRoot, prefix) {
   );
 }
 
+// A replaced package (with its prepared .venv and dashboard build) is kept
+// aside until the install that replaced it has succeeded, so a failed update
+// or reinstall puts the working runtime back instead of leaving the host
+// pointed at an unprepared copy. Keyed by package root; the value is the
+// backup path. Any exit before commitLocalPluginPackage rolls back.
+const pendingPreviousPackages = new Map();
+
+function rollbackLocalPluginPackages() {
+  for (const [packageRoot, backupPackage] of pendingPreviousPackages) {
+    pendingPreviousPackages.delete(packageRoot);
+    try {
+      rmSync(packageRoot, { recursive: true, force: true });
+      renameSync(backupPackage, packageRoot);
+      process.stderr.write(
+        `Install did not complete; restored the previous claude-smart package at ${packageRoot}.\n`,
+      );
+    } catch (err) {
+      process.stderr.write(
+        `warning: could not restore the previous claude-smart package from ${backupPackage}: ` +
+          `${err && err.message ? err.message : err}\n`,
+      );
+    }
+  }
+}
+
+function commitLocalPluginPackage(packageRoot) {
+  const backupPackage = pendingPreviousPackages.get(packageRoot);
+  if (!backupPackage) return;
+  pendingPreviousPackages.delete(packageRoot);
+  rmSync(backupPackage, { recursive: true, force: true });
+}
+
 function replaceLocalPluginPackage(stagedPackage, packageRoot) {
   const backupPackage = uniquePackagePath(packageRoot, ".claude-smart-previous");
   let backupCreated = false;
@@ -939,14 +981,15 @@ function replaceLocalPluginPackage(stagedPackage, packageRoot) {
       backupCreated = true;
     }
     renameSync(stagedPackage, packageRoot);
-    if (backupCreated) {
-      rmSync(backupPackage, { recursive: true, force: true });
-    }
   } catch (err) {
     if (backupCreated && !existsSync(packageRoot) && existsSync(backupPackage)) {
       renameSync(backupPackage, packageRoot);
     }
     throw err;
+  }
+  if (backupCreated) {
+    if (pendingPreviousPackages.size === 0) process.once("exit", rollbackLocalPluginPackages);
+    pendingPreviousPackages.set(packageRoot, backupPackage);
   }
 }
 
@@ -2355,6 +2398,7 @@ async function runInstall(args, options = {}) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
+    commitLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
     await startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup.managed);
   } catch (err) {
     process.stderr.write(
@@ -2521,6 +2565,7 @@ async function runInstallOpenCode(args) {
     stopClaudeSmartServices(pluginRoot);
     process.exit(1);
   }
+  commitLocalPluginPackage(packageRoot);
   if (readOnly) {
     process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
   }
