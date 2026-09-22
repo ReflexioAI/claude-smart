@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 import pytest  # type: ignore[reportMissingImports]
-from claude_smart import cli
+from claude_smart import cli, env_config
 
 
 def _installed_plugin(tmp_path: Path, version: str = "9.8.7") -> Path:
@@ -559,3 +559,41 @@ def test_read_only_never_prunes_the_source_checkout_manifests(
 
     assert hooks.read_bytes() == before
     assert "CLAUDE_SMART_READ_ONLY" in capsys.readouterr().out
+
+
+def test_env_writes_are_private_before_content_lands(monkeypatch, tmp_path: Path) -> None:
+    env_path = tmp_path / ".claude-smart" / ".env"
+    env_path.parent.mkdir()
+    modes: list[int] = []
+    real_write_text = Path.write_text
+
+    def recording_write_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if self == env_path:
+            modes.append(self.stat().st_mode & 0o777)
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", recording_write_text)
+    old_umask = os.umask(0o022)
+    try:
+        env_config.set_env_vars(env_path, {"REFLEXIO_API_KEY": "rflx-secret"})
+        env_path.unlink()
+        env_config.ensure_local_env_defaults(env_path, host="claude-code")
+    finally:
+        os.umask(old_umask)
+
+    assert modes == [0o600, 0o600]
+
+
+def test_python_installer_warns_about_exported_url_it_ignores(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    env_path = tmp_path / ".claude-smart" / ".env"
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
+    monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
+    monkeypatch.setenv("REFLEXIO_URL", "https://www.reflexio.ai/")
+
+    cli._configure_reflexio_setup()
+
+    captured = capsys.readouterr()
+    assert "Using local Reflexio backend" in captured.out
+    assert "REFLEXIO_URL=https://www.reflexio.ai/ is exported in this shell" in captured.err

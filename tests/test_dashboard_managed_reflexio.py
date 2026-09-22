@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -69,7 +75,7 @@ def test_dashboard_proxy_forwards_bearer_auth_without_client_auth() -> None:
     assert 'process.env.BACKEND_PORT || "8071"' in route
     assert 'headers.set("user-agent", "claude-smart")' in route
     assert 'headers.set("authorization", `Bearer ${apiKey}`)' in route
-    assert "readConfig" in route
+    assert "managedReflexioSettings" in route
     assert "configuredBase" in route
     assert 'apiKey: configuredBase ? apiKey : ""' in route
     assert "fromHeader" not in route
@@ -93,3 +99,68 @@ def test_dashboard_settings_read_configured_reflexio_url_only() -> None:
     assert "window.dispatchEvent(new Event(SETTINGS_CHANGED_EVENT))" in page
     assert "Stored in browser localStorage" not in page
     assert "Reflexio endpoint (dashboard)" not in page
+
+
+def _run_config_module(tmp_path: Path, script: str, env_extra: dict[str, str]) -> str:
+    """Run config-file.ts under Node's type stripping with HOME=tmp_path."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required")
+    probe = subprocess.run(
+        [node, "-p", "process.features.typescript"], capture_output=True, text=True
+    )
+    if probe.stdout.strip() in {"", "false", "undefined"}:
+        pytest.skip("this node cannot strip TypeScript types")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("REFLEXIO_")}
+    env["HOME"] = str(tmp_path)
+    env.update(env_extra)
+    module = REPO_ROOT / "plugin" / "dashboard" / "lib" / "config-file.ts"
+    result = subprocess.run(
+        [
+            node,
+            "--no-warnings",
+            "--input-type=module",
+            "-e",
+            f"const m = await import({json.dumps(str(module))});\n{script}",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_dashboard_proxy_prefers_the_saved_file_over_its_launch_env(tmp_path: Path) -> None:
+    # dashboard-service.sh exports the file before launching Next, so the
+    # inherited env goes stale after a Configure save. File wins, like hooks.
+    env_file = tmp_path / ".claude-smart" / ".env"
+    env_file.parent.mkdir()
+    env_file.write_text('REFLEXIO_URL="https://b.example/"\nREFLEXIO_API_KEY="kb"\n')
+    out = _run_config_module(
+        tmp_path,
+        "process.stdout.write(JSON.stringify(await m.managedReflexioSettings()));",
+        {"REFLEXIO_URL": "https://a.example/", "REFLEXIO_API_KEY": "ka"},
+    )
+    assert json.loads(out) == {"url": "https://b.example/", "apiKey": "kb"}
+
+    env_file.write_text("CLAUDE_SMART_HOST=claude-code\n")
+    out = _run_config_module(
+        tmp_path,
+        "process.stdout.write(JSON.stringify(await m.managedReflexioSettings()));",
+        {"REFLEXIO_URL": "https://a.example/", "REFLEXIO_API_KEY": "ka"},
+    )
+    assert json.loads(out) == {"url": "https://a.example/", "apiKey": "ka"}
+
+
+def test_dashboard_save_does_not_turn_off_absent_local_providers(tmp_path: Path) -> None:
+    # A managed file has no local-provider flags. Saving the Configure page
+    # must not write them as 0, or a later switch to local mode keeps them off.
+    env_file = tmp_path / ".claude-smart" / ".env"
+    env_file.parent.mkdir()
+    env_file.write_text('REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="k"\n')
+    _run_config_module(tmp_path, "await m.writeConfig(await m.readConfig());", {})
+    text = env_file.read_text()
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=0" not in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" not in text

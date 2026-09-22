@@ -143,9 +143,16 @@ def set_env_vars(path: Path, values: dict[str, str]) -> list[str]:
         added.append(key)
 
     content = "\n".join(out)
-    path.write_text(content + ("\n" if content else ""), encoding="utf-8")
-    path.chmod(0o600)
+    _write_private(path, content + ("\n" if content else ""))
     return added
+
+
+def _write_private(path: Path, content: str) -> None:
+    """Write the env file, which holds the managed API key, as 0600 from the
+    start, so no other account can read it between the write and a chmod."""
+    path.touch(mode=0o600, exist_ok=True)
+    path.chmod(0o600)
+    path.write_text(content, encoding="utf-8")
 
 
 def ensure_local_env_defaults(
@@ -217,7 +224,7 @@ def ensure_local_env_defaults(
             prefix = "" if not content or content.endswith("\n") else "\n"
             content = content + prefix + "\n".join(additions)
         content = content + ("\n" if content else "")
-        path.write_text(content, encoding="utf-8")
+        _write_private(path, content)
     elif not path.exists():
         path.touch()
     path.chmod(0o600)

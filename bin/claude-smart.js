@@ -345,12 +345,20 @@ function ensureLocalEnvFile(path, installHost, { prune = true } = {}) {
       const prefix = content ? "\n" : "";
       content = content + prefix + additions.join("\n");
     }
-    writeFileSync(path, content ? `${content}\n` : "");
+    writePrivateFile(path, content ? `${content}\n` : "");
   } else if (!existsSync(path)) {
-    writeFileSync(path, "");
+    writePrivateFile(path, "");
   }
   chmodSync(path, 0o600);
   return added;
+}
+
+// The env file holds the managed API key: make it 0600 before any content
+// lands in it, so no other account can read it between write and chmod.
+function writePrivateFile(path, content) {
+  if (existsSync(path)) chmodSync(path, 0o600);
+  writeFileSync(path, content, { mode: 0o600 });
+  chmodSync(path, 0o600);
 }
 
 function setEnvVars(path, values) {
@@ -374,8 +382,7 @@ function setEnvVars(path, values) {
     added.push(key);
   }
   const content = out.join("\n").replace(/\n*$/, "");
-  writeFileSync(path, content ? `${content}\n` : "");
-  chmodSync(path, 0o600);
+  writePrivateFile(path, content ? `${content}\n` : "");
   return added;
 }
 
@@ -520,7 +527,7 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
   const readOnly = ["1", "true", "yes", "on"].includes(
     String(fileEnv.get(CLAUDE_SMART_READ_ONLY_ENV) || "").trim().toLowerCase(),
   );
-  return { readOnly, managed };
+  return { readOnly, managed, url };
 }
 
 function configureReflexioSetup(installHost = DEFAULT_CLAUDE_SMART_HOST) {
@@ -1229,9 +1236,29 @@ function autostartDisabled(key) {
 // backend-service.sh / dashboard-service.sh always exit 0 (they double as
 // hooks), so their status says nothing about whether a service is serving.
 // Report only what an HTTP probe observes.
-async function startAndReportServices(pluginRoot, host, managed) {
+function urlPort(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+  } catch {
+    return "";
+  }
+}
+
+async function startAndReportServices(pluginRoot, host, setup) {
+  const { managed, url: hooksUrl } = setup;
   if (managed) {
     process.stdout.write("Managed mode: no local backend is started.\n");
+  } else if (hooksUrl && urlPort(hooksUrl) !== urlPort(localBackendUrl())) {
+    // A keyed loopback URL on another port is the user's own local Reflexio
+    // server: the hooks call it, not the bundled backend, so report on it.
+    if (!autostartDisabled("CLAUDE_SMART_BACKEND_AUTOSTART")) startBackendService(pluginRoot, host);
+    const base = hooksUrl.endsWith("/") ? hooksUrl : `${hooksUrl}/`;
+    const answering = await waitForHttp(`${base}health`, 3, ({ status }) => status === 200);
+    process.stdout.write(
+      `Hooks use the Reflexio server at ${hooksUrl}, which claude-smart does not start; ` +
+        `it is ${answering ? "answering" : "not answering"} ${base}health.\n`,
+    );
   } else if (autostartDisabled("CLAUDE_SMART_BACKEND_AUTOSTART")) {
     process.stdout.write("Backend autostart is disabled (CLAUDE_SMART_BACKEND_AUTOSTART=0).\n");
   } else {
@@ -2437,7 +2464,7 @@ async function runInstall(args, options = {}) {
     }
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
     commitLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
-    await startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup.managed);
+    await startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup);
   } catch (err) {
     process.stderr.write(
       `error: claude-smart installed, but dependency bootstrap failed: ${err && err.message ? err.message : err}\n`,
@@ -2515,7 +2542,7 @@ async function runInstallCodex(args) {
     if (readOnly) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
-    await startAndReportServices(cacheDir, HOST_CODEX, setup.managed);
+    await startAndReportServices(cacheDir, HOST_CODEX, setup);
   } catch (err) {
     process.stderr.write(
       `error: automatic Codex plugin install failed: ${err && err.message ? err.message : err}\n`,
@@ -2607,7 +2634,7 @@ async function runInstallOpenCode(args) {
   if (readOnly) {
     process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
   }
-  await startAndReportServices(pluginRoot, HOST_OPENCODE, setup.managed);
+  await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
   }

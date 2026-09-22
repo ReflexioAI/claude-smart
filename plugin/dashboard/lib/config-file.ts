@@ -56,8 +56,10 @@ export async function readConfig(): Promise<ClaudeSmartConfig> {
   const defaults: ClaudeSmartConfig = {
     REFLEXIO_URL: defaultReflexioUrl(),
     REFLEXIO_API_KEY: "",
-    CLAUDE_SMART_USE_LOCAL_CLI: false,
-    CLAUDE_SMART_USE_LOCAL_EMBEDDING: false,
+    // Absent means the local default (smart-install seeds both as 1). Reading
+    // them as false would make the next save write 0 into the runtime file.
+    CLAUDE_SMART_USE_LOCAL_CLI: true,
+    CLAUDE_SMART_USE_LOCAL_EMBEDDING: true,
     CLAUDE_SMART_READ_ONLY: false,
     CLAUDE_SMART_CLI_PATH: "",
     CLAUDE_SMART_CLI_TIMEOUT: "120",
@@ -81,6 +83,27 @@ export async function readConfig(): Promise<ClaudeSmartConfig> {
     }
   }
   return out;
+}
+
+/**
+ * The Reflexio URL and key the hooks resolve: a key present in the env file
+ * wins (even when empty), otherwise this process's environment. The file is
+ * read on every call, so a save on the Configure page takes effect without a
+ * restart instead of losing to the values this process inherited at launch.
+ */
+export async function managedReflexioSettings(): Promise<{ url: string; apiKey: string }> {
+  const values = new Map<string, string>();
+  try {
+    for (const line of (await fs.readFile(envPath(), "utf-8")).split("\n")) {
+      const pair = parseLine(line);
+      if (pair) values.set(pair.key, pair.value);
+    }
+  } catch {
+    // No file: fall back to the environment below.
+  }
+  const pick = (key: string): string =>
+    values.has(key) ? (values.get(key) ?? "") : (process.env[key] ?? "");
+  return { url: pick("REFLEXIO_URL"), apiKey: pick("REFLEXIO_API_KEY") };
 }
 
 export async function writeConfig(update: Partial<ClaudeSmartConfig>): Promise<void> {

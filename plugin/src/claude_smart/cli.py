@@ -920,6 +920,7 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
     Returns:
         bool: Whether read-only mode is enabled.
     """
+    exported_url = os.environ.get(env_config.REFLEXIO_URL_ENV, "")
     env_config.load_reflexio_env(_CLAUDE_SMART_ENV_PATH)
     try:
         env_text = _CLAUDE_SMART_ENV_PATH.read_text()
@@ -986,6 +987,17 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
         added = env_config.ensure_local_env_defaults(_CLAUDE_SMART_ENV_PATH, host=host)
         if added:
             sys.stdout.write(f"Seeded {_CLAUDE_SMART_ENV_PATH} with {', '.join(added)}.\n")
+        if env_config.reflexio_url_is_remote(exported_url):
+            # Same warning as the Node installer: this process drops the
+            # export, but hooks in a Claude Code started from the calling
+            # shell inherit it and will not use the local backend.
+            sys.stderr.write(
+                f"warning: REFLEXIO_URL={exported_url} is exported in this shell "
+                "without an API key. Install ignores it, but claude-smart hooks in a "
+                "Claude Code started from this shell inherit it and will not use the "
+                "local backend. Unset it, or run `npx claude-smart setup` for managed "
+                "mode.\n"
+            )
     # The runtime picks its mode from the URL alone
     # (claude_smart_reflexio_url_is_remote), so the summary does too.
     if env_config.reflexio_url_is_remote(reflexio_url):

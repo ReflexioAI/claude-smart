@@ -1626,6 +1626,75 @@ def test_node_install_rollback_leaves_a_concurrent_install_alone(tmp_path: Path)
     assert sorted(p.name for p in stable.parent.iterdir()) == ["claude-smart"]
 
 
+def test_node_install_reports_the_custom_local_server_hooks_use(tmp_path: Path) -> None:
+    # A keyed loopback URL on another port is kept and is what the hooks
+    # call, so install must report on that server, not on the bundled one.
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    port = _free_port()
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    runtime_env.parent.mkdir()
+    runtime_env.write_text(f'REFLEXIO_URL="http://localhost:{port}/"\nREFLEXIO_API_KEY="k"\n')
+    (tmp_path / "backend-status").write_text("running on http://localhost:8071 (x)\n")
+
+    class Health(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(200 if self.path == "/health" else 404)
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Health)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        result = _run_fake_claude_code_install(tmp_path, package_root, {})
+    finally:
+        server.shutdown()
+
+    assert result.returncode == 0, result.stderr
+    assert f"Using local Reflexio backend at http://localhost:{port}/." in result.stdout
+    assert f"Hooks use the Reflexio server at http://localhost:{port}/" in result.stdout
+    assert "it is answering" in result.stdout
+    assert "Backend healthy" not in result.stdout
+
+
+def test_node_env_writes_are_private_before_content_lands(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    legacy_env = tmp_path / ".reflexio" / ".env"
+    legacy_env.parent.mkdir()
+    legacy_env.write_text(
+        'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-legacy"\n'
+    )
+    env = _isolated_env(tmp_path)
+    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY", "REFLEXIO_USER_ID"):
+        env.pop(key, None)
+    script = (
+        "const fs = require('fs');"
+        "const real = fs.writeFileSync;"
+        "const modes = [];"
+        "fs.writeFileSync = function(p, ...rest) {"
+        "  const r = real.call(fs, p, ...rest);"
+        "  if (String(p).endsWith('.claude-smart/.env')) modes.push(fs.statSync(p).mode & 0o777);"
+        "  return r;"
+        "};"
+        f"require({json.dumps(str(NODE_INSTALLER))}).configureReflexioSetup('claude-code');"
+        "process.stdout.write('\\nMODES=' + JSON.stringify(modes));"
+    )
+    result = subprocess.run(
+        ["/bin/sh", "-c", 'umask 022; exec "$0" -e "$1"', node, script],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Migrated managed Reflexio settings" in result.stdout
+    modes = json.loads(result.stdout.rsplit("MODES=", 1)[1])
+    assert modes and all(mode == 0o600 for mode in modes), modes
+
+
 def test_node_install_survives_an_invalid_service_port(tmp_path: Path) -> None:
     package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
     result = _run_fake_claude_code_install(
@@ -2085,10 +2154,10 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert 'const HOST_CLAUDE_CODE = "claude-code"' in node_installer
     assert 'const HOST_CODEX = "codex"' in node_installer
     assert (
-        "startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup.managed)"
+        "startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup)"
         in node_installer
     )
-    assert "startAndReportServices(cacheDir, HOST_CODEX, setup.managed)" in node_installer
+    assert "startAndReportServices(cacheDir, HOST_CODEX, setup)" in node_installer
     assert (
         'runPluginService(pluginRoot, "dashboard-service.sh", "stop")' in node_installer
     )

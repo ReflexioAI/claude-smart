@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { originOnly } from "@/lib/reflexio-url";
-import { readConfig } from "@/lib/config-file";
+import { managedReflexioSettings } from "@/lib/config-file";
 
 export const dynamic = "force-dynamic";
 
@@ -9,11 +9,10 @@ function defaultUrl(): string {
 }
 
 async function reflexioConfig(): Promise<{ base: string; apiKey: string }> {
-  const config = await readConfig();
-  const apiKey = config.REFLEXIO_API_KEY || process.env.REFLEXIO_API_KEY || "";
-  const fromEnv = originOnly(process.env.REFLEXIO_URL ?? "");
-  const fromConfig = originOnly(config.REFLEXIO_URL ?? "");
-  const configuredBase = fromEnv ?? fromConfig;
+  // File wins over the environment this process inherited at launch, the
+  // same precedence as the hooks.
+  const { url, apiKey } = await managedReflexioSettings();
+  const configuredBase = originOnly(url);
   return {
     base: configuredBase ?? defaultUrl(),
     apiKey: configuredBase ? apiKey : "",
