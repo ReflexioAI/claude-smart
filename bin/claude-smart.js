@@ -1251,8 +1251,8 @@ async function startAndReportServices(pluginRoot, host, setup) {
     process.stdout.write("Managed mode: no local backend is started.\n");
   } else if (hooksUrl && urlPort(hooksUrl) !== urlPort(localBackendUrl())) {
     // A keyed loopback URL on another port is the user's own local Reflexio
-    // server: the hooks call it, not the bundled backend, so report on it.
-    if (!autostartDisabled("CLAUDE_SMART_BACKEND_AUTOSTART")) startBackendService(pluginRoot, host);
+    // server: the hooks call it, not the bundled backend, so report on it and
+    // start nothing.
     const base = hooksUrl.endsWith("/") ? hooksUrl : `${hooksUrl}/`;
     const answering = await waitForHttp(`${base}health`, 3, ({ status }) => status === 200);
     process.stdout.write(

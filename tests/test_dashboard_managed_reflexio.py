@@ -145,6 +145,16 @@ def test_dashboard_proxy_prefers_the_saved_file_over_its_launch_env(tmp_path: Pa
     )
     assert json.loads(out) == {"url": "https://b.example/", "apiKey": "kb"}
 
+    # `export KEY=value` is valid in the file (the shell and Python loaders
+    # strip the prefix); it must not fall through to the launch env.
+    env_file.write_text('export REFLEXIO_URL="https://c.example/"\nexport REFLEXIO_API_KEY="kc"\n')
+    out = _run_config_module(
+        tmp_path,
+        "process.stdout.write(JSON.stringify(await m.managedReflexioSettings()));",
+        {"REFLEXIO_URL": "https://a.example/", "REFLEXIO_API_KEY": "ka"},
+    )
+    assert json.loads(out) == {"url": "https://c.example/", "apiKey": "kc"}
+
     env_file.write_text("CLAUDE_SMART_HOST=claude-code\n")
     out = _run_config_module(
         tmp_path,

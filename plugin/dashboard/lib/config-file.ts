@@ -41,7 +41,9 @@ function parseLine(line: string): { key: string; value: string } | null {
   if (!trimmed || trimmed.startsWith("#")) return null;
   const eq = trimmed.indexOf("=");
   if (eq < 0) return null;
-  const key = trimmed.slice(0, eq).trim();
+  // `export KEY=value` is valid in this file; _lib.sh and env_config.py
+  // strip the prefix too.
+  const key = trimmed.slice(0, eq).trim().replace(/^export\s+/, "");
   let value = trimmed.slice(eq + 1).trim();
   if (
     (value.startsWith('"') && value.endsWith('"')) ||

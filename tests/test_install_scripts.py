@@ -1656,6 +1656,8 @@ def test_node_install_reports_the_custom_local_server_hooks_use(tmp_path: Path) 
     assert f"Hooks use the Reflexio server at http://localhost:{port}/" in result.stdout
     assert "it is answering" in result.stdout
     assert "Backend healthy" not in result.stdout
+    # The bundled backend would sit unused on BACKEND_PORT.
+    assert not (tmp_path / "backend-service.log").exists()
 
 
 def test_node_env_writes_are_private_before_content_lands(tmp_path: Path) -> None:
