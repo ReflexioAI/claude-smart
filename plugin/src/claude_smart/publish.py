@@ -17,11 +17,12 @@ from claude_smart.reflexio_adapter import Adapter
 PublishStatus = Literal["nothing", "ok", "failed"]
 
 
-def _publish_request_id(session_id: str, start: int, end: int) -> str:
-    """Return a stable request ID for one buffered publish range."""
-
-    name = f"claude-smart:{session_id}:{start}:{end}"
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
+# Re-exported from ``state``: the derivation lives there because it is a
+# property of the session buffer, and because the SEARCH hook needs it too.
+# Importing ``publish`` from ``context_inject`` to reach it pulled the reflexio
+# client into the hook's import graph and broke the host integration outright.
+pending_request_id = state.pending_request_id
+request_id_for_next_publish = state.request_id_for_next_publish
 
 
 def _prepare_publish_batch(
@@ -107,7 +108,7 @@ def publish_unpublished(
     published_record_offset, publish_end, interactions = batch
 
     client = adapter if adapter is not None else Adapter()
-    request_id = _publish_request_id(session_id, published_record_offset, publish_end)
+    request_id = pending_request_id(session_id, published_record_offset)
     result = client.publish(
         session_id=session_id,
         project_id=project_id,

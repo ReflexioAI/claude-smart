@@ -40,7 +40,13 @@ class FakeReflexioAdapter:
         return True
 
     def search_all(
-        self, *, project_id: str, query: str, top_k: int, session_id: str | None = None
+        self,
+        *,
+        project_id: str,
+        query: str,
+        top_k: int,
+        session_id: str | None = None,
+        request_id: str | None = None,
     ) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
         from claude_smart import runtime
 
@@ -50,6 +56,10 @@ class FakeReflexioAdapter:
                 "query": query,
                 "top_k": top_k,
                 "session_id": session_id,
+                # Recorded so the host test can assert the hook names the
+                # request its publish will use -- without it the exposure
+                # events this search produces are unjoinable to any session.
+                "request_id": request_id,
                 "host": runtime.host(),
             }
         )
@@ -244,6 +254,7 @@ def run_host_learning_happy_path(
                 "query": prompt,
                 "top_k": 3,
                 "session_id": session_id,
+                "request_id": fake_reflexio.search_calls[0]["request_id"],
                 "host": host,
             }
         ]
@@ -252,6 +263,12 @@ def run_host_learning_happy_path(
         assert publish_call["session_id"] == session_id
         assert publish_call["project_id"] == project.name
         assert publish_call["request_id"]
+        # THE CORRELATION CONTRACT, end to end through the real hook entrypoints:
+        # the id the search announced must be the id the publish actually used.
+        # If these ever diverge, every exposure event that search produced is
+        # unjoinable to the session that follows, and the offline tuner -- which
+        # resolves a trajectory only through request_id -- sees no evidence.
+        assert fake_reflexio.search_calls[0]["request_id"] == publish_call["request_id"]
         assert publish_call["force_extraction"] is False
         assert publish_call["skip_aggregation"] is False
         assert publish_call["host"] == host
