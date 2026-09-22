@@ -1542,6 +1542,24 @@ def test_setup_script_never_offers_a_loopback_key_as_managed_default(
     assert "rflx-dev" not in text
 
 
+def test_setup_script_keyed_loopback_skips_legacy_prefill(tmp_path: Path) -> None:
+    # A configured local server (key + loopback URL) must not be replaced by
+    # the pre-split managed settings when Enter is pressed through setup.
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    runtime_env.parent.mkdir()
+    runtime_env.write_text('REFLEXIO_URL="http://localhost:8081/"\nREFLEXIO_API_KEY="rflx-dev"\n')
+    legacy = tmp_path / ".reflexio" / ".env"
+    legacy.parent.mkdir()
+    legacy.write_text('REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-legacy"\n')
+
+    result = _run_setup_script(tmp_path, "claude-code\n\n")
+
+    assert result.returncode == 0, result.stderr
+    assert "as defaults" not in result.stderr
+    assert "Setup mode (1=local, 2=managed Reflexio) [local]" in result.stderr
+    assert "rflx-legacy" not in runtime_env.read_text()
+
+
 def test_setup_script_defaults_to_local_for_loopback_url(tmp_path: Path) -> None:
     # The dashboard's Configure page saves its displayed default
     # REFLEXIO_URL=http://localhost:8071/; that is still a local setup.
@@ -1582,6 +1600,71 @@ def test_node_install_keeps_previous_stable_copy_until_install_succeeds(
         assert prepared.read_text() == "old runtime\n"
         assert "restored the previous claude-smart package" in result.stderr
     assert sorted(p.name for p in stable.parent.iterdir()) == ["claude-smart"]
+
+
+def test_node_install_rollback_leaves_a_concurrent_install_alone(tmp_path: Path) -> None:
+    # The package lock covers only the copy. Here the bootstrap stands in for
+    # a concurrent install that replaces the stable copy and then this
+    # install fails: its rollback must not delete the newer package.
+    smart_install = (
+        "#!/bin/sh\n"
+        'stable="$HOME/.claude-smart/claude-code/claude-smart"\n'
+        'mv "$stable" "$stable.mine"\n'
+        'mkdir -p "$stable/plugin" && echo newer > "$stable/plugin/owner"\n'
+        'rm -rf "$stable.mine"\n'
+        "exit 7\n"
+    )
+    package_root = _fake_claude_code_package(tmp_path, smart_install)
+    stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
+    (stable / "plugin").mkdir(parents=True)
+    (stable / "plugin" / "owner").write_text("older\n")
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {})
+
+    assert result.returncode != 0
+    assert (stable / "plugin" / "owner").read_text() == "newer\n"
+    assert sorted(p.name for p in stable.parent.iterdir()) == ["claude-smart"]
+
+
+def test_node_install_survives_an_invalid_service_port(tmp_path: Path) -> None:
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    result = _run_fake_claude_code_install(
+        tmp_path, package_root, {"BACKEND_PORT": "not-a-port"}
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Backend is still starting" in result.stdout
+
+
+def test_legacy_migration_is_retried_after_a_failed_check(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    if os.geteuid() == 0:
+        pytest.skip("root can read a mode-000 file")
+    legacy_env = tmp_path / ".reflexio" / ".env"
+    legacy_env.parent.mkdir()
+    legacy_env.write_text(
+        'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-legacy"\n'
+    )
+    env = _isolated_env(tmp_path)
+    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY", "REFLEXIO_USER_ID"):
+        env.pop(key, None)
+    configure = [
+        node,
+        "-e",
+        f"require({json.dumps(str(NODE_INSTALLER))}).configureReflexioSetup('claude-code');",
+    ]
+    legacy_env.chmod(0)
+    try:
+        failed = subprocess.run(configure, env=env, text=True, capture_output=True, check=False)
+    finally:
+        legacy_env.chmod(0o600)
+    assert failed.returncode != 0
+    assert not (tmp_path / ".claude-smart" / "legacy-reflexio-env-checked").exists()
+
+    retried = subprocess.run(configure, env=env, text=True, capture_output=True, check=False)
+    assert retried.returncode == 0, retried.stderr
+    assert "Migrated managed Reflexio settings" in retried.stdout
 
 
 def test_node_install_migrates_pre_split_managed_env(tmp_path: Path) -> None:

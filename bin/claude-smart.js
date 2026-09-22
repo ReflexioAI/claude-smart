@@ -422,8 +422,14 @@ function localBackendUrl() {
 // server (e.g. a dev backend), not to claude-smart, so it is left alone.
 function migrateLegacyManagedEnv() {
   if (existsSync(LEGACY_ENV_MIGRATION_MARKER)) return;
+  migrateLegacyManagedEnvOnce();
+  // Recorded only once the check has completed: a read or write error above
+  // aborts the install and the next run tries again.
   mkdirSync(CLAUDE_SMART_STATE_DIR, { recursive: true });
   writeFileSync(LEGACY_ENV_MIGRATION_MARKER, "");
+}
+
+function migrateLegacyManagedEnvOnce() {
   if ((readEnvFile(CLAUDE_SMART_ENV_PATH).get("REFLEXIO_API_KEY") || "").trim()) return;
   const legacy = readEnvFile(LEGACY_REFLEXIO_ENV_PATH);
   const apiKey = (legacy.get("REFLEXIO_API_KEY") || "").trim();
@@ -943,14 +949,23 @@ function uniquePackagePath(packageRoot, prefix) {
 // A replaced package (with its prepared .venv and dashboard build) is kept
 // aside until the install that replaced it has succeeded, so a failed update
 // or reinstall puts the working runtime back instead of leaving the host
-// pointed at an unprepared copy. Keyed by package root; the value is the
-// backup path. Any exit before commitLocalPluginPackage rolls back.
+// pointed at an unprepared copy. Keyed by package root; the value holds the
+// backup path and the inode of the package this process installed, so a
+// rollback never removes a package that a concurrent install put there
+// after this one (the package lock covers only the copy itself). Any exit
+// before commitLocalPluginPackage rolls back.
 const pendingPreviousPackages = new Map();
 
 function rollbackLocalPluginPackages() {
-  for (const [packageRoot, backupPackage] of pendingPreviousPackages) {
+  for (const [packageRoot, { backupPackage, installedIno }] of pendingPreviousPackages) {
     pendingPreviousPackages.delete(packageRoot);
     try {
+      if (!pathEntryExists(packageRoot) || lstatSync(packageRoot).ino !== installedIno) {
+        // Another install replaced this package meanwhile; it owns the
+        // directory now, and this backup is older than what it holds.
+        rmSync(backupPackage, { recursive: true, force: true });
+        continue;
+      }
       rmSync(packageRoot, { recursive: true, force: true });
       renameSync(backupPackage, packageRoot);
       process.stderr.write(
@@ -966,10 +981,10 @@ function rollbackLocalPluginPackages() {
 }
 
 function commitLocalPluginPackage(packageRoot) {
-  const backupPackage = pendingPreviousPackages.get(packageRoot);
-  if (!backupPackage) return;
+  const pending = pendingPreviousPackages.get(packageRoot);
+  if (!pending) return;
   pendingPreviousPackages.delete(packageRoot);
-  rmSync(backupPackage, { recursive: true, force: true });
+  rmSync(pending.backupPackage, { recursive: true, force: true });
 }
 
 function replaceLocalPluginPackage(stagedPackage, packageRoot) {
@@ -989,7 +1004,10 @@ function replaceLocalPluginPackage(stagedPackage, packageRoot) {
   }
   if (backupCreated) {
     if (pendingPreviousPackages.size === 0) process.once("exit", rollbackLocalPluginPackages);
-    pendingPreviousPackages.set(packageRoot, backupPackage);
+    pendingPreviousPackages.set(packageRoot, {
+      backupPackage,
+      installedIno: lstatSync(packageRoot).ino,
+    });
   }
 }
 
@@ -1158,10 +1176,18 @@ function startBackendService(pluginRoot, host) {
 
 function httpProbe(url, timeoutMs = 1000) {
   return new Promise((resolve) => {
-    const request = http.get(url, (response) => {
-      response.resume();
-      resolve({ status: response.statusCode || null, headers: response.headers });
-    });
+    let request;
+    try {
+      request = http.get(url, (response) => {
+        response.resume();
+        resolve({ status: response.statusCode || null, headers: response.headers });
+      });
+    } catch {
+      // e.g. a non-numeric BACKEND_PORT / DASHBOARD_PORT: an unsuccessful
+      // probe, not an install failure.
+      resolve({ status: null, headers: {} });
+      return;
+    }
     request.on("error", () => resolve({ status: null, headers: {} }));
     request.setTimeout(timeoutMs, () => request.destroy());
   });
@@ -1503,7 +1529,19 @@ function commandIsPublishHook(command) {
   );
 }
 
+// Returns false when pluginRoot is this package's own plugin dir: its
+// manifests are the pristine source restorePublishHooksFromSource copies
+// from, so pruning them would make read-only mode permanent. Publishing is
+// still skipped there, because the stop and session-end hooks honor
+// CLAUDE_SMART_READ_ONLY themselves.
 function prunePublishHooksForReadOnly(pluginRoot) {
+  if (sameRealPath(pluginRoot, join(PACKAGE_ROOT, "plugin"))) {
+    process.stdout.write(
+      "Read-only mode: publishing is skipped via CLAUDE_SMART_READ_ONLY; " +
+        "the source hook manifests are left unchanged.\n",
+    );
+    return false;
+  }
   for (const hookFile of ["hooks.json", "codex-hooks.json"]) {
     const hookPath = join(pluginRoot, "hooks", hookFile);
     if (!existsSync(hookPath)) continue;
@@ -1525,6 +1563,7 @@ function prunePublishHooksForReadOnly(pluginRoot) {
     }
     writeFileSync(hookPath, JSON.stringify(parsed, null, 2) + "\n");
   }
+  return true;
 }
 
 function restorePublishHooksFromSource(pluginRoot) {
@@ -2393,8 +2432,7 @@ async function runInstall(args, options = {}) {
     // copy's plugin dir is the one runtime root to bootstrap and report.
     const pluginRoot = await bootstrapClaudeCodeInstall(join(source, "plugin"));
     restorePublishHooksFromSource(pluginRoot);
-    if (readOnly) {
-      prunePublishHooksForReadOnly(pluginRoot);
+    if (readOnly && prunePublishHooksForReadOnly(pluginRoot)) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -540,3 +541,21 @@ def test_cmd_update_reads_managed_reflexio_env(
     assert 'REFLEXIO_URL="https://managed.example/"' in text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in text
     assert "REFLEXIO_USER_ID=" not in text
+
+
+def test_read_only_never_prunes_the_source_checkout_manifests(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    # The source checkout is its own runtime root; its manifests are the
+    # pristine copy that restore reads, so read-only must not edit them.
+    # A copy stands in for the checkout so a regression cannot edit the repo.
+    source_plugin = tmp_path / "plugin"
+    shutil.copytree(cli._PLUGIN_ROOT / "hooks", source_plugin / "hooks")
+    monkeypatch.setattr(cli, "_PLUGIN_ROOT", source_plugin)
+    hooks = source_plugin / "hooks" / "hooks.json"
+    before = hooks.read_bytes()
+
+    assert cli._prune_publish_hooks_for_read_only(source_plugin) is False
+
+    assert hooks.read_bytes() == before
+    assert "CLAUDE_SMART_READ_ONLY" in capsys.readouterr().out

@@ -299,6 +299,7 @@ install_for_host() {
 main() {
   local existing_api_key existing_url existing_user_id existing_read_only
   local default_mode default_read_only default_scope host mode api_key read_only scope
+  local runtime_has_key
   local managed_url managed_user_id
 
   existing_api_key="$(get_env_value REFLEXIO_API_KEY || true)"
@@ -307,10 +308,14 @@ main() {
   existing_read_only="$(get_env_value CLAUDE_SMART_READ_ONLY || true)"
   # A key next to a loopback URL belongs to that local server. Offering it as
   # the managed default would send it to the managed service on Enter.
+  # Any key in the runtime file means claude-smart is already configured, so
+  # the pre-split file is not consulted even when that key is dropped below.
+  runtime_has_key=0
+  [ -z "$existing_api_key" ] || runtime_has_key=1
   if [ -n "$existing_url" ] && is_local_url "$existing_url"; then
     existing_api_key=""
   fi
-  if [ -z "$existing_api_key" ] && [ -f "$LEGACY_REFLEXIO_ENV" ] && [ ! -e "$LEGACY_MIGRATION_MARKER" ]; then
+  if [ "$runtime_has_key" = "0" ] && [ -f "$LEGACY_REFLEXIO_ENV" ] && [ ! -e "$LEGACY_MIGRATION_MARKER" ]; then
     local legacy_api_key legacy_url
     legacy_api_key="$(REFLEXIO_ENV="$LEGACY_REFLEXIO_ENV" get_env_value REFLEXIO_API_KEY || true)"
     legacy_url="$(REFLEXIO_ENV="$LEGACY_REFLEXIO_ENV" get_env_value REFLEXIO_URL || true)"

@@ -363,8 +363,21 @@ def _command_is_publish_hook(command: object) -> bool:
     )
 
 
-def _prune_publish_hooks_for_read_only(plugin_root: Path) -> None:
-    """Remove publish-to-reflexio hook commands from a copied/installed plugin."""
+def _prune_publish_hooks_for_read_only(plugin_root: Path) -> bool:
+    """Remove publish-to-reflexio hook commands from a copied/installed plugin.
+
+    Returns False without touching anything when ``plugin_root`` is this
+    checkout's own plugin dir: its manifests are the pristine source that
+    ``_restore_publish_hooks_from_source`` copies from, so pruning them would
+    make read-only mode permanent. Publishing is still skipped there, because
+    the stop and session-end hooks honor ``CLAUDE_SMART_READ_ONLY`` themselves.
+    """
+    if plugin_root.resolve() == _PLUGIN_ROOT.resolve():
+        sys.stdout.write(
+            "Read-only mode: publishing is skipped via CLAUDE_SMART_READ_ONLY; "
+            "the source hook manifests are left unchanged.\n"
+        )
+        return False
     for hook_file in ("hooks.json", "codex-hooks.json"):
         hook_path = plugin_root / "hooks" / hook_file
         if not hook_path.is_file():
@@ -394,6 +407,7 @@ def _prune_publish_hooks_for_read_only(plugin_root: Path) -> None:
             else:
                 del hooks_by_event[event]
         hook_path.write_text(json.dumps(parsed, indent=2) + "\n")
+    return True
 
 
 def _restore_publish_hooks_from_source(plugin_root: Path) -> None:
@@ -1578,8 +1592,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         )
         return 1
     _restore_publish_hooks_from_source(Path(message))
-    if read_only:
-        _prune_publish_hooks_for_read_only(Path(message))
+    if read_only and _prune_publish_hooks_for_read_only(Path(message)):
         sys.stdout.write(
             "Installed read-only hook manifest; publish interactions hooks are disabled.\n"
         )
