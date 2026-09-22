@@ -320,8 +320,10 @@ main() {
     fi
   fi
 
+  # A loopback URL is a local setup (the dashboard writes its default
+  # http://localhost URL when settings are saved), not a managed one.
   default_mode="local"
-  if [ -n "$existing_api_key" ] || [ -n "$existing_url" ]; then
+  if [ -n "$existing_api_key" ] || { [ -n "$existing_url" ] && ! is_local_url "$existing_url"; }; then
     default_mode="managed"
   fi
   default_read_only="no"

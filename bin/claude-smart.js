@@ -1113,23 +1113,42 @@ function startBackendService(pluginRoot, host) {
   });
 }
 
-function httpStatus(url, timeoutMs = 1000) {
+function httpProbe(url, timeoutMs = 1000) {
   return new Promise((resolve) => {
     const request = http.get(url, (response) => {
       response.resume();
-      resolve(response.statusCode || null);
+      resolve({ status: response.statusCode || null, headers: response.headers });
     });
-    request.on("error", () => resolve(null));
+    request.on("error", () => resolve({ status: null, headers: {} }));
     request.setTimeout(timeoutMs, () => request.destroy());
   });
 }
 
 async function waitForHttp(url, attempts, isReady) {
   for (let i = 0; i < attempts; i += 1) {
-    if (isReady(await httpStatus(url))) return true;
+    if (isReady(await httpProbe(url))) return true;
     if (i + 1 < attempts) await new Promise((r) => setTimeout(r, 1000));
   }
   return false;
+}
+
+// `backend-service.sh status` checks listener identity (a claude-smart backend
+// process, current or compatible version), which /health alone cannot: any
+// service on the port may answer it.
+function backendServiceStatus(pluginRoot) {
+  const script = join(pluginRoot, "scripts", "backend-service.sh");
+  const bash = resolveUsableBash();
+  if (!existsSync(script) || !bash) return "";
+  const result = spawnSync(bash, [script, "status"], {
+    cwd: pluginRoot,
+    env: runtimeEnv(),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+    timeout: PLUGIN_SERVICE_TIMEOUT_MS,
+    killSignal: "SIGTERM",
+  });
+  return String(result.stdout || "").trim().split(/\r?\n/).pop() || "";
 }
 
 // Same precedence as _lib.sh: an exported value wins over ~/.claude-smart/.env.
@@ -1149,8 +1168,16 @@ async function startAndReportServices(pluginRoot, host, managed) {
   } else {
     startBackendService(pluginRoot, host);
     const url = localBackendUrl();
-    if (await waitForHttp(`${url}health`, 5, (status) => status === 200)) {
-      process.stdout.write(`Backend healthy at ${url}.\n`);
+    if (await waitForHttp(`${url}health`, 5, ({ status }) => status === 200)) {
+      const status = backendServiceStatus(pluginRoot);
+      if (status.startsWith("running on")) {
+        process.stdout.write(`Backend healthy at ${url}.\n`);
+      } else {
+        process.stdout.write(
+          `Something answers ${url}health, but it is not a claude-smart backend this ` +
+            `install can use (backend-service.sh status: ${status || "unknown"}).\n`,
+        );
+      }
     } else {
       process.stdout.write(
         `Backend is still starting (log: ${join(CLAUDE_SMART_STATE_DIR, "backend.log")}); ` +
@@ -1165,8 +1192,17 @@ async function startAndReportServices(pluginRoot, host, managed) {
   refreshDashboardService(pluginRoot);
   const port = (process.env.DASHBOARD_PORT || "").trim() || "3001";
   const url = `http://localhost:${port}/`;
-  if (await waitForHttp(url, 3, (status) => status !== null && status < 500)) {
+  // Same marker dashboard-service.sh trusts: a foreign app on the port answers
+  // the root page too, but only the claude-smart dashboard sends this header.
+  const isDashboard = ({ status, headers }) =>
+    status === 200 && headers["x-claude-smart-dashboard"] !== undefined;
+  if (await waitForHttp(`${url}api/health`, 3, isDashboard)) {
     process.stdout.write(`Dashboard running at ${url}.\n`);
+  } else if ((await httpProbe(`${url}api/health`)).status !== null) {
+    process.stdout.write(
+      `Another app answers ${url} without the claude-smart dashboard marker; ` +
+        "the dashboard is not running there. Set DASHBOARD_PORT to a free port.\n",
+    );
   } else {
     process.stdout.write(
       `Dashboard is building in the background (first build takes 1-2 minutes); it will serve ${url}.\n`,

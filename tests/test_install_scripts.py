@@ -917,6 +917,9 @@ def _run_setup_script(tmp_path: Path, stdin: str) -> subprocess.CompletedProcess
         text=True,
         capture_output=True,
         check=False,
+        # The wizard re-prompts forever at EOF; a wrong default must fail the
+        # test instead of hanging the suite.
+        timeout=60,
     )
 
 
@@ -1280,7 +1283,12 @@ def _fake_claude_code_package(tmp_path: Path, smart_install: str) -> Path:
     _write_executable(scripts / "smart-install.sh", smart_install)
     _write_executable(
         scripts / "backend-service.sh",
-        '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$HOME/backend-service.log"\nexit 0\n',
+        "#!/bin/sh\n"
+        'if [ "$1" = status ]; then\n'
+        '  if [ -f "$HOME/backend-status" ]; then cat "$HOME/backend-status"; else echo "not running"; fi\n'
+        "  exit 0\n"
+        "fi\n"
+        'printf \'%s\\n\' "$*" >> "$HOME/backend-service.log"\nexit 0\n',
     )
     return package_root
 
@@ -1349,9 +1357,9 @@ def test_node_install_bootstraps_stable_copy_in_managed_mode(tmp_path: Path) -> 
     assert 'CLAUDE_SMART_HOST="claude-code"' in runtime_env.read_text()
 
 
-@pytest.mark.parametrize("backend_up", [False, True])
+@pytest.mark.parametrize("backend_state", ["down", "up", "foreign"])
 def test_node_install_ignores_foreign_reflexio_env_and_probes_backend(
-    tmp_path: Path, backend_up: bool
+    tmp_path: Path, backend_state: str
 ) -> None:
     # The incident: ~/.reflexio/.env held an enterprise dev server's URL and
     # key, the installer announced "managed Reflexio at https://localhost:8081"
@@ -1364,6 +1372,14 @@ def test_node_install_ignores_foreign_reflexio_env_and_probes_backend(
     legacy_env.write_text(legacy_text)
     port = _free_port()
     server = None
+    backend_up = backend_state != "down"
+    # "foreign": something else answers /health on the port, and
+    # backend-service.sh's identity check says it is not claude-smart's.
+    (tmp_path / "backend-status").write_text(
+        f"running on http://localhost:{port} (bundled Reflexio at /x)\n"
+        if backend_state == "up"
+        else f"foreign or ambiguous backend on http://localhost:{port} (not managed by claude-smart)\n"
+    )
     if backend_up:
         class Health(http.server.BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
@@ -1385,7 +1401,8 @@ def test_node_install_ignores_foreign_reflexio_env_and_probes_backend(
 
     assert result.returncode == 0, result.stderr
     assert f"Using local Reflexio backend at http://localhost:{port}/." in result.stdout
-    assert "managed" not in result.stdout.lower()
+    assert "Using managed Reflexio" not in result.stdout
+    assert "Migrated" not in result.stdout
     assert legacy_env.read_text() == legacy_text
     runtime_text = (tmp_path / ".claude-smart" / ".env").read_text()
     assert "REFLEXIO_URL" not in runtime_text
@@ -1393,9 +1410,64 @@ def test_node_install_ignores_foreign_reflexio_env_and_probes_backend(
     assert "CLAUDE_SMART_HOST=claude-code" in runtime_text
     assert (tmp_path / "backend-service.log").read_text().splitlines() == ["start"]
     healthy = f"Backend healthy at http://localhost:{port}/." in result.stdout
-    assert healthy is backend_up
+    assert healthy is (backend_state == "up")
     assert ("Backend is still starting" in result.stdout) is not backend_up
+    assert ("is not a claude-smart backend" in result.stdout) is (backend_state == "foreign")
     assert "Started claude-smart backend service" not in result.stdout
+
+
+@pytest.mark.parametrize("marker", [False, True])
+def test_node_install_reports_dashboard_only_when_marker_answers(
+    tmp_path: Path, marker: bool
+) -> None:
+    # dashboard-service.sh never replaces a foreign app on the dashboard port,
+    # so install must not report that app as the dashboard.
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    port = _free_port()
+
+    class App(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(200)
+            if marker and self.path == "/api/health":
+                self.send_header("x-claude-smart-dashboard", "1")
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), App)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        result = _run_fake_claude_code_install(
+            tmp_path,
+            package_root,
+            {
+                "DASHBOARD_PORT": str(port),
+                "CLAUDE_SMART_DASHBOARD_AUTOSTART": "1",
+                "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
+            },
+        )
+    finally:
+        server.shutdown()
+
+    assert result.returncode == 0, result.stderr
+    running = f"Dashboard running at http://localhost:{port}/." in result.stdout
+    assert running is marker
+    assert ("without the claude-smart dashboard marker" in result.stdout) is not marker
+
+
+def test_setup_script_defaults_to_local_for_loopback_url(tmp_path: Path) -> None:
+    # The dashboard's Configure page saves its displayed default
+    # REFLEXIO_URL=http://localhost:8071/; that is still a local setup.
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    runtime_env.parent.mkdir()
+    runtime_env.write_text('REFLEXIO_URL="http://localhost:8071/"\n')
+
+    result = _run_setup_script(tmp_path, "claude-code\n\n")
+
+    assert result.returncode == 0, result.stderr
+    assert "Setup mode (1=local, 2=managed Reflexio) [local]" in result.stderr
+    assert "configured local Reflexio defaults" in result.stderr
 
 
 def test_node_install_migrates_pre_split_managed_env(tmp_path: Path) -> None:
