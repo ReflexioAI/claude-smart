@@ -2051,6 +2051,22 @@ def test_failed_reinstall_restores_marker_and_host(tmp_path: Path) -> None:
     assert (tmp_path / "old-backend.log").read_text().splitlines()[-1] == "start codex"
 
 
+def test_failed_install_removes_a_host_it_added(tmp_path: Path) -> None:
+    # Pre-split installs can have no CLAUDE_SMART_HOST (runtime default:
+    # Claude Code); a failed install must not leave its own host behind.
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 7\n")
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    runtime_env.parent.mkdir()
+    runtime_env.write_text('# mine\nREFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="k"\n')
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {})
+
+    assert result.returncode != 0
+    text = runtime_env.read_text()
+    assert "CLAUDE_SMART_HOST" not in text
+    assert "# mine" in text and 'REFLEXIO_API_KEY="k"' in text
+
+
 def test_windows_interrupt_ends_the_whole_child_tree(tmp_path: Path) -> None:
     # Windows has no process groups; stopping only the direct child would
     # orphan uv/npm grandchildren that keep writing after the rollback.

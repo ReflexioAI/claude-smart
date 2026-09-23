@@ -1111,6 +1111,16 @@ function restoreInstallState() {
     else writeFileSync(INSTALL_FAILURE_MARKER, snapshot.failureMarker);
     if (snapshot.host !== null) {
       setEnvVars(CLAUDE_SMART_ENV_PATH, { [CLAUDE_SMART_HOST_ENV]: snapshot.host });
+    } else if (existsSync(CLAUDE_SMART_ENV_PATH)) {
+      // The key was absent (the runtime then defaults to Claude Code); drop
+      // the one the failed install added.
+      const kept = readFileSync(CLAUDE_SMART_ENV_PATH, "utf8")
+        .split(/\r?\n/)
+        .filter((line) => {
+          const parsed = parseEnvLine(line);
+          return !parsed || parsed.key !== CLAUDE_SMART_HOST_ENV;
+        });
+      writePrivateFile(CLAUDE_SMART_ENV_PATH, kept.join("\n"));
     }
   } catch (err) {
     process.stderr.write(
