@@ -2002,6 +2002,55 @@ def test_bundled_endpoint_rule_agrees_across_node_python_and_shell(
     assert shell.stdout.strip() == str(bundled).lower()
 
 
+def test_interrupt_waits_for_killed_children_before_returning(tmp_path: Path) -> None:
+    # A child that ignores SIGTERM is SIGKILLed; the rollback must not start
+    # until that child has actually exited.
+    script = (
+        f"const i = require({json.dumps(str(NODE_INSTALLER))});"
+        "const { spawn } = require('child_process');"
+        "const child = spawn('/bin/sh', ['-c', 'trap \"\" TERM; while :; do sleep 0.1; done']);"
+        "i.trackChild(child, false);"
+        "setTimeout(() => i.terminateActiveChildren(300).then(() => {"
+        "  process.stdout.write(String(child.exitCode !== null || child.signalCode !== null));"
+        "}), 200);"
+    )
+    result = subprocess.run(
+        [node_bin(), "-e", script], env=_isolated_env(tmp_path), text=True,
+        capture_output=True, check=False, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "true"
+
+
+def test_failed_reinstall_restores_marker_and_host(tmp_path: Path) -> None:
+    # A same-version reinstall whose bootstrap fails must not leave its
+    # install-failed marker (it would suppress the restored, working hooks)
+    # or its CLAUDE_SMART_HOST (it selects the restarted backend's bridge).
+    marker = tmp_path / ".claude-smart" / "install-failed"
+    smart_install = f'#!/bin/sh\necho "bootstrap broke" > "{marker}"\nexit 7\n'
+    package_root = _fake_claude_code_package(tmp_path, smart_install)
+    stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
+    old_scripts = stable / "plugin" / "scripts"
+    old_scripts.mkdir(parents=True)
+    _write_executable(
+        old_scripts / "backend-service.sh",
+        '#!/bin/sh\necho "$1 $CLAUDE_SMART_HOST" >> "$HOME/old-backend.log"\n',
+    )
+    link = tmp_path / ".reflexio" / "plugin-root"
+    link.parent.mkdir()
+    link.symlink_to(stable / "plugin", target_is_directory=True)
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    runtime_env.write_text("CLAUDE_SMART_HOST=codex\n")
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {})
+
+    assert result.returncode != 0
+    assert not marker.exists()
+    assert "CLAUDE_SMART_HOST=\"codex\"" in runtime_env.read_text() or "CLAUDE_SMART_HOST=codex" in runtime_env.read_text()
+    assert "claude-code" not in runtime_env.read_text()
+    assert (tmp_path / "old-backend.log").read_text().splitlines()[-1] == "start codex"
+
+
 def test_windows_interrupt_ends_the_whole_child_tree(tmp_path: Path) -> None:
     # Windows has no process groups; stopping only the direct child would
     # orphan uv/npm grandchildren that keep writing after the rollback.

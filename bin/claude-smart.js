@@ -1086,7 +1086,41 @@ function uniquePackagePath(packageRoot, prefix) {
 // back.
 const pendingPreviousPackages = new Map();
 
+// State an install changes outside its package that a rollback must undo:
+// the install-failed marker (a leftover one suppresses the restored,
+// working hooks) and CLAUDE_SMART_HOST (it selects the backend's
+// extraction bridge). Captured before the install touches either;
+// cleared on commit.
+let installStateSnapshot = null;
+
+function snapshotInstallState() {
+  const read = (path) => (existsSync(path) ? readFileSync(path) : null);
+  installStateSnapshot = {
+    failureMarker: read(INSTALL_FAILURE_MARKER),
+    host: readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) ?? null,
+  };
+  ensureRollbackOnExit();
+}
+
+function restoreInstallState() {
+  const snapshot = installStateSnapshot;
+  installStateSnapshot = null;
+  if (!snapshot) return;
+  try {
+    if (snapshot.failureMarker === null) rmSync(INSTALL_FAILURE_MARKER, { force: true });
+    else writeFileSync(INSTALL_FAILURE_MARKER, snapshot.failureMarker);
+    if (snapshot.host !== null) {
+      setEnvVars(CLAUDE_SMART_ENV_PATH, { [CLAUDE_SMART_HOST_ENV]: snapshot.host });
+    }
+  } catch (err) {
+    process.stderr.write(
+      `warning: could not restore claude-smart install state: ${err && err.message ? err.message : err}\n`,
+    );
+  }
+}
+
 function rollbackLocalPluginPackages() {
+  restoreInstallState();
   for (const [packageRoot, { backupPackage, installedIno }] of pendingPreviousPackages) {
     pendingPreviousPackages.delete(packageRoot);
     try {
@@ -1146,6 +1180,7 @@ function restartStoppedServices() {
 
 function commitLocalPluginPackage(packageRoot) {
   stoppedServices = null;
+  installStateSnapshot = null;
   const pending = pendingPreviousPackages.get(packageRoot);
   pendingPreviousPackages.delete(packageRoot);
   if (pending && pending.backupPackage) {
@@ -1377,7 +1412,14 @@ async function terminateActiveChildren(timeoutMs = 5000) {
     exited().then(() => false),
     new Promise((resolve) => setTimeout(() => resolve(true), timeoutMs).unref()),
   ]);
-  if (timedOut) signalAll("SIGKILL");
+  if (timedOut) {
+    signalAll("SIGKILL");
+    // A killed process may still be exiting; do not roll back under it.
+    await Promise.race([
+      exited(),
+      new Promise((resolve) => setTimeout(resolve, timeoutMs).unref()),
+    ]);
+  }
 }
 
 function runSilentStatus(command, args, options = {}) {
@@ -2689,12 +2731,15 @@ async function runInstall(args, options = {}) {
     process.exit(1);
   }
 
+  snapshotInstallState();
+  const previousHost = installStateSnapshot.host;
   const setup = configureReflexioSetup(HOST_CLAUDE_CODE);
   const readOnly = setup.readOnly;
   // Stop services running from the previous root (e.g. a pruned npx dir or an
   // older copy) before the copy under them is replaced.
   const previousRoot = activePluginRoot();
-  if (previousRoot) stopServicesForInstall(previousRoot, HOST_CLAUDE_CODE);
+  // Restart with the host that root was running for (e.g. Codex's bridge).
+  if (previousRoot) stopServicesForInstall(previousRoot, previousHost || HOST_CLAUDE_CODE);
   let source;
   try {
     source = installLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "Claude Code");
@@ -2885,6 +2930,7 @@ async function runInstallOpenCode(args) {
     process.stderr.write(prerequisiteError);
     process.exit(1);
   }
+  snapshotInstallState();
   const setup = configureReflexioSetup(HOST_OPENCODE);
   const readOnly = setup.readOnly;
   persistOpenCodePath();
