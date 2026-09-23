@@ -187,6 +187,12 @@ if [ "$needs_build" = "1" ]; then
   fi
   claude_smart_clear_dashboard_unavailable
   log "dashboard build: complete"
+  # The dashboard-service.sh start (or install) that spawned this build
+  # returned without starting anything because .next was missing. Start the
+  # dashboard now, so it serves without waiting for another session start.
+  # dashboard-service.sh honors CLAUDE_SMART_DASHBOARD_AUTOSTART=0 and never
+  # replaces a foreign listener.
+  bash "$HERE/dashboard-service.sh" start >/dev/null 2>&1 || true
 else
   claude_smart_clear_dashboard_unavailable
   log "dashboard build: .next is up-to-date; skipping"

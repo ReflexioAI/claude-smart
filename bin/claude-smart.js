@@ -38,7 +38,7 @@ const {
 const http = require("http");
 const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
-const { dirname, join, resolve } = require("path");
+const { dirname, isAbsolute, join, relative, resolve } = require("path");
 const { fileURLToPath, pathToFileURL } = require("url");
 
 const PLUGIN_SPEC = "claude-smart@reflexioai";
@@ -464,16 +464,20 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
   // file wins (even when empty), otherwise the inherited environment.
   const resolved = (key) => (fileEnv.has(key) ? fileEnv.get(key) : process.env[key] || "");
   const apiKey = resolved("REFLEXIO_API_KEY").trim();
+  // Policy: only a key saved in the file makes install managed. A key that is
+  // only exported in this shell is gone in later sessions, and install never
+  // copies a secret from the environment into a file.
+  const shellOnlyKey = Boolean(apiKey) && !fileEnv.has("REFLEXIO_API_KEY");
   let url = resolved("REFLEXIO_URL");
   const updates = {};
-  if (apiKey && fileEnv.has("REFLEXIO_API_KEY") && !(fileEnv.get("REFLEXIO_URL") || "").trim()) {
+  if (apiKey && !shellOnlyKey && !(fileEnv.get("REFLEXIO_URL") || "").trim()) {
     // The runtime treats a file key with no file URL as local mode, so the URL
     // chosen here (an exported one, else the managed default) must be written
     // where the runtime will read it once that export is gone.
     if (!url.trim()) url = MANAGED_REFLEXIO_URL;
     updates.REFLEXIO_URL = url;
   }
-  if (apiKey && url.trim()) {
+  if (apiKey && !shellOnlyKey && url.trim()) {
     process.env.REFLEXIO_API_KEY = apiKey;
     process.env.REFLEXIO_URL = url;
     process.env[MANAGED_SETUP_ENV] = "1";
@@ -500,9 +504,15 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
     if (added.length > 0) {
       process.stdout.write(`Seeded ${CLAUDE_SMART_ENV_PATH} with ${added.join(", ")}.\n`);
     }
+    if (shellOnlyKey) {
+      process.stderr.write(
+        "warning: REFLEXIO_API_KEY is only exported in this shell, so install uses local " +
+          "mode and saves no key. Run `npx claude-smart setup` to save managed settings.\n",
+      );
+    }
     if (isRemoteReflexioUrl(exportedUrl)) {
       process.stderr.write(
-        `warning: REFLEXIO_URL=${exportedUrl} is exported in this shell without an API key. ` +
+        `warning: REFLEXIO_URL=${exportedUrl} is exported in this shell. ` +
           "Install ignores it, but claude-smart hooks in a Claude Code started from this " +
           "shell inherit it and will not use the local backend. Unset it, or run " +
           "`npx claude-smart setup` for managed mode.\n",
@@ -852,6 +862,57 @@ function activePluginRoot() {
     }
   }
   return root && existsSync(join(root, "scripts", "backend-service.sh")) ? root : null;
+}
+
+// Installed runtime roots other integrations may still use, newest host
+// first. Codex keeps one cache dir per version.
+function installedPluginRoots() {
+  const roots = [
+    join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin"),
+    join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"),
+  ];
+  try {
+    for (const version of readdirSync(CODEX_PLUGIN_CACHE_DIR).sort().reverse()) {
+      roots.push(join(CODEX_PLUGIN_CACHE_DIR, version));
+    }
+  } catch {
+    // No Codex install.
+  }
+  return roots.filter((root) => existsSync(join(root, "scripts", "backend-service.sh")));
+}
+
+function isInside(child, parent) {
+  const rel = relative(parent, child);
+  return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
+}
+
+// Call before deleting an integration's files. ~/.reflexio/plugin-root is
+// shared by every installed host's slash commands, so when it points into
+// the directory being removed it is repointed at a remaining install, or
+// removed when none is left, instead of being left dangling.
+function releasePluginRoot(removedDir) {
+  const active = activePluginRoot();
+  let removedReal = removedDir;
+  try {
+    removedReal = realpathSync(removedDir);
+  } catch {
+    // Already gone: compare the plain path.
+  }
+  if (!active || !isInside(active, removedReal)) return;
+  const next = installedPluginRoots().find((root) => {
+    try {
+      return !isInside(realpathSync(root), removedReal);
+    } catch {
+      return false;
+    }
+  });
+  if (next) {
+    forcePluginRoot(next);
+    process.stdout.write(`Repointed ${join(REFLEXIO_DIR, "plugin-root")} to ${next}.\n`);
+  } else {
+    rmSync(join(REFLEXIO_DIR, "plugin-root"), { force: true });
+    rmSync(join(REFLEXIO_DIR, "plugin-root.txt"), { force: true });
+  }
 }
 
 function forcePluginRoot(pluginRoot) {
@@ -1993,6 +2054,8 @@ function cleanupCodexInstallState() {
     ]),
     prefixes: [`hooks.state."${CODEX_PLUGIN_ID}:`],
   });
+  releasePluginRoot(CODEX_MARKETPLACE_DIR);
+  releasePluginRoot(CODEX_PLUGIN_CACHE_DIR);
   rmSync(CODEX_MARKETPLACE_DIR, { recursive: true, force: true });
   rmSync(CODEX_PLUGIN_CACHE_DIR, { recursive: true, force: true });
   try {
@@ -2361,6 +2424,7 @@ async function runUninstall(args) {
         `claude plugin marketplace remove ${CODEX_MARKETPLACE_NAME}\n`,
     );
   }
+  releasePluginRoot(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
   rmSync(CLAUDE_CODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
 
   process.stdout.write(
@@ -2690,6 +2754,7 @@ async function runUninstallOpenCode(args) {
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
   }
+  releasePluginRoot(OPENCODE_LOCAL_PACKAGE_DIR);
   rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
   try {
     rmdirSync(dirname(OPENCODE_LOCAL_PACKAGE_DIR));

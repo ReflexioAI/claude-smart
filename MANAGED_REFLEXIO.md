@@ -32,6 +32,12 @@ installer records that it has checked (`~/.claude-smart/legacy-reflexio-env-chec
 and never reads the legacy file again, so choosing local mode in
 `npx claude-smart setup` stays local.
 
+Only a key saved in `~/.claude-smart/.env` makes install use managed mode. A
+`REFLEXIO_API_KEY` that is only exported in your shell is gone in later
+sessions, so install reports local mode, removes a keyless `REFLEXIO_URL` from
+the file, warns, and never writes the exported key anywhere. Run
+`npx claude-smart setup` to save managed settings.
+
 The installer's summary comes from the same file: it prints either
 `Using managed Reflexio at <url>` or `Using local Reflexio backend at <url>`,
 and only reports a backend or dashboard as running after an HTTP probe answers.

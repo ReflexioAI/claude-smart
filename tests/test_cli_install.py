@@ -597,3 +597,34 @@ def test_python_installer_warns_about_exported_url_it_ignores(
     captured = capsys.readouterr()
     assert "Using local Reflexio backend" in captured.out
     assert "REFLEXIO_URL=https://www.reflexio.ai/ is exported in this shell" in captured.err
+
+
+@pytest.mark.parametrize("other_host_installed", [True, False])
+def test_python_release_plugin_root_before_removing_an_integration(
+    monkeypatch, tmp_path: Path, other_host_installed: bool
+) -> None:
+    # Mirror of the Node guard: deleting the install plugin-root points at
+    # must repoint it at a remaining install, or remove it.
+    state = tmp_path / ".claude-smart"
+    reflexio = tmp_path / ".reflexio"
+    opencode_pkg = state / "opencode" / "claude-smart"
+    codex_cache = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    monkeypatch.setattr(cli, "_STATE_DIR", state)
+    monkeypatch.setattr(cli, "_REFLEXIO_DIR", reflexio)
+    monkeypatch.setattr(cli, "_OPENCODE_LOCAL_PACKAGE_DIR", opencode_pkg)
+    monkeypatch.setattr(cli, "_CODEX_PLUGIN_CACHE_DIR", codex_cache)
+    codex_root = codex_cache / "0.2.50"
+    roots = [codex_root, opencode_pkg / "plugin"] if other_host_installed else [codex_root]
+    for root in roots:
+        (root / "scripts").mkdir(parents=True)
+        (root / "scripts" / "backend-service.sh").write_text("#!/bin/sh\n")
+    reflexio.mkdir()
+    (reflexio / "plugin-root").symlink_to(codex_root, target_is_directory=True)
+
+    cli._release_plugin_root(codex_cache)
+
+    link = reflexio / "plugin-root"
+    if other_host_installed:
+        assert link.resolve() == (opencode_pkg / "plugin").resolve()
+    else:
+        assert not link.is_symlink() and not link.exists()

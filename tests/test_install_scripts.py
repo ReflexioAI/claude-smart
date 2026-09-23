@@ -798,6 +798,12 @@ _MODE_SCENARIOS = {
         {"REFLEXIO_URL": "https://managed.example/"},
     ),
     "shell key only": ("", {"REFLEXIO_API_KEY": "rflx-shell"}),
+    # Policy: a key only exported in the install shell never makes install
+    # managed; the keyless file URL is pruned and no secret is written.
+    "file remote url + shell-only key": (
+        'REFLEXIO_URL="https://www.reflexio.ai/"\n',
+        {"REFLEXIO_API_KEY": "rflx-shell"},
+    ),
     "empty file key beats shell key": (
         'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY=\n',
         {"REFLEXIO_API_KEY": "rflx-shell"},
@@ -893,6 +899,12 @@ def test_installer_mode_matches_runtime_resolution(
     # persisted for a shell-only key outlives that export (later sessions
     # would go remote with no key).
     final_text = runtime_env.read_text()
+    # Install never copies a secret from the environment into a file.
+    for secret in ("rflx-shell",):
+        assert secret not in final_text, context
+    if exported.get("REFLEXIO_API_KEY") and "REFLEXIO_API_KEY" not in file_text:
+        assert not installer_managed, context
+        assert "npx claude-smart setup" in installer.stderr, context
     # A local report must leave the local backend its provider defaults.
     if not installer_managed:
         assert "CLAUDE_SMART_USE_LOCAL_CLI=" in final_text, context
@@ -1695,6 +1707,48 @@ def test_node_env_writes_are_private_before_content_lands(tmp_path: Path) -> Non
     assert "Migrated managed Reflexio settings" in result.stdout
     modes = json.loads(result.stdout.rsplit("MODES=", 1)[1])
     assert modes and all(mode == 0o600 for mode in modes), modes
+
+
+@pytest.mark.parametrize("other_host_installed", [True, False])
+def test_node_claude_uninstall_never_leaves_plugin_root_dangling(
+    tmp_path: Path, other_host_installed: bool
+) -> None:
+    # ~/.reflexio/plugin-root is shared by every host's commands. Removing
+    # the Claude Code copy it points at must repoint it at a remaining
+    # install (OpenCode here), or remove it when nothing is left.
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    claude_root = tmp_path / ".claude-smart" / "claude-code" / "claude-smart" / "plugin"
+    opencode_root = tmp_path / ".claude-smart" / "opencode" / "claude-smart" / "plugin"
+    roots = [claude_root, opencode_root] if other_host_installed else [claude_root]
+    for root in roots:
+        (root / "scripts").mkdir(parents=True)
+        _write_executable(root / "scripts" / "backend-service.sh", "#!/bin/sh\nexit 0\n")
+    link = tmp_path / ".reflexio" / "plugin-root"
+    link.parent.mkdir()
+    link.symlink_to(claude_root, target_is_directory=True)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "claude", _fake_claude_install_script())
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    result = subprocess.run(
+        [node, str(package_root / "bin" / "claude-smart.js"), "uninstall"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not claude_root.exists()
+    if other_host_installed:
+        assert link.resolve() == opencode_root.resolve()
+    else:
+        assert not link.is_symlink() and not link.exists()
 
 
 def test_node_install_survives_an_invalid_service_port(tmp_path: Path) -> None:
