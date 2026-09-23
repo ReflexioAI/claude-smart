@@ -440,12 +440,15 @@ function migrateLegacyManagedEnvOnce() {
   if ((readEnvFile(CLAUDE_SMART_ENV_PATH).get("REFLEXIO_API_KEY") || "").trim()) return;
   const legacy = readEnvFile(LEGACY_REFLEXIO_ENV_PATH);
   const apiKey = (legacy.get("REFLEXIO_API_KEY") || "").trim();
-  const url = (legacy.get("REFLEXIO_URL") || "").trim();
-  if (!apiKey || !url || isLoopbackUrl(url)) return;
+  // A key with no URL meant the managed service to older installers (and to
+  // the Reflexio client, whose default URL it is), so it migrates as such.
+  const url = (legacy.get("REFLEXIO_URL") || "").trim() || MANAGED_REFLEXIO_URL;
+  if (!apiKey || isLoopbackUrl(url)) return;
   const values = {};
-  for (const key of ["REFLEXIO_URL", "REFLEXIO_API_KEY", REFLEXIO_USER_ID_ENV, CLAUDE_SMART_READ_ONLY_ENV]) {
+  for (const key of ["REFLEXIO_API_KEY", REFLEXIO_USER_ID_ENV, CLAUDE_SMART_READ_ONLY_ENV]) {
     if (legacy.has(key)) values[key] = legacy.get(key);
   }
+  values.REFLEXIO_URL = url;
   setEnvVars(CLAUDE_SMART_ENV_PATH, values);
   process.stdout.write(
     `Migrated managed Reflexio settings from ${LEGACY_REFLEXIO_ENV_PATH} to ${CLAUDE_SMART_ENV_PATH}.\n`,

@@ -1809,6 +1809,40 @@ def test_node_install_survives_an_invalid_service_port(tmp_path: Path) -> None:
     assert "Backend is still starting" in result.stdout
 
 
+def test_legacy_key_only_managed_env_migrates_with_the_managed_url(tmp_path: Path) -> None:
+    # Older installers treated a key with no URL as managed Reflexio at the
+    # default URL; the migration and the setup prefill keep that meaning.
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    legacy_env = tmp_path / ".reflexio" / ".env"
+    legacy_env.parent.mkdir()
+    legacy_env.write_text('REFLEXIO_API_KEY="rflx-legacy"\n')
+
+    prefill = _run_setup_script(tmp_path, "claude-code\nmanaged\n\nno\nproject\n")
+    assert prefill.returncode == 0, prefill.stderr
+    assert "as defaults" in prefill.stderr
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    assert 'REFLEXIO_API_KEY="rflx-legacy"' in runtime_env.read_text()
+    runtime_env.unlink()
+
+    env = _isolated_env(tmp_path)
+    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY", "REFLEXIO_USER_ID"):
+        env.pop(key, None)
+    result = subprocess.run(
+        [node, "-e", f"require({json.dumps(str(NODE_INSTALLER))}).configureReflexioSetup('claude-code');"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Migrated managed Reflexio settings" in result.stdout
+    assert "Using managed Reflexio at https://www.reflexio.ai/" in result.stdout
+    text = runtime_env.read_text()
+    assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in text
+
+
 def test_legacy_migration_is_retried_after_a_failed_check(tmp_path: Path) -> None:
     node = shutil.which("node")
     if not node:

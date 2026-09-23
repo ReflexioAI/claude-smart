@@ -321,7 +321,9 @@ main() {
     legacy_url="$(REFLEXIO_ENV="$LEGACY_REFLEXIO_ENV" get_env_value REFLEXIO_URL || true)"
     # Same rule as the installer's migration: a loopback URL there belongs to
     # another local Reflexio server, so its key is not claude-smart's.
-    if [ -n "$legacy_api_key" ] && [ -n "$legacy_url" ] && ! is_local_url "$legacy_url"; then
+    # A key with no URL meant the managed service to older releases.
+    legacy_url="${legacy_url:-$MANAGED_REFLEXIO_URL}"
+    if [ -n "$legacy_api_key" ] && ! is_local_url "$legacy_url"; then
       existing_api_key="$legacy_api_key"
       existing_url="$legacy_url"
       existing_user_id="$(REFLEXIO_ENV="$LEGACY_REFLEXIO_ENV" get_env_value REFLEXIO_USER_ID || true)"
