@@ -825,6 +825,7 @@ full_stop() {
 case "$CMD" in
   preflight)
     if claude_smart_reflexio_url_is_remote \
+      || claude_smart_reflexio_url_is_custom_local \
       || [ "${CLAUDE_SMART_BACKEND_AUTOSTART:-1}" = "0" ]; then
       exit 0
     fi
@@ -842,6 +843,10 @@ case "$CMD" in
     fi
     if claude_smart_reflexio_url_is_remote; then
       claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: remote REFLEXIO_URL configured; skipping local backend start"
+      emit_ok; exit 0
+    fi
+    if claude_smart_reflexio_url_is_custom_local; then
+      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: REFLEXIO_URL=$REFLEXIO_URL is your own local Reflexio server; skipping bundled backend start"
       emit_ok; exit 0
     fi
     # Opt-out: users who don't want the backend managed by the hook can
@@ -1025,6 +1030,8 @@ case "$CMD" in
   status)
     if claude_smart_reflexio_url_is_remote; then
       echo "remote configured at $REFLEXIO_URL"
+    elif claude_smart_reflexio_url_is_custom_local; then
+      echo "custom local server configured at $REFLEXIO_URL (bundled backend not used)"
     elif backend_owned_by_current_vendor; then
       if embedding_owned_by_current_vendor; then
         echo "running on http://localhost:$PORT (bundled Reflexio at $VENDORED_REFLEXIO)"

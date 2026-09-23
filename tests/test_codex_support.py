@@ -699,6 +699,14 @@ def test_codex_uninstall_cleans_plugin_config_cache_and_marketplace(
     monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", config)
     monkeypatch.setattr(cli, "_CODEX_LOCAL_MARKETPLACE_ROOT", marketplace_root)
     monkeypatch.setattr(cli, "_CODEX_PLUGIN_CACHE_DIR", plugin_cache)
+    # Uninstall repairs ~/.reflexio/plugin-root and CLAUDE_SMART_HOST; keep
+    # both inside tmp_path, never the real home.
+    monkeypatch.setattr(cli, "_REFLEXIO_DIR", tmp_path / ".reflexio")
+    monkeypatch.setattr(cli, "_STATE_DIR", tmp_path / ".claude-smart")
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
+    monkeypatch.setattr(
+        cli, "_OPENCODE_LOCAL_PACKAGE_DIR", tmp_path / ".claude-smart" / "opencode" / "claude-smart"
+    )
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(
         cli,

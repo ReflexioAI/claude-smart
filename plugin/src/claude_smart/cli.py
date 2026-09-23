@@ -248,45 +248,6 @@ def _installed_plugin_sort_key(path: Path) -> tuple[int, int, int, int, float]:
     return (0, 0, 0, 0, path.stat().st_mtime)
 
 
-def _find_claude_code_plugin_root() -> Path | None:
-    """Locate the installed Claude Code plugin root after native install."""
-    cache_root = (
-        Path.home()
-        / ".claude"
-        / "plugins"
-        / "cache"
-        / _CODEX_MARKETPLACE_NAME
-        / "claude-smart"
-    )
-    candidates: list[Path] = []
-    if cache_root.is_dir():
-        for child in cache_root.iterdir():
-            if (
-                child.is_dir()
-                and (child / "pyproject.toml").is_file()
-                and (child / "scripts" / "smart-install.sh").is_file()
-            ):
-                candidates.append(child)
-    candidates.sort(key=_installed_plugin_sort_key, reverse=True)
-    candidates.extend(
-        [
-            Path.home()
-            / ".claude"
-            / "plugins"
-            / "marketplaces"
-            / _CODEX_MARKETPLACE_NAME
-            / "plugin",
-            _PLUGIN_ROOT,
-        ]
-    )
-    for candidate in candidates:
-        if (candidate / "pyproject.toml").is_file() and (
-            candidate / "scripts" / "smart-install.sh"
-        ).is_file():
-            return candidate
-    return None
-
-
 def _force_plugin_root(plugin_root: Path) -> None:
     """Point ~/.reflexio/plugin-root at the installed plugin root."""
     _REFLEXIO_DIR.mkdir(parents=True, exist_ok=True)
@@ -303,11 +264,102 @@ def _force_plugin_root(plugin_root: Path) -> None:
         (_REFLEXIO_DIR / "plugin-root.txt").write_text(f"{plugin_root}\n")
 
 
-def _bootstrap_claude_code_install() -> tuple[bool, str]:
-    """Run smart-install immediately for the installed Claude Code plugin."""
-    plugin_root = _find_claude_code_plugin_root()
-    if plugin_root is None:
-        return False, "could not locate installed Claude Code plugin root after install"
+def _active_plugin_root() -> Path | None:
+    link = _REFLEXIO_DIR / "plugin-root"
+    try:
+        return link.resolve(strict=True) if link.is_symlink() else None
+    except OSError:
+        pass
+    try:
+        text = (_REFLEXIO_DIR / "plugin-root.txt").read_text().strip()
+    except OSError:
+        return None
+    return Path(text) if text else None
+
+
+def _plugin_root_is_broken() -> bool:
+    def has_runtime(root: Path) -> bool:
+        return (root / "scripts" / "backend-service.sh").is_file()
+
+    link = _REFLEXIO_DIR / "plugin-root"
+    if link.is_symlink():
+        try:
+            return not has_runtime(link.resolve(strict=True))
+        except OSError:
+            return True
+    try:
+        text = (_REFLEXIO_DIR / "plugin-root.txt").read_text().strip()
+    except OSError:
+        return False
+    return bool(text) and not has_runtime(Path(text))
+
+
+def _repair_plugin_root(removed_host: str | None = None) -> None:
+    """Keep ~/.reflexio/plugin-root usable after removing an integration.
+
+    Mirrors ``repairPluginRoot`` in bin/claude-smart.js: the link is shared by
+    every installed host's commands, so one left pointing at deleted files is
+    repointed at a remaining install, or removed when none is left. A
+    CLAUDE_SMART_HOST naming ``removed_host`` then follows the active root.
+    """
+    if _plugin_root_is_broken():
+        _repoint_or_remove_plugin_root()
+    active = _active_plugin_root()
+    if removed_host is None or active is None or not _CLAUDE_SMART_ENV_PATH.is_file():
+        return
+    current = None
+    for line in _CLAUDE_SMART_ENV_PATH.read_text().splitlines():
+        parsed = env_config.parse_env_line(line)
+        if parsed and parsed[0] == env_config.CLAUDE_SMART_HOST_ENV:
+            current = parsed[1]
+    if current == removed_host:
+        env_config.set_env_vars(
+            _CLAUDE_SMART_ENV_PATH,
+            {env_config.CLAUDE_SMART_HOST_ENV: _host_for_plugin_root(active)},
+        )
+
+
+def _host_for_plugin_root(root: Path) -> str:
+    real = root.resolve()
+
+    def under(directory: Path) -> bool:
+        base = directory.resolve()
+        return real == base or base in real.parents
+
+    if under(_OPENCODE_LOCAL_PACKAGE_DIR):
+        return _HOST_OPENCODE
+    if under(_CODEX_PLUGIN_CACHE_DIR) or under(_CODEX_LOCAL_MARKETPLACE_ROOT):
+        return _HOST_CODEX
+    return _HOST_CLAUDE_CODE
+
+
+def _repoint_or_remove_plugin_root() -> None:
+    candidates = [
+        _STATE_DIR / "claude-code" / "claude-smart" / "plugin",
+        _OPENCODE_LOCAL_PACKAGE_DIR / "plugin",
+    ]
+    if _CODEX_PLUGIN_CACHE_DIR.is_dir():
+        # Newest version first (0.2.10 before 0.2.9), as elsewhere.
+        candidates += sorted(
+            _CODEX_PLUGIN_CACHE_DIR.iterdir(), key=_installed_plugin_sort_key, reverse=True
+        )
+    for root in candidates:
+        if (root / "scripts" / "backend-service.sh").is_file():
+            _force_plugin_root(root)
+            return
+    for name in ("plugin-root", "plugin-root.txt"):
+        path = _REFLEXIO_DIR / name
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+
+
+def _bootstrap_claude_code_install(plugin_root: Path) -> tuple[bool, str]:
+    """Run smart-install for the plugin root Claude Code will load.
+
+    Claude Code runs a plugin from a local-directory marketplace in place
+    (``<marketplace>/plugin``), not from ``~/.claude/plugins/cache``, so the
+    caller passes the marketplace's own plugin dir.
+    """
     try:
         _force_plugin_root(plugin_root)
     except OSError as exc:
@@ -400,8 +452,21 @@ def _command_is_publish_hook(command: object) -> bool:
     )
 
 
-def _prune_publish_hooks_for_read_only(plugin_root: Path) -> None:
-    """Remove publish-to-reflexio hook commands from a copied/installed plugin."""
+def _prune_publish_hooks_for_read_only(plugin_root: Path) -> bool:
+    """Remove publish-to-reflexio hook commands from a copied/installed plugin.
+
+    Returns False without touching anything when ``plugin_root`` is this
+    checkout's own plugin dir: its manifests are the pristine source that
+    ``_restore_publish_hooks_from_source`` copies from, so pruning them would
+    make read-only mode permanent. Publishing is still skipped there, because
+    the stop and session-end hooks honor ``CLAUDE_SMART_READ_ONLY`` themselves.
+    """
+    if plugin_root.resolve() == _PLUGIN_ROOT.resolve():
+        sys.stdout.write(
+            "Read-only mode: publishing is skipped via CLAUDE_SMART_READ_ONLY; "
+            "the source hook manifests are left unchanged.\n"
+        )
+        return False
     for hook_file in ("hooks.json", "codex-hooks.json"):
         hook_path = plugin_root / "hooks" / hook_file
         if not hook_path.is_file():
@@ -431,6 +496,7 @@ def _prune_publish_hooks_for_read_only(plugin_root: Path) -> None:
             else:
                 del hooks_by_event[event]
         hook_path.write_text(json.dumps(parsed, indent=2) + "\n")
+    return True
 
 
 def _restore_publish_hooks_from_source(plugin_root: Path) -> None:
@@ -867,6 +933,7 @@ def _cleanup_codex_install_state() -> bool:
     )
     shutil.rmtree(_CODEX_LOCAL_MARKETPLACE_ROOT, ignore_errors=True)
     shutil.rmtree(_CODEX_PLUGIN_CACHE_DIR, ignore_errors=True)
+    _repair_plugin_root(_HOST_CODEX)
     try:
         _CODEX_PLUGIN_CACHE_DIR.parent.rmdir()
     except OSError:
@@ -943,44 +1010,70 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
     Returns:
         bool: Whether read-only mode is enabled.
     """
+    exported_url = os.environ.get(env_config.REFLEXIO_URL_ENV, "")
     env_config.load_reflexio_env(_CLAUDE_SMART_ENV_PATH)
     try:
         env_text = _CLAUDE_SMART_ENV_PATH.read_text()
     except OSError:
         env_text = ""
-    read_only_value = ""
-    file_api_key = ""
-    file_url = ""
+    file_values: dict[str, str] = {}
     for line in env_text.splitlines():
         parsed = env_config.parse_env_line(line)
-        if parsed is None:
-            continue
-        key, value = parsed
-        if key == env_config.REFLEXIO_API_KEY_ENV:
-            file_api_key = value
-        elif key == env_config.REFLEXIO_URL_ENV:
-            file_url = value
-        elif key == "REFLEXIO_USER_ID":
-            os.environ[key] = value
-        elif key == env_config.CLAUDE_SMART_READ_ONLY_ENV:
-            read_only_value = value
-    api_key = (
-        file_api_key or os.environ.get(env_config.REFLEXIO_API_KEY_ENV, "")
-    ).strip()
-    read_only = read_only_value.strip().lower() in {"1", "true", "yes", "on"}
-    if api_key:
-        reflexio_url = (
-            file_url
-            or os.environ.get(env_config.REFLEXIO_URL_ENV, _MANAGED_REFLEXIO_URL)
-        ).strip()
+        if parsed is not None:
+            file_values[parsed[0]] = parsed[1]
+    if "REFLEXIO_USER_ID" in file_values:
+        os.environ["REFLEXIO_USER_ID"] = file_values["REFLEXIO_USER_ID"]
+    read_only = file_values.get(
+        env_config.CLAUDE_SMART_READ_ONLY_ENV, ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+    # Same precedence as claude_smart_source_reflexio_env (and the Node
+    # installer): a key present in the file wins, even when empty, otherwise
+    # the inherited environment.
+    def resolved(key: str) -> str:
+        if key in file_values:
+            return file_values[key]
+        return os.environ.get(key, "")
+
+    api_key = resolved(env_config.REFLEXIO_API_KEY_ENV).strip()
+    # Policy: only a key saved in the file makes install managed. A key that
+    # is only exported in this shell is gone in later sessions, and install
+    # never copies a secret from the environment into a file.
+    shell_only_key = bool(api_key) and env_config.REFLEXIO_API_KEY_ENV not in file_values
+    reflexio_url = resolved(env_config.REFLEXIO_URL_ENV)
+    updates: dict[str, str] = {}
+    if (
+        api_key
+        and not shell_only_key
+        and not file_values.get(env_config.REFLEXIO_URL_ENV, "").strip()
+    ):
+        # The runtime treats a file key with no file URL as local mode, so the
+        # URL chosen here must be written where the runtime will read it. A
+        # shell-only key persists nothing: a URL without its key would outlive
+        # the export and send later sessions remote with no credentials.
+        if not reflexio_url.strip():
+            reflexio_url = _MANAGED_REFLEXIO_URL
+        updates[env_config.REFLEXIO_URL_ENV] = reflexio_url
+    if api_key and not shell_only_key and reflexio_url.strip():
         os.environ[env_config.REFLEXIO_URL_ENV] = reflexio_url
         os.environ[env_config.REFLEXIO_API_KEY_ENV] = api_key
         os.environ["CLAUDE_SMART_MANAGED_SETUP"] = "1"
-        sys.stdout.write(
-            f"Using managed Reflexio at {reflexio_url} "
-            f"(API key {env_config.mask_secret(api_key)}).\n"
-        )
+        # The host follows the install in managed mode too
+        # (ensure_local_env_defaults does it for local mode).
+        updates[env_config.CLAUDE_SMART_HOST_ENV] = host
+        env_config.set_env_vars(_CLAUDE_SMART_ENV_PATH, updates)
+        if not env_config.reflexio_url_is_remote(reflexio_url):
+            # A key next to a plain http loopback URL is still local mode at
+            # runtime, and the local backend needs the local provider defaults.
+            added = env_config.ensure_local_env_defaults(
+                _CLAUDE_SMART_ENV_PATH, host=host, prune=False
+            )
+            if added:
+                sys.stdout.write(
+                    f"Seeded {_CLAUDE_SMART_ENV_PATH} with {', '.join(added)}.\n"
+                )
     else:
+        reflexio_url = ""
         os.environ.pop(env_config.REFLEXIO_URL_ENV, None)
         os.environ.pop(env_config.REFLEXIO_API_KEY_ENV, None)
         os.environ.pop("REFLEXIO_USER_ID", None)
@@ -988,7 +1081,67 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
         added = env_config.ensure_local_env_defaults(_CLAUDE_SMART_ENV_PATH, host=host)
         if added:
             sys.stdout.write(f"Seeded {_CLAUDE_SMART_ENV_PATH} with {', '.join(added)}.\n")
+        if shell_only_key:
+            sys.stderr.write(
+                "warning: REFLEXIO_API_KEY is only exported in this shell, so install "
+                "uses local mode and saves no key. Run `npx claude-smart setup` to save "
+                "managed settings.\n"
+            )
+        if exported_url and not _is_bundled_backend_url(exported_url):
+            # Same warning as the Node installer: this process drops the
+            # export, but hooks in a Claude Code started from the calling
+            # shell inherit it and will not use the local backend.
+            sys.stderr.write(
+                f"warning: REFLEXIO_URL={exported_url} is exported in this shell. "
+                "Install ignores it, but claude-smart hooks in a "
+                "Claude Code started from this shell inherit it and will not use the "
+                f"local backend at {_local_backend_url()}. Unset it, or run "
+                "`npx claude-smart setup` for managed mode.\n"
+            )
+    # The runtime picks its mode from the URL alone
+    # (claude_smart_reflexio_url_is_remote), so the summary does too.
+    if env_config.reflexio_url_is_remote(reflexio_url):
+        sys.stdout.write(
+            f"Using managed Reflexio at {reflexio_url} "
+            f"(API key {env_config.mask_secret(api_key)}).\n"
+        )
+    else:
+        sys.stdout.write(
+            f"Using local Reflexio backend at {reflexio_url or _local_backend_url()}.\n"
+        )
     return read_only
+
+
+def _local_backend_url() -> str:
+    port = os.environ.get("BACKEND_PORT", "").strip() or "8071"
+    return f"http://localhost:{port}/"
+
+
+def _is_bundled_backend_url(url: str) -> bool:
+    """Mirror ``isBundledBackendUrl`` in bin/claude-smart.js.
+
+    Hooks calling ``url`` reach the bundled backend when its origin is
+    http://localhost or http://127.0.0.1 on BACKEND_PORT (the Reflexio client
+    urljoins absolute /api/... paths, so a path prefix is dropped), or when it
+    is one of the 8071 spellings ``_lib.sh`` rewrites to BACKEND_PORT.
+    """
+    port = os.environ.get("BACKEND_PORT", "").strip() or "8071"
+    value = url.strip()
+    if value in {
+        f"http://{host}:8071{slash}"
+        for host in ("localhost", "127.0.0.1")
+        for slash in ("", "/")
+    }:
+        return True
+    try:
+        parsed = urlparse(value)
+        return (
+            parsed.scheme == "http"
+            and parsed.hostname in {"localhost", "127.0.0.1"}
+            and str(parsed.port or 80) == port
+        )
+    except ValueError:
+        return False
 
 
 def _strip_jsonc(text: str) -> str:
@@ -1371,6 +1524,7 @@ def _bootstrap_opencode_install(read_only: bool) -> tuple[bool, str]:
 
 
 def cmd_install_opencode(args: argparse.Namespace) -> int:
+    os.environ.setdefault("CLAUDE_SMART_DASHBOARD_WORKSPACE", os.getcwd())
     if not _opencode_install_supported_from_this_package():
         sys.stderr.write(
             "error: OpenCode install is supported from the npm package. "
@@ -1429,6 +1583,7 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
     Returns:
         int: 0 on success, non-zero on failure or unsupported runtime.
     """
+    os.environ.setdefault("CLAUDE_SMART_DASHBOARD_WORKSPACE", os.getcwd())
     if not shutil.which("codex"):
         sys.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n")
         return 1
@@ -1535,6 +1690,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     Returns:
         int: 0 on success, non-zero if the ``claude`` CLI is missing or fails.
     """
+    os.environ.setdefault("CLAUDE_SMART_DASHBOARD_WORKSPACE", os.getcwd())
     if getattr(args, "host", _HOST_CLAUDE_CODE) == _HOST_CODEX:
         return cmd_install_codex(args)
     if getattr(args, "host", _HOST_CLAUDE_CODE) == _HOST_OPENCODE:
@@ -1572,7 +1728,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             sys.stderr.write(f"error: {' '.join(cmd)} failed (exit {exc.returncode})\n")
             return exc.returncode or 1
 
-    bootstrapped, message = _bootstrap_claude_code_install()
+    bootstrapped, message = _bootstrap_claude_code_install(_PLUGIN_ROOT)
     if not bootstrapped:
         sys.stderr.write(
             f"error: claude-smart installed, but dependency bootstrap failed: {message}\n"
@@ -1582,8 +1738,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         )
         return 1
     _restore_publish_hooks_from_source(Path(message))
-    if read_only:
-        _prune_publish_hooks_for_read_only(Path(message))
+    if read_only and _prune_publish_hooks_for_read_only(Path(message)):
         sys.stdout.write(
             "Installed read-only hook manifest; publish interactions hooks are disabled.\n"
         )
@@ -1680,6 +1835,8 @@ def cmd_uninstall(_args: argparse.Namespace) -> int:
     except subprocess.CalledProcessError as exc:
         sys.stderr.write(f"error: {' '.join(cmd)} failed (exit {exc.returncode})\n")
         return exc.returncode or 1
+    # `claude plugin uninstall` can delete the directory plugin-root targets.
+    _repair_plugin_root(_HOST_CLAUDE_CODE)
 
     sys.stdout.write(
         "\nclaude-smart uninstalled. Restart Claude Code to apply.\n"
@@ -1745,6 +1902,7 @@ def cmd_uninstall_opencode(args: argparse.Namespace) -> int:
         sys.stderr.write(f"error: {exc}\n")
         return 1
     shutil.rmtree(_OPENCODE_LOCAL_PACKAGE_DIR, ignore_errors=True)
+    _repair_plugin_root(_HOST_OPENCODE)
     try:
         _OPENCODE_LOCAL_PACKAGE_DIR.parent.rmdir()
     except OSError:

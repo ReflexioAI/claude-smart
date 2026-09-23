@@ -11,6 +11,7 @@ must stay in sync with the ``REFLEXIO_ENV_FILE`` export in
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from claude_smart import runtime
@@ -53,6 +54,21 @@ _LOCAL_MODE_PRUNE_KEYS = {
     REFLEXIO_API_KEY_ENV,
     "REFLEXIO_USER_ID",
 }
+
+
+_LOCAL_REFLEXIO_URL_RE = re.compile(
+    r"http://(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(/?|:.*)"
+)
+
+
+def reflexio_url_is_remote(url: str) -> bool:
+    """Mirror ``claude_smart_reflexio_url_is_remote`` in ``scripts/_lib.sh``.
+
+    The runtime starts a local backend unless this is true, so installer
+    summaries must use the same rule. The URL is deliberately not stripped:
+    the shell helper matches the raw value too.
+    """
+    return bool(url) and _LOCAL_REFLEXIO_URL_RE.fullmatch(url) is None
 
 
 def parse_env_line(line: str) -> tuple[str, str] | None:
@@ -127,14 +143,23 @@ def set_env_vars(path: Path, values: dict[str, str]) -> list[str]:
         added.append(key)
 
     content = "\n".join(out)
-    path.write_text(content + ("\n" if content else ""), encoding="utf-8")
-    path.chmod(0o600)
+    _write_private(path, content + ("\n" if content else ""))
     return added
+
+
+def _write_private(path: Path, content: str) -> None:
+    """Write the env file, which holds the managed API key, as 0600 from the
+    start, so no other account can read it between the write and a chmod."""
+    path.touch(mode=0o600, exist_ok=True)
+    path.chmod(0o600)
+    path.write_text(content, encoding="utf-8")
 
 
 def ensure_local_env_defaults(
     path: Path | None = None,
     host: str = DEFAULT_CLAUDE_SMART_HOST,
+    *,
+    prune: bool = True,
 ) -> list[str]:
     """Create or augment ``~/.claude-smart/.env`` for claude-smart local mode.
 
@@ -160,7 +185,7 @@ def ensure_local_env_defaults(
         parsed = parse_env_line(line)
         if parsed is not None:
             key, _value = parsed
-            if key in _LOCAL_MODE_PRUNE_KEYS:
+            if prune and key in _LOCAL_MODE_PRUNE_KEYS:
                 pruned = True
                 continue
             if key == CLAUDE_SMART_HOST_ENV:
@@ -199,7 +224,7 @@ def ensure_local_env_defaults(
             prefix = "" if not content or content.endswith("\n") else "\n"
             content = content + prefix + "\n".join(additions)
         content = content + ("\n" if content else "")
-        path.write_text(content, encoding="utf-8")
+        _write_private(path, content)
     elif not path.exists():
         path.touch()
     path.chmod(0o600)

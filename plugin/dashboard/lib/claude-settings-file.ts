@@ -1,7 +1,7 @@
 /**
  * Read/write Claude Code project settings used to inject hook-side env vars.
  *
- * This is intentionally separate from ~/.reflexio/.env: reflexio reads that
+ * This is intentionally separate from ~/.claude-smart/.env: reflexio reads that
  * file in the backend process, while claude-smart hooks read env from the
  * Claude Code process tree.
  */

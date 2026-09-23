@@ -119,8 +119,13 @@ Condensed install/uninstall commands live in the [README Quick Start](./README.m
 
 ### Claude Code
 
-`npx claude-smart install` registers the bundled npm package as a local
-marketplace and installs the plugin.
+`npx claude-smart install` copies the npm package to
+`~/.claude-smart/claude-code/claude-smart`, registers that copy as the
+`reflexioai` local marketplace, installs the plugin, and bootstraps
+`<copy>/plugin`. Claude Code runs a local-directory marketplace plugin in place,
+so that dir is the runtime root (`~/.reflexio/plugin-root` points at it); the
+`~/.claude/plugins/cache` entry Claude Code records is not used. The copy exists
+because the npx dir the installer runs from may be pruned by npm.
 
 `ReflexioAI/claude-smart` cannot be installed as a GitHub marketplace: the
 generated `plugin/vendor/reflexio` runtime is gitignored and exists only in
@@ -129,11 +134,13 @@ rather than committed (see [Versioning](#versioning)). `claude plugin
 marketplace add ReflexioAI/claude-smart` therefore fails with `Marketplace file
 not found` instead of installing a plugin whose backend can never start.
 
-For anyone already in that state from an earlier release, the npm installer
-repairs it: it detects a Claude cache for the version it is installing that is
-missing the vendor bundle and replaces it before preparing or restarting
-services. It only ever inspects the cache directory matching its own version —
-other cached versions vendor a different Reflexio and are left alone.
+For anyone already in that state from an earlier release, rerunning
+`npx claude-smart install` repairs it: re-adding the marketplace re-points the
+existing `reflexioai` entry at the packaged copy, which carries the vendor bundle.
+
+`npx claude-smart uninstall` uninstalls the plugin, stops services, removes the
+`reflexioai` marketplace, and deletes the copy; learned data under `~/.reflexio/`
+and `~/.claude-smart/` is preserved.
 
 ### Codex
 
@@ -180,7 +187,7 @@ claude-smart has learned:
 - **Preferences / Skills** — reflexio data fetched via a proxy route
   (`plugin/dashboard/app/api/reflexio/[...path]/route.ts`) that forwards to the URL
   configured in the top bar; defaults to `http://localhost:8071`.
-- **Configure** — reads and writes backend/provider settings in `~/.reflexio/.env`
+- **Configure** — reads and writes backend/provider settings in `~/.claude-smart/.env`
   and hook-side Claude Code settings in `.claude/settings.local.json`. Unknown
   `.env` keys (API secrets, user additions) are preserved on write and never
   returned to the browser.
@@ -236,8 +243,11 @@ with no Reflexio runtime — one that can never start its backend.
 With the manifest absent from the repo, that command fails immediately
 (`Marketplace file not found`), and the only way in is the npm package, which
 carries both the manifest and the vendor bundle. `npx claude-smart install`
-registers the npm package root as the marketplace, so the supported path is
-unaffected. As a backstop, `smart-install.sh` fails Setup outright if a host
+copies the npm package to `~/.claude-smart/claude-code/claude-smart` and
+registers that copy as the marketplace, so the supported path is unaffected.
+Claude Code runs a plugin from a local-directory marketplace **in place**
+(`<marketplace>/plugin`), not from `~/.claude/plugins/cache`, which is why the
+installer bootstraps the copy and never the npx dir (npm may prune it). As a backstop, `smart-install.sh` fails Setup outright if a host
 plugin cache (`*/plugins/cache/*`) is missing the vendor bundle, since that can
 only mean a GitHub-marketplace install.
 
