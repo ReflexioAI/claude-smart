@@ -2939,7 +2939,10 @@ async function runInstall(args, options = {}) {
     [
       "",
       "claude-smart installed and dependencies are prepared. Restart Claude Code in your project.",
-      "The reflexio backend and dashboard auto-start on session start.",
+      // Only claim a local backend where one will actually run.
+      setup.managed || (setup.url && !isBundledBackendUrl(setup.url))
+        ? "The dashboard auto-starts on session start; no bundled backend runs in this setup."
+        : "The reflexio backend and dashboard auto-start on session start.",
       "Opt out with CLAUDE_SMART_BACKEND_AUTOSTART=0 or CLAUDE_SMART_DASHBOARD_AUTOSTART=0.",
       "",
     ].join("\n"),

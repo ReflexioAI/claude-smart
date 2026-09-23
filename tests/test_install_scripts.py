@@ -1518,6 +1518,21 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+@pytest.mark.parametrize("managed", [True, False])
+def test_node_install_summary_claims_a_backend_only_when_one_runs(
+    tmp_path: Path, managed: bool
+) -> None:
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    if managed:
+        runtime_env = tmp_path / ".claude-smart" / ".env"
+        runtime_env.parent.mkdir()
+        runtime_env.write_text('REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="k"\n')
+    result = _run_fake_claude_code_install(tmp_path, package_root, {"BACKEND_PORT": str(_free_port())})
+    assert result.returncode == 0, result.stderr
+    claims = "The reflexio backend and dashboard auto-start on session start." in result.stdout
+    assert claims is not managed
+
+
 def test_node_install_bootstraps_stable_copy_in_managed_mode(tmp_path: Path) -> None:
     # Claude Code runs a local-directory marketplace plugin in place, so the
     # marketplace must be the stable copy (never the prunable npx dir) and that
@@ -3143,10 +3158,11 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
         "  verify_windows_local_embedding_runtime\n"
         "  start_backend_service"
     ) in smart_install
-    assert (
-        "Backend is starting in the background; dashboard auto-starts on session start."
-        in smart_install
-    )
+    # smart-install never claims a backend is starting: it may be deferred
+    # (npx installer) or skipped (managed, custom local server, autostart=0).
+    assert "Backend is starting in the background" not in smart_install
+    assert "starting backend service in background" not in smart_install
+    assert "the installer starts and reports services once the plugin is registered" in smart_install
     assert "function startBackendService(pluginRoot, host)" in node_installer
     assert "CLAUDE_SMART_HOST: host" in node_installer
     assert "const bash = resolveUsableBash();" in node_installer

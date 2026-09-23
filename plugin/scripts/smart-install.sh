@@ -150,7 +150,9 @@ install_complete() {
 start_backend_service() {
   [ "${CLAUDE_SMART_DEFER_SERVICES:-}" = "1" ] && return 0
   if [ -x "$HERE/backend-service.sh" ]; then
-    echo "[claude-smart] starting backend service in background" >&2
+    # backend-service.sh decides whether a bundled backend runs at all
+    # (managed mode, a custom local server, and autostart=0 skip it).
+    echo "[claude-smart] requested a backend start (see backend-service.sh status)" >&2
     bash "$HERE/backend-service.sh" start >/dev/null 2>&1 || true
   fi
 }
@@ -770,5 +772,9 @@ fi
 start_backend_service
 
 write_success_marker
-echo "[claude-smart] install complete. Backend is starting in the background; dashboard auto-starts on session start." >&2
+if [ "${CLAUDE_SMART_DEFER_SERVICES:-}" = "1" ]; then
+  echo "[claude-smart] install complete; the installer starts and reports services once the plugin is registered." >&2
+else
+  echo "[claude-smart] install complete. Services start on session start when this setup uses them; see backend-service.sh status." >&2
+fi
 claude_smart_emit_continue
