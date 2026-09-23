@@ -514,12 +514,18 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
           "mode and saves no key. Run `npx claude-smart setup` to save managed settings.\n",
       );
     }
-    if (isRemoteReflexioUrl(exportedUrl)) {
+    // Hooks in a Claude Code started from this shell inherit the export: a
+    // remote URL, or a loopback URL on another port, sends them somewhere
+    // other than the bundled backend this install starts.
+    if (
+      isRemoteReflexioUrl(exportedUrl) ||
+      (exportedUrl && urlPort(exportedUrl) !== urlPort(localBackendUrl()))
+    ) {
       process.stderr.write(
         `warning: REFLEXIO_URL=${exportedUrl} is exported in this shell. ` +
           "Install ignores it, but claude-smart hooks in a Claude Code started from this " +
-          "shell inherit it and will not use the local backend. Unset it, or run " +
-          "`npx claude-smart setup` for managed mode.\n",
+          `shell inherit it and will not use the local backend at ${localBackendUrl()}. ` +
+          "Unset it, or run `npx claude-smart setup` for managed mode.\n",
       );
     }
   }
@@ -1028,7 +1034,24 @@ function holdPackageInstallLock(packageRoot, label) {
   if (heldPackageLocks.size === 0 && pendingPreviousPackages.size === 0) {
     process.once("exit", rollbackLocalPluginPackages);
   }
+  registerRollbackSignalHandlers();
   heldPackageLocks.set(packageRoot, { lockDir, timer });
+}
+
+// Node does not emit "exit" when SIGINT/SIGTERM/SIGHUP terminate the process
+// by default, so an interrupted update would otherwise leave the uncommitted
+// copy in place and the lock held. Roll back, then exit with the signal's
+// conventional status.
+let rollbackSignalHandlersRegistered = false;
+function registerRollbackSignalHandlers() {
+  if (rollbackSignalHandlersRegistered) return;
+  rollbackSignalHandlersRegistered = true;
+  for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
+    process.once(signal, () => {
+      rollbackLocalPluginPackages();
+      process.exit(code);
+    });
+  }
 }
 
 function releasePackageInstallLock(packageRoot) {

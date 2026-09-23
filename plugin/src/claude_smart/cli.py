@@ -31,6 +31,7 @@ import re
 import select
 import shutil
 import subprocess
+import urllib.parse
 import sys
 import time
 from pathlib import Path
@@ -1045,7 +1046,9 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
                 "uses local mode and saves no key. Run `npx claude-smart setup` to save "
                 "managed settings.\n"
             )
-        if env_config.reflexio_url_is_remote(exported_url):
+        if env_config.reflexio_url_is_remote(exported_url) or (
+            exported_url and _url_port(exported_url) != _url_port(_local_backend_url())
+        ):
             # Same warning as the Node installer: this process drops the
             # export, but hooks in a Claude Code started from the calling
             # shell inherit it and will not use the local backend.
@@ -1053,8 +1056,8 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
                 f"warning: REFLEXIO_URL={exported_url} is exported in this shell. "
                 "Install ignores it, but claude-smart hooks in a "
                 "Claude Code started from this shell inherit it and will not use the "
-                "local backend. Unset it, or run `npx claude-smart setup` for managed "
-                "mode.\n"
+                f"local backend at {_local_backend_url()}. Unset it, or run "
+                "`npx claude-smart setup` for managed mode.\n"
             )
     # The runtime picks its mode from the URL alone
     # (claude_smart_reflexio_url_is_remote), so the summary does too.
@@ -1064,11 +1067,23 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
             f"(API key {env_config.mask_secret(api_key)}).\n"
         )
     else:
-        port = os.environ.get("BACKEND_PORT", "").strip() or "8071"
         sys.stdout.write(
-            f"Using local Reflexio backend at {reflexio_url or f'http://localhost:{port}/'}.\n"
+            f"Using local Reflexio backend at {reflexio_url or _local_backend_url()}.\n"
         )
     return read_only
+
+
+def _local_backend_url() -> str:
+    port = os.environ.get("BACKEND_PORT", "").strip() or "8071"
+    return f"http://localhost:{port}/"
+
+
+def _url_port(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(url.strip())
+        return str(parsed.port or (443 if parsed.scheme == "https" else 80))
+    except ValueError:
+        return ""
 
 
 def _strip_jsonc(text: str) -> str:

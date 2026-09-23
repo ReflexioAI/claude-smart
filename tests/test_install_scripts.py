@@ -934,6 +934,46 @@ def test_installer_warns_about_exported_url_it_ignores(tmp_path: Path) -> None:
     assert "REFLEXIO_URL=https://www.reflexio.ai/ is exported in this shell" in result.stderr
 
 
+@pytest.mark.parametrize("installer_kind", ["node", "python"])
+@pytest.mark.parametrize(
+    ("exported_url", "warns"),
+    [
+        ("http://localhost:9000/", True),
+        ("http://localhost:8071/", False),
+        ("https://www.reflexio.ai/", True),
+    ],
+)
+def test_installers_warn_about_an_exported_url_hooks_would_follow(
+    tmp_path: Path, installer_kind: str, exported_url: str, warns: bool
+) -> None:
+    # Install drops the export in its own process, but hooks in a Claude Code
+    # started from the same shell inherit it: any URL other than the bundled
+    # backend's (remote, or loopback on another port) needs a warning.
+    node = shutil.which("node")
+    if installer_kind == "node" and not node:
+        pytest.skip("node is required for Node installer test")
+    env = _isolated_env(tmp_path)
+    for key in ("REFLEXIO_API_KEY", "BACKEND_PORT"):
+        env.pop(key, None)
+    env["REFLEXIO_URL"] = exported_url
+    if installer_kind == "node":
+        command = [
+            node,
+            "-e",
+            f"require({json.dumps(str(NODE_INSTALLER))}).configureReflexioSetup('claude-code');",
+        ]
+    else:
+        command = [
+            sys.executable,
+            "-c",
+            "from claude_smart import cli; cli._configure_reflexio_setup(host='claude-code')",
+        ]
+    result = subprocess.run(command, env=env, text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert "Using local Reflexio backend" in result.stdout
+    assert (f"REFLEXIO_URL={exported_url} is exported in this shell" in result.stderr) is warns
+
+
 def test_no_code_path_uses_the_shared_reflexio_env_file() -> None:
     """Class guard: #85 moved the runtime to ~/.claude-smart/.env, but the npx
     installer, the setup wizard, and the dashboard Configure page kept using
@@ -1686,6 +1726,23 @@ def test_node_install_holds_the_package_lock_until_commit_or_rollback(
     assert (tmp_path / "lock-during-bootstrap").read_text() == "held\n"
     assert not lock.exists()
     assert sorted(p.name for p in stable.parent.iterdir()) == ["claude-smart"]
+
+
+def test_node_install_rolls_back_when_terminated_during_bootstrap(tmp_path: Path) -> None:
+    # Node emits no "exit" on a default SIGTERM/SIGINT; an interrupted update
+    # must still restore the previous package and release the lock.
+    smart_install = "#!/bin/sh\nkill -TERM $PPID\nsleep 5\nexit 0\n"
+    package_root = _fake_claude_code_package(tmp_path, smart_install)
+    stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
+    (stable / "plugin").mkdir(parents=True)
+    (stable / "plugin" / "owner").write_text("older\n")
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {})
+
+    assert result.returncode == 143, (result.returncode, result.stderr)
+    assert (stable / "plugin" / "owner").read_text() == "older\n"
+    assert sorted(p.name for p in stable.parent.iterdir()) == ["claude-smart"]
+    assert "restored the previous claude-smart package" in result.stderr
 
 
 def test_node_install_rollback_never_deletes_the_only_working_backup(
