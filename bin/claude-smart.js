@@ -1347,8 +1347,18 @@ async function terminateActiveChildren(timeoutMs = 5000) {
     for (const [child, group] of children) {
       if (child.exitCode !== null || child.signalCode !== null) continue;
       try {
-        if (group) process.kill(-child.pid, signal);
-        else child.kill(signal);
+        if (isWindows()) {
+          // No process groups on Windows: taskkill /T ends the whole tree
+          // (uv, npm, ...) rather than only the direct child.
+          spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+            stdio: "ignore",
+            windowsHide: true,
+          });
+        } else if (group) {
+          process.kill(-child.pid, signal);
+        } else {
+          child.kill(signal);
+        }
       } catch {
         // Already gone.
       }
@@ -1483,17 +1493,30 @@ function autostartDisabled(key) {
 // backend-service.sh / dashboard-service.sh always exit 0 (they double as
 // hooks), so their status says nothing about whether a service is serving.
 // Report only what an HTTP probe observes.
-// True when hooks calling `url` reach the bundled backend install starts:
-// http://localhost or http://127.0.0.1 on BACKEND_PORT, with no path. Any
-// other endpoint (another host spelling, port, or a path prefix) is one the
-// user runs themselves.
+// True when hooks calling `url` reach the bundled backend install starts.
+// The Reflexio client joins absolute /api/... paths onto REFLEXIO_URL
+// (urljoin), so only the origin matters: http://localhost or
+// http://127.0.0.1 on BACKEND_PORT. The exact 8071 spellings also count,
+// because claude_smart_derive_reflexio_url_from_backend_port (_lib.sh)
+// rewrites them to BACKEND_PORT. Mirrors claude_smart_reflexio_url_is_custom_local.
 function isBundledBackendUrl(url) {
   const port = (process.env.BACKEND_PORT || "").trim() || "8071";
   const value = String(url || "").trim();
-  // The 8071 spellings are rewritten to BACKEND_PORT by
-  // claude_smart_derive_reflexio_url_from_backend_port (_lib.sh).
-  const bases = [port, "8071"].flatMap((p) => [`http://localhost:${p}`, `http://127.0.0.1:${p}`]);
-  return bases.some((base) => value === base || value === `${base}/`);
+  const rewritten = ["localhost", "127.0.0.1"].flatMap((host) => [
+    `http://${host}:8071`,
+    `http://${host}:8071/`,
+  ]);
+  if (rewritten.includes(value)) return true;
+  try {
+    const parsed = new URL(value);
+    return (
+      parsed.protocol === "http:" &&
+      ["localhost", "127.0.0.1"].includes(parsed.hostname) &&
+      parsed.port === port
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function startAndReportServices(pluginRoot, host, setup) {
@@ -1504,7 +1527,13 @@ async function startAndReportServices(pluginRoot, host, setup) {
     // A kept loopback URL other than the bundled endpoint is the user's own
     // local Reflexio server: the hooks call it, not the bundled backend, so
     // report on it and start nothing.
-    const base = hooksUrl.endsWith("/") ? hooksUrl : `${hooksUrl}/`;
+    // Hooks call the origin (see isBundledBackendUrl), so probe it there.
+    let base = hooksUrl;
+    try {
+      base = `${new URL(hooksUrl).origin}/`;
+    } catch {
+      // Unparseable: the probe below simply fails.
+    }
     const answering = await waitForHttp(`${base}health`, 3, ({ status }) => status === 200);
     process.stdout.write(
       `Hooks use the Reflexio server at ${hooksUrl}, which claude-smart does not start; ` +
@@ -3046,4 +3075,6 @@ module.exports = {
   prunePublishHooksForReadOnly,
   restorePublishHooksFromSource,
   stripJsonc,
+  terminateActiveChildren,
+  trackChild,
 };

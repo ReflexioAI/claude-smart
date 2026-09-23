@@ -1087,18 +1087,30 @@ def _local_backend_url() -> str:
 
 
 def _is_bundled_backend_url(url: str) -> bool:
-    """Mirror ``isBundledBackendUrl`` in bin/claude-smart.js: hooks calling
-    ``url`` reach the bundled backend (http://localhost or http://127.0.0.1
-    on BACKEND_PORT, no path); anything else is a server the user runs."""
+    """Mirror ``isBundledBackendUrl`` in bin/claude-smart.js.
+
+    Hooks calling ``url`` reach the bundled backend when its origin is
+    http://localhost or http://127.0.0.1 on BACKEND_PORT (the Reflexio client
+    urljoins absolute /api/... paths, so a path prefix is dropped), or when it
+    is one of the 8071 spellings ``_lib.sh`` rewrites to BACKEND_PORT.
+    """
     port = os.environ.get("BACKEND_PORT", "").strip() or "8071"
     value = url.strip()
-    # The 8071 spellings are rewritten to BACKEND_PORT by
-    # claude_smart_derive_reflexio_url_from_backend_port (_lib.sh).
-    return any(
-        value in (f"http://{host}:{p}", f"http://{host}:{p}/")
+    if value in {
+        f"http://{host}:8071{slash}"
         for host in ("localhost", "127.0.0.1")
-        for p in (port, "8071")
-    )
+        for slash in ("", "/")
+    }:
+        return True
+    try:
+        parsed = urlparse(value)
+        return (
+            parsed.scheme == "http"
+            and parsed.hostname in {"localhost", "127.0.0.1"}
+            and str(parsed.port) == port
+        )
+    except ValueError:
+        return False
 
 
 def _strip_jsonc(text: str) -> str:

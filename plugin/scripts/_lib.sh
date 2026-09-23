@@ -146,21 +146,27 @@ claude_smart_reflexio_url_is_remote() {
 # True for a plain-HTTP loopback REFLEXIO_URL that is not the bundled
 # backend's endpoint: the user's own local Reflexio server, which hooks call
 # directly, so claude-smart must not start (or report) its bundled backend
-# for it. The bundled endpoint is http://localhost or http://127.0.0.1 on
-# BACKEND_PORT, or the 8071 spellings that
+# for it. The Reflexio client urljoins absolute /api/... paths, so only the
+# origin matters: the bundled endpoint is http://localhost or
+# http://127.0.0.1 on BACKEND_PORT, plus the exact 8071 spellings that
 # claude_smart_derive_reflexio_url_from_backend_port rewrites to it.
 # Mirrors isBundledBackendUrl in bin/claude-smart.js.
 claude_smart_reflexio_url_is_custom_local() {
-  local url port
+  local url port hostport
   url="${REFLEXIO_URL:-}"
   port="${BACKEND_PORT:-8071}"
   [ -n "$url" ] || return 1
   claude_smart_reflexio_url_is_remote && return 1
   case "$url" in
-    "http://localhost:$port"|"http://localhost:$port/"|"http://127.0.0.1:$port"|"http://127.0.0.1:$port/"|\
     "http://localhost:8071"|"http://localhost:8071/"|"http://127.0.0.1:8071"|"http://127.0.0.1:8071/")
       return 1
       ;;
+  esac
+  hostport="${url#http://}"
+  hostport="${hostport%%/*}"
+  hostport="${hostport%%\?*}"
+  case "$hostport" in
+    "localhost:$port"|"127.0.0.1:$port") return 1 ;;
   esac
   return 0
 }

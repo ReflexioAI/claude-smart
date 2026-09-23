@@ -596,8 +596,11 @@ def test_backend_service_skips_local_start_for_remote_reflexio_url() -> None:
     ("url", "custom"),
     [
         ("http://localhost:9000/", True),
-        ("http://localhost:8071/prefix/", True),
+        ("http://localhost:9000/prefix/", True),
         ("http://[::1]:8071/", True),
+        # The client urljoins /api/... onto the URL, so a path prefix on the
+        # bundled origin still reaches the bundled backend.
+        ("http://localhost:8071/prefix/", False),
         ("http://localhost:8071/", False),
         ("http://127.0.0.1:8071", False),
     ],
@@ -1006,7 +1009,8 @@ def test_installer_warns_about_exported_url_it_ignores(tmp_path: Path) -> None:
         ("http://localhost:8071/", False),
         ("http://127.0.0.1:8071", False),
         ("http://[::1]:8071/", True),
-        ("http://localhost:8071/prefix/", True),
+        ("http://localhost:8071/prefix/", False),
+        ("http://localhost:9000/prefix/", True),
         ("https://www.reflexio.ai/", True),
     ],
 )
@@ -1960,6 +1964,28 @@ def test_node_setup_passes_the_caller_workspace_to_nested_installs(tmp_path: Pat
     assert (tmp_path / "workspace").read_text().strip() == str(project)
 
 
+def test_windows_interrupt_ends_the_whole_child_tree(tmp_path: Path) -> None:
+    # Windows has no process groups; stopping only the direct child would
+    # orphan uv/npm grandchildren that keep writing after the rollback.
+    script = (
+        "const cp = require('child_process');"
+        "const calls = [];"
+        "cp.spawnSync = (cmd, args) => { calls.push([cmd, ...args]); child.exitCode = 1; child.emit('exit', 1); return { status: 0 }; };"
+        "Object.defineProperty(process, 'platform', { value: 'win32' });"
+        "const { EventEmitter } = require('events');"
+        "const child = new EventEmitter(); child.pid = 4242; child.exitCode = null; child.signalCode = null;"
+        "child.kill = () => calls.push(['kill']);"
+        f"const i = require({json.dumps(str(NODE_INSTALLER))});"
+        "i.trackChild(child, false);"
+        "i.terminateActiveChildren(1000).then(() => process.stdout.write(JSON.stringify(calls)));"
+    )
+    result = subprocess.run(
+        [node_bin(), "-e", script], env=_isolated_env(tmp_path), text=True, capture_output=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)[0] == ["taskkill", "/pid", "4242", "/T", "/F"]
+
+
 def test_node_install_rolls_back_when_terminated_during_bootstrap(tmp_path: Path) -> None:
     # Node emits no "exit" on a default SIGTERM/SIGINT; an interrupted update
     # must still restore the previous package and release the lock.
@@ -2045,18 +2071,17 @@ def test_node_install_rollback_never_deletes_the_only_working_backup(
     assert "was kept at" in result.stderr
 
 
-@pytest.mark.parametrize("same_port_with_path", [False, True])
+@pytest.mark.parametrize("path", ["/", "/prefix/"])
 def test_node_install_reports_the_custom_local_server_hooks_use(
-    tmp_path: Path, same_port_with_path: bool
+    tmp_path: Path, path: str
 ) -> None:
-    # A kept loopback URL other than the bundled endpoint (another port, or
-    # BACKEND_PORT with a path prefix) is what the hooks call, so install
-    # must report on that server, not on the bundled one.
+    # A kept loopback URL on another port is what the hooks call, so install
+    # must report on that server, not on the bundled one. The client
+    # urljoins /api/... onto it, so the probe targets the origin.
     package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
     port = _free_port()
-    path = "/prefix/" if same_port_with_path else "/"
     hooks_url = f"http://localhost:{port}{path}"
-    extra_env = {"BACKEND_PORT": str(port)} if same_port_with_path else {}
+    extra_env: dict[str, str] = {}
     runtime_env = tmp_path / ".claude-smart" / ".env"
     runtime_env.parent.mkdir()
     runtime_env.write_text(f'REFLEXIO_URL="{hooks_url}"\nREFLEXIO_API_KEY="k"\n')
@@ -2064,7 +2089,7 @@ def test_node_install_reports_the_custom_local_server_hooks_use(
 
     class Health(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
-            self.send_response(200 if self.path == f"{path}health" else 404)
+            self.send_response(200 if self.path == "/health" else 404)
             self.end_headers()
 
         def log_message(self, *_args: object) -> None:
