@@ -2131,6 +2131,51 @@ def test_interrupt_waits_for_the_whole_process_group(tmp_path: Path) -> None:
     assert (stable / "plugin" / "owner").read_text() == "older\n"
 
 
+def test_interrupt_during_a_claude_cli_step_stops_its_descendants(tmp_path: Path) -> None:
+    # `claude plugin marketplace add` may spawn descendants; an interrupt must
+    # stop the whole group before the rollback, not only the direct process.
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
+    (stable / "plugin").mkdir(parents=True)
+    (stable / "plugin" / "owner").write_text("older\n")
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "claude",
+        "#!/bin/sh\n"
+        'case "$*" in *"marketplace add"*) ;; *) exit 0 ;; esac\n'
+        "sh -c 'trap \"\" TERM; echo $$ > \"$HOME/claude-descendant.pid\"; while :; do sleep 0.1; done' &\n"
+        'while [ ! -s "$HOME/claude-descendant.pid" ]; do sleep 0.05; done\n'
+        "kill -TERM $PPID\n"
+        "wait\n",
+    )
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["CLAUDE_SMART_DASHBOARD_AUTOSTART"] = "0"
+    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY"):
+        env.pop(key, None)
+
+    try:
+        result = subprocess.run(
+            [node_bin(), str(package_root / "bin" / "claude-smart.js"), "install"],
+            env=env, text=True, capture_output=True, check=False, timeout=120,
+        )
+    finally:
+        pid_file = tmp_path / "claude-descendant.pid"
+        pid = int(pid_file.read_text()) if pid_file.exists() else None
+        alive = False
+        if pid:
+            try:
+                os.kill(pid, 0)
+                alive = True
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+    assert result.returncode == 143, (result.returncode, result.stderr)
+    assert pid and not alive
+    assert (stable / "plugin" / "owner").read_text() == "older\n"
+
+
 def test_commit_survives_an_undeletable_previous_package(tmp_path: Path) -> None:
     # The install succeeded; failing to delete the replaced copy must not turn
     # it into a failure that skips starting services.

@@ -162,10 +162,18 @@ function shouldCopyPath(src) {
 function runClaude(args, { spinnerLabel } = {}) {
   const useSpinner = Boolean(spinnerLabel) && process.stdout.isTTY && !process.env.CI;
   return new Promise((resolve) => {
+    // While a package install is uncommitted, run the step in its own
+    // process group (as runChecked does) so an interrupt can stop and await
+    // every descendant before the rollback. These steps are non-interactive;
+    // stdin is not passed through there, since a background group reading
+    // the terminal would be stopped.
+    const group = !isWindows() && heldPackageLocks.size > 0;
+    const stdin = group ? "ignore" : "inherit";
     const child = spawn("claude", args, {
-      stdio: useSpinner ? ["inherit", "pipe", "pipe"] : "inherit",
+      stdio: useSpinner ? [stdin, "pipe", "pipe"] : [stdin, "inherit", "inherit"],
+      detached: group,
     });
-    trackChild(child, false);
+    trackChild(child, group);
 
     if (useSpinner) {
       const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
