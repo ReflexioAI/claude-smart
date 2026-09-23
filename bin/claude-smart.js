@@ -1490,9 +1490,10 @@ function autostartDisabled(key) {
 function isBundledBackendUrl(url) {
   const port = (process.env.BACKEND_PORT || "").trim() || "8071";
   const value = String(url || "").trim();
-  return [`http://localhost:${port}`, `http://127.0.0.1:${port}`].some(
-    (base) => value === base || value === `${base}/`,
-  );
+  // The 8071 spellings are rewritten to BACKEND_PORT by
+  // claude_smart_derive_reflexio_url_from_backend_port (_lib.sh).
+  const bases = [port, "8071"].flatMap((p) => [`http://localhost:${p}`, `http://127.0.0.1:${p}`]);
+  return bases.some((base) => value === base || value === `${base}/`);
 }
 
 async function startAndReportServices(pluginRoot, host, setup) {

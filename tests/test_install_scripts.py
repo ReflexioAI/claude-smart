@@ -592,6 +592,47 @@ def test_backend_service_skips_local_start_for_remote_reflexio_url() -> None:
     assert "remote configured at $REFLEXIO_URL" in backend
 
 
+@pytest.mark.parametrize(
+    ("url", "custom"),
+    [
+        ("http://localhost:9000/", True),
+        ("http://localhost:8071/prefix/", True),
+        ("http://[::1]:8071/", True),
+        ("http://localhost:8071/", False),
+        ("http://127.0.0.1:8071", False),
+    ],
+)
+def test_backend_service_never_starts_the_bundled_backend_for_a_custom_local_server(
+    tmp_path: Path, url: str, custom: bool
+) -> None:
+    # SessionStart runs `backend-service.sh start` directly. For the user's
+    # own loopback server the hooks call that server, so the bundled backend
+    # must not be started there either (the installer already starts nothing).
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    runtime_env.parent.mkdir()
+    runtime_env.write_text(f'REFLEXIO_URL="{url}"\nREFLEXIO_API_KEY="k"\n')
+    env = {
+        "HOME": str(tmp_path),
+        "PATH": "/usr/bin:/bin",
+        "SHELL": "/bin/sh",
+        "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
+        # Never start a real backend from the bundled-endpoint rows.
+        "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
+    }
+    script = str(REPO_ROOT / "plugin" / "scripts" / "backend-service.sh")
+    start = subprocess.run(
+        ["/bin/bash", script, "start"], env=env, text=True, capture_output=True, check=False
+    )
+    status = subprocess.run(
+        ["/bin/bash", script, "status"], env=env, text=True, capture_output=True, check=False
+    )
+    assert start.returncode == 0, start.stderr
+    log = tmp_path / ".claude-smart" / "backend.log"
+    skipped = log.exists() and "is your own local Reflexio server" in log.read_text()
+    assert skipped is custom
+    assert ("custom local server configured" in status.stdout) is custom
+
+
 def test_smart_install_repairs_local_env_defaults() -> None:
     script = (REPO_ROOT / "plugin" / "scripts" / "smart-install.sh").read_text()
     lib = (REPO_ROOT / "plugin" / "scripts" / "_lib.sh").read_text()

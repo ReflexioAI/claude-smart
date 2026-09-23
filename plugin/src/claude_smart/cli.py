@@ -1092,9 +1092,12 @@ def _is_bundled_backend_url(url: str) -> bool:
     on BACKEND_PORT, no path); anything else is a server the user runs."""
     port = os.environ.get("BACKEND_PORT", "").strip() or "8071"
     value = url.strip()
+    # The 8071 spellings are rewritten to BACKEND_PORT by
+    # claude_smart_derive_reflexio_url_from_backend_port (_lib.sh).
     return any(
-        value in (base, f"{base}/")
-        for base in (f"http://localhost:{port}", f"http://127.0.0.1:{port}")
+        value in (f"http://{host}:{p}", f"http://{host}:{p}/")
+        for host in ("localhost", "127.0.0.1")
+        for p in (port, "8071")
     )
 
 
