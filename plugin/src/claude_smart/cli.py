@@ -294,15 +294,46 @@ def _plugin_root_is_broken() -> bool:
     return bool(text) and not has_runtime(Path(text))
 
 
-def _repair_plugin_root() -> None:
+def _repair_plugin_root(removed_host: str | None = None) -> None:
     """Keep ~/.reflexio/plugin-root usable after removing an integration.
 
     Mirrors ``repairPluginRoot`` in bin/claude-smart.js: the link is shared by
     every installed host's commands, so one left pointing at deleted files is
-    repointed at a remaining install, or removed when none is left.
+    repointed at a remaining install, or removed when none is left. A
+    CLAUDE_SMART_HOST naming ``removed_host`` then follows the active root.
     """
-    if not _plugin_root_is_broken():
+    if _plugin_root_is_broken():
+        _repoint_or_remove_plugin_root()
+    active = _active_plugin_root()
+    if removed_host is None or active is None or not _CLAUDE_SMART_ENV_PATH.is_file():
         return
+    current = None
+    for line in _CLAUDE_SMART_ENV_PATH.read_text().splitlines():
+        parsed = env_config.parse_env_line(line)
+        if parsed and parsed[0] == env_config.CLAUDE_SMART_HOST_ENV:
+            current = parsed[1]
+    if current == removed_host:
+        env_config.set_env_vars(
+            _CLAUDE_SMART_ENV_PATH,
+            {env_config.CLAUDE_SMART_HOST_ENV: _host_for_plugin_root(active)},
+        )
+
+
+def _host_for_plugin_root(root: Path) -> str:
+    real = root.resolve()
+
+    def under(directory: Path) -> bool:
+        base = directory.resolve()
+        return real == base or base in real.parents
+
+    if under(_OPENCODE_LOCAL_PACKAGE_DIR):
+        return _HOST_OPENCODE
+    if under(_CODEX_PLUGIN_CACHE_DIR) or under(_CODEX_LOCAL_MARKETPLACE_ROOT):
+        return _HOST_CODEX
+    return _HOST_CLAUDE_CODE
+
+
+def _repoint_or_remove_plugin_root() -> None:
     candidates = [
         _STATE_DIR / "claude-code" / "claude-smart" / "plugin",
         _OPENCODE_LOCAL_PACKAGE_DIR / "plugin",
@@ -902,7 +933,7 @@ def _cleanup_codex_install_state() -> bool:
     )
     shutil.rmtree(_CODEX_LOCAL_MARKETPLACE_ROOT, ignore_errors=True)
     shutil.rmtree(_CODEX_PLUGIN_CACHE_DIR, ignore_errors=True)
-    _repair_plugin_root()
+    _repair_plugin_root(_HOST_CODEX)
     try:
         _CODEX_PLUGIN_CACHE_DIR.parent.rmdir()
     except OSError:
@@ -1805,7 +1836,7 @@ def cmd_uninstall(_args: argparse.Namespace) -> int:
         sys.stderr.write(f"error: {' '.join(cmd)} failed (exit {exc.returncode})\n")
         return exc.returncode or 1
     # `claude plugin uninstall` can delete the directory plugin-root targets.
-    _repair_plugin_root()
+    _repair_plugin_root(_HOST_CLAUDE_CODE)
 
     sys.stdout.write(
         "\nclaude-smart uninstalled. Restart Claude Code to apply.\n"
@@ -1871,7 +1902,7 @@ def cmd_uninstall_opencode(args: argparse.Namespace) -> int:
         sys.stderr.write(f"error: {exc}\n")
         return 1
     shutil.rmtree(_OPENCODE_LOCAL_PACKAGE_DIR, ignore_errors=True)
-    _repair_plugin_root()
+    _repair_plugin_root(_HOST_OPENCODE)
     try:
         _OPENCODE_LOCAL_PACKAGE_DIR.parent.rmdir()
     except OSError:

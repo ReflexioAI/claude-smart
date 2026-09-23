@@ -39,7 +39,7 @@ const {
 const http = require("http");
 const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
-const { dirname, join, resolve } = require("path");
+const { dirname, join, resolve, sep } = require("path");
 const { fileURLToPath, pathToFileURL } = require("url");
 
 const PLUGIN_SPEC = "claude-smart@reflexioai";
@@ -917,16 +917,39 @@ function pluginRootIsBroken() {
 // ~/.reflexio/plugin-root is used by every installed host's commands, so a
 // link left pointing at deleted files is repointed at a remaining install,
 // or removed when none is left.
-function repairPluginRoot() {
-  if (!pluginRootIsBroken()) return;
-  const next = installedPluginRoots()[0];
-  if (next) {
-    forcePluginRoot(next);
-    process.stdout.write(`Repointed ${join(REFLEXIO_DIR, "plugin-root")} to ${next}.\n`);
-  } else {
-    rmSync(join(REFLEXIO_DIR, "plugin-root"), { force: true });
-    rmSync(join(REFLEXIO_DIR, "plugin-root.txt"), { force: true });
+function repairPluginRoot(removedHost = null) {
+  if (pluginRootIsBroken()) {
+    const next = installedPluginRoots()[0];
+    if (next) {
+      forcePluginRoot(next);
+      process.stdout.write(`Repointed ${join(REFLEXIO_DIR, "plugin-root")} to ${next}.\n`);
+    } else {
+      rmSync(join(REFLEXIO_DIR, "plugin-root"), { force: true });
+      rmSync(join(REFLEXIO_DIR, "plugin-root.txt"), { force: true });
+    }
   }
+  // CLAUDE_SMART_HOST picks the backend's extraction bridge, and hooks such
+  // as SessionStart read it from the file. If it names the host just
+  // removed, it now follows the runtime plugin-root points at.
+  const active = activePluginRoot();
+  if (!removedHost || !active || !existsSync(CLAUDE_SMART_ENV_PATH)) return;
+  if (readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) !== removedHost) return;
+  setEnvVars(CLAUDE_SMART_ENV_PATH, { [CLAUDE_SMART_HOST_ENV]: hostForPluginRoot(active) });
+}
+
+function hostForPluginRoot(root) {
+  const real = (path) => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return path;
+    }
+  };
+  const target = real(root);
+  const under = (dir) => target === real(dir) || target.startsWith(`${real(dir)}${sep}`);
+  if (under(OPENCODE_LOCAL_PACKAGE_DIR)) return HOST_OPENCODE;
+  if (under(CODEX_PLUGIN_CACHE_DIR) || under(CODEX_MARKETPLACE_DIR)) return HOST_CODEX;
+  return HOST_CLAUDE_CODE;
 }
 
 function forcePluginRoot(pluginRoot) {
@@ -1193,14 +1216,28 @@ function restartStoppedServices() {
 }
 
 function commitLocalPluginPackage(packageRoot) {
-  stoppedServices = null;
-  commitInstallState();
   const pending = pendingPreviousPackages.get(packageRoot);
   pendingPreviousPackages.delete(packageRoot);
-  if (pending && pending.backupPackage) {
-    rmSync(pending.backupPackage, { recursive: true, force: true });
+  // The install succeeded; failing to delete the old copy (e.g. a Windows
+  // file handle still open) must not turn it into a failure that leaves
+  // services stopped.
+  try {
+    if (pending && pending.backupPackage) {
+      rmSync(pending.backupPackage, { recursive: true, force: true });
+    }
+  } catch (err) {
+    process.stderr.write(
+      `warning: could not remove the previous package at ${pending.backupPackage}: ` +
+        `${err && err.message ? err.message : err}\n`,
+    );
   }
-  releasePackageInstallLock(packageRoot);
+  try {
+    releasePackageInstallLock(packageRoot);
+  } catch {
+    // A leftover lock dir is reclaimed as stale by the next install.
+  }
+  stoppedServices = null;
+  commitInstallState();
 }
 
 // A newly created package whose runtime is now prepared is worth keeping
@@ -1390,11 +1427,27 @@ function trackChild(child, group) {
   child.on("error", forget);
 }
 
+function processGroupAlive(pgid) {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err) {
+    return Boolean(err && err.code === "EPERM");
+  }
+}
+
 async function terminateActiveChildren(timeoutMs = 5000) {
   const children = [...activeChildren.entries()];
+  // A process group is waited on until it is empty, not just its leader: a
+  // descendant (uv, npm) that ignores SIGTERM must not outlive the rollback.
+  const alive = ([child, group]) =>
+    group && !isWindows()
+      ? processGroupAlive(child.pid)
+      : child.exitCode === null && child.signalCode === null;
   const signalAll = (signal) => {
-    for (const [child, group] of children) {
-      if (child.exitCode !== null || child.signalCode !== null) continue;
+    for (const entry of children) {
+      if (!alive(entry)) continue;
+      const [child, group] = entry;
       try {
         if (isWindows()) {
           // No process groups on Windows: taskkill /T ends the whole tree
@@ -1413,26 +1466,18 @@ async function terminateActiveChildren(timeoutMs = 5000) {
       }
     }
   };
-  const exited = () =>
-    Promise.all(
-      children.map(([child]) =>
-        child.exitCode !== null || child.signalCode !== null
-          ? null
-          : new Promise((resolve) => child.once("exit", resolve)),
-      ),
-    );
+  const waitAll = async (ms) => {
+    const deadline = Date.now() + ms;
+    while (children.some(alive) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return !children.some(alive);
+  };
   signalAll("SIGTERM");
-  const timedOut = await Promise.race([
-    exited().then(() => false),
-    new Promise((resolve) => setTimeout(() => resolve(true), timeoutMs).unref()),
-  ]);
-  if (timedOut) {
+  if (!(await waitAll(timeoutMs))) {
     signalAll("SIGKILL");
     // A killed process may still be exiting; do not roll back under it.
-    await Promise.race([
-      exited(),
-      new Promise((resolve) => setTimeout(resolve, timeoutMs).unref()),
-    ]);
+    await waitAll(timeoutMs);
   }
 }
 
@@ -2332,7 +2377,7 @@ function cleanupCodexInstallState() {
   });
   rmSync(CODEX_MARKETPLACE_DIR, { recursive: true, force: true });
   rmSync(CODEX_PLUGIN_CACHE_DIR, { recursive: true, force: true });
-  repairPluginRoot();
+  repairPluginRoot(HOST_CODEX);
   try {
     rmSync(dirname(CODEX_PLUGIN_CACHE_DIR), { recursive: false, force: true });
   } catch {
@@ -2700,7 +2745,7 @@ async function runUninstall(args) {
     );
   }
   rmSync(CLAUDE_CODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
-  repairPluginRoot();
+  repairPluginRoot(HOST_CLAUDE_CODE);
 
   process.stdout.write(
     [
@@ -3047,7 +3092,7 @@ async function runUninstallOpenCode(args) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
   }
   rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
-  repairPluginRoot();
+  repairPluginRoot(HOST_OPENCODE);
   try {
     rmdirSync(dirname(OPENCODE_LOCAL_PACKAGE_DIR));
   } catch {

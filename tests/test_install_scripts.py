@@ -1500,6 +1500,8 @@ def _run_fake_claude_code_install(
         text=True,
         capture_output=True,
         check=False,
+        # An orphaned child holding stdout would otherwise hang the suite.
+        timeout=120,
     )
 
 
@@ -2096,6 +2098,92 @@ def test_failed_codex_install_restores_the_previous_host(tmp_path: Path) -> None
     assert result.returncode != 0
     assert "codex" not in runtime_env.read_text()
     assert "opencode" in runtime_env.read_text()
+
+
+def test_interrupt_waits_for_the_whole_process_group(tmp_path: Path) -> None:
+    # The bootstrap leader dies on SIGTERM, but a descendant ignores it; the
+    # rollback must wait until the group is empty (SIGKILL after the grace).
+    smart_install = (
+        "#!/bin/sh\n"
+        "sh -c 'trap \"\" TERM; echo $$ > \"$HOME/descendant.pid\"; while :; do sleep 0.1; done' &\n"
+        # Signal only once the descendant is ignoring SIGTERM.
+        'while [ ! -s "$HOME/descendant.pid" ]; do sleep 0.05; done\n'
+        "kill -TERM $PPID\n"
+        "wait\n"
+    )
+    package_root = _fake_claude_code_package(tmp_path, smart_install)
+    stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
+    (stable / "plugin").mkdir(parents=True)
+    (stable / "plugin" / "owner").write_text("older\n")
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {})
+
+    assert result.returncode == 143, (result.returncode, result.stderr)
+    pid = int((tmp_path / "descendant.pid").read_text())
+    try:
+        os.kill(pid, 0)
+        alive = True
+    except ProcessLookupError:
+        alive = False
+    if alive:
+        os.kill(pid, 9)
+    assert not alive
+    assert (stable / "plugin" / "owner").read_text() == "older\n"
+
+
+def test_commit_survives_an_undeletable_previous_package(tmp_path: Path) -> None:
+    # The install succeeded; failing to delete the replaced copy must not turn
+    # it into a failure that skips starting services.
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
+    locked = stable / "plugin" / "locked"
+    locked.mkdir(parents=True)
+    (locked / "file").write_text("x\n")
+    locked.chmod(0o500)
+    try:
+        result = _run_fake_claude_code_install(tmp_path, package_root, {})
+    finally:
+        for path in stable.parent.rglob("locked"):
+            path.chmod(0o700)
+    assert result.returncode == 0, result.stderr
+    assert "could not remove the previous package" in result.stderr
+    assert "claude-smart installed and dependencies are prepared" in result.stdout
+
+
+def test_node_opencode_uninstall_hands_the_host_back_to_claude_code(tmp_path: Path) -> None:
+    # SessionStart reads CLAUDE_SMART_HOST from the file; after removing the
+    # OpenCode install it must name the remaining Claude Code runtime.
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    claude_root = tmp_path / ".claude-smart" / "claude-code" / "claude-smart" / "plugin"
+    opencode_root = tmp_path / ".claude-smart" / "opencode" / "claude-smart" / "plugin"
+    for root in (claude_root, opencode_root):
+        (root / "scripts").mkdir(parents=True)
+        _write_executable(root / "scripts" / "backend-service.sh", "#!/bin/sh\nexit 0\n")
+    link = tmp_path / ".reflexio" / "plugin-root"
+    link.parent.mkdir()
+    link.symlink_to(opencode_root, target_is_directory=True)
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    runtime_env.write_text("CLAUDE_SMART_HOST=opencode\n")
+    # OpenCode uninstall edits the project's config in cwd: keep it in tmp.
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "opencode.json").write_text('{"plugin": []}\n')
+    env = _isolated_env(tmp_path)
+
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "uninstall", "--host", "opencode"],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert link.resolve() == claude_root.resolve()
+    assert 'CLAUDE_SMART_HOST="claude-code"' in runtime_env.read_text()
 
 
 def test_windows_interrupt_ends_the_whole_child_tree(tmp_path: Path) -> None:

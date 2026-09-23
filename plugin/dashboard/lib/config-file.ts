@@ -143,8 +143,25 @@ export async function writeConfig(update: Partial<ClaudeSmartConfig>): Promise<v
   const seen = new Set<string>();
   const outLines: string[] = [];
 
+  // Clearing the API key means local mode, but the hooks and service scripts
+  // pick the mode from the URL: a remote URL left without a key would keep
+  // them remote with no credentials. Drop that URL so the result is local.
+  const current = new Map<string, string>();
   for (const line of lines) {
     const pair = parseLine(line);
+    if (pair) current.set(pair.key, pair.value);
+  }
+  const finalValue = (key: string): string =>
+    key in safeUpdate ? String(safeUpdate[key] ?? "") : (current.get(key) ?? "");
+  const dropUrl =
+    !finalValue("REFLEXIO_API_KEY").trim() && isRemoteReflexioUrl(finalValue("REFLEXIO_URL"));
+  if (dropUrl) {
+    delete safeUpdate.REFLEXIO_URL;
+  }
+
+  for (const line of lines) {
+    const pair = parseLine(line);
+    if (dropUrl && pair?.key === "REFLEXIO_URL") continue;
     if (!pair) {
       outLines.push(line);
       continue;
@@ -170,6 +187,12 @@ export async function writeConfig(update: Partial<ClaudeSmartConfig>): Promise<v
     encoding: "utf-8",
     mode: 0o600,
   });
+}
+
+/** Mirror of claude_smart_reflexio_url_is_remote in plugin/scripts/_lib.sh. */
+function isRemoteReflexioUrl(url: string): boolean {
+  if (!url) return false;
+  return !/^http:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(\/?|:.*)$/.test(url);
 }
 
 function formatValue(key: string, raw: unknown): string {

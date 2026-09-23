@@ -191,3 +191,22 @@ def test_dashboard_proxy_follows_the_backend_port_for_default_spellings(
     out = _run_config_module(tmp_path, script, {"BACKEND_PORT": "9123"})
     assert json.loads(out)["url"] == "http://localhost:7000/"
 
+
+def test_dashboard_clearing_the_key_drops_a_remote_url(tmp_path: Path) -> None:
+    # An empty key is local mode; a remote URL left behind would keep hooks
+    # and services remote with no credentials.
+    env_file = tmp_path / ".claude-smart" / ".env"
+    env_file.parent.mkdir()
+    env_file.write_text('REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="k"\n')
+    _run_config_module(
+        tmp_path,
+        'await m.writeConfig({ REFLEXIO_URL: "https://www.reflexio.ai/", REFLEXIO_API_KEY: "" });',
+        {},
+    )
+    text = env_file.read_text()
+    assert "REFLEXIO_URL" not in text
+    # A local URL is kept.
+    env_file.write_text('REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY="k"\n')
+    _run_config_module(tmp_path, 'await m.writeConfig({ REFLEXIO_API_KEY: "" });', {})
+    assert "REFLEXIO_URL=" in env_file.read_text()
+

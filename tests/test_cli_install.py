@@ -654,3 +654,31 @@ def test_python_repair_plugin_root_prefers_the_newest_codex_version(
 
     assert (reflexio / "plugin-root").resolve() == (codex_cache / "0.2.10").resolve()
 
+
+def test_python_repair_hands_the_host_to_the_remaining_runtime(
+    monkeypatch, tmp_path: Path
+) -> None:
+    state = tmp_path / ".claude-smart"
+    reflexio = tmp_path / ".reflexio"
+    codex_cache = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    env_path = state / ".env"
+    monkeypatch.setattr(cli, "_STATE_DIR", state)
+    monkeypatch.setattr(cli, "_REFLEXIO_DIR", reflexio)
+    monkeypatch.setattr(cli, "_OPENCODE_LOCAL_PACKAGE_DIR", state / "opencode" / "claude-smart")
+    monkeypatch.setattr(cli, "_CODEX_PLUGIN_CACHE_DIR", codex_cache)
+    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
+    claude_root = state / "claude-code" / "claude-smart" / "plugin"
+    codex_root = codex_cache / "0.2.50"
+    for root in (claude_root, codex_root):
+        (root / "scripts").mkdir(parents=True)
+        (root / "scripts" / "backend-service.sh").write_text("#!/bin/sh\n")
+    reflexio.mkdir()
+    (reflexio / "plugin-root").symlink_to(codex_root, target_is_directory=True)
+    env_path.write_text("CLAUDE_SMART_HOST=codex\n")
+
+    shutil.rmtree(codex_cache)
+    cli._repair_plugin_root(cli._HOST_CODEX)
+
+    assert (reflexio / "plugin-root").resolve() == claude_root.resolve()
+    assert 'CLAUDE_SMART_HOST="claude-code"' in env_path.read_text()
+
