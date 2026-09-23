@@ -2067,6 +2067,37 @@ def test_failed_install_removes_a_host_it_added(tmp_path: Path) -> None:
     assert "# mine" in text and 'REFLEXIO_API_KEY="k"' in text
 
 
+def test_failed_codex_install_restores_the_previous_host(tmp_path: Path) -> None:
+    # `install --host codex` writes CLAUDE_SMART_HOST=codex up front; if it
+    # fails before the Codex runtime is installed, the active install's host
+    # (and so its extraction bridge) must come back.
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "codex", "#!/bin/sh\nexit 3\n")
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    runtime_env.parent.mkdir()
+    runtime_env.write_text("CLAUDE_SMART_HOST=opencode\n")
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY"):
+        env.pop(key, None)
+
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "install", "--host", "codex"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "codex" not in runtime_env.read_text()
+    assert "opencode" in runtime_env.read_text()
+
+
 def test_windows_interrupt_ends_the_whole_child_tree(tmp_path: Path) -> None:
     # Windows has no process groups; stopping only the direct child would
     # orphan uv/npm grandchildren that keep writing after the rollback.

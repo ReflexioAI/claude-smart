@@ -174,3 +174,20 @@ def test_dashboard_save_does_not_turn_off_absent_local_providers(tmp_path: Path)
     text = env_file.read_text()
     assert "CLAUDE_SMART_USE_LOCAL_CLI=0" not in text
     assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" not in text
+
+
+def test_dashboard_proxy_follows_the_backend_port_for_default_spellings(
+    tmp_path: Path,
+) -> None:
+    # The hooks rewrite the default 8071 spellings to BACKEND_PORT; the
+    # dashboard must call the same port, but keep genuinely custom URLs.
+    env_file = tmp_path / ".claude-smart" / ".env"
+    env_file.parent.mkdir()
+    script = "process.stdout.write(JSON.stringify(await m.managedReflexioSettings()));"
+    env_file.write_text('REFLEXIO_URL="http://localhost:8071"\n')
+    out = _run_config_module(tmp_path, script, {"BACKEND_PORT": "9123"})
+    assert json.loads(out)["url"] == "http://localhost:9123/"
+    env_file.write_text('REFLEXIO_URL="http://localhost:7000/"\n')
+    out = _run_config_module(tmp_path, script, {"BACKEND_PORT": "9123"})
+    assert json.loads(out)["url"] == "http://localhost:7000/"
+

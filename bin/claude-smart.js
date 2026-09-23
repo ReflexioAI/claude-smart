@@ -1102,6 +1102,10 @@ function snapshotInstallState() {
   ensureRollbackOnExit();
 }
 
+function commitInstallState() {
+  installStateSnapshot = null;
+}
+
 function restoreInstallState() {
   const snapshot = installStateSnapshot;
   installStateSnapshot = null;
@@ -1190,7 +1194,7 @@ function restartStoppedServices() {
 
 function commitLocalPluginPackage(packageRoot) {
   stoppedServices = null;
-  installStateSnapshot = null;
+  commitInstallState();
   const pending = pendingPreviousPackages.get(packageRoot);
   pendingPreviousPackages.delete(packageRoot);
   if (pending && pending.backupPackage) {
@@ -2839,6 +2843,7 @@ async function runInstallCodex(args) {
     process.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n");
     process.exit(1);
   }
+  snapshotInstallState();
   const setup = configureReflexioSetup(HOST_CODEX);
   const readOnly = setup.readOnly;
 
@@ -2890,6 +2895,8 @@ async function runInstallCodex(args) {
     if (readOnly) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
+    // The Codex runtime is installed: its host and marker state stand.
+    commitInstallState();
     await startAndReportServices(cacheDir, HOST_CODEX, setup);
   } catch (err) {
     process.stderr.write(

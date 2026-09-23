@@ -105,7 +105,23 @@ export async function managedReflexioSettings(): Promise<{ url: string; apiKey: 
   }
   const pick = (key: string): string =>
     values.has(key) ? (values.get(key) ?? "") : (process.env[key] ?? "");
-  return { url: pick("REFLEXIO_URL"), apiKey: pick("REFLEXIO_API_KEY") };
+  return { url: deriveFromBackendPort(pick("REFLEXIO_URL")), apiKey: pick("REFLEXIO_API_KEY") };
+}
+
+/**
+ * Mirror of claude_smart_derive_reflexio_url_from_backend_port (_lib.sh): the
+ * 8071 spellings on localhost/127.0.0.1 mean the bundled backend, which runs
+ * on BACKEND_PORT. The hooks rewrite them the same way. (An empty URL stays
+ * empty: the proxy then uses its own default and sends no key.)
+ */
+function deriveFromBackendPort(url: string): string {
+  const defaults = new Set([
+    "http://localhost:8071",
+    "http://localhost:8071/",
+    "http://127.0.0.1:8071",
+    "http://127.0.0.1:8071/",
+  ]);
+  return defaults.has(url) ? defaultReflexioUrl() : url;
 }
 
 export async function writeConfig(update: Partial<ClaudeSmartConfig>): Promise<void> {
