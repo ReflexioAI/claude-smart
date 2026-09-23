@@ -242,7 +242,7 @@ normalize_scope() {
 # machine (a local or dev Reflexio), never the managed service.
 is_local_url() {
   case "$1" in
-    http://localhost|http://localhost/|http://localhost:*|http://127.0.0.1|http://127.0.0.1/|http://127.0.0.1:*|http://0.0.0.0|http://0.0.0.0/|http://0.0.0.0:*|http://\[::1\]*|https://localhost|https://localhost/*|https://localhost:*|https://127.0.0.1|https://127.0.0.1/*|https://127.0.0.1:*|https://0.0.0.0*|https://\[::1\]*)
+    http://localhost|http://localhost/|http://localhost:*|http://127.0.0.1|http://127.0.0.1/|http://127.0.0.1:*|http://0.0.0.0|http://0.0.0.0/|http://0.0.0.0:*|http://\[::1\]|http://\[::1\]/*|http://\[::1\]:*|https://localhost|https://localhost/*|https://localhost:*|https://127.0.0.1|https://127.0.0.1/*|https://127.0.0.1:*|https://0.0.0.0|https://0.0.0.0/*|https://0.0.0.0:*|https://\[::1\]|https://\[::1\]/*|https://\[::1\]:*)
       return 0
       ;;
     *)

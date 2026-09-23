@@ -132,6 +132,9 @@ on_interrupt() {
 trap cleanup EXIT
 trap on_interrupt INT TERM
 
+# dashboard-service.sh records its cwd as the project the dashboard's
+# Configure page edits, so the post-build start below runs from here.
+CALLER_CWD="$PWD"
 cd "$DASHBOARD_DIR"
 
 # Cheap freshness check: skip reinstall when node_modules is newer than
@@ -192,7 +195,7 @@ if [ "$needs_build" = "1" ]; then
   # dashboard now, so it serves without waiting for another session start.
   # dashboard-service.sh honors CLAUDE_SMART_DASHBOARD_AUTOSTART=0 and never
   # replaces a foreign listener.
-  bash "$HERE/dashboard-service.sh" start >/dev/null 2>&1 || true
+  (cd "$CALLER_CWD" 2>/dev/null || cd /; bash "$HERE/dashboard-service.sh" start) >/dev/null 2>&1 || true
 else
   claude_smart_clear_dashboard_unavailable
   log "dashboard build: .next is up-to-date; skipping"

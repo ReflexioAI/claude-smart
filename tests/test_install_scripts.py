@@ -1572,6 +1572,30 @@ def test_setup_script_keyed_loopback_skips_legacy_prefill(tmp_path: Path) -> Non
     assert "rflx-legacy" not in runtime_env.read_text()
 
 
+@pytest.mark.parametrize(
+    ("url", "local"),
+    [
+        ("https://0.0.0.0.example.com/", False),
+        ("https://[::1]example.com/", False),
+        ("http://[::1]example.com/", False),
+        ("https://0.0.0.0:8081/", True),
+        ("https://[::1]:8081/", True),
+        ("http://[::1]/", True),
+    ],
+)
+def test_setup_is_local_url_matches_only_exact_loopback_hosts(url: str, local: bool) -> None:
+    # A remote host that merely starts with a loopback literal is managed.
+    script = SETUP_CLAUDE_SMART.read_text()
+    start = script.index("is_local_url() {")
+    end = script.index("\n}\n", start) + 3
+    result = subprocess.run(
+        ["/bin/bash", "-c", script[start:end] + f'is_local_url "{url}"'],
+        capture_output=True,
+        check=False,
+    )
+    assert (result.returncode == 0) is local
+
+
 def test_setup_script_defaults_to_local_for_loopback_url(tmp_path: Path) -> None:
     # The dashboard's Configure page saves its displayed default
     # REFLEXIO_URL=http://localhost:8071/; that is still a local setup.

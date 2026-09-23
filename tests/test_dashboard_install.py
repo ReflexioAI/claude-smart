@@ -45,8 +45,12 @@ def test_dashboard_build_starts_the_dashboard_when_a_fresh_build_completes(
     for name in ("dashboard-build.sh", "_lib.sh"):
         shutil.copy2(REPO_ROOT / "plugin" / "scripts" / name, scripts / name)
     (scripts / "dashboard-service.sh").write_text(
-        '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$HOME/dashboard-service.log"\n'
+        '#!/bin/sh\nprintf \'%s %s\\n\' "$*" "$PWD" >> "$HOME/dashboard-service.log"\n'
     )
+    # The start must run from the caller's project: dashboard-service.sh
+    # records its cwd as the workspace the Configure page edits.
+    project = tmp_path / "project"
+    project.mkdir()
     dashboard = plugin / "dashboard"
     dashboard.mkdir()
     (dashboard / "package.json").write_text("{}\n")
@@ -66,6 +70,7 @@ def test_dashboard_build_starts_the_dashboard_when_a_fresh_build_completes(
 
     result = subprocess.run(
         ["/bin/bash", str(scripts / "dashboard-build.sh")],
+        cwd=project,
         env=env,
         text=True,
         capture_output=True,
@@ -76,4 +81,5 @@ def test_dashboard_build_starts_the_dashboard_when_a_fresh_build_completes(
     assert result.returncode == 0, result.stderr
     assert (dashboard / ".next").is_dir()
     log = tmp_path / "dashboard-service.log"
-    assert log.is_file() and log.read_text().splitlines() == ["start"]
+    assert log.is_file()
+    assert log.read_text().splitlines() == [f"start {project.resolve()}"]
