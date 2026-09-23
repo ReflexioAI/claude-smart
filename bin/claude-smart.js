@@ -167,7 +167,7 @@ function runClaude(args, { spinnerLabel } = {}) {
     // every descendant before the rollback. These steps are non-interactive;
     // stdin is not passed through there, since a background group reading
     // the terminal would be stopped.
-    const group = !isWindows() && heldPackageLocks.size > 0;
+    const group = !isWindows() && rollbackArmed();
     const stdin = group ? "ignore" : "inherit";
     const child = spawn("claude", args, {
       stdio: useSpinner ? [stdin, "pipe", "pipe"] : [stdin, "inherit", "inherit"],
@@ -245,11 +245,15 @@ function hasCli(name) {
 
 function runCodex(args) {
   return new Promise((resolve) => {
+    // Grouped while an install can still roll back (see runChecked).
+    const group = !isWindows() && rollbackArmed();
     const child = spawn("codex", args, {
-      stdio: "inherit",
+      stdio: [group ? "ignore" : "inherit", "inherit", "inherit"],
       timeout: CODEX_CLI_TIMEOUT_MS,
       killSignal: "SIGTERM",
+      detached: group,
     });
+    trackChild(child, group);
     let timedOut = false;
     child.on("exit", (code, signal) => {
       if (signal === "SIGTERM" && code === null) {
@@ -260,10 +264,10 @@ function runCodex(args) {
         resolve(124);
         return;
       }
-      if (timedOut) return;
+      if (timedOut || terminatingOnSignal) return;
       resolve(typeof code === "number" ? code : 1);
     });
-    child.on("error", () => resolve(1));
+    child.on("error", () => terminatingOnSignal || resolve(1));
   });
 }
 
@@ -470,6 +474,10 @@ function migrateLegacyManagedEnvOnce() {
 function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
   migrateLegacyManagedEnv();
   const fileEnv = readEnvFile(CLAUDE_SMART_ENV_PATH);
+  // The backend picks its extraction bridge from CLAUDE_SMART_HOST at start;
+  // a change means a running backend must be restarted to follow it.
+  const hostChanged =
+    fileEnv.has(CLAUDE_SMART_HOST_ENV) && fileEnv.get(CLAUDE_SMART_HOST_ENV) !== installHost;
   if (fileEnv.has(REFLEXIO_USER_ID_ENV)) {
     process.env[REFLEXIO_USER_ID_ENV] = fileEnv.get(REFLEXIO_USER_ID_ENV);
   }
@@ -553,7 +561,7 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
   const readOnly = ["1", "true", "yes", "on"].includes(
     String(fileEnv.get(CLAUDE_SMART_READ_ONLY_ENV) || "").trim().toLowerCase(),
   );
-  return { readOnly, managed, url };
+  return { readOnly, managed, url, hostChanged };
 }
 
 function configureReflexioSetup(installHost = DEFAULT_CLAUDE_SMART_HOST) {
@@ -1129,8 +1137,16 @@ function snapshotInstallState() {
   installStateSnapshot = {
     failureMarker: read(INSTALL_FAILURE_MARKER),
     host: readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) ?? null,
+    // Bootstraps repoint the shared plugin-root before they finish.
+    pluginRoot: activePluginRoot(),
   };
   ensureRollbackOnExit();
+}
+
+// True while an install can still roll back: children then run in their own
+// process group so an interrupt can stop the whole tree first.
+function rollbackArmed() {
+  return heldPackageLocks.size > 0 || installStateSnapshot !== null;
 }
 
 function commitInstallState() {
@@ -1142,6 +1158,9 @@ function restoreInstallState() {
   installStateSnapshot = null;
   if (!snapshot) return;
   try {
+    if (snapshot.pluginRoot && existsSync(join(snapshot.pluginRoot, "scripts", "backend-service.sh"))) {
+      forcePluginRoot(snapshot.pluginRoot);
+    }
     if (snapshot.failureMarker === null) rmSync(INSTALL_FAILURE_MARKER, { force: true });
     else writeFileSync(INSTALL_FAILURE_MARKER, snapshot.failureMarker);
     if (snapshot.host !== null) {
@@ -1208,9 +1227,31 @@ function rollbackLocalPluginPackages() {
 // so a failed update does not leave a working setup offline.
 let stoppedServices = null;
 
+function pluginServiceStatus(root, scriptName) {
+  const script = join(root, "scripts", scriptName);
+  const bash = resolveUsableBash();
+  if (!existsSync(script) || !bash) return "";
+  const result = spawnSync(bash, [script, "status"], {
+    cwd: root,
+    env: runtimeEnv(),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+    timeout: PLUGIN_SERVICE_TIMEOUT_MS,
+  });
+  return String(result.stdout || "").trim().split(/\r?\n/).pop() || "";
+}
+
 function stopServicesForInstall(root, host) {
+  // Only what was actually running is restarted if the install fails.
+  const running = (scriptName) => pluginServiceStatus(root, scriptName).startsWith("running on");
+  stoppedServices = {
+    root,
+    host,
+    backend: running("backend-service.sh"),
+    dashboard: running("dashboard-service.sh"),
+  };
   stopClaudeSmartServices(root);
-  stoppedServices = { root, host };
   ensureRollbackOnExit();
 }
 
@@ -1218,8 +1259,9 @@ function restartStoppedServices() {
   const stopped = stoppedServices;
   stoppedServices = null;
   if (!stopped || !existsSync(join(stopped.root, "scripts", "backend-service.sh"))) return;
-  startBackendService(stopped.root, stopped.host);
-  runPluginService(stopped.root, "dashboard-service.sh", "start");
+  if (!stopped.backend && !stopped.dashboard) return;
+  if (stopped.backend) startBackendService(stopped.root, stopped.host);
+  if (stopped.dashboard) runPluginService(stopped.root, "dashboard-service.sh", "start");
   process.stderr.write(`Restarted claude-smart services from ${stopped.root}.\n`);
 }
 
@@ -1405,7 +1447,7 @@ function runChecked(command, args, options = {}) {
   // While a package install is uncommitted, run children in their own
   // process group so an interrupt can stop the whole tree (uv, npm, ...)
   // before rolling back; they are non-interactive there.
-  const group = !isWindows() && heldPackageLocks.size > 0;
+  const group = !isWindows() && rollbackArmed();
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -1652,6 +1694,11 @@ async function startAndReportServices(pluginRoot, host, setup) {
   } else if (autostartDisabled("CLAUDE_SMART_BACKEND_AUTOSTART")) {
     process.stdout.write("Backend autostart is disabled (CLAUDE_SMART_BACKEND_AUTOSTART=0).\n");
   } else {
+    if (setup.hostChanged) {
+      // backend-service.sh start keeps any compatible running backend, which
+      // would keep the previous host's extraction bridge.
+      runPluginService(pluginRoot, "backend-service.sh", "stop");
+    }
     startBackendService(pluginRoot, host);
     const url = localBackendUrl();
     if (await waitForHttp(`${url}health`, 5, ({ status }) => status === 200)) {
@@ -2834,9 +2881,7 @@ async function runInstall(args, options = {}) {
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
     markLocalPluginPackagePrepared(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
   } catch (err) {
-    if (previousRoot && existsSync(join(previousRoot, "scripts", "backend-service.sh"))) {
-      forcePluginRoot(previousRoot);
-    }
+    // The exit rollback restores the previous plugin-root (install snapshot).
     process.stderr.write(
       `error: claude-smart dependency bootstrap failed: ${err && err.message ? err.message : err}\n`,
     );

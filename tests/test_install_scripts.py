@@ -1975,6 +1975,8 @@ def test_node_setup_passes_the_caller_workspace_to_nested_installs(tmp_path: Pat
         ("9000", "http://127.0.0.1:9000/x/", True),
         ("9000", "http://localhost:8071", True),
         ("9000", "http://localhost:8071/x/", False),
+        ("8071", "http://localhost:8071#dev", True),
+        ("8071", "http://localhost:8071/?q=1#dev", True),
     ],
 )
 def test_bundled_endpoint_rule_agrees_across_node_python_and_shell(
@@ -2036,7 +2038,8 @@ def test_failed_reinstall_restores_marker_and_host(tmp_path: Path) -> None:
     old_scripts.mkdir(parents=True)
     _write_executable(
         old_scripts / "backend-service.sh",
-        '#!/bin/sh\necho "$1 $CLAUDE_SMART_HOST" >> "$HOME/old-backend.log"\n',
+        '#!/bin/sh\n[ "$1" = status ] && { echo "running on http://localhost:1"; exit 0; }\n'
+        'echo "$1 $CLAUDE_SMART_HOST" >> "$HOME/old-backend.log"\n',
     )
     link = tmp_path / ".reflexio" / "plugin-root"
     link.parent.mkdir()
@@ -2176,6 +2179,120 @@ def test_interrupt_during_a_claude_cli_step_stops_its_descendants(tmp_path: Path
     assert (stable / "plugin" / "owner").read_text() == "older\n"
 
 
+def test_codex_hook_rewrites_default_url_spellings_to_the_backend_port() -> None:
+    # Same rewrite as _lib.sh's derive: the saved 8071 default means the
+    # bundled backend, which runs on BACKEND_PORT.
+    source = CODEX_HOOK.read_text()
+    start = source.index("const DEFAULT_URL_SPELLINGS")
+    end = source.index("\n}\n", source.index("function readBackendUrl()")) + 3
+    script = (
+        "const DEFAULT_BACKEND_PORT = 9123;\n"
+        + source[start:end]
+        + "\nconst out = [];"
+        "for (const url of ['http://localhost:8071', 'http://127.0.0.1:8071/', 'http://localhost:7000/', '']) {"
+        "  process.env.REFLEXIO_URL = url; out.push(readBackendUrl()); }"
+        "process.stdout.write(JSON.stringify(out));"
+    )
+    result = subprocess.run([node_bin(), "-e", script], text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [
+        "http://localhost:9123/",
+        "http://localhost:9123/",
+        "http://localhost:7000/",
+        "http://localhost:9123/",
+    ]
+
+
+def test_failed_install_restarts_only_services_that_were_running(tmp_path: Path) -> None:
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 7\n")
+    stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
+    old_scripts = stable / "plugin" / "scripts"
+    old_scripts.mkdir(parents=True)
+    # The backend was stopped by the user; the dashboard was running.
+    _write_executable(
+        old_scripts / "backend-service.sh",
+        '#!/bin/sh\n[ "$1" = status ] && { echo "not running"; exit 0; }\n'
+        'echo "backend $1" >> "$HOME/old-services.log"\n',
+    )
+    _write_executable(
+        old_scripts / "dashboard-service.sh",
+        '#!/bin/sh\n[ "$1" = status ] && { echo "running on http://localhost:3001"; exit 0; }\n'
+        'echo "dashboard $1" >> "$HOME/old-services.log"\n',
+    )
+    link = tmp_path / ".reflexio" / "plugin-root"
+    link.parent.mkdir()
+    link.symlink_to(stable / "plugin", target_is_directory=True)
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {})
+
+    assert result.returncode != 0
+    log = (tmp_path / "old-services.log").read_text().splitlines()
+    assert "dashboard start" in log
+    assert "backend start" not in log
+
+
+@pytest.mark.parametrize("previous_host", ["codex", "claude-code"])
+def test_install_restarts_a_running_backend_when_the_host_changes(
+    tmp_path: Path, previous_host: str
+) -> None:
+    # backend-service.sh start keeps any compatible running backend, which
+    # would keep the previous host's extraction bridge.
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    runtime_env.parent.mkdir()
+    runtime_env.write_text(f"CLAUDE_SMART_HOST={previous_host}\n")
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {"BACKEND_PORT": str(_free_port())})
+
+    assert result.returncode == 0, result.stderr
+    log = (tmp_path / "backend-service.log").read_text().splitlines()
+    assert log == (["stop", "start"] if previous_host != "claude-code" else ["start"])
+
+
+def test_interrupt_during_a_codex_cli_step_stops_its_descendants(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "codex",
+        "#!/bin/sh\n"
+        'case "$*" in *"marketplace add"*) ;; *) exit 0 ;; esac\n'
+        "sh -c 'trap \"\" TERM; echo $$ > \"$HOME/codex-descendant.pid\"; while :; do sleep 0.1; done' &\n"
+        'while [ ! -s "$HOME/codex-descendant.pid" ]; do sleep 0.05; done\n'
+        "kill -TERM $PPID\n"
+        "wait\n",
+    )
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    runtime_env.parent.mkdir()
+    runtime_env.write_text("CLAUDE_SMART_HOST=opencode\n")
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY"):
+        env.pop(key, None)
+    pid = None
+    alive = False
+    try:
+        result = subprocess.run(
+            [node, str(NODE_INSTALLER), "install", "--host", "codex"],
+            env=env, text=True, capture_output=True, check=False, timeout=120,
+        )
+    finally:
+        pid_file = tmp_path / "codex-descendant.pid"
+        if pid_file.exists():
+            pid = int(pid_file.read_text())
+            try:
+                os.kill(pid, 0)
+                alive = True
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+    assert result.returncode == 143, (result.returncode, result.stderr)
+    assert pid and not alive
+    assert "opencode" in runtime_env.read_text()
+
+
 def test_commit_survives_an_undeletable_previous_package(tmp_path: Path) -> None:
     # The install succeeded; failing to delete the replaced copy must not turn
     # it into a failure that skips starting services.
@@ -2294,7 +2411,8 @@ def test_node_failed_install_restarts_the_services_it_stopped(tmp_path: Path) ->
     for name in ("backend-service.sh", "dashboard-service.sh"):
         _write_executable(
             old_scripts / name,
-            f'#!/bin/sh\necho "{name} $1" >> "$HOME/old-services.log"\n',
+            '#!/bin/sh\n[ "$1" = status ] && { echo "running on http://localhost:1"; exit 0; }\n'
+            f'echo "{name} $1" >> "$HOME/old-services.log"\n',
         )
     link = tmp_path / ".reflexio" / "plugin-root"
     link.parent.mkdir()

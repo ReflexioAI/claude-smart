@@ -285,8 +285,19 @@ function codexCompatPath(root) {
   return path.join(root, "scripts", filename);
 }
 
+// Same rewrite as claude_smart_derive_reflexio_url_from_backend_port in
+// _lib.sh: the default 8071 spellings mean the bundled backend, which runs on
+// BACKEND_PORT.
+const DEFAULT_URL_SPELLINGS = new Set([
+  "http://localhost:8071",
+  "http://localhost:8071/",
+  "http://127.0.0.1:8071",
+  "http://127.0.0.1:8071/",
+]);
+
 function readBackendUrl() {
-  if (process.env.REFLEXIO_URL) return process.env.REFLEXIO_URL;
+  const url = process.env.REFLEXIO_URL || "";
+  if (url && !DEFAULT_URL_SPELLINGS.has(url)) return url;
   return `http://localhost:${DEFAULT_BACKEND_PORT}/`;
 }
 

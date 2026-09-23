@@ -165,6 +165,7 @@ claude_smart_reflexio_url_is_custom_local() {
   hostport="${url#http://}"
   hostport="${hostport%%/*}"
   hostport="${hostport%%\?*}"
+  hostport="${hostport%%#*}"
   case "$hostport" in
     *:*) ;;
     *) hostport="$hostport:80" ;;
