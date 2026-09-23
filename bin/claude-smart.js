@@ -2485,9 +2485,35 @@ async function runInstall(args, options = {}) {
     );
     process.exit(1);
   }
-  // Re-adding the marketplace with a new path re-points an existing
-  // "reflexioai" entry (verified on Claude Code 2.1.280), so installs that
-  // registered the npx dir move to the stable copy here.
+  // Prepare the copy BEFORE registering it: re-adding the marketplace with
+  // a new path re-points an existing "reflexioai" entry (verified on Claude
+  // Code 2.1.280), and on a first migration from the npx dir there is no
+  // previous stable copy to roll back to. So Claude Code is only moved once
+  // the runtime it will load is ready; a failed bootstrap leaves the old
+  // registration (and ~/.reflexio/plugin-root) as they were.
+  let pluginRoot;
+  try {
+    // Claude Code runs a local-directory marketplace plugin in place, so the
+    // copy's plugin dir is the one runtime root to bootstrap and report.
+    pluginRoot = await bootstrapClaudeCodeInstall(join(source, "plugin"));
+    restorePublishHooksFromSource(pluginRoot);
+    if (readOnly && prunePublishHooksForReadOnly(pluginRoot)) {
+      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
+    }
+    process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
+  } catch (err) {
+    if (previousRoot && existsSync(join(previousRoot, "scripts", "backend-service.sh"))) {
+      forcePluginRoot(previousRoot);
+    }
+    process.stderr.write(
+      `error: claude-smart dependency bootstrap failed: ${err && err.message ? err.message : err}\n`,
+    );
+    process.stderr.write(
+      "Claude Code was left on its previous claude-smart registration. Fix the issue above, " +
+        "then run `npx claude-smart install` again.\n",
+    );
+    process.exit(1);
+  }
 
   const steps = [
     { args: ["plugin", "marketplace", "add", source], label: "Adding marketplace…" },
@@ -2518,26 +2544,8 @@ async function runInstall(args, options = {}) {
     }
   }
 
-  try {
-    // Claude Code runs a local-directory marketplace plugin in place, so the
-    // copy's plugin dir is the one runtime root to bootstrap and report.
-    const pluginRoot = await bootstrapClaudeCodeInstall(join(source, "plugin"));
-    restorePublishHooksFromSource(pluginRoot);
-    if (readOnly && prunePublishHooksForReadOnly(pluginRoot)) {
-      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
-    }
-    process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
-    commitLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
-    await startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup);
-  } catch (err) {
-    process.stderr.write(
-      `error: claude-smart installed, but dependency bootstrap failed: ${err && err.message ? err.message : err}\n`,
-    );
-    process.stderr.write(
-      "Fix the issue above, then run /claude-smart:restart or restart Claude Code to retry.\n",
-    );
-    process.exit(1);
-  }
+  commitLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
+  await startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup);
 
   process.stdout.write(
     [

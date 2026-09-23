@@ -1638,6 +1638,31 @@ def test_node_install_keeps_previous_stable_copy_until_install_succeeds(
     assert sorted(p.name for p in stable.parent.iterdir()) == ["claude-smart"]
 
 
+def test_node_first_migration_keeps_old_registration_when_bootstrap_fails(
+    tmp_path: Path,
+) -> None:
+    # Upgrading from a release that registered the npx dir: there is no
+    # stable copy to roll back to, so Claude Code must not be repointed at
+    # the new copy until its runtime is prepared.
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 7\n")
+    old_root = tmp_path / "npx-old" / "plugin"
+    (old_root / "scripts").mkdir(parents=True)
+    _write_executable(old_root / "scripts" / "backend-service.sh", "#!/bin/sh\nexit 0\n")
+    link = tmp_path / ".reflexio" / "plugin-root"
+    link.parent.mkdir()
+    link.symlink_to(old_root, target_is_directory=True)
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {})
+
+    assert result.returncode != 0
+    claude_log = tmp_path / "claude.log"
+    calls = claude_log.read_text() if claude_log.exists() else ""
+    assert "marketplace add" not in calls
+    assert "plugin install" not in calls
+    assert link.resolve() == old_root.resolve()
+    assert "previous claude-smart registration" in result.stderr
+
+
 def test_node_install_rollback_leaves_a_concurrent_install_alone(tmp_path: Path) -> None:
     # The package lock covers only the copy. Here the bootstrap stands in for
     # a concurrent install that replaces the stable copy and then this
