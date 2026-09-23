@@ -293,7 +293,10 @@ def _release_plugin_root(removed_dir: Path) -> None:
         _OPENCODE_LOCAL_PACKAGE_DIR / "plugin",
     ]
     if _CODEX_PLUGIN_CACHE_DIR.is_dir():
-        candidates += sorted(_CODEX_PLUGIN_CACHE_DIR.iterdir(), reverse=True)
+        # Newest version first (0.2.10 before 0.2.9), as elsewhere.
+        candidates += sorted(
+            _CODEX_PLUGIN_CACHE_DIR.iterdir(), key=_installed_plugin_sort_key, reverse=True
+        )
     for root in candidates:
         real = root.resolve()
         if (root / "scripts" / "backend-service.sh").is_file() and not (

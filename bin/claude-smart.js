@@ -33,6 +33,7 @@ const {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } = require("fs");
 const http = require("http");
@@ -875,9 +876,10 @@ function installedPluginRoots() {
     join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"),
   ];
   try {
-    for (const version of readdirSync(CODEX_PLUGIN_CACHE_DIR).sort().reverse()) {
-      roots.push(join(CODEX_PLUGIN_CACHE_DIR, version));
-    }
+    const versions = readdirSync(CODEX_PLUGIN_CACHE_DIR).map((name) => join(CODEX_PLUGIN_CACHE_DIR, name));
+    // Same order as findCodexPluginRoot: newest version first, not lexical.
+    versions.sort((a, b) => compareSemverLikePathNames(b, a));
+    roots.push(...versions);
   } catch {
     // No Codex install.
   }
@@ -979,7 +981,7 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function withPackageInstallLock(packageRoot, label, fn) {
+function acquirePackageInstallLock(packageRoot, label) {
   const lockDir = join(dirname(packageRoot), ".install.lock");
   mkdirSync(dirname(packageRoot), { recursive: true });
   const deadline = Date.now() + OPENCODE_PACKAGE_LOCK_TIMEOUT_MS;
@@ -1003,11 +1005,38 @@ function withPackageInstallLock(packageRoot, label, fn) {
       sleepSync(100);
     }
   }
-  try {
-    return fn();
-  } finally {
-    rmSync(lockDir, { recursive: true, force: true });
+  return lockDir;
+}
+
+// Locks held from the package copy until the install commits or rolls back,
+// so a concurrent install of the same host waits instead of stacking its
+// backup on top of an uncommitted package. The lock's mtime is refreshed
+// while held, so a long dependency bootstrap is never mistaken for stale.
+const heldPackageLocks = new Map();
+
+function holdPackageInstallLock(packageRoot, label) {
+  const lockDir = acquirePackageInstallLock(packageRoot, label);
+  const timer = setInterval(() => {
+    try {
+      const now = new Date();
+      utimesSync(lockDir, now, now);
+    } catch {
+      // Lock dir gone; nothing to refresh.
+    }
+  }, 30_000);
+  timer.unref();
+  if (heldPackageLocks.size === 0 && pendingPreviousPackages.size === 0) {
+    process.once("exit", rollbackLocalPluginPackages);
   }
+  heldPackageLocks.set(packageRoot, { lockDir, timer });
+}
+
+function releasePackageInstallLock(packageRoot) {
+  const held = heldPackageLocks.get(packageRoot);
+  if (!held) return;
+  heldPackageLocks.delete(packageRoot);
+  clearInterval(held.timer);
+  rmSync(held.lockDir, { recursive: true, force: true });
 }
 
 function uniquePackagePath(packageRoot, prefix) {
@@ -1021,10 +1050,11 @@ function uniquePackagePath(packageRoot, prefix) {
 // aside until the install that replaced it has succeeded, so a failed update
 // or reinstall puts the working runtime back instead of leaving the host
 // pointed at an unprepared copy. Keyed by package root; the value holds the
-// backup path and the inode of the package this process installed, so a
-// rollback never removes a package that a concurrent install put there
-// after this one (the package lock covers only the copy itself). Any exit
-// before commitLocalPluginPackage rolls back.
+// backup path and the inode of the package this process installed. The
+// package lock is held until commit or rollback, so no concurrent install
+// can replace the package meanwhile; the inode check is a last guard that
+// never deletes a backup. Any exit before commitLocalPluginPackage rolls
+// back.
 const pendingPreviousPackages = new Map();
 
 function rollbackLocalPluginPackages() {
@@ -1032,9 +1062,12 @@ function rollbackLocalPluginPackages() {
     pendingPreviousPackages.delete(packageRoot);
     try {
       if (!pathEntryExists(packageRoot) || lstatSync(packageRoot).ino !== installedIno) {
-        // Another install replaced this package meanwhile; it owns the
-        // directory now, and this backup is older than what it holds.
-        rmSync(backupPackage, { recursive: true, force: true });
+        // Someone replaced this package despite the lock. Leave both alone;
+        // the backup may be the only copy of a working runtime.
+        process.stderr.write(
+          `warning: ${packageRoot} changed during this install; the previous package ` +
+            `was kept at ${backupPackage}.\n`,
+        );
         continue;
       }
       rmSync(packageRoot, { recursive: true, force: true });
@@ -1049,13 +1082,14 @@ function rollbackLocalPluginPackages() {
       );
     }
   }
+  for (const packageRoot of [...heldPackageLocks.keys()]) releasePackageInstallLock(packageRoot);
 }
 
 function commitLocalPluginPackage(packageRoot) {
   const pending = pendingPreviousPackages.get(packageRoot);
-  if (!pending) return;
   pendingPreviousPackages.delete(packageRoot);
-  rmSync(pending.backupPackage, { recursive: true, force: true });
+  if (pending) rmSync(pending.backupPackage, { recursive: true, force: true });
+  releasePackageInstallLock(packageRoot);
 }
 
 function replaceLocalPluginPackage(stagedPackage, packageRoot) {
@@ -1074,7 +1108,9 @@ function replaceLocalPluginPackage(stagedPackage, packageRoot) {
     throw err;
   }
   if (backupCreated) {
-    if (pendingPreviousPackages.size === 0) process.once("exit", rollbackLocalPluginPackages);
+    if (pendingPreviousPackages.size === 0 && heldPackageLocks.size === 0) {
+      process.once("exit", rollbackLocalPluginPackages);
+    }
     pendingPreviousPackages.set(packageRoot, {
       backupPackage,
       installedIno: lstatSync(packageRoot).ino,
@@ -1089,24 +1125,30 @@ function installLocalPluginPackage(packageRoot, label) {
     verifyLocalPluginPackage(packageRoot, label);
     return packageRoot;
   }
-  return withPackageInstallLock(packageRoot, label, () => {
-    const stagedPackage = uniquePackagePath(packageRoot, ".claude-smart-copy");
+  // Held until commitLocalPluginPackage or the exit rollback releases it.
+  holdPackageInstallLock(packageRoot, label);
+  const stagedPackage = uniquePackagePath(packageRoot, ".claude-smart-copy");
+  rmSync(stagedPackage, { recursive: true, force: true });
+  let replaced = false;
+  try {
+    cpSync(PACKAGE_ROOT, stagedPackage, {
+      recursive: true,
+      force: true,
+      verbatimSymlinks: false,
+      filter: shouldCopyPath,
+    });
+    verifyLocalPluginPackage(stagedPackage, label);
+    replaceLocalPluginPackage(stagedPackage, packageRoot);
+    replaced = true;
+    verifyLocalPluginPackage(packageRoot, label);
+    return packageRoot;
+  } catch (err) {
+    // Nothing replaced: nothing to roll back, so do not keep others waiting.
+    if (!replaced) releasePackageInstallLock(packageRoot);
+    throw err;
+  } finally {
     rmSync(stagedPackage, { recursive: true, force: true });
-    try {
-      cpSync(PACKAGE_ROOT, stagedPackage, {
-        recursive: true,
-        force: true,
-        verbatimSymlinks: false,
-        filter: shouldCopyPath,
-      });
-      verifyLocalPluginPackage(stagedPackage, label);
-      replaceLocalPluginPackage(stagedPackage, packageRoot);
-      verifyLocalPluginPackage(packageRoot, label);
-      return packageRoot;
-    } finally {
-      rmSync(stagedPackage, { recursive: true, force: true });
-    }
-  });
+  }
 }
 
 function installOpenCodePluginPackage() {

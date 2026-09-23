@@ -1663,10 +1663,37 @@ def test_node_first_migration_keeps_old_registration_when_bootstrap_fails(
     assert "previous claude-smart registration" in result.stderr
 
 
-def test_node_install_rollback_leaves_a_concurrent_install_alone(tmp_path: Path) -> None:
-    # The package lock covers only the copy. Here the bootstrap stands in for
-    # a concurrent install that replaces the stable copy and then this
-    # install fails: its rollback must not delete the newer package.
+@pytest.mark.parametrize("bootstrap_ok", [True, False])
+def test_node_install_holds_the_package_lock_until_commit_or_rollback(
+    tmp_path: Path, bootstrap_ok: bool
+) -> None:
+    # The lock must cover the bootstrap too, so a concurrent install of the
+    # same host waits instead of stacking its backup on an uncommitted copy.
+    lock = tmp_path / ".claude-smart" / "claude-code" / ".install.lock"
+    smart_install = (
+        "#!/bin/sh\n"
+        f'[ -d "{lock}" ] && echo held > "$HOME/lock-during-bootstrap"\n'
+        + ("exit 0\n" if bootstrap_ok else "exit 7\n")
+    )
+    package_root = _fake_claude_code_package(tmp_path, smart_install)
+    stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
+    (stable / "plugin").mkdir(parents=True)
+    (stable / "plugin" / "owner").write_text("older\n")
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {})
+
+    assert (result.returncode == 0) is bootstrap_ok, result.stderr
+    assert (tmp_path / "lock-during-bootstrap").read_text() == "held\n"
+    assert not lock.exists()
+    assert sorted(p.name for p in stable.parent.iterdir()) == ["claude-smart"]
+
+
+def test_node_install_rollback_never_deletes_the_only_working_backup(
+    tmp_path: Path,
+) -> None:
+    # If the package is replaced despite the lock, this install's rollback
+    # must neither delete the newer package nor its own backup, which may be
+    # the only copy of a working runtime.
     smart_install = (
         "#!/bin/sh\n"
         'stable="$HOME/.claude-smart/claude-code/claude-smart"\n'
@@ -1684,7 +1711,10 @@ def test_node_install_rollback_leaves_a_concurrent_install_alone(tmp_path: Path)
 
     assert result.returncode != 0
     assert (stable / "plugin" / "owner").read_text() == "newer\n"
-    assert sorted(p.name for p in stable.parent.iterdir()) == ["claude-smart"]
+    backups = [p for p in stable.parent.iterdir() if p.name.startswith(".claude-smart-previous")]
+    assert len(backups) == 1
+    assert (backups[0] / "plugin" / "owner").read_text() == "older\n"
+    assert "was kept at" in result.stderr
 
 
 def test_node_install_reports_the_custom_local_server_hooks_use(tmp_path: Path) -> None:
@@ -1798,6 +1828,38 @@ def test_node_claude_uninstall_never_leaves_plugin_root_dangling(
         assert link.resolve() == opencode_root.resolve()
     else:
         assert not link.is_symlink() and not link.exists()
+
+
+def test_node_claude_uninstall_repoints_plugin_root_at_newest_codex(tmp_path: Path) -> None:
+    # 0.2.10 is newer than 0.2.9; a lexical sort would pick 0.2.9.
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    claude_root = tmp_path / ".claude-smart" / "claude-code" / "claude-smart" / "plugin"
+    codex_cache = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    for root in (claude_root, codex_cache / "0.2.9", codex_cache / "0.2.10"):
+        (root / "scripts").mkdir(parents=True)
+        _write_executable(root / "scripts" / "backend-service.sh", "#!/bin/sh\nexit 0\n")
+    link = tmp_path / ".reflexio" / "plugin-root"
+    link.parent.mkdir()
+    link.symlink_to(claude_root, target_is_directory=True)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "claude", _fake_claude_install_script())
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    result = subprocess.run(
+        [node, str(package_root / "bin" / "claude-smart.js"), "uninstall"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert link.resolve() == (codex_cache / "0.2.10").resolve()
 
 
 def test_node_install_survives_an_invalid_service_port(tmp_path: Path) -> None:

@@ -628,3 +628,27 @@ def test_python_release_plugin_root_before_removing_an_integration(
         assert link.resolve() == (opencode_pkg / "plugin").resolve()
     else:
         assert not link.is_symlink() and not link.exists()
+
+
+def test_python_release_plugin_root_prefers_the_newest_codex_version(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # 0.2.10 is newer than 0.2.9; a lexical sort would pick 0.2.9.
+    state = tmp_path / ".claude-smart"
+    reflexio = tmp_path / ".reflexio"
+    codex_cache = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    monkeypatch.setattr(cli, "_STATE_DIR", state)
+    monkeypatch.setattr(cli, "_REFLEXIO_DIR", reflexio)
+    monkeypatch.setattr(cli, "_OPENCODE_LOCAL_PACKAGE_DIR", state / "opencode" / "claude-smart")
+    monkeypatch.setattr(cli, "_CODEX_PLUGIN_CACHE_DIR", codex_cache)
+    removed = state / "claude-code" / "claude-smart"
+    for root in (removed / "plugin", codex_cache / "0.2.9", codex_cache / "0.2.10"):
+        (root / "scripts").mkdir(parents=True)
+        (root / "scripts" / "backend-service.sh").write_text("#!/bin/sh\n")
+    reflexio.mkdir()
+    (reflexio / "plugin-root").symlink_to(removed / "plugin", target_is_directory=True)
+
+    cli._release_plugin_root(removed)
+
+    assert (reflexio / "plugin-root").resolve() == (codex_cache / "0.2.10").resolve()
+
