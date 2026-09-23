@@ -249,25 +249,29 @@ function runCodex(args) {
     const group = !isWindows() && rollbackArmed();
     const child = spawn("codex", args, {
       stdio: [group ? "ignore" : "inherit", "inherit", "inherit"],
-      timeout: CODEX_CLI_TIMEOUT_MS,
-      killSignal: "SIGTERM",
       detached: group,
     });
     trackChild(child, group);
     let timedOut = false;
-    child.on("exit", (code, signal) => {
-      if (signal === "SIGTERM" && code === null) {
-        timedOut = true;
-        process.stderr.write(
-          `error: codex ${args.join(" ")} timed out after ${CODEX_CLI_TIMEOUT_MS / 1000}s\n`,
-        );
-        resolve(124);
-        return;
-      }
+    // On timeout, stop the whole tree (not just the leader) and wait for it
+    // before the caller retries or rolls back.
+    const timer = setTimeout(async () => {
+      timedOut = true;
+      process.stderr.write(
+        `error: codex ${args.join(" ")} timed out after ${CODEX_CLI_TIMEOUT_MS / 1000}s\n`,
+      );
+      await terminateChildren([[child, group]]);
+      if (!terminatingOnSignal) resolve(124);
+    }, CODEX_CLI_TIMEOUT_MS);
+    child.on("exit", (code) => {
       if (timedOut || terminatingOnSignal) return;
+      clearTimeout(timer);
       resolve(typeof code === "number" ? code : 1);
     });
-    child.on("error", () => terminatingOnSignal || resolve(1));
+    child.on("error", () => {
+      clearTimeout(timer);
+      if (!terminatingOnSignal) resolve(1);
+    });
   });
 }
 
@@ -476,8 +480,9 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
   const fileEnv = readEnvFile(CLAUDE_SMART_ENV_PATH);
   // The backend picks its extraction bridge from CLAUDE_SMART_HOST at start;
   // a change means a running backend must be restarted to follow it.
+  // A missing key means Claude Code to the runtime (_lib.sh default).
   const hostChanged =
-    fileEnv.has(CLAUDE_SMART_HOST_ENV) && fileEnv.get(CLAUDE_SMART_HOST_ENV) !== installHost;
+    (fileEnv.get(CLAUDE_SMART_HOST_ENV) || DEFAULT_CLAUDE_SMART_HOST) !== installHost;
   if (fileEnv.has(REFLEXIO_USER_ID_ENV)) {
     process.env[REFLEXIO_USER_ID_ENV] = fileEnv.get(REFLEXIO_USER_ID_ENV);
   }
@@ -1487,7 +1492,12 @@ function processGroupAlive(pgid) {
 }
 
 async function terminateActiveChildren(timeoutMs = 5000) {
-  const children = [...activeChildren.entries()];
+  await terminateChildren([...activeChildren.entries()], timeoutMs);
+}
+
+// Stops each [child, group] entry, waiting until every process group is
+// empty (SIGKILL after the grace period).
+async function terminateChildren(children, timeoutMs = 5000) {
   // A process group is waited on until it is empty, not just its leader: a
   // descendant (uv, npm) that ignores SIGTERM must not outlive the rollback.
   const alive = ([child, group]) =>

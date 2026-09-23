@@ -2293,6 +2293,69 @@ def test_interrupt_during_a_codex_cli_step_stops_its_descendants(tmp_path: Path)
     assert "opencode" in runtime_env.read_text()
 
 
+def test_codex_cli_timeout_stops_the_whole_process_group(tmp_path: Path) -> None:
+    # A timed-out Codex step must not leave descendants mutating Codex state
+    # while the installer retries or rolls back. (Uses the real 30s timeout.)
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "codex",
+        "#!/bin/sh\n"
+        'case "$*" in *"marketplace add"*) ;; *) exit 0 ;; esac\n'
+        "sh -c 'trap \"\" TERM; echo $$ > \"$HOME/codex-descendant.pid\"; while :; do sleep 0.1; done' &\n"
+        "wait\n",
+    )
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY"):
+        env.pop(key, None)
+    pid = None
+    alive = False
+    try:
+        result = subprocess.run(
+            [node, str(NODE_INSTALLER), "install", "--host", "codex"],
+            env=env, text=True, capture_output=True, check=False, timeout=120,
+        )
+    finally:
+        pid_file = tmp_path / "codex-descendant.pid"
+        if pid_file.exists():
+            pid = int(pid_file.read_text())
+            try:
+                os.kill(pid, 0)
+                alive = True
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+    assert "timed out after 30s" in result.stderr
+    assert pid and not alive
+
+
+@pytest.mark.parametrize(("file_host", "restart"), [(None, True), ("opencode", False)])
+def test_opencode_host_change_counts_a_missing_host_as_claude_code(
+    tmp_path: Path, file_host: str | None, restart: bool
+) -> None:
+    # _lib.sh treats a missing CLAUDE_SMART_HOST as claude-code, so moving
+    # to opencode from a file without it is a host change.
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    runtime_env.parent.mkdir()
+    runtime_env.write_text(f"CLAUDE_SMART_HOST={file_host}\n" if file_host else "# none\n")
+    env = _isolated_env(tmp_path)
+    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY"):
+        env.pop(key, None)
+    result = subprocess.run(
+        [node, "-e", f"process.stdout.write(String(require({json.dumps(str(NODE_INSTALLER))}).configureReflexioSetup('opencode').hostChanged))"],
+        env=env, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.rsplit("\n", 1)[-1] == str(restart).lower()
+
+
 def test_commit_survives_an_undeletable_previous_package(tmp_path: Path) -> None:
     # The install succeeded; failing to delete the replaced copy must not turn
     # it into a failure that skips starting services.
