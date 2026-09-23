@@ -1683,6 +1683,11 @@ function isBundledBackendUrl(url) {
 
 async function startAndReportServices(pluginRoot, host, setup) {
   const { managed, url: hooksUrl } = setup;
+  if (managed || (hooksUrl && !isBundledBackendUrl(hooksUrl))) {
+    // Hooks will not call the bundled backend, so stop one left running from
+    // an earlier local setup (stop only reaps claude-smart's own listener).
+    runPluginService(pluginRoot, "backend-service.sh", "stop");
+  }
   if (managed) {
     process.stdout.write("Managed mode: no local backend is started.\n");
   } else if (hooksUrl && !isBundledBackendUrl(hooksUrl)) {

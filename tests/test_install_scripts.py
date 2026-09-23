@@ -1531,6 +1531,9 @@ def test_node_install_summary_claims_a_backend_only_when_one_runs(
     assert result.returncode == 0, result.stderr
     claims = "The reflexio backend and dashboard auto-start on session start." in result.stdout
     assert claims is not managed
+    # Entering managed mode stops a bundled backend left from local mode.
+    log = (tmp_path / "backend-service.log").read_text().splitlines()
+    assert ("stop" in log) is managed
 
 
 def test_node_install_bootstraps_stable_copy_in_managed_mode(tmp_path: Path) -> None:
@@ -1563,7 +1566,8 @@ def test_node_install_bootstraps_stable_copy_in_managed_mode(tmp_path: Path) -> 
     assert (tmp_path / ".reflexio" / "plugin-root").resolve() == stable_plugin
     assert f"Prepared claude-smart runtime at {stable_plugin}." in result.stdout
     assert "Managed mode: no local backend is started." in result.stdout
-    assert not (tmp_path / "backend-service.log").exists()
+    # Managed mode only stops a leftover bundled backend; it never starts one.
+    assert (tmp_path / "backend-service.log").read_text().splitlines() == ["stop"]
     assert 'CLAUDE_SMART_HOST="claude-code"' in runtime_env.read_text()
 
 
@@ -2570,8 +2574,9 @@ def test_node_install_reports_the_custom_local_server_hooks_use(
     assert f"Hooks use the Reflexio server at {hooks_url}" in result.stdout
     assert "it is answering" in result.stdout
     assert "Backend healthy" not in result.stdout
-    # The bundled backend would sit unused on BACKEND_PORT.
-    assert not (tmp_path / "backend-service.log").exists()
+    # The bundled backend would sit unused on BACKEND_PORT: it is stopped,
+    # never started.
+    assert (tmp_path / "backend-service.log").read_text().splitlines() == ["stop"]
 
 
 def test_node_env_writes_are_private_before_content_lands(tmp_path: Path) -> None:
