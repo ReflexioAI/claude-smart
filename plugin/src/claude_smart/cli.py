@@ -31,7 +31,6 @@ import re
 import select
 import shutil
 import subprocess
-import urllib.parse
 import sys
 import time
 from pathlib import Path
@@ -1057,9 +1056,7 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
                 "uses local mode and saves no key. Run `npx claude-smart setup` to save "
                 "managed settings.\n"
             )
-        if env_config.reflexio_url_is_remote(exported_url) or (
-            exported_url and _url_port(exported_url) != _url_port(_local_backend_url())
-        ):
+        if exported_url and not _is_bundled_backend_url(exported_url):
             # Same warning as the Node installer: this process drops the
             # export, but hooks in a Claude Code started from the calling
             # shell inherit it and will not use the local backend.
@@ -1089,12 +1086,16 @@ def _local_backend_url() -> str:
     return f"http://localhost:{port}/"
 
 
-def _url_port(url: str) -> str:
-    try:
-        parsed = urllib.parse.urlsplit(url.strip())
-        return str(parsed.port or (443 if parsed.scheme == "https" else 80))
-    except ValueError:
-        return ""
+def _is_bundled_backend_url(url: str) -> bool:
+    """Mirror ``isBundledBackendUrl`` in bin/claude-smart.js: hooks calling
+    ``url`` reach the bundled backend (http://localhost or http://127.0.0.1
+    on BACKEND_PORT, no path); anything else is a server the user runs."""
+    port = os.environ.get("BACKEND_PORT", "").strip() or "8071"
+    value = url.strip()
+    return any(
+        value in (base, f"{base}/")
+        for base in (f"http://localhost:{port}", f"http://127.0.0.1:{port}")
+    )
 
 
 def _strip_jsonc(text: str) -> str:

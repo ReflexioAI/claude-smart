@@ -165,6 +165,7 @@ function runClaude(args, { spinnerLabel } = {}) {
     const child = spawn("claude", args, {
       stdio: useSpinner ? ["inherit", "pipe", "pipe"] : "inherit",
     });
+    trackChild(child, false);
 
     if (useSpinner) {
       const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -215,8 +216,8 @@ function runClaude(args, { spinnerLabel } = {}) {
       });
     }
 
-    child.on("exit", (code) => resolve(typeof code === "number" ? code : 1));
-    child.on("error", () => resolve(1));
+    child.on("exit", (code) => terminatingOnSignal || resolve(typeof code === "number" ? code : 1));
+    child.on("error", () => terminatingOnSignal || resolve(1));
   });
 }
 
@@ -517,10 +518,7 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
     // Hooks in a Claude Code started from this shell inherit the export: a
     // remote URL, or a loopback URL on another port, sends them somewhere
     // other than the bundled backend this install starts.
-    if (
-      isRemoteReflexioUrl(exportedUrl) ||
-      (exportedUrl && urlPort(exportedUrl) !== urlPort(localBackendUrl()))
-    ) {
+    if (exportedUrl && !isBundledBackendUrl(exportedUrl)) {
       process.stderr.write(
         `warning: REFLEXIO_URL=${exportedUrl} is exported in this shell. ` +
           "Install ignores it, but claude-smart hooks in a Claude Code started from this " +
@@ -1036,10 +1034,7 @@ function holdPackageInstallLock(packageRoot, label) {
     }
   }, 30_000);
   timer.unref();
-  if (heldPackageLocks.size === 0 && pendingPreviousPackages.size === 0) {
-    process.once("exit", rollbackLocalPluginPackages);
-  }
-  registerRollbackSignalHandlers();
+  ensureRollbackOnExit();
   heldPackageLocks.set(packageRoot, { lockDir, timer });
 }
 
@@ -1047,12 +1042,18 @@ function holdPackageInstallLock(packageRoot, label) {
 // by default, so an interrupted update would otherwise leave the uncommitted
 // copy in place and the lock held. Roll back, then exit with the signal's
 // conventional status.
-let rollbackSignalHandlersRegistered = false;
-function registerRollbackSignalHandlers() {
-  if (rollbackSignalHandlersRegistered) return;
-  rollbackSignalHandlersRegistered = true;
+let rollbackOnExitRegistered = false;
+function ensureRollbackOnExit() {
+  if (rollbackOnExitRegistered) return;
+  rollbackOnExitRegistered = true;
+  process.once("exit", rollbackLocalPluginPackages);
   for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
-    process.once(signal, () => {
+    process.once(signal, async () => {
+      terminatingOnSignal = true;
+      // Stop and await children first: an orphaned smart-install or Claude
+      // CLI step must not keep writing after the rollback restores the
+      // previous package.
+      await terminateActiveChildren();
       rollbackLocalPluginPackages();
       process.exit(code);
     });
@@ -1111,9 +1112,31 @@ function rollbackLocalPluginPackages() {
     }
   }
   for (const packageRoot of [...heldPackageLocks.keys()]) releasePackageInstallLock(packageRoot);
+  restartStoppedServices();
+}
+
+// Services an install stopped before replacing their root. If the install
+// does not commit, they are started again from the (restored) previous root
+// so a failed update does not leave a working setup offline.
+let stoppedServices = null;
+
+function stopServicesForInstall(root, host) {
+  stopClaudeSmartServices(root);
+  stoppedServices = { root, host };
+  ensureRollbackOnExit();
+}
+
+function restartStoppedServices() {
+  const stopped = stoppedServices;
+  stoppedServices = null;
+  if (!stopped || !existsSync(join(stopped.root, "scripts", "backend-service.sh"))) return;
+  startBackendService(stopped.root, stopped.host);
+  runPluginService(stopped.root, "dashboard-service.sh", "start");
+  process.stderr.write(`Restarted claude-smart services from ${stopped.root}.\n`);
 }
 
 function commitLocalPluginPackage(packageRoot) {
+  stoppedServices = null;
   const pending = pendingPreviousPackages.get(packageRoot);
   pendingPreviousPackages.delete(packageRoot);
   if (pending) rmSync(pending.backupPackage, { recursive: true, force: true });
@@ -1136,9 +1159,7 @@ function replaceLocalPluginPackage(stagedPackage, packageRoot) {
     throw err;
   }
   if (backupCreated) {
-    if (pendingPreviousPackages.size === 0 && heldPackageLocks.size === 0) {
-      process.once("exit", rollbackLocalPluginPackages);
-    }
+    ensureRollbackOnExit();
     pendingPreviousPackages.set(packageRoot, {
       backupPackage,
       installedIno: lstatSync(packageRoot).ino,
@@ -1266,6 +1287,10 @@ function assertSupportedRuntimePlatform() {
 }
 
 function runChecked(command, args, options = {}) {
+  // While a package install is uncommitted, run children in their own
+  // process group so an interrupt can stop the whole tree (uv, npm, ...)
+  // before rolling back; they are non-interactive there.
+  const group = !isWindows() && heldPackageLocks.size > 0;
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -1273,10 +1298,55 @@ function runChecked(command, args, options = {}) {
       shell: isWindows() && /\.(?:cmd|bat)$/i.test(command),
       stdio: "inherit",
       windowsHide: true,
+      detached: group,
     });
-    child.on("exit", (code) => resolve(typeof code === "number" ? code : 1));
-    child.on("error", () => resolve(1));
+    trackChild(child, group);
+    // While a signal handler is rolling back, the caller must not see the
+    // terminated child as a failure and exit first.
+    child.on("exit", (code) => terminatingOnSignal || resolve(typeof code === "number" ? code : 1));
+    child.on("error", () => terminatingOnSignal || resolve(1));
   });
+}
+
+// Children still running, so a signal handler can stop them before rolling
+// back a package they may be writing into.
+const activeChildren = new Map();
+let terminatingOnSignal = false;
+
+function trackChild(child, group) {
+  activeChildren.set(child, group);
+  const forget = () => activeChildren.delete(child);
+  child.on("exit", forget);
+  child.on("error", forget);
+}
+
+async function terminateActiveChildren(timeoutMs = 5000) {
+  const children = [...activeChildren.entries()];
+  const signalAll = (signal) => {
+    for (const [child, group] of children) {
+      if (child.exitCode !== null || child.signalCode !== null) continue;
+      try {
+        if (group) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch {
+        // Already gone.
+      }
+    }
+  };
+  const exited = () =>
+    Promise.all(
+      children.map(([child]) =>
+        child.exitCode !== null || child.signalCode !== null
+          ? null
+          : new Promise((resolve) => child.once("exit", resolve)),
+      ),
+    );
+  signalAll("SIGTERM");
+  const timedOut = await Promise.race([
+    exited().then(() => false),
+    new Promise((resolve) => setTimeout(() => resolve(true), timeoutMs).unref()),
+  ]);
+  if (timedOut) signalAll("SIGKILL");
 }
 
 function runSilentStatus(command, args, options = {}) {
@@ -1392,23 +1462,26 @@ function autostartDisabled(key) {
 // backend-service.sh / dashboard-service.sh always exit 0 (they double as
 // hooks), so their status says nothing about whether a service is serving.
 // Report only what an HTTP probe observes.
-function urlPort(url) {
-  try {
-    const parsed = new URL(url);
-    return parsed.port || (parsed.protocol === "https:" ? "443" : "80");
-  } catch {
-    return "";
-  }
+// True when hooks calling `url` reach the bundled backend install starts:
+// http://localhost or http://127.0.0.1 on BACKEND_PORT, with no path. Any
+// other endpoint (another host spelling, port, or a path prefix) is one the
+// user runs themselves.
+function isBundledBackendUrl(url) {
+  const port = (process.env.BACKEND_PORT || "").trim() || "8071";
+  const value = String(url || "").trim();
+  return [`http://localhost:${port}`, `http://127.0.0.1:${port}`].some(
+    (base) => value === base || value === `${base}/`,
+  );
 }
 
 async function startAndReportServices(pluginRoot, host, setup) {
   const { managed, url: hooksUrl } = setup;
   if (managed) {
     process.stdout.write("Managed mode: no local backend is started.\n");
-  } else if (hooksUrl && urlPort(hooksUrl) !== urlPort(localBackendUrl())) {
-    // A keyed loopback URL on another port is the user's own local Reflexio
-    // server: the hooks call it, not the bundled backend, so report on it and
-    // start nothing.
+  } else if (hooksUrl && !isBundledBackendUrl(hooksUrl)) {
+    // A kept loopback URL other than the bundled endpoint is the user's own
+    // local Reflexio server: the hooks call it, not the bundled backend, so
+    // report on it and start nothing.
     const base = hooksUrl.endsWith("/") ? hooksUrl : `${hooksUrl}/`;
     const answering = await waitForHttp(`${base}health`, 3, ({ status }) => status === 200);
     process.stdout.write(
@@ -2569,7 +2642,7 @@ async function runInstall(args, options = {}) {
   // Stop services running from the previous root (e.g. a pruned npx dir or an
   // older copy) before the copy under them is replaced.
   const previousRoot = activePluginRoot();
-  if (previousRoot) stopClaudeSmartServices(previousRoot);
+  if (previousRoot) stopServicesForInstall(previousRoot, HOST_CLAUDE_CODE);
   let source;
   try {
     source = installLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "Claude Code");

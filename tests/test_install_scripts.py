@@ -963,6 +963,9 @@ def test_installer_warns_about_exported_url_it_ignores(tmp_path: Path) -> None:
     [
         ("http://localhost:9000/", True),
         ("http://localhost:8071/", False),
+        ("http://127.0.0.1:8071", False),
+        ("http://[::1]:8071/", True),
+        ("http://localhost:8071/prefix/", True),
         ("https://www.reflexio.ai/", True),
     ],
 )
@@ -1857,7 +1860,15 @@ def test_node_install_holds_the_package_lock_until_commit_or_rollback(
 def test_node_install_rolls_back_when_terminated_during_bootstrap(tmp_path: Path) -> None:
     # Node emits no "exit" on a default SIGTERM/SIGINT; an interrupted update
     # must still restore the previous package and release the lock.
-    smart_install = "#!/bin/sh\nkill -TERM $PPID\nsleep 5\nexit 0\n"
+    smart_install = (
+        "#!/bin/sh\n"
+        'echo $$ > "$HOME/smart-install.pid"\n'
+        "sleep 30 &\n"
+        'echo $! > "$HOME/sleep.pid"\n'
+        "kill -TERM $PPID\n"
+        "wait\n"
+        'touch "$HOME/orphan-finished"\n'
+    )
     package_root = _fake_claude_code_package(tmp_path, smart_install)
     stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
     (stable / "plugin").mkdir(parents=True)
@@ -1866,9 +1877,40 @@ def test_node_install_rolls_back_when_terminated_during_bootstrap(tmp_path: Path
     result = _run_fake_claude_code_install(tmp_path, package_root, {})
 
     assert result.returncode == 143, (result.returncode, result.stderr)
+    # The bootstrap tree was stopped before the rollback, not orphaned.
+    for pid_file in ("smart-install.pid", "sleep.pid"):
+        pid = int((tmp_path / pid_file).read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    assert not (tmp_path / "orphan-finished").exists()
     assert (stable / "plugin" / "owner").read_text() == "older\n"
     assert sorted(p.name for p in stable.parent.iterdir()) == ["claude-smart"]
     assert "restored the previous claude-smart package" in result.stderr
+
+
+def test_node_failed_install_restarts_the_services_it_stopped(tmp_path: Path) -> None:
+    # Install stops the previous root's services before replacing it; when
+    # the install does not commit they must come back from the restored root.
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 7\n")
+    stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
+    old_scripts = stable / "plugin" / "scripts"
+    old_scripts.mkdir(parents=True)
+    for name in ("backend-service.sh", "dashboard-service.sh"):
+        _write_executable(
+            old_scripts / name,
+            f'#!/bin/sh\necho "{name} $1" >> "$HOME/old-services.log"\n',
+        )
+    link = tmp_path / ".reflexio" / "plugin-root"
+    link.parent.mkdir()
+    link.symlink_to(stable / "plugin", target_is_directory=True)
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {})
+
+    assert result.returncode != 0
+    log = (tmp_path / "old-services.log").read_text().splitlines()
+    assert log[:2] == ["dashboard-service.sh stop", "backend-service.sh stop"]
+    assert log[-2:] == ["backend-service.sh start", "dashboard-service.sh start"]
+    assert "Restarted claude-smart services" in result.stderr
 
 
 def test_node_install_rollback_never_deletes_the_only_working_backup(
@@ -1900,19 +1942,26 @@ def test_node_install_rollback_never_deletes_the_only_working_backup(
     assert "was kept at" in result.stderr
 
 
-def test_node_install_reports_the_custom_local_server_hooks_use(tmp_path: Path) -> None:
-    # A keyed loopback URL on another port is kept and is what the hooks
-    # call, so install must report on that server, not on the bundled one.
+@pytest.mark.parametrize("same_port_with_path", [False, True])
+def test_node_install_reports_the_custom_local_server_hooks_use(
+    tmp_path: Path, same_port_with_path: bool
+) -> None:
+    # A kept loopback URL other than the bundled endpoint (another port, or
+    # BACKEND_PORT with a path prefix) is what the hooks call, so install
+    # must report on that server, not on the bundled one.
     package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
     port = _free_port()
+    path = "/prefix/" if same_port_with_path else "/"
+    hooks_url = f"http://localhost:{port}{path}"
+    extra_env = {"BACKEND_PORT": str(port)} if same_port_with_path else {}
     runtime_env = tmp_path / ".claude-smart" / ".env"
     runtime_env.parent.mkdir()
-    runtime_env.write_text(f'REFLEXIO_URL="http://localhost:{port}/"\nREFLEXIO_API_KEY="k"\n')
+    runtime_env.write_text(f'REFLEXIO_URL="{hooks_url}"\nREFLEXIO_API_KEY="k"\n')
     (tmp_path / "backend-status").write_text("running on http://localhost:8071 (x)\n")
 
     class Health(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
-            self.send_response(200 if self.path == "/health" else 404)
+            self.send_response(200 if self.path == f"{path}health" else 404)
             self.end_headers()
 
         def log_message(self, *_args: object) -> None:
@@ -1921,13 +1970,13 @@ def test_node_install_reports_the_custom_local_server_hooks_use(tmp_path: Path) 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Health)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        result = _run_fake_claude_code_install(tmp_path, package_root, {})
+        result = _run_fake_claude_code_install(tmp_path, package_root, extra_env)
     finally:
         server.shutdown()
 
     assert result.returncode == 0, result.stderr
-    assert f"Using local Reflexio backend at http://localhost:{port}/." in result.stdout
-    assert f"Hooks use the Reflexio server at http://localhost:{port}/" in result.stdout
+    assert f"Using local Reflexio backend at {hooks_url}." in result.stdout
+    assert f"Hooks use the Reflexio server at {hooks_url}" in result.stdout
     assert "it is answering" in result.stdout
     assert "Backend healthy" not in result.stdout
     # The bundled backend would sit unused on BACKEND_PORT.
