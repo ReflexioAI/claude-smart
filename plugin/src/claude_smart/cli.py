@@ -1107,7 +1107,7 @@ def _is_bundled_backend_url(url: str) -> bool:
         return (
             parsed.scheme == "http"
             and parsed.hostname in {"localhost", "127.0.0.1"}
-            and str(parsed.port) == port
+            and str(parsed.port or 80) == port
         )
     except ValueError:
         return False

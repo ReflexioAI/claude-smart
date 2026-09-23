@@ -1512,7 +1512,8 @@ function isBundledBackendUrl(url) {
     return (
       parsed.protocol === "http:" &&
       ["localhost", "127.0.0.1"].includes(parsed.hostname) &&
-      parsed.port === port
+      // WHATWG URL drops the scheme's default port ("" for :80).
+      (parsed.port || "80") === port
     );
   } catch {
     return false;
@@ -3077,4 +3078,5 @@ module.exports = {
   stripJsonc,
   terminateActiveChildren,
   trackChild,
+  isBundledBackendUrl,
 };

@@ -1964,6 +1964,44 @@ def test_node_setup_passes_the_caller_workspace_to_nested_installs(tmp_path: Pat
     assert (tmp_path / "workspace").read_text().strip() == str(project)
 
 
+@pytest.mark.parametrize(
+    ("backend_port", "url", "bundled"),
+    [
+        ("80", "http://localhost:80", True),
+        ("80", "http://localhost/", True),
+        ("8071", "http://localhost/", False),
+        ("9000", "http://127.0.0.1:9000/x/", True),
+        ("9000", "http://localhost:8071", True),
+        ("9000", "http://localhost:8071/x/", False),
+    ],
+)
+def test_bundled_endpoint_rule_agrees_across_node_python_and_shell(
+    tmp_path: Path, backend_port: str, url: str, bundled: bool
+) -> None:
+    # One rule, three implementations: the Node installer, the Python
+    # installer, and _lib.sh (which backend-service.sh uses at SessionStart).
+    env = _isolated_env(tmp_path)
+    env["BACKEND_PORT"] = backend_port
+    env["REFLEXIO_URL"] = url
+    node = subprocess.run(
+        [node_bin(), "-e", f"process.stdout.write(String(require({json.dumps(str(NODE_INSTALLER))}).isBundledBackendUrl(process.env.REFLEXIO_URL)))"],
+        env=env, text=True, capture_output=True, check=False,
+    )
+    python = subprocess.run(
+        [sys.executable, "-c", "import os; from claude_smart import cli; print(cli._is_bundled_backend_url(os.environ['REFLEXIO_URL']), end='')"],
+        env=env, text=True, capture_output=True, check=False,
+    )
+    shell = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", f'. "{LIB}"; if claude_smart_reflexio_url_is_custom_local; then echo false; else echo true; fi'],
+        env=env, text=True, capture_output=True, check=False,
+    )
+    assert node.returncode == 0, node.stderr
+    assert python.returncode == 0, python.stderr
+    assert node.stdout == str(bundled).lower()
+    assert python.stdout == str(bundled)
+    assert shell.stdout.strip() == str(bundled).lower()
+
+
 def test_windows_interrupt_ends_the_whole_child_tree(tmp_path: Path) -> None:
     # Windows has no process groups; stopping only the direct child would
     # orphan uv/npm grandchildren that keep writing after the rollback.
