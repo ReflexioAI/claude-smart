@@ -664,6 +664,29 @@ def test_smart_install_seeds_local_defaults_whenever_runtime_is_local(
         assert 'REFLEXIO_API_KEY="k"' in text
 
 
+@pytest.mark.parametrize("defer", ["1", ""])
+def test_smart_install_defers_the_backend_start_for_the_npx_installer(
+    tmp_path: Path, defer: str
+) -> None:
+    here = tmp_path / "scripts"
+    here.mkdir()
+    _write_executable(
+        here / "backend-service.sh", '#!/bin/sh\necho "$1" >> "$HOME/backend.log"\n'
+    )
+    script = f'HERE="{here}"\n' + _smart_install_functions("start_backend_service") + "\nstart_backend_service\n"
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_DEFER_SERVICES"] = defer
+    result = subprocess.run(
+        ["/bin/bash", "-c", script], env=env, text=True, capture_output=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "backend.log").exists() is (defer != "1")
+    # The dashboard build spawn is gated on the same variable.
+    text = SMART_INSTALL.read_text()
+    gate = text.index('if [ "${CLAUDE_SMART_DEFER_SERVICES:-}" = "1" ]; then')
+    assert gate < text.index('claude_smart_spawn_detached bash "$HERE/dashboard-build.sh"')
+
+
 def test_python_import_probe_uses_plugin_python(tmp_path: Path) -> None:
     python_path = tmp_path / ".venv" / "Scripts" / "python.exe"
     python_path.parent.mkdir(parents=True)
@@ -1432,6 +1455,13 @@ def _run_fake_claude_code_install(
     )
 
 
+def node_bin() -> str:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    return node
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -1701,6 +1731,102 @@ def test_node_first_migration_keeps_old_registration_when_bootstrap_fails(
     assert "plugin install" not in calls
     assert link.resolve() == old_root.resolve()
     assert "previous claude-smart registration" in result.stderr
+
+
+def test_node_claude_uninstall_repairs_a_legacy_plugin_root(tmp_path: Path) -> None:
+    # A pre-stable-copy install points plugin-root into the old Claude
+    # marketplace, which `claude plugin uninstall` removes. The link must be
+    # repointed at a remaining install instead of left dangling.
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    legacy_root = tmp_path / ".claude" / "plugins" / "marketplaces" / "reflexioai" / "plugin"
+    opencode_root = tmp_path / ".claude-smart" / "opencode" / "claude-smart" / "plugin"
+    for root in (legacy_root, opencode_root):
+        (root / "scripts").mkdir(parents=True)
+        _write_executable(root / "scripts" / "backend-service.sh", "#!/bin/sh\nexit 0\n")
+    link = tmp_path / ".reflexio" / "plugin-root"
+    link.parent.mkdir()
+    link.symlink_to(legacy_root, target_is_directory=True)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    # Fake `claude`: uninstalling removes the legacy marketplace dir.
+    _write_executable(
+        fake_bin / "claude",
+        '#!/bin/sh\ncase "$*" in *"plugin uninstall"*) rm -rf "$HOME/.claude/plugins/marketplaces/reflexioai";; esac\nexit 0\n',
+    )
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    result = subprocess.run(
+        [node, str(package_root / "bin" / "claude-smart.js"), "uninstall"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not legacy_root.exists()
+    assert link.resolve() == opencode_root.resolve()
+
+
+@pytest.mark.parametrize("dashboard_autostart", ["1", "0"])
+def test_node_install_starts_services_only_after_commit(
+    tmp_path: Path, dashboard_autostart: str
+) -> None:
+    # smart-install.sh must not start the backend or the dashboard build
+    # while the copy may still be rolled back; install starts them after
+    # the Claude CLI steps commit, from the project install was run in.
+    smart_install = (
+        "#!/bin/sh\n"
+        'echo "defer=${CLAUDE_SMART_DEFER_SERVICES:-}" > "$HOME/smart-install.env"\n'
+        "exit 0\n"
+    )
+    package_root = _fake_claude_code_package(tmp_path, smart_install)
+    project = tmp_path / "project"
+    project.mkdir()
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "claude", _fake_claude_install_script())
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["CLAUDE_SMART_DASHBOARD_AUTOSTART"] = dashboard_autostart
+    env["CLAUDE_SMART_BACKEND_AUTOSTART"] = "0"
+    env["DASHBOARD_PORT"] = str(_free_port())
+    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY", "CLAUDE_SMART_DASHBOARD_WORKSPACE"):
+        env.pop(key, None)
+    scripts = package_root / "plugin" / "scripts"
+    _write_executable(
+        scripts / "dashboard-service.sh",
+        '#!/bin/sh\nprintf \'%s %s\\n\' "$1" "$CLAUDE_SMART_DASHBOARD_WORKSPACE" >> "$HOME/dashboard-service.log"\n',
+    )
+    _write_executable(
+        scripts / "dashboard-build.sh",
+        '#!/bin/sh\necho build >> "$HOME/dashboard-build.log"\n',
+    )
+    (package_root / "plugin" / "dashboard").mkdir()
+
+    result = subprocess.run(
+        [node_bin(), str(package_root / "bin" / "claude-smart.js"), "install"],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "smart-install.env").read_text() == "defer=1\n"
+    for _ in range(50):
+        if (tmp_path / "dashboard-build.log").exists():
+            break
+        time.sleep(0.1)
+    assert (tmp_path / "dashboard-build.log").read_text() == "build\n"
+    if dashboard_autostart == "1":
+        log = (tmp_path / "dashboard-service.log").read_text().splitlines()
+        assert log[-1] == f"start {project}"
 
 
 @pytest.mark.parametrize("bootstrap_ok", [True, False])

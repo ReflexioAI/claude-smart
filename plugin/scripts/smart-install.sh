@@ -144,7 +144,11 @@ install_complete() {
   return 0
 }
 
+# The npx installer sets CLAUDE_SMART_DEFER_SERVICES=1 while it prepares a
+# copy it may still roll back; it starts the backend and the dashboard build
+# itself once the install has committed.
 start_backend_service() {
+  [ "${CLAUDE_SMART_DEFER_SERVICES:-}" = "1" ] && return 0
   if [ -x "$HERE/backend-service.sh" ]; then
     echo "[claude-smart] starting backend service in background" >&2
     bash "$HERE/backend-service.sh" start >/dev/null 2>&1 || true
@@ -746,7 +750,9 @@ DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
 if [ -d "$DASHBOARD_DIR" ]; then
   install_private_node || true
 fi
-if [ -d "$DASHBOARD_DIR" ] && claude_smart_npm_available; then
+if [ "${CLAUDE_SMART_DEFER_SERVICES:-}" = "1" ]; then
+  :
+elif [ -d "$DASHBOARD_DIR" ] && claude_smart_npm_available; then
   echo "[claude-smart] starting dashboard build in background (~1-2 min on first install)" >&2
   claude_smart_spawn_detached bash "$HERE/dashboard-build.sh" >/dev/null 2>&1
 elif [ -d "$DASHBOARD_DIR" ]; then

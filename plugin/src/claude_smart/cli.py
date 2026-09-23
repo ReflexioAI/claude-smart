@@ -278,16 +278,31 @@ def _active_plugin_root() -> Path | None:
     return Path(text) if text else None
 
 
-def _release_plugin_root(removed_dir: Path) -> None:
-    """Keep ~/.reflexio/plugin-root usable before deleting an integration.
+def _plugin_root_is_broken() -> bool:
+    def has_runtime(root: Path) -> bool:
+        return (root / "scripts" / "backend-service.sh").is_file()
 
-    Mirrors ``releasePluginRoot`` in bin/claude-smart.js: the link is shared
-    by every installed host's commands, so when it points into ``removed_dir``
-    it is repointed at a remaining install, or removed when none is left.
+    link = _REFLEXIO_DIR / "plugin-root"
+    if link.is_symlink():
+        try:
+            return not has_runtime(link.resolve(strict=True))
+        except OSError:
+            return True
+    try:
+        text = (_REFLEXIO_DIR / "plugin-root.txt").read_text().strip()
+    except OSError:
+        return False
+    return bool(text) and not has_runtime(Path(text))
+
+
+def _repair_plugin_root() -> None:
+    """Keep ~/.reflexio/plugin-root usable after removing an integration.
+
+    Mirrors ``repairPluginRoot`` in bin/claude-smart.js: the link is shared by
+    every installed host's commands, so one left pointing at deleted files is
+    repointed at a remaining install, or removed when none is left.
     """
-    active = _active_plugin_root()
-    removed = removed_dir.resolve()
-    if active is None or not (active == removed or removed in active.parents):
+    if not _plugin_root_is_broken():
         return
     candidates = [
         _STATE_DIR / "claude-code" / "claude-smart" / "plugin",
@@ -299,10 +314,7 @@ def _release_plugin_root(removed_dir: Path) -> None:
             _CODEX_PLUGIN_CACHE_DIR.iterdir(), key=_installed_plugin_sort_key, reverse=True
         )
     for root in candidates:
-        real = root.resolve()
-        if (root / "scripts" / "backend-service.sh").is_file() and not (
-            real == removed or removed in real.parents
-        ):
+        if (root / "scripts" / "backend-service.sh").is_file():
             _force_plugin_root(root)
             return
     for name in ("plugin-root", "plugin-root.txt"):
@@ -889,10 +901,9 @@ def _cleanup_codex_install_state() -> bool:
         },
         prefixes=(f'hooks.state."{_CODEX_PLUGIN_ID}:',),
     )
-    _release_plugin_root(_CODEX_LOCAL_MARKETPLACE_ROOT)
-    _release_plugin_root(_CODEX_PLUGIN_CACHE_DIR)
     shutil.rmtree(_CODEX_LOCAL_MARKETPLACE_ROOT, ignore_errors=True)
     shutil.rmtree(_CODEX_PLUGIN_CACHE_DIR, ignore_errors=True)
+    _repair_plugin_root()
     try:
         _CODEX_PLUGIN_CACHE_DIR.parent.rmdir()
     except OSError:
@@ -1466,6 +1477,7 @@ def _bootstrap_opencode_install(read_only: bool) -> tuple[bool, str]:
 
 
 def cmd_install_opencode(args: argparse.Namespace) -> int:
+    os.environ.setdefault("CLAUDE_SMART_DASHBOARD_WORKSPACE", os.getcwd())
     if not _opencode_install_supported_from_this_package():
         sys.stderr.write(
             "error: OpenCode install is supported from the npm package. "
@@ -1524,6 +1536,7 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
     Returns:
         int: 0 on success, non-zero on failure or unsupported runtime.
     """
+    os.environ.setdefault("CLAUDE_SMART_DASHBOARD_WORKSPACE", os.getcwd())
     if not shutil.which("codex"):
         sys.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n")
         return 1
@@ -1630,6 +1643,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     Returns:
         int: 0 on success, non-zero if the ``claude`` CLI is missing or fails.
     """
+    os.environ.setdefault("CLAUDE_SMART_DASHBOARD_WORKSPACE", os.getcwd())
     if getattr(args, "host", _HOST_CLAUDE_CODE) == _HOST_CODEX:
         return cmd_install_codex(args)
     if getattr(args, "host", _HOST_CLAUDE_CODE) == _HOST_OPENCODE:
@@ -1774,6 +1788,8 @@ def cmd_uninstall(_args: argparse.Namespace) -> int:
     except subprocess.CalledProcessError as exc:
         sys.stderr.write(f"error: {' '.join(cmd)} failed (exit {exc.returncode})\n")
         return exc.returncode or 1
+    # `claude plugin uninstall` can delete the directory plugin-root targets.
+    _repair_plugin_root()
 
     sys.stdout.write(
         "\nclaude-smart uninstalled. Restart Claude Code to apply.\n"
@@ -1838,8 +1854,8 @@ def cmd_uninstall_opencode(args: argparse.Namespace) -> int:
     except ValueError as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 1
-    _release_plugin_root(_OPENCODE_LOCAL_PACKAGE_DIR)
     shutil.rmtree(_OPENCODE_LOCAL_PACKAGE_DIR, ignore_errors=True)
+    _repair_plugin_root()
     try:
         _OPENCODE_LOCAL_PACKAGE_DIR.parent.rmdir()
     except OSError:

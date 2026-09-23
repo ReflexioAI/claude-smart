@@ -600,7 +600,7 @@ def test_python_installer_warns_about_exported_url_it_ignores(
 
 
 @pytest.mark.parametrize("other_host_installed", [True, False])
-def test_python_release_plugin_root_before_removing_an_integration(
+def test_python_repair_plugin_root_after_removing_an_integration(
     monkeypatch, tmp_path: Path, other_host_installed: bool
 ) -> None:
     # Mirror of the Node guard: deleting the install plugin-root points at
@@ -621,7 +621,8 @@ def test_python_release_plugin_root_before_removing_an_integration(
     reflexio.mkdir()
     (reflexio / "plugin-root").symlink_to(codex_root, target_is_directory=True)
 
-    cli._release_plugin_root(codex_cache)
+    shutil.rmtree(codex_cache)
+    cli._repair_plugin_root()
 
     link = reflexio / "plugin-root"
     if other_host_installed:
@@ -630,7 +631,7 @@ def test_python_release_plugin_root_before_removing_an_integration(
         assert not link.is_symlink() and not link.exists()
 
 
-def test_python_release_plugin_root_prefers_the_newest_codex_version(
+def test_python_repair_plugin_root_prefers_the_newest_codex_version(
     monkeypatch, tmp_path: Path
 ) -> None:
     # 0.2.10 is newer than 0.2.9; a lexical sort would pick 0.2.9.
@@ -648,7 +649,8 @@ def test_python_release_plugin_root_prefers_the_newest_codex_version(
     reflexio.mkdir()
     (reflexio / "plugin-root").symlink_to(removed / "plugin", target_is_directory=True)
 
-    cli._release_plugin_root(removed)
+    shutil.rmtree(removed)
+    cli._repair_plugin_root()
 
     assert (reflexio / "plugin-root").resolve() == (codex_cache / "0.2.10").resolve()
 

@@ -39,7 +39,7 @@ const {
 const http = require("http");
 const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
-const { dirname, isAbsolute, join, relative, resolve } = require("path");
+const { dirname, join, resolve } = require("path");
 const { fileURLToPath, pathToFileURL } = require("url");
 
 const PLUGIN_SPEC = "claude-smart@reflexioai";
@@ -892,31 +892,36 @@ function installedPluginRoots() {
   return roots.filter((root) => existsSync(join(root, "scripts", "backend-service.sh")));
 }
 
-function isInside(child, parent) {
-  const rel = relative(parent, child);
-  return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
+function pluginRootIsBroken() {
+  const hasRuntime = (root) => existsSync(join(root, "scripts", "backend-service.sh"));
+  const link = join(REFLEXIO_DIR, "plugin-root");
+  try {
+    if (lstatSync(link).isSymbolicLink()) {
+      try {
+        return !hasRuntime(realpathSync(link));
+      } catch {
+        return true;
+      }
+    }
+  } catch {
+    // No link; forcePluginRoot may have used plugin-root.txt instead.
+  }
+  try {
+    const root = readFileSync(join(REFLEXIO_DIR, "plugin-root.txt"), "utf8").trim();
+    return Boolean(root) && !hasRuntime(root);
+  } catch {
+    return false;
+  }
 }
 
-// Call before deleting an integration's files. ~/.reflexio/plugin-root is
-// shared by every installed host's slash commands, so when it points into
-// the directory being removed it is repointed at a remaining install, or
-// removed when none is left, instead of being left dangling.
-function releasePluginRoot(removedDir) {
-  const active = activePluginRoot();
-  let removedReal = removedDir;
-  try {
-    removedReal = realpathSync(removedDir);
-  } catch {
-    // Already gone: compare the plain path.
-  }
-  if (!active || !isInside(active, removedReal)) return;
-  const next = installedPluginRoots().find((root) => {
-    try {
-      return !isInside(realpathSync(root), removedReal);
-    } catch {
-      return false;
-    }
-  });
+// Call after deleting an integration's files (or after `claude plugin
+// uninstall`, which can remove a pre-stable-copy target). The shared
+// ~/.reflexio/plugin-root is used by every installed host's commands, so a
+// link left pointing at deleted files is repointed at a remaining install,
+// or removed when none is left.
+function repairPluginRoot() {
+  if (!pluginRootIsBroken()) return;
+  const next = installedPluginRoots()[0];
   if (next) {
     forcePluginRoot(next);
     process.stdout.write(`Repointed ${join(REFLEXIO_DIR, "plugin-root")} to ${next}.\n`);
@@ -1184,14 +1189,36 @@ async function bootstrapClaudeCodeInstall(pluginRoot) {
   if (!bash) {
     throw new Error("bash is required to bootstrap claude-smart dependencies");
   }
+  // Services and the dashboard build start only after the install commits
+  // (startCommittedClaudeCodeServices), so a rollback never leaves processes
+  // running from, or writing into, a package it has replaced.
   const code = await runChecked(bash, [join(pluginRoot, "scripts", "smart-install.sh")], {
     cwd: pluginRoot,
+    env: { ...process.env, CLAUDE_SMART_DEFER_SERVICES: "1" },
   });
   if (code !== 0) {
     throw new Error(`smart-install.sh failed in ${pluginRoot}`);
   }
   throwIfInstallFailureMarker();
   return pluginRoot;
+}
+
+// What smart-install.sh defers under CLAUDE_SMART_DEFER_SERVICES: the
+// dashboard's first build (detached, as smart-install does); the backend and
+// dashboard are then started and reported by startAndReportServices.
+function startDeferredDashboardBuild(pluginRoot) {
+  const dashboardDir = join(pluginRoot, "dashboard");
+  const bash = resolveUsableBash();
+  if (!bash || !existsSync(dashboardDir) || existsSync(join(dashboardDir, ".next"))) return;
+  const child = spawn(bash, [join(pluginRoot, "scripts", "dashboard-build.sh")], {
+    cwd: pluginRoot,
+    env: runtimeEnv(),
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.on("error", () => {});
+  child.unref();
 }
 
 function isWindows() {
@@ -2122,10 +2149,9 @@ function cleanupCodexInstallState() {
     ]),
     prefixes: [`hooks.state."${CODEX_PLUGIN_ID}:`],
   });
-  releasePluginRoot(CODEX_MARKETPLACE_DIR);
-  releasePluginRoot(CODEX_PLUGIN_CACHE_DIR);
   rmSync(CODEX_MARKETPLACE_DIR, { recursive: true, force: true });
   rmSync(CODEX_PLUGIN_CACHE_DIR, { recursive: true, force: true });
+  repairPluginRoot();
   try {
     rmSync(dirname(CODEX_PLUGIN_CACHE_DIR), { recursive: false, force: true });
   } catch {
@@ -2492,8 +2518,8 @@ async function runUninstall(args) {
         `claude plugin marketplace remove ${CODEX_MARKETPLACE_NAME}\n`,
     );
   }
-  releasePluginRoot(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
   rmSync(CLAUDE_CODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
+  repairPluginRoot();
 
   process.stdout.write(
     [
@@ -2613,6 +2639,7 @@ async function runInstall(args, options = {}) {
   }
 
   commitLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
+  startDeferredDashboardBuild(pluginRoot);
   await startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup);
 
   process.stdout.write(
@@ -2830,8 +2857,8 @@ async function runUninstallOpenCode(args) {
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
   }
-  releasePluginRoot(OPENCODE_LOCAL_PACKAGE_DIR);
   rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
+  repairPluginRoot();
   try {
     rmdirSync(dirname(OPENCODE_LOCAL_PACKAGE_DIR));
   } catch {
@@ -2857,6 +2884,14 @@ async function main() {
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     printHelp();
     return;
+  }
+
+  if (cmd === "install" || cmd === "update") {
+    // Service scripts run from the plugin dir; the dashboard they start must
+    // still edit the project install was run from (dashboard-service.sh).
+    if (!process.env.CLAUDE_SMART_DASHBOARD_WORKSPACE) {
+      process.env.CLAUDE_SMART_DASHBOARD_WORKSPACE = process.cwd();
+    }
   }
 
   if (cmd === "install") {
