@@ -1608,15 +1608,25 @@ def test_setup_script_never_offers_a_loopback_key_as_managed_default(
     tmp_path: Path,
 ) -> None:
     # Enter at every prompt must not ship a local server's key to the managed
-    # service: the mode defaults to local, and an explicit managed choice
-    # does not prefill that key.
+    # service, nor silently reset the hooks to the bundled backend: the mode
+    # defaults to keeping the user's local server, and an explicit managed
+    # choice does not prefill that key.
     runtime_env = tmp_path / ".claude-smart" / ".env"
     runtime_env.parent.mkdir()
     runtime_env.write_text('REFLEXIO_URL="http://localhost:8081/"\nREFLEXIO_API_KEY="rflx-dev"\n')
 
     result = _run_setup_script(tmp_path, "claude-code\n\n")
     assert result.returncode == 0, result.stderr
-    assert "Setup mode (1=local, 2=managed Reflexio) [local]" in result.stderr
+    assert "current=keep http://localhost:8081/) [current]" in result.stderr
+    kept = runtime_env.read_text()
+    assert 'REFLEXIO_URL="http://localhost:8081/"' in kept
+    assert 'REFLEXIO_API_KEY="rflx-dev"' in kept
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=" in kept
+
+    # An explicit local choice still resets to the bundled backend.
+    result = _run_setup_script(tmp_path, "claude-code\nlocal\n")
+    assert result.returncode == 0, result.stderr
+    assert "REFLEXIO_API_KEY" not in runtime_env.read_text()
 
     runtime_env.write_text('REFLEXIO_URL="http://localhost:8081/"\nREFLEXIO_API_KEY="rflx-dev"\n')
     result = _run_setup_script(tmp_path, "claude-code\nmanaged\nrflx-new\nno\nproject\n")
@@ -1641,8 +1651,19 @@ def test_setup_script_keyed_loopback_skips_legacy_prefill(tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     assert "as defaults" not in result.stderr
-    assert "Setup mode (1=local, 2=managed Reflexio) [local]" in result.stderr
+    assert "[current]" in result.stderr
     assert "rflx-legacy" not in runtime_env.read_text()
+
+
+def test_setup_current_mode_needs_a_keyed_local_server(tmp_path: Path) -> None:
+    # "current" is only offered for a keyed loopback URL; elsewhere it is not
+    # a valid answer, so it cannot add local flags to a managed setup.
+    runtime_env = tmp_path / ".claude-smart" / ".env"
+    runtime_env.parent.mkdir()
+    runtime_env.write_text('REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-m"\n')
+    result = _run_setup_script(tmp_path, "claude-code\ncurrent\nlocal\n")
+    assert result.returncode == 0, result.stderr
+    assert "Invalid choice: current" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -1855,6 +1876,47 @@ def test_node_install_holds_the_package_lock_until_commit_or_rollback(
     assert (tmp_path / "lock-during-bootstrap").read_text() == "held\n"
     assert not lock.exists()
     assert sorted(p.name for p in stable.parent.iterdir()) == ["claude-smart"]
+
+
+def test_node_first_install_removes_an_unprepared_copy_on_failure(tmp_path: Path) -> None:
+    # With no previous stable copy, a failed bootstrap must not leave an
+    # unprepared copy (or a plugin-root pointing at it) for the next attempt
+    # to treat as the previous working package.
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 7\n")
+    stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {})
+
+    assert result.returncode != 0
+    assert not stable.exists()
+    link = tmp_path / ".reflexio" / "plugin-root"
+    assert not link.is_symlink() and not link.exists()
+    assert "removed the unprepared claude-smart package" in result.stderr
+
+
+def test_node_setup_passes_the_caller_workspace_to_nested_installs(tmp_path: Path) -> None:
+    # `setup` runs its script from the package dir and that script runs
+    # `install`; the dashboard must still edit the project setup ran from.
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    (package_root / "scripts").mkdir()
+    _write_executable(
+        package_root / "scripts" / "setup-claude-smart.sh",
+        '#!/bin/sh\necho "$CLAUDE_SMART_DASHBOARD_WORKSPACE" > "$HOME/workspace"\n',
+    )
+    project = tmp_path / "project"
+    project.mkdir()
+    env = _isolated_env(tmp_path)
+    env.pop("CLAUDE_SMART_DASHBOARD_WORKSPACE", None)
+    result = subprocess.run(
+        [node_bin(), str(package_root / "bin" / "claude-smart.js"), "setup"],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "workspace").read_text().strip() == str(project)
 
 
 def test_node_install_rolls_back_when_terminated_during_bootstrap(tmp_path: Path) -> None:

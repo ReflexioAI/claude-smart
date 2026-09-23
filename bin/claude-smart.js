@@ -1093,17 +1093,26 @@ function rollbackLocalPluginPackages() {
       if (!pathEntryExists(packageRoot) || lstatSync(packageRoot).ino !== installedIno) {
         // Someone replaced this package despite the lock. Leave both alone;
         // the backup may be the only copy of a working runtime.
-        process.stderr.write(
-          `warning: ${packageRoot} changed during this install; the previous package ` +
-            `was kept at ${backupPackage}.\n`,
-        );
+        if (backupPackage) {
+          process.stderr.write(
+            `warning: ${packageRoot} changed during this install; the previous package ` +
+              `was kept at ${backupPackage}.\n`,
+          );
+        }
         continue;
       }
       rmSync(packageRoot, { recursive: true, force: true });
-      renameSync(backupPackage, packageRoot);
-      process.stderr.write(
-        `Install did not complete; restored the previous claude-smart package at ${packageRoot}.\n`,
-      );
+      if (backupPackage) {
+        renameSync(backupPackage, packageRoot);
+        process.stderr.write(
+          `Install did not complete; restored the previous claude-smart package at ${packageRoot}.\n`,
+        );
+      } else {
+        process.stderr.write(
+          `Install did not complete; removed the unprepared claude-smart package at ${packageRoot}.\n`,
+        );
+        repairPluginRoot();
+      }
     } catch (err) {
       process.stderr.write(
         `warning: could not restore the previous claude-smart package from ${backupPackage}: ` +
@@ -1139,8 +1148,18 @@ function commitLocalPluginPackage(packageRoot) {
   stoppedServices = null;
   const pending = pendingPreviousPackages.get(packageRoot);
   pendingPreviousPackages.delete(packageRoot);
-  if (pending) rmSync(pending.backupPackage, { recursive: true, force: true });
+  if (pending && pending.backupPackage) {
+    rmSync(pending.backupPackage, { recursive: true, force: true });
+  }
   releasePackageInstallLock(packageRoot);
+}
+
+// A newly created package whose runtime is now prepared is worth keeping
+// even if a later Claude CLI step fails: the marketplace may already point
+// at it. A replaced package keeps its backup until commit.
+function markLocalPluginPackagePrepared(packageRoot) {
+  const pending = pendingPreviousPackages.get(packageRoot);
+  if (pending && !pending.backupPackage) pendingPreviousPackages.delete(packageRoot);
 }
 
 function replaceLocalPluginPackage(stagedPackage, packageRoot) {
@@ -1158,13 +1177,15 @@ function replaceLocalPluginPackage(stagedPackage, packageRoot) {
     }
     throw err;
   }
-  if (backupCreated) {
-    ensureRollbackOnExit();
-    pendingPreviousPackages.set(packageRoot, {
-      backupPackage,
-      installedIno: lstatSync(packageRoot).ino,
-    });
-  }
+  // A package with no predecessor is tracked too (backupPackage null): if
+  // the install fails before its runtime is prepared, rollback removes it
+  // rather than leaving an unprepared copy for the next attempt to treat as
+  // the previous working package.
+  ensureRollbackOnExit();
+  pendingPreviousPackages.set(packageRoot, {
+    backupPackage: backupCreated ? backupPackage : null,
+    installedIno: lstatSync(packageRoot).ino,
+  });
 }
 
 // Copy this npm package to a stable per-host dir. The npx cache this runs from
@@ -2668,6 +2689,7 @@ async function runInstall(args, options = {}) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
+    markLocalPluginPackagePrepared(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
   } catch (err) {
     if (previousRoot && existsSync(join(previousRoot, "scripts", "backend-service.sh"))) {
       forcePluginRoot(previousRoot);
@@ -2959,7 +2981,7 @@ async function main() {
     return;
   }
 
-  if (cmd === "install" || cmd === "update") {
+  if (cmd === "install" || cmd === "update" || cmd === "setup") {
     // Service scripts run from the plugin dir; the dashboard they start must
     // still edit the project install was run from (dashboard-service.sh).
     if (!process.env.CLAUDE_SMART_DASHBOARD_WORKSPACE) {

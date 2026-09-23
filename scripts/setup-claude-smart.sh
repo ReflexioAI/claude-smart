@@ -217,6 +217,7 @@ normalize_host() {
 normalize_mode() {
   case "$1" in
     1|local|Local*) printf 'local\n' ;;
+    current|keep) [ -n "${keyed_local_url:-}" ] || return 1; printf 'current\n' ;;
     2|managed|remote|Remote*) printf 'managed\n' ;;
     *) return 1 ;;
   esac
@@ -299,7 +300,7 @@ install_for_host() {
 main() {
   local existing_api_key existing_url existing_user_id existing_read_only
   local default_mode default_read_only default_scope host mode api_key read_only scope
-  local runtime_has_key
+  local runtime_has_key keyed_local_url mode_label
   local managed_url managed_user_id
 
   existing_api_key="$(get_env_value REFLEXIO_API_KEY || true)"
@@ -312,7 +313,9 @@ main() {
   # the pre-split file is not consulted even when that key is dropped below.
   runtime_has_key=0
   [ -z "$existing_api_key" ] || runtime_has_key=1
+  keyed_local_url=""
   if [ -n "$existing_url" ] && is_local_url "$existing_url"; then
+    [ "$runtime_has_key" = "0" ] || keyed_local_url="$existing_url"
     existing_api_key=""
   fi
   if [ "$runtime_has_key" = "0" ] && [ -f "$LEGACY_REFLEXIO_ENV" ] && [ ! -e "$LEGACY_MIGRATION_MARKER" ]; then
@@ -347,8 +350,24 @@ main() {
     default_scope="global"
   fi
 
+  # A key next to a loopback URL is the user's own local Reflexio server.
+  # "local" would reset the hooks to the bundled backend, so the default is
+  # to keep it; switching needs an explicit choice.
+  mode_label="Setup mode (1=local, 2=managed Reflexio)"
+  if [ -n "$keyed_local_url" ]; then
+    default_mode="current"
+    mode_label="Setup mode (1=local, 2=managed Reflexio, current=keep $keyed_local_url)"
+  fi
+
   host="$(prompt_normalized "Host (1=Claude Code, 2=Codex, 3=all, 4=OpenCode)" "claude-code" normalize_host)"
-  mode="$(prompt_normalized "Setup mode (1=local, 2=managed Reflexio)" "$default_mode" normalize_mode)"
+  mode="$(prompt_normalized "$mode_label" "$default_mode" normalize_mode)"
+
+  if [ "$mode" = "current" ]; then
+    ensure_local_env_defaults
+    log "kept your local Reflexio server settings ($keyed_local_url) in $REFLEXIO_ENV"
+    install_for_host "$host"
+    return 0
+  fi
 
   if [ "$mode" = "local" ]; then
     if [ -f "$REFLEXIO_ENV" ]; then

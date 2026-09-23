@@ -111,6 +111,11 @@ Choose `local` only when you want to switch back to local storage and local
 backend behavior. Local mode removes the managed keys from
 `~/.claude-smart/.env` and writes the local-provider defaults.
 
+If `~/.claude-smart/.env` already points claude-smart at your own local
+Reflexio server (a loopback `REFLEXIO_URL` with an API key), setup offers
+`current` as the default, which keeps those settings. Choosing `local` resets
+the hooks to the bundled backend.
+
 ### Reflexio API Key
 
 Managed mode requires a Reflexio API key. Setup writes it as:
