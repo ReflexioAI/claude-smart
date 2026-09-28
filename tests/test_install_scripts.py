@@ -588,10 +588,11 @@ def test_detached_spawn_does_not_hold_caller_stdio(tmp_path: Path) -> None:
         except subprocess.TimeoutExpired:
             timed_out = True
     finally:
-        if timed_out:
-            proc.kill()
-            proc.communicate()
-        # The spawned `sleep` is detached from us, so clean it up by pid.
+        # Kill the detached child BEFORE any further read. Killing `proc` does
+        # not close a pipe its detached child still holds, so draining first
+        # would block until that child exits by itself -- which a real daemon
+        # never does. This test only survived that with `sleep 30`; leaving it
+        # would make the failure path hang instead of report.
         if marker.exists():
             raw = marker.read_text().strip()
             if raw.isdigit():
@@ -599,6 +600,12 @@ def test_detached_spawn_does_not_hold_caller_stdio(tmp_path: Path) -> None:
                     os.kill(int(raw), signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     pass
+        if timed_out:
+            proc.kill()
+            try:
+                proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:  # pragma: no cover - cleanup only
+                pass
 
     assert not timed_out, (
         "detached child kept the caller's stdout open: the spawning script "
