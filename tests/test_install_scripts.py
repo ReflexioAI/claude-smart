@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -539,6 +540,77 @@ def test_detached_spawns_with_log_redirection_preserve_output_on_windows() -> No
         "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached "
         '"$NEXT_BIN" start -p "$PORT" -H 127.0.0.1 >>"$LOG_FILE" 2>&1'
         in dashboard
+    )
+    # The backend runner is a long-lived daemon and is squeezed from both
+    # sides: it must NOT opt out of the default close, because opting out
+    # without a redirect hands the hook's stdout to the daemon
+    # (claude-smart#163), and a raw redirect here would bypass the capped
+    # appender (see test_backend_service_uses_capped_logging).
+    assert (
+        "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached bash "
+        '"$HERE/backend-log-runner.sh"'
+    ) not in backend
+
+
+@pytest.mark.skipif(os.name == "nt", reason="exercises the POSIX spawn branch")
+def test_detached_spawn_does_not_hold_caller_stdio(tmp_path: Path) -> None:
+    """A detached child must not keep the caller's stdout/stderr open.
+
+    Regression for #163. Claude Code gives a hook a socketpair for stdout/stderr
+    and waits for EOF on it. `backend-service.sh start` spawns a long-lived
+    daemon, so if that daemon inherits those fds EOF never arrives and the
+    SessionStart hook hangs forever -- the hook's own timeout does not help,
+    because its bash has already exited while the daemon holds the fds.
+
+    A pipe has the same EOF semantics as the socketpair, so reading to EOF after
+    the spawning script exits is a faithful stand-in: it completes only if no
+    surviving child still holds the write end.
+    """
+    marker = tmp_path / "child.pid"
+    script = tmp_path / "spawn.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        f". {shlex.quote(str(LIB))}\n"
+        "claude_smart_spawn_detached sleep 30\n"
+        f"printf '%s\\n' \"$!\" > {shlex.quote(str(marker))}\n"
+    )
+
+    proc = subprocess.Popen(
+        ["bash", str(script)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    timed_out = False
+    try:
+        try:
+            proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+    finally:
+        if timed_out:
+            proc.kill()
+            proc.communicate()
+        # The spawned `sleep` is detached from us, so clean it up by pid.
+        if marker.exists():
+            raw = marker.read_text().strip()
+            if raw.isdigit():
+                try:
+                    os.kill(int(raw), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+
+    assert not timed_out, (
+        "detached child kept the caller's stdout open: the spawning script "
+        "exited but its stdout never reached EOF (claude-smart#163)"
+    )
+
+    # The refactor that applies the redirect must not break `$!` for callers --
+    # backend-service.sh writes it to the pid file immediately after spawning.
+    assert marker.exists(), "spawn script never recorded $!"
+    recorded = marker.read_text().strip()
+    assert recorded.isdigit() and int(recorded) > 0, (
+        f"$! did not survive the spawn helper; got {recorded!r}"
     )
 
 

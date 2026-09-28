@@ -663,15 +663,30 @@ claude_smart_append_capped_log() {
 # POSIX: setsid → python3 os.setsid → nohup (in that order of strength).
 # Windows: nohup alone — Git Bash has no setsid, no process groups, and
 # `os.setsid()` is POSIX-only; nohup ignores SIGHUP which is enough to
-# survive the parent console closing. On Windows, stdout/stderr are also
-# closed here so hook-runner pipes cannot be kept alive by long-lived
-# background children after the hook script exits unless the caller explicitly
-# opts into preserving stdout/stderr for a file redirection. The python3
-# fallback is gated on a real-interpreter probe (-V) so the Windows App
-# Execution Alias stub doesn't get invoked. POSIX callers are responsible for
-# redirecting stdout/stderr; we do not impose a log destination there. Stdin is
-# closed so the child cannot inherit a tty. Use `$!` after this call to capture
-# the pid.
+# survive the parent console closing. The python3 fallback is gated on a
+# real-interpreter probe (-V) so the Windows App Execution Alias stub doesn't
+# get invoked. Stdin is closed so the child cannot inherit a tty. Use `$!`
+# after this call to capture the pid.
+#
+# On EVERY platform stdout/stderr are closed too, unless the caller sets
+# CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 to point them at a log file. Claude Code
+# hands a hook a socketpair for stdout/stderr and waits for EOF on it; a
+# detached daemon that inherits those fds never closes them, so the session
+# hangs on "running SessionStart hooks" forever. The hook's own timeout does
+# not save it -- the hook's shell has already exited while the daemon holds
+# the fds. This used to be POSIX callers' responsibility and one of them
+# (the backend spawn) did not do it: claude-smart#163.
+_claude_smart_spawn_posix() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid nohup "$@" < /dev/null &
+  elif _CS_PY=$(claude_smart_resolve_python) && [ -n "$_CS_PY" ]; then
+    "$_CS_PY" -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+      "$@" < /dev/null &
+  else
+    nohup "$@" < /dev/null &
+  fi
+}
+
 claude_smart_spawn_detached() {
   if claude_smart_is_windows; then
     if [ "${CLAUDE_SMART_SPAWN_KEEP_OUTPUT:-}" = "1" ]; then
@@ -681,13 +696,12 @@ claude_smart_spawn_detached() {
     fi
     return 0
   fi
-  if command -v setsid >/dev/null 2>&1; then
-    setsid nohup "$@" < /dev/null &
-  elif _CS_PY=$(claude_smart_resolve_python) && [ -n "$_CS_PY" ]; then
-    "$_CS_PY" -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-      "$@" < /dev/null &
+  # `$!` is a shell-global "most recent background pid", so it survives the
+  # extra function layer and callers can still read it after this returns.
+  if [ "${CLAUDE_SMART_SPAWN_KEEP_OUTPUT:-}" = "1" ]; then
+    _claude_smart_spawn_posix "$@"
   else
-    nohup "$@" < /dev/null &
+    _claude_smart_spawn_posix "$@" > /dev/null 2>&1
   fi
 }
 
