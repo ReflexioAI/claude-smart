@@ -119,13 +119,19 @@ install_fingerprint() {
   claude_smart_install_fingerprint "$PLUGIN_ROOT" "$HERE"
 }
 
+# Managed means a key AND a remote URL, as the runtime decides it
+# (claude_smart_reflexio_url_is_remote); a keyed loopback URL is local mode.
+claude_smart_managed_env_active() {
+  [ -n "${REFLEXIO_API_KEY:-}" ] && claude_smart_reflexio_url_is_remote
+}
+
 install_complete() {
   [ -f "$SUCCESS_MARKER" ] || return 1
   [ "$(cat "$SUCCESS_MARKER" 2>/dev/null || true)" = "$(install_fingerprint)" ] || return 1
   command -v uv >/dev/null 2>&1 || return 1
   [ -d "$PLUGIN_ROOT/.venv" ] || return 1
   claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook || return 1
-  if [ -z "${REFLEXIO_API_KEY:-}" ]; then
+  if ! claude_smart_managed_env_active; then
     [ -f "$HOME/.claude-smart/.env" ] || return 1
     grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$HOME/.claude-smart/.env" || return 1
     grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$HOME/.claude-smart/.env" || return 1
@@ -138,9 +144,15 @@ install_complete() {
   return 0
 }
 
+# The npx installer sets CLAUDE_SMART_DEFER_SERVICES=1 while it prepares a
+# copy it may still roll back; it starts the backend and the dashboard build
+# itself once the install has committed.
 start_backend_service() {
+  [ "${CLAUDE_SMART_DEFER_SERVICES:-}" = "1" ] && return 0
   if [ -x "$HERE/backend-service.sh" ]; then
-    echo "[claude-smart] starting backend service in background" >&2
+    # backend-service.sh decides whether a bundled backend runs at all
+    # (managed mode, a custom local server, and autostart=0 skip it).
+    echo "[claude-smart] requested a backend start (see backend-service.sh status)" >&2
     bash "$HERE/backend-service.sh" start >/dev/null 2>&1 || true
   fi
 }
@@ -637,12 +649,16 @@ claude_smart_ensure_local_env_defaults() {
   local local_cli_default local_embedding_default
   local_cli_default="${CLAUDE_SMART_USE_LOCAL_CLI:-1}"
   local_embedding_default="${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}"
-  [ -z "${REFLEXIO_API_KEY:-}" ] || return 0
+  claude_smart_managed_env_active && return 0
   mkdir -p "$(dirname "$REFLEXIO_ENV")"
   touch "$REFLEXIO_ENV"
   chmod 600 "$REFLEXIO_ENV"
-  claude_smart_prune_managed_env_keys_for_local
-  unset REFLEXIO_URL REFLEXIO_API_KEY REFLEXIO_USER_ID CLAUDE_SMART_MANAGED_SETUP
+  # A key next to a plain http loopback URL is local mode that keeps its URL;
+  # only a keyless setup has managed keys to prune.
+  if [ -z "${REFLEXIO_API_KEY:-}" ]; then
+    claude_smart_prune_managed_env_keys_for_local
+    unset REFLEXIO_URL REFLEXIO_API_KEY REFLEXIO_USER_ID CLAUDE_SMART_MANAGED_SETUP
+  fi
   if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
     printf '# Route reflexio generation through the configured local host CLI\n' >> "$REFLEXIO_ENV"
     claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_CLI "$local_cli_default"
@@ -736,7 +752,9 @@ DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
 if [ -d "$DASHBOARD_DIR" ]; then
   install_private_node || true
 fi
-if [ -d "$DASHBOARD_DIR" ] && claude_smart_npm_available; then
+if [ "${CLAUDE_SMART_DEFER_SERVICES:-}" = "1" ]; then
+  :
+elif [ -d "$DASHBOARD_DIR" ] && claude_smart_npm_available; then
   echo "[claude-smart] starting dashboard build in background (~1-2 min on first install)" >&2
   claude_smart_spawn_detached bash "$HERE/dashboard-build.sh" >/dev/null 2>&1
 elif [ -d "$DASHBOARD_DIR" ]; then
@@ -754,5 +772,9 @@ fi
 start_backend_service
 
 write_success_marker
-echo "[claude-smart] install complete. Backend started; dashboard auto-starts on session start." >&2
+if [ "${CLAUDE_SMART_DEFER_SERVICES:-}" = "1" ]; then
+  echo "[claude-smart] install complete; the installer starts and reports services once the plugin is registered." >&2
+else
+  echo "[claude-smart] install complete. Services start on session start when this setup uses them; see backend-service.sh status." >&2
+fi
 claude_smart_emit_continue

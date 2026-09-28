@@ -36,7 +36,9 @@ claude_smart_derive_reflexio_url_from_backend_port
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "dashboard-service.sh" "$@"
 DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
-WORKSPACE_CWD="${PWD:-}"
+# The project the Configure page edits. The npx installer runs this script
+# from the plugin dir and passes the directory install was run from instead.
+WORKSPACE_CWD="${CLAUDE_SMART_DASHBOARD_WORKSPACE:-${PWD:-}}"
 
 STATE_DIR="$HOME/.claude-smart"
 PID_FILE="$STATE_DIR/dashboard.pid"

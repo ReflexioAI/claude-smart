@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Interactive setup for claude-smart's shared ~/.reflexio/.env.
+# Interactive setup for claude-smart's ~/.claude-smart/.env — the env file the
+# hooks and backend read. ~/.reflexio/.env belongs to other Reflexio tools and
+# is only read, never written, to prefill a pre-#85 managed setup.
 #
 # Plain installs stay local and do not need this script. Use this when a user
 # wants managed Reflexio, read-only mode, global sharing, or to switch back to
@@ -10,7 +12,11 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 INSTALLER="$REPO_ROOT/bin/claude-smart.js"
-REFLEXIO_ENV="${REFLEXIO_ENV_PATH:-$HOME/.reflexio/.env}"
+REFLEXIO_ENV="${REFLEXIO_ENV_PATH:-$HOME/.claude-smart/.env}"
+LEGACY_REFLEXIO_ENV="${LEGACY_REFLEXIO_ENV_PATH:-$HOME/.reflexio/.env}"
+# Same path as LEGACY_ENV_MIGRATION_MARKER in bin/claude-smart.js: once it
+# exists, neither the installer nor this wizard reads the legacy file again.
+LEGACY_MIGRATION_MARKER="$HOME/.claude-smart/legacy-reflexio-env-checked"
 MANAGED_REFLEXIO_URL="https://www.reflexio.ai/"
 GLOBAL_USER_ID="global_user"
 
@@ -211,6 +217,7 @@ normalize_host() {
 normalize_mode() {
   case "$1" in
     1|local|Local*) printf 'local\n' ;;
+    current|keep) [ -n "${keyed_local_url:-}" ] || return 1; printf 'current\n' ;;
     2|managed|remote|Remote*) printf 'managed\n' ;;
     *) return 1 ;;
   esac
@@ -232,9 +239,11 @@ normalize_scope() {
   esac
 }
 
+# Any loopback host, over any scheme: such a URL names a server on this
+# machine (a local or dev Reflexio), never the managed service.
 is_local_url() {
   case "$1" in
-    http://localhost|http://localhost/|http://localhost:*|http://127.0.0.1|http://127.0.0.1/|http://127.0.0.1:*|http://0.0.0.0|http://0.0.0.0/|http://0.0.0.0:*)
+    http://localhost|http://localhost/|http://localhost:*|http://127.0.0.1|http://127.0.0.1/|http://127.0.0.1:*|http://0.0.0.0|http://0.0.0.0/|http://0.0.0.0:*|http://\[::1\]|http://\[::1\]/*|http://\[::1\]:*|https://localhost|https://localhost/*|https://localhost:*|https://127.0.0.1|https://127.0.0.1/*|https://127.0.0.1:*|https://0.0.0.0|https://0.0.0.0/*|https://0.0.0.0:*|https://\[::1\]|https://\[::1\]/*|https://\[::1\]:*)
       return 0
       ;;
     *)
@@ -291,15 +300,45 @@ install_for_host() {
 main() {
   local existing_api_key existing_url existing_user_id existing_read_only
   local default_mode default_read_only default_scope host mode api_key read_only scope
+  local runtime_has_key keyed_local_url mode_label
   local managed_url managed_user_id
 
   existing_api_key="$(get_env_value REFLEXIO_API_KEY || true)"
   existing_url="$(get_env_value REFLEXIO_URL || true)"
   existing_user_id="$(get_env_value REFLEXIO_USER_ID || true)"
   existing_read_only="$(get_env_value CLAUDE_SMART_READ_ONLY || true)"
+  # A key next to a loopback URL belongs to that local server. Offering it as
+  # the managed default would send it to the managed service on Enter.
+  # Any key in the runtime file means claude-smart is already configured, so
+  # the pre-split file is not consulted even when that key is dropped below.
+  runtime_has_key=0
+  [ -z "$existing_api_key" ] || runtime_has_key=1
+  keyed_local_url=""
+  if [ -n "$existing_url" ] && is_local_url "$existing_url"; then
+    [ "$runtime_has_key" = "0" ] || keyed_local_url="$existing_url"
+    existing_api_key=""
+  fi
+  if [ "$runtime_has_key" = "0" ] && [ -f "$LEGACY_REFLEXIO_ENV" ] && [ ! -e "$LEGACY_MIGRATION_MARKER" ]; then
+    local legacy_api_key legacy_url
+    legacy_api_key="$(REFLEXIO_ENV="$LEGACY_REFLEXIO_ENV" get_env_value REFLEXIO_API_KEY || true)"
+    legacy_url="$(REFLEXIO_ENV="$LEGACY_REFLEXIO_ENV" get_env_value REFLEXIO_URL || true)"
+    # Same rule as the installer's migration: a loopback URL there belongs to
+    # another local Reflexio server, so its key is not claude-smart's.
+    # A key with no URL meant the managed service to older releases.
+    legacy_url="${legacy_url:-$MANAGED_REFLEXIO_URL}"
+    if [ -n "$legacy_api_key" ] && ! is_local_url "$legacy_url"; then
+      existing_api_key="$legacy_api_key"
+      existing_url="$legacy_url"
+      existing_user_id="$(REFLEXIO_ENV="$LEGACY_REFLEXIO_ENV" get_env_value REFLEXIO_USER_ID || true)"
+      existing_read_only="$(REFLEXIO_ENV="$LEGACY_REFLEXIO_ENV" get_env_value CLAUDE_SMART_READ_ONLY || true)"
+      log "using managed settings from $LEGACY_REFLEXIO_ENV as defaults (it is left unchanged)"
+    fi
+  fi
 
+  # A loopback URL is a local setup (the dashboard writes its default
+  # http://localhost URL when settings are saved), not a managed one.
   default_mode="local"
-  if [ -n "$existing_api_key" ] || [ -n "$existing_url" ]; then
+  if [ -n "$existing_api_key" ] || { [ -n "$existing_url" ] && ! is_local_url "$existing_url"; }; then
     default_mode="managed"
   fi
   default_read_only="no"
@@ -311,8 +350,24 @@ main() {
     default_scope="global"
   fi
 
+  # A key next to a loopback URL is the user's own local Reflexio server.
+  # "local" would reset the hooks to the bundled backend, so the default is
+  # to keep it; switching needs an explicit choice.
+  mode_label="Setup mode (1=local, 2=managed Reflexio)"
+  if [ -n "$keyed_local_url" ]; then
+    default_mode="current"
+    mode_label="Setup mode (1=local, 2=managed Reflexio, current=keep $keyed_local_url)"
+  fi
+
   host="$(prompt_normalized "Host (1=Claude Code, 2=Codex, 3=all, 4=OpenCode)" "claude-code" normalize_host)"
-  mode="$(prompt_normalized "Setup mode (1=local, 2=managed Reflexio)" "$default_mode" normalize_mode)"
+  mode="$(prompt_normalized "$mode_label" "$default_mode" normalize_mode)"
+
+  if [ "$mode" = "current" ]; then
+    ensure_local_env_defaults
+    log "kept your local Reflexio server settings ($keyed_local_url) in $REFLEXIO_ENV"
+    install_for_host "$host"
+    return 0
+  fi
 
   if [ "$mode" = "local" ]; then
     if [ -f "$REFLEXIO_ENV" ]; then
@@ -320,6 +375,10 @@ main() {
       log "removed managed Reflexio settings from $REFLEXIO_ENV"
     fi
     ensure_local_env_defaults
+    # Stop the installer from migrating ~/.reflexio/.env managed settings
+    # straight back after the user chose local mode.
+    mkdir -p "$(dirname "$LEGACY_MIGRATION_MARKER")"
+    : > "$LEGACY_MIGRATION_MARKER"
     log "configured local Reflexio defaults in $REFLEXIO_ENV"
     install_for_host "$host"
     return 0

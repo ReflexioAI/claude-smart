@@ -2,13 +2,14 @@
 /**
  * npx claude-smart install — thin wrapper around the native host plugin
  * CLIs. Both Claude Code and Codex install from the bundled marketplace in
- * this npm package: Claude Code registers the package root as a local
- * marketplace, and Codex copies the bundled plugin into its own marketplace
- * wrapper. The npm path reads setup/bootstrap config from ~/.reflexio/.env and
- * seeds runtime ~/.claude-smart/.env with local-provider defaults so reflexio
- * can route generation through local tools with no API key.
+ * this npm package: Claude Code registers a stable copy of the package
+ * (~/.claude-smart/claude-code/claude-smart) as a local marketplace and runs
+ * the plugin in place from it, and Codex copies the bundled plugin into its
+ * own marketplace wrapper. Config lives in ~/.claude-smart/.env — the file the
+ * hooks and backend read — seeded with local-provider defaults so reflexio can
+ * route generation through local tools with no API key.
  * Managed/read-only/global setup is handled by `npx claude-smart setup`,
- * which writes ~/.reflexio/.env before running this installer.
+ * which writes ~/.claude-smart/.env before running this installer.
  *
  * Keep this file dependency-free — it runs via `npx` with no install step.
  */
@@ -32,11 +33,13 @@ const {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } = require("fs");
+const http = require("http");
 const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
-const { dirname, join, resolve } = require("path");
+const { dirname, join, resolve, sep } = require("path");
 const { fileURLToPath, pathToFileURL } = require("url");
 
 const PLUGIN_SPEC = "claude-smart@reflexioai";
@@ -45,7 +48,10 @@ const CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI";
 const CODEX_PLUGIN_ID = `claude-smart@${CODEX_MARKETPLACE_NAME}`;
 const OPENCODE_BARE_PLUGIN_SPEC = "claude-smart";
 const OPENCODE_CONFIG_NAMES = ["opencode.json", "opencode.jsonc"];
-const REFLEXIO_SETUP_ENV_PATH = join(homedir(), ".reflexio", ".env");
+// Pre-#85 installs kept claude-smart's managed settings here. It is also the
+// env file of any other Reflexio tool on the machine, so it is only ever read
+// for a one-time migration (see migrateLegacyManagedEnv), never written.
+const LEGACY_REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
 const CLAUDE_SMART_ENV_PATH = join(homedir(), ".claude-smart", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
 const MANAGED_SETUP_ENV = "CLAUDE_SMART_MANAGED_SETUP";
@@ -63,7 +69,14 @@ const DEFAULT_CLAUDE_SMART_HOST = HOST_CLAUDE_CODE;
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const INSTALL_FAILURE_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-failed");
+// Written the first time install considers ~/.reflexio/.env, whatever the
+// outcome, so the migration runs once and a later local-mode choice sticks.
+// scripts/setup-claude-smart.sh writes the same path before a local install.
+const LEGACY_ENV_MIGRATION_MARKER = join(CLAUDE_SMART_STATE_DIR, "legacy-reflexio-env-checked");
 const OPENCODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "opencode", "claude-smart");
+// Claude Code loads plugins from a local-directory marketplace in place
+// (<marketplace>/plugin), so this copy IS the runtime root, not a staging area.
+const CLAUDE_CODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "claude-code", "claude-smart");
 const OPENCODE_PACKAGE_LOCK_TIMEOUT_MS = 120_000;
 const OPENCODE_PACKAGE_LOCK_STALE_MS = 10 * 60_000;
 const CODEX_CONFIG_PATH = join(homedir(), ".codex", "config.toml");
@@ -149,9 +162,18 @@ function shouldCopyPath(src) {
 function runClaude(args, { spinnerLabel } = {}) {
   const useSpinner = Boolean(spinnerLabel) && process.stdout.isTTY && !process.env.CI;
   return new Promise((resolve) => {
+    // While a package install is uncommitted, run the step in its own
+    // process group (as runChecked does) so an interrupt can stop and await
+    // every descendant before the rollback. These steps are non-interactive;
+    // stdin is not passed through there, since a background group reading
+    // the terminal would be stopped.
+    const group = !isWindows() && rollbackArmed();
+    const stdin = group ? "ignore" : "inherit";
     const child = spawn("claude", args, {
-      stdio: useSpinner ? ["inherit", "pipe", "pipe"] : "inherit",
+      stdio: useSpinner ? [stdin, "pipe", "pipe"] : [stdin, "inherit", "inherit"],
+      detached: group,
     });
+    trackChild(child, group);
 
     if (useSpinner) {
       const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -202,8 +224,8 @@ function runClaude(args, { spinnerLabel } = {}) {
       });
     }
 
-    child.on("exit", (code) => resolve(typeof code === "number" ? code : 1));
-    child.on("error", () => resolve(1));
+    child.on("exit", (code) => terminatingOnSignal || resolve(typeof code === "number" ? code : 1));
+    child.on("error", () => terminatingOnSignal || resolve(1));
   });
 }
 
@@ -223,25 +245,33 @@ function hasCli(name) {
 
 function runCodex(args) {
   return new Promise((resolve) => {
+    // Grouped while an install can still roll back (see runChecked).
+    const group = !isWindows() && rollbackArmed();
     const child = spawn("codex", args, {
-      stdio: "inherit",
-      timeout: CODEX_CLI_TIMEOUT_MS,
-      killSignal: "SIGTERM",
+      stdio: [group ? "ignore" : "inherit", "inherit", "inherit"],
+      detached: group,
     });
+    trackChild(child, group);
     let timedOut = false;
-    child.on("exit", (code, signal) => {
-      if (signal === "SIGTERM" && code === null) {
-        timedOut = true;
-        process.stderr.write(
-          `error: codex ${args.join(" ")} timed out after ${CODEX_CLI_TIMEOUT_MS / 1000}s\n`,
-        );
-        resolve(124);
-        return;
-      }
-      if (timedOut) return;
+    // On timeout, stop the whole tree (not just the leader) and wait for it
+    // before the caller retries or rolls back.
+    const timer = setTimeout(async () => {
+      timedOut = true;
+      process.stderr.write(
+        `error: codex ${args.join(" ")} timed out after ${CODEX_CLI_TIMEOUT_MS / 1000}s\n`,
+      );
+      await terminateChildren([[child, group]]);
+      if (!terminatingOnSignal) resolve(124);
+    }, CODEX_CLI_TIMEOUT_MS);
+    child.on("exit", (code) => {
+      if (timedOut || terminatingOnSignal) return;
+      clearTimeout(timer);
       resolve(typeof code === "number" ? code : 1);
     });
-    child.on("error", () => resolve(1));
+    child.on("error", () => {
+      clearTimeout(timer);
+      if (!terminatingOnSignal) resolve(1);
+    });
   });
 }
 
@@ -277,7 +307,9 @@ function resolveLocalEnvDefault(key, fallback, installHost) {
   return fallback;
 }
 
-function ensureLocalEnvFile(path, installHost) {
+// prune=false keeps REFLEXIO_URL / REFLEXIO_API_KEY: a keyed loopback URL is
+// a local setup whose URL the runtime still honors.
+function ensureLocalEnvFile(path, installHost, { prune = true } = {}) {
   mkdirSync(dirname(path), { recursive: true });
   const existing = existsSync(path)
     ? readFileSync(path, "utf8")
@@ -290,7 +322,7 @@ function ensureLocalEnvFile(path, installHost) {
   for (const line of existing.split(/\r?\n/)) {
     const parsed = parseEnvLine(line);
     if (parsed) {
-      if (LOCAL_MODE_PRUNE_KEYS.has(parsed.key)) {
+      if (prune && LOCAL_MODE_PRUNE_KEYS.has(parsed.key)) {
         pruned = true;
         continue;
       }
@@ -331,12 +363,20 @@ function ensureLocalEnvFile(path, installHost) {
       const prefix = content ? "\n" : "";
       content = content + prefix + additions.join("\n");
     }
-    writeFileSync(path, content ? `${content}\n` : "");
+    writePrivateFile(path, content ? `${content}\n` : "");
   } else if (!existsSync(path)) {
-    writeFileSync(path, "");
+    writePrivateFile(path, "");
   }
   chmodSync(path, 0o600);
   return added;
+}
+
+// The env file holds the managed API key: make it 0600 before any content
+// lands in it, so no other account can read it between write and chmod.
+function writePrivateFile(path, content) {
+  if (existsSync(path)) chmodSync(path, 0o600);
+  writeFileSync(path, content, { mode: 0o600 });
+  chmodSync(path, 0o600);
 }
 
 function setEnvVars(path, values) {
@@ -360,15 +400,8 @@ function setEnvVars(path, values) {
     added.push(key);
   }
   const content = out.join("\n").replace(/\n*$/, "");
-  writeFileSync(path, content ? `${content}\n` : "");
-  chmodSync(path, 0o600);
+  writePrivateFile(path, content ? `${content}\n` : "");
   return added;
-}
-
-function ensureLocalInstallEnvDefaults(installHost = DEFAULT_CLAUDE_SMART_HOST) {
-  const added = ensureLocalEnvFile(REFLEXIO_SETUP_ENV_PATH, installHost);
-  const runtimeAdded = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, installHost);
-  return Array.from(new Set([...added, ...runtimeAdded]));
 }
 
 function maskSecret(value) {
@@ -378,48 +411,162 @@ function maskSecret(value) {
   return `${prefix}****${value.slice(-4)}`;
 }
 
+function readEnvFile(path) {
+  const values = new Map();
+  if (!existsSync(path)) return values;
+  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const parsed = parseEnvLine(line);
+    if (parsed) values.set(parsed.key, parsed.value);
+  }
+  return values;
+}
+
+// Mirrors claude_smart_reflexio_url_is_remote in plugin/scripts/_lib.sh, which
+// decides whether the runtime starts a local backend. Keep the two in sync.
+function isRemoteReflexioUrl(url) {
+  const value = String(url || "");
+  if (!value) return false;
+  return !/^http:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(\/?|:.*)$/.test(value);
+}
+
+function isLoopbackUrl(url) {
+  try {
+    const host = new URL(String(url)).hostname;
+    return ["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1"].includes(host);
+  } catch {
+    return false;
+  }
+}
+
+function localBackendUrl() {
+  return `http://localhost:${(process.env.BACKEND_PORT || "").trim() || "8071"}/`;
+}
+
+// Carry managed settings written by pre-#85 `claude-smart setup` over to the
+// runtime env file. A loopback URL there belongs to some other local Reflexio
+// server (e.g. a dev backend), not to claude-smart, so it is left alone.
+function migrateLegacyManagedEnv() {
+  if (existsSync(LEGACY_ENV_MIGRATION_MARKER)) return;
+  migrateLegacyManagedEnvOnce();
+  // Recorded only once the check has completed: a read or write error above
+  // aborts the install and the next run tries again.
+  mkdirSync(CLAUDE_SMART_STATE_DIR, { recursive: true });
+  writeFileSync(LEGACY_ENV_MIGRATION_MARKER, "");
+}
+
+function migrateLegacyManagedEnvOnce() {
+  if ((readEnvFile(CLAUDE_SMART_ENV_PATH).get("REFLEXIO_API_KEY") || "").trim()) return;
+  const legacy = readEnvFile(LEGACY_REFLEXIO_ENV_PATH);
+  const apiKey = (legacy.get("REFLEXIO_API_KEY") || "").trim();
+  // A key with no URL meant the managed service to older installers (and to
+  // the Reflexio client, whose default URL it is), so it migrates as such.
+  const url = (legacy.get("REFLEXIO_URL") || "").trim() || MANAGED_REFLEXIO_URL;
+  if (!apiKey || isLoopbackUrl(url)) return;
+  const values = {};
+  for (const key of ["REFLEXIO_API_KEY", REFLEXIO_USER_ID_ENV, CLAUDE_SMART_READ_ONLY_ENV]) {
+    if (legacy.has(key)) values[key] = legacy.get(key);
+  }
+  values.REFLEXIO_URL = url;
+  setEnvVars(CLAUDE_SMART_ENV_PATH, values);
+  process.stdout.write(
+    `Migrated managed Reflexio settings from ${LEGACY_REFLEXIO_ENV_PATH} to ${CLAUDE_SMART_ENV_PATH}.\n`,
+  );
+}
+
+// Reads ~/.claude-smart/.env — the file the hooks and backend read — so the
+// mode reported here is the mode the runtime will actually use.
 function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
-  let readOnlyValue = "";
-  let fileApiKey = "";
-  let fileUrl = "";
-  if (existsSync(REFLEXIO_SETUP_ENV_PATH)) {
-    const text = readFileSync(REFLEXIO_SETUP_ENV_PATH, "utf8");
-    for (const line of text.split(/\r?\n/)) {
-      const parsed = parseEnvLine(line);
-      if (!parsed) continue;
-      if (parsed.key === "REFLEXIO_API_KEY") {
-        fileApiKey = parsed.value;
-      } else if (parsed.key === "REFLEXIO_URL") {
-        fileUrl = parsed.value;
-      } else if (parsed.key === REFLEXIO_USER_ID_ENV) {
-        process.env[parsed.key] = parsed.value;
-      } else if (parsed.key === CLAUDE_SMART_READ_ONLY_ENV) {
-        readOnlyValue = parsed.value;
+  migrateLegacyManagedEnv();
+  const fileEnv = readEnvFile(CLAUDE_SMART_ENV_PATH);
+  // The backend picks its extraction bridge from CLAUDE_SMART_HOST at start;
+  // a change means a running backend must be restarted to follow it.
+  // A missing key means Claude Code to the runtime (_lib.sh default).
+  const hostChanged =
+    (fileEnv.get(CLAUDE_SMART_HOST_ENV) || DEFAULT_CLAUDE_SMART_HOST) !== installHost;
+  if (fileEnv.has(REFLEXIO_USER_ID_ENV)) {
+    process.env[REFLEXIO_USER_ID_ENV] = fileEnv.get(REFLEXIO_USER_ID_ENV);
+  }
+  // Same precedence as claude_smart_source_reflexio_env: a key present in the
+  // file wins (even when empty), otherwise the inherited environment.
+  const resolved = (key) => (fileEnv.has(key) ? fileEnv.get(key) : process.env[key] || "");
+  const apiKey = resolved("REFLEXIO_API_KEY").trim();
+  // Policy: only a key saved in the file makes install managed. A key that is
+  // only exported in this shell is gone in later sessions, and install never
+  // copies a secret from the environment into a file.
+  const shellOnlyKey = Boolean(apiKey) && !fileEnv.has("REFLEXIO_API_KEY");
+  let url = resolved("REFLEXIO_URL");
+  const updates = {};
+  if (apiKey && !shellOnlyKey && !(fileEnv.get("REFLEXIO_URL") || "").trim()) {
+    // The runtime treats a file key with no file URL as local mode, so the URL
+    // chosen here (an exported one, else the managed default) must be written
+    // where the runtime will read it once that export is gone.
+    if (!url.trim()) url = MANAGED_REFLEXIO_URL;
+    updates.REFLEXIO_URL = url;
+  }
+  if (apiKey && !shellOnlyKey && url.trim()) {
+    process.env.REFLEXIO_API_KEY = apiKey;
+    process.env.REFLEXIO_URL = url;
+    process.env[MANAGED_SETUP_ENV] = "1";
+    // The host follows the install in both modes (ensureLocalEnvFile does it
+    // for local mode).
+    updates[CLAUDE_SMART_HOST_ENV] = installHost;
+    setEnvVars(CLAUDE_SMART_ENV_PATH, updates);
+    if (!isRemoteReflexioUrl(url)) {
+      // A key next to a plain http loopback URL is still local mode at
+      // runtime, and the local backend needs the local provider defaults.
+      const added = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, installHost, { prune: false });
+      if (added.length > 0) {
+        process.stdout.write(`Seeded ${CLAUDE_SMART_ENV_PATH} with ${added.join(", ")}.\n`);
       }
     }
-  }
-  const apiKey = (fileApiKey || process.env.REFLEXIO_API_KEY || "").trim();
-  if (apiKey) {
-    process.env.REFLEXIO_API_KEY = apiKey;
-    process.env.REFLEXIO_URL = (fileUrl || process.env.REFLEXIO_URL || MANAGED_REFLEXIO_URL).trim();
-    process.env[MANAGED_SETUP_ENV] = "1";
-    process.stdout.write(
-      `Using managed Reflexio at ${process.env.REFLEXIO_URL} (API key ${maskSecret(apiKey)}).\n`,
-    );
   } else {
+    const exportedUrl = process.env.REFLEXIO_URL || "";
     delete process.env.REFLEXIO_URL;
     delete process.env.REFLEXIO_API_KEY;
     delete process.env[REFLEXIO_USER_ID_ENV];
     delete process.env[MANAGED_SETUP_ENV];
-    const added = ensureLocalInstallEnvDefaults(installHost);
+    url = "";
+    const added = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, installHost);
     if (added.length > 0) {
-      process.stdout.write(`Seeded ${REFLEXIO_SETUP_ENV_PATH} with ${added.join(", ")}.\n`);
+      process.stdout.write(`Seeded ${CLAUDE_SMART_ENV_PATH} with ${added.join(", ")}.\n`);
+    }
+    if (shellOnlyKey) {
+      process.stderr.write(
+        "warning: REFLEXIO_API_KEY is only exported in this shell, so install uses local " +
+          "mode and saves no key. Run `npx claude-smart setup` to save managed settings.\n",
+      );
+    }
+    // Hooks in a Claude Code started from this shell inherit the export: a
+    // remote URL, or a loopback URL on another port, sends them somewhere
+    // other than the bundled backend this install starts.
+    if (exportedUrl && !isBundledBackendUrl(exportedUrl)) {
+      process.stderr.write(
+        `warning: REFLEXIO_URL=${exportedUrl} is exported in this shell. ` +
+          "Install ignores it, but claude-smart hooks in a Claude Code started from this " +
+          `shell inherit it and will not use the local backend at ${localBackendUrl()}. ` +
+          "Unset it, or run `npx claude-smart setup` for managed mode.\n",
+      );
     }
   }
+  const managed = isRemoteReflexioUrl(url);
+  if (managed) {
+    process.stdout.write(
+      `Using managed Reflexio at ${url} (API key ${maskSecret(apiKey)}).\n`,
+    );
+    if (isLoopbackUrl(url)) {
+      process.stderr.write(
+        `warning: REFLEXIO_URL ${url} points at this machine but is not a plain ` +
+          "http://localhost URL, so claude-smart treats it as remote and will not start " +
+          "its local backend.\n",
+      );
+    }
+  } else {
+    process.stdout.write(`Using local Reflexio backend at ${url || localBackendUrl()}.\n`);
+  }
   const readOnly = ["1", "true", "yes", "on"].includes(
-    String(readOnlyValue).trim().toLowerCase(),
+    String(fileEnv.get(CLAUDE_SMART_READ_ONLY_ENV) || "").trim().toLowerCase(),
   );
-  return { readOnly };
+  return { readOnly, managed, url, hostChanged };
 }
 
 function configureReflexioSetup(installHost = DEFAULT_CLAUDE_SMART_HOST) {
@@ -708,51 +855,6 @@ function opencodePrerequisiteError() {
   return null;
 }
 
-function findClaudeCodePluginRoot() {
-  const cacheRoot = join(homedir(), ".claude", "plugins", "cache", CODEX_MARKETPLACE_NAME, "claude-smart");
-  const candidates = [];
-  try {
-    for (const entry of readdirSync(cacheRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const candidate = join(cacheRoot, entry.name);
-      if (
-        existsSync(join(candidate, "pyproject.toml")) &&
-        existsSync(join(candidate, "scripts", "smart-install.sh"))
-      ) {
-        candidates.push(candidate);
-      }
-    }
-  } catch {
-    // Fall through to marketplace fallback.
-  }
-  candidates.sort((a, b) => {
-    const versionCompare = compareSemverLikePathNames(b, a);
-    if (versionCompare !== 0) return versionCompare;
-    try {
-      return statSync(b).mtimeMs - statSync(a).mtimeMs;
-    } catch {
-      return 0;
-    }
-  });
-  // PACKAGE_ROOT/plugin is intentionally NOT a fallback: under `npx` it
-  // points at /root/.npm/_npx/<hash>/.../plugin which npm may prune between
-  // invocations, breaking the editable claude_smart install (.pth dangles,
-  // venv survives) and confusing every later `uv sync`. Require `claude
-  // plugin install` to have populated the cache dir instead, and fail loud.
-  const fallbacks = [
-    join(homedir(), ".claude", "plugins", "marketplaces", CODEX_MARKETPLACE_NAME, "plugin"),
-  ];
-  for (const candidate of [...candidates, ...fallbacks]) {
-    if (
-      existsSync(join(candidate, "pyproject.toml")) &&
-      existsSync(join(candidate, "scripts", "smart-install.sh"))
-    ) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
 function semverLikePathName(path) {
   const base = String(path).split(/[\\/]/).pop() || "";
   const match = base.match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
@@ -772,6 +874,103 @@ function compareSemverLikePathNames(a, b) {
   if (av) return 1;
   if (bv) return -1;
   return 0;
+}
+
+// The root ~/.reflexio/plugin-root currently points at, if it is still a
+// usable plugin dir (npm may have pruned an npx target).
+function activePluginRoot() {
+  let root = null;
+  try {
+    root = realpathSync(join(REFLEXIO_DIR, "plugin-root"));
+  } catch {
+    // forcePluginRoot falls back to plugin-root.txt where symlinks fail.
+    try {
+      root = readFileSync(join(REFLEXIO_DIR, "plugin-root.txt"), "utf8").trim() || null;
+    } catch {
+      return null;
+    }
+  }
+  return root && existsSync(join(root, "scripts", "backend-service.sh")) ? root : null;
+}
+
+// Installed runtime roots other integrations may still use, newest host
+// first. Codex keeps one cache dir per version.
+function installedPluginRoots() {
+  const roots = [
+    join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin"),
+    join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"),
+  ];
+  try {
+    const versions = readdirSync(CODEX_PLUGIN_CACHE_DIR).map((name) => join(CODEX_PLUGIN_CACHE_DIR, name));
+    // Same order as findCodexPluginRoot: newest version first, not lexical.
+    versions.sort((a, b) => compareSemverLikePathNames(b, a));
+    roots.push(...versions);
+  } catch {
+    // No Codex install.
+  }
+  return roots.filter((root) => existsSync(join(root, "scripts", "backend-service.sh")));
+}
+
+function pluginRootIsBroken() {
+  const hasRuntime = (root) => existsSync(join(root, "scripts", "backend-service.sh"));
+  const link = join(REFLEXIO_DIR, "plugin-root");
+  try {
+    if (lstatSync(link).isSymbolicLink()) {
+      try {
+        return !hasRuntime(realpathSync(link));
+      } catch {
+        return true;
+      }
+    }
+  } catch {
+    // No link; forcePluginRoot may have used plugin-root.txt instead.
+  }
+  try {
+    const root = readFileSync(join(REFLEXIO_DIR, "plugin-root.txt"), "utf8").trim();
+    return Boolean(root) && !hasRuntime(root);
+  } catch {
+    return false;
+  }
+}
+
+// Call after deleting an integration's files (or after `claude plugin
+// uninstall`, which can remove a pre-stable-copy target). The shared
+// ~/.reflexio/plugin-root is used by every installed host's commands, so a
+// link left pointing at deleted files is repointed at a remaining install,
+// or removed when none is left.
+function repairPluginRoot(removedHost = null) {
+  if (pluginRootIsBroken()) {
+    const next = installedPluginRoots()[0];
+    if (next) {
+      forcePluginRoot(next);
+      process.stdout.write(`Repointed ${join(REFLEXIO_DIR, "plugin-root")} to ${next}.\n`);
+    } else {
+      rmSync(join(REFLEXIO_DIR, "plugin-root"), { force: true });
+      rmSync(join(REFLEXIO_DIR, "plugin-root.txt"), { force: true });
+    }
+  }
+  // CLAUDE_SMART_HOST picks the backend's extraction bridge, and hooks such
+  // as SessionStart read it from the file. If it names the host just
+  // removed, it now follows the runtime plugin-root points at.
+  const active = activePluginRoot();
+  if (!removedHost || !active || !existsSync(CLAUDE_SMART_ENV_PATH)) return;
+  if (readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) !== removedHost) return;
+  setEnvVars(CLAUDE_SMART_ENV_PATH, { [CLAUDE_SMART_HOST_ENV]: hostForPluginRoot(active) });
+}
+
+function hostForPluginRoot(root) {
+  const real = (path) => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return path;
+    }
+  };
+  const target = real(root);
+  const under = (dir) => target === real(dir) || target.startsWith(`${real(dir)}${sep}`);
+  if (under(OPENCODE_LOCAL_PACKAGE_DIR)) return HOST_OPENCODE;
+  if (under(CODEX_PLUGIN_CACHE_DIR) || under(CODEX_MARKETPLACE_DIR)) return HOST_CODEX;
+  return HOST_CLAUDE_CODE;
 }
 
 function forcePluginRoot(pluginRoot) {
@@ -816,77 +1015,17 @@ function fileSha256(path) {
   return crypto.createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function claudeCodeCacheRoot() {
-  return join(homedir(), ".claude", "plugins", "cache", CODEX_MARKETPLACE_NAME, "claude-smart");
-}
-
-// Version of the plugin this npm package ships. The Claude Code cache is keyed
-// by this version, and each version vendors a different Reflexio — so the
-// vendor payload may only ever be compared against the cache dir for *this*
-// version. Comparing against some other version's cache reports a spurious
-// mismatch (its vendor legitimately differs) and would force a pointless
-// reinstall.
-function claudeCodePackageVersion(sourceRoot = join(PACKAGE_ROOT, "plugin")) {
-  try {
-    const manifest = JSON.parse(
-      readFileSync(join(sourceRoot, ".claude-plugin", "plugin.json"), "utf8"),
-    );
-    if (typeof manifest.version === "string" && manifest.version) return manifest.version;
-  } catch {
-    // Fall through to pyproject.toml.
-  }
-  try {
-    const match = readFileSync(join(sourceRoot, "pyproject.toml"), "utf8").match(
-      /^version\s*=\s*"([^"]+)"/m,
-    );
-    if (match) return match[1];
-  } catch {
-    // No readable version.
-  }
-  return null;
-}
-
-function claudeCodeVendorPayloadMismatch(
-  pluginRoot,
-  sourceRoot = join(PACKAGE_ROOT, "plugin"),
-) {
-  // A sentinel pair, not a full tree hash: it catches the failure this exists
-  // for (a cache with no vendor bundle at all, or one from a different build),
-  // not a vendor tree that is individually corrupt past these two files.
-  const vendorFiles = [
-    "vendor/reflexio/pyproject.toml",
-    "vendor/reflexio/reflexio/__init__.py",
-  ];
-  // A git checkout gitignores the generated vendor bundle, so a source tree
-  // without one is a dev install, not a broken cache. Nothing to compare.
-  const sourceHasVendor = vendorFiles.some((rel) =>
-    existsSync(join(sourceRoot, rel)),
-  );
-  if (!sourceHasVendor) return null;
-
-  for (const rel of vendorFiles) {
-    const source = join(sourceRoot, rel);
-    const cached = join(pluginRoot, rel);
-    if (!existsSync(source)) {
-      throw new Error(`installed claude-smart package is missing ${rel}`);
-    }
-    if (!existsSync(cached)) return rel;
-    if (fileSha256(source) !== fileSha256(cached)) return rel;
-  }
-  return null;
-}
-
-function verifyOpenCodePluginPackage(packageRoot) {
+function verifyLocalPluginPackage(packageRoot, label) {
   const sourceScript = join(PACKAGE_ROOT, "plugin", "scripts", "smart-install.sh");
   const copiedScript = join(packageRoot, "plugin", "scripts", "smart-install.sh");
   for (const file of [join(packageRoot, "package.json"), copiedScript]) {
     if (!existsSync(file)) {
-      throw new Error(`OpenCode local plugin package is missing ${file}`);
+      throw new Error(`${label} local plugin package is missing ${file}`);
     }
   }
   if (fileSha256(sourceScript) !== fileSha256(copiedScript)) {
     throw new Error(
-      "OpenCode local plugin package does not match the installed claude-smart package",
+      `${label} local plugin package does not match the installed claude-smart package`,
     );
   }
 }
@@ -895,9 +1034,9 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function withOpenCodePackageInstallLock(fn) {
-  const lockDir = join(dirname(OPENCODE_LOCAL_PACKAGE_DIR), ".install.lock");
-  mkdirSync(dirname(OPENCODE_LOCAL_PACKAGE_DIR), { recursive: true });
+function acquirePackageInstallLock(packageRoot, label) {
+  const lockDir = join(dirname(packageRoot), ".install.lock");
+  mkdirSync(dirname(packageRoot), { recursive: true });
   const deadline = Date.now() + OPENCODE_PACKAGE_LOCK_TIMEOUT_MS;
   while (true) {
     try {
@@ -914,27 +1053,258 @@ function withOpenCodePackageInstallLock(fn) {
         if (statErr && statErr.code !== "ENOENT") throw statErr;
       }
       if (Date.now() >= deadline) {
-        throw new Error(`timed out waiting for OpenCode package install lock at ${lockDir}`);
+        throw new Error(`timed out waiting for ${label} package install lock at ${lockDir}`);
       }
       sleepSync(100);
     }
   }
-  try {
-    return fn();
-  } finally {
-    rmSync(lockDir, { recursive: true, force: true });
+  return lockDir;
+}
+
+// Locks held from the package copy until the install commits or rolls back,
+// so a concurrent install of the same host waits instead of stacking its
+// backup on top of an uncommitted package. The lock's mtime is refreshed
+// while held, so a long dependency bootstrap is never mistaken for stale.
+const heldPackageLocks = new Map();
+
+function holdPackageInstallLock(packageRoot, label) {
+  const lockDir = acquirePackageInstallLock(packageRoot, label);
+  const timer = setInterval(() => {
+    try {
+      const now = new Date();
+      utimesSync(lockDir, now, now);
+    } catch {
+      // Lock dir gone; nothing to refresh.
+    }
+  }, 30_000);
+  timer.unref();
+  ensureRollbackOnExit();
+  heldPackageLocks.set(packageRoot, { lockDir, timer });
+}
+
+// Node does not emit "exit" when SIGINT/SIGTERM/SIGHUP terminate the process
+// by default, so an interrupted update would otherwise leave the uncommitted
+// copy in place and the lock held. Roll back, then exit with the signal's
+// conventional status.
+let rollbackOnExitRegistered = false;
+function ensureRollbackOnExit() {
+  if (rollbackOnExitRegistered) return;
+  rollbackOnExitRegistered = true;
+  process.once("exit", rollbackLocalPluginPackages);
+  for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
+    process.once(signal, async () => {
+      terminatingOnSignal = true;
+      // Stop and await children first: an orphaned smart-install or Claude
+      // CLI step must not keep writing after the rollback restores the
+      // previous package.
+      await terminateActiveChildren();
+      rollbackLocalPluginPackages();
+      process.exit(code);
+    });
   }
 }
 
-function uniqueOpenCodePackagePath(prefix) {
+function releasePackageInstallLock(packageRoot) {
+  const held = heldPackageLocks.get(packageRoot);
+  if (!held) return;
+  heldPackageLocks.delete(packageRoot);
+  clearInterval(held.timer);
+  rmSync(held.lockDir, { recursive: true, force: true });
+}
+
+function uniquePackagePath(packageRoot, prefix) {
   return join(
-    dirname(OPENCODE_LOCAL_PACKAGE_DIR),
+    dirname(packageRoot),
     `${prefix}-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`,
   );
 }
 
-function replaceOpenCodePluginPackage(stagedPackage, packageRoot) {
-  const backupPackage = uniqueOpenCodePackagePath(".claude-smart-previous");
+// A replaced package (with its prepared .venv and dashboard build) is kept
+// aside until the install that replaced it has succeeded, so a failed update
+// or reinstall puts the working runtime back instead of leaving the host
+// pointed at an unprepared copy. Keyed by package root; the value holds the
+// backup path and the inode of the package this process installed. The
+// package lock is held until commit or rollback, so no concurrent install
+// can replace the package meanwhile; the inode check is a last guard that
+// never deletes a backup. Any exit before commitLocalPluginPackage rolls
+// back.
+const pendingPreviousPackages = new Map();
+
+// State an install changes outside its package that a rollback must undo:
+// the install-failed marker (a leftover one suppresses the restored,
+// working hooks) and CLAUDE_SMART_HOST (it selects the backend's
+// extraction bridge). Captured before the install touches either;
+// cleared on commit.
+let installStateSnapshot = null;
+
+function snapshotInstallState() {
+  const read = (path) => (existsSync(path) ? readFileSync(path) : null);
+  installStateSnapshot = {
+    failureMarker: read(INSTALL_FAILURE_MARKER),
+    host: readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) ?? null,
+    // Bootstraps repoint the shared plugin-root before they finish.
+    pluginRoot: activePluginRoot(),
+  };
+  ensureRollbackOnExit();
+}
+
+// True while an install can still roll back: children then run in their own
+// process group so an interrupt can stop the whole tree first.
+function rollbackArmed() {
+  return heldPackageLocks.size > 0 || installStateSnapshot !== null;
+}
+
+function commitInstallState() {
+  installStateSnapshot = null;
+}
+
+function restoreInstallState() {
+  const snapshot = installStateSnapshot;
+  installStateSnapshot = null;
+  if (!snapshot) return;
+  try {
+    if (snapshot.pluginRoot && existsSync(join(snapshot.pluginRoot, "scripts", "backend-service.sh"))) {
+      forcePluginRoot(snapshot.pluginRoot);
+    }
+    if (snapshot.failureMarker === null) rmSync(INSTALL_FAILURE_MARKER, { force: true });
+    else writeFileSync(INSTALL_FAILURE_MARKER, snapshot.failureMarker);
+    if (snapshot.host !== null) {
+      setEnvVars(CLAUDE_SMART_ENV_PATH, { [CLAUDE_SMART_HOST_ENV]: snapshot.host });
+    } else if (existsSync(CLAUDE_SMART_ENV_PATH)) {
+      // The key was absent (the runtime then defaults to Claude Code); drop
+      // the one the failed install added.
+      const kept = readFileSync(CLAUDE_SMART_ENV_PATH, "utf8")
+        .split(/\r?\n/)
+        .filter((line) => {
+          const parsed = parseEnvLine(line);
+          return !parsed || parsed.key !== CLAUDE_SMART_HOST_ENV;
+        });
+      writePrivateFile(CLAUDE_SMART_ENV_PATH, kept.join("\n"));
+    }
+  } catch (err) {
+    process.stderr.write(
+      `warning: could not restore claude-smart install state: ${err && err.message ? err.message : err}\n`,
+    );
+  }
+}
+
+function rollbackLocalPluginPackages() {
+  restoreInstallState();
+  for (const [packageRoot, { backupPackage, installedIno }] of pendingPreviousPackages) {
+    pendingPreviousPackages.delete(packageRoot);
+    try {
+      if (!pathEntryExists(packageRoot) || lstatSync(packageRoot).ino !== installedIno) {
+        // Someone replaced this package despite the lock. Leave both alone;
+        // the backup may be the only copy of a working runtime.
+        if (backupPackage) {
+          process.stderr.write(
+            `warning: ${packageRoot} changed during this install; the previous package ` +
+              `was kept at ${backupPackage}.\n`,
+          );
+        }
+        continue;
+      }
+      rmSync(packageRoot, { recursive: true, force: true });
+      if (backupPackage) {
+        renameSync(backupPackage, packageRoot);
+        process.stderr.write(
+          `Install did not complete; restored the previous claude-smart package at ${packageRoot}.\n`,
+        );
+      } else {
+        process.stderr.write(
+          `Install did not complete; removed the unprepared claude-smart package at ${packageRoot}.\n`,
+        );
+        repairPluginRoot();
+      }
+    } catch (err) {
+      process.stderr.write(
+        `warning: could not restore the previous claude-smart package from ${backupPackage}: ` +
+          `${err && err.message ? err.message : err}\n`,
+      );
+    }
+  }
+  for (const packageRoot of [...heldPackageLocks.keys()]) releasePackageInstallLock(packageRoot);
+  restartStoppedServices();
+}
+
+// Services an install stopped before replacing their root. If the install
+// does not commit, they are started again from the (restored) previous root
+// so a failed update does not leave a working setup offline.
+let stoppedServices = null;
+
+function pluginServiceStatus(root, scriptName) {
+  const script = join(root, "scripts", scriptName);
+  const bash = resolveUsableBash();
+  if (!existsSync(script) || !bash) return "";
+  const result = spawnSync(bash, [script, "status"], {
+    cwd: root,
+    env: runtimeEnv(),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+    timeout: PLUGIN_SERVICE_TIMEOUT_MS,
+  });
+  return String(result.stdout || "").trim().split(/\r?\n/).pop() || "";
+}
+
+function stopServicesForInstall(root, host) {
+  // Only what was actually running is restarted if the install fails.
+  const running = (scriptName) => pluginServiceStatus(root, scriptName).startsWith("running on");
+  stoppedServices = {
+    root,
+    host,
+    backend: running("backend-service.sh"),
+    dashboard: running("dashboard-service.sh"),
+  };
+  stopClaudeSmartServices(root);
+  ensureRollbackOnExit();
+}
+
+function restartStoppedServices() {
+  const stopped = stoppedServices;
+  stoppedServices = null;
+  if (!stopped || !existsSync(join(stopped.root, "scripts", "backend-service.sh"))) return;
+  if (!stopped.backend && !stopped.dashboard) return;
+  if (stopped.backend) startBackendService(stopped.root, stopped.host);
+  if (stopped.dashboard) runPluginService(stopped.root, "dashboard-service.sh", "start");
+  process.stderr.write(`Restarted claude-smart services from ${stopped.root}.\n`);
+}
+
+function commitLocalPluginPackage(packageRoot) {
+  const pending = pendingPreviousPackages.get(packageRoot);
+  pendingPreviousPackages.delete(packageRoot);
+  // The install succeeded; failing to delete the old copy (e.g. a Windows
+  // file handle still open) must not turn it into a failure that leaves
+  // services stopped.
+  try {
+    if (pending && pending.backupPackage) {
+      rmSync(pending.backupPackage, { recursive: true, force: true });
+    }
+  } catch (err) {
+    process.stderr.write(
+      `warning: could not remove the previous package at ${pending.backupPackage}: ` +
+        `${err && err.message ? err.message : err}\n`,
+    );
+  }
+  try {
+    releasePackageInstallLock(packageRoot);
+  } catch {
+    // A leftover lock dir is reclaimed as stale by the next install.
+  }
+  stoppedServices = null;
+  commitInstallState();
+}
+
+// A newly created package whose runtime is now prepared is worth keeping
+// even if a later Claude CLI step fails: the marketplace may already point
+// at it. A replaced package keeps its backup until commit.
+function markLocalPluginPackagePrepared(packageRoot) {
+  const pending = pendingPreviousPackages.get(packageRoot);
+  if (pending && !pending.backupPackage) pendingPreviousPackages.delete(packageRoot);
+}
+
+function replaceLocalPluginPackage(stagedPackage, packageRoot) {
+  const backupPackage = uniquePackagePath(packageRoot, ".claude-smart-previous");
   let backupCreated = false;
   try {
     if (pathEntryExists(packageRoot)) {
@@ -942,67 +1312,72 @@ function replaceOpenCodePluginPackage(stagedPackage, packageRoot) {
       backupCreated = true;
     }
     renameSync(stagedPackage, packageRoot);
-    if (backupCreated) {
-      rmSync(backupPackage, { recursive: true, force: true });
-    }
   } catch (err) {
     if (backupCreated && !existsSync(packageRoot) && existsSync(backupPackage)) {
       renameSync(backupPackage, packageRoot);
     }
     throw err;
   }
-}
-
-function installOpenCodePluginPackage() {
-  const packageRoot = OPENCODE_LOCAL_PACKAGE_DIR;
-  if (sameRealPath(PACKAGE_ROOT, packageRoot)) {
-    verifyOpenCodePluginPackage(packageRoot);
-    return packageRoot;
-  }
-  return withOpenCodePackageInstallLock(() => {
-    const stagedPackage = uniqueOpenCodePackagePath(".claude-smart-copy");
-    rmSync(stagedPackage, { recursive: true, force: true });
-    try {
-      cpSync(PACKAGE_ROOT, stagedPackage, {
-        recursive: true,
-        force: true,
-        verbatimSymlinks: false,
-        filter: shouldCopyPath,
-      });
-      verifyOpenCodePluginPackage(stagedPackage);
-      replaceOpenCodePluginPackage(stagedPackage, packageRoot);
-      verifyOpenCodePluginPackage(packageRoot);
-      return packageRoot;
-    } finally {
-      rmSync(stagedPackage, { recursive: true, force: true });
-    }
+  // A package with no predecessor is tracked too (backupPackage null): if
+  // the install fails before its runtime is prepared, rollback removes it
+  // rather than leaving an unprepared copy for the next attempt to treat as
+  // the previous working package.
+  ensureRollbackOnExit();
+  pendingPreviousPackages.set(packageRoot, {
+    backupPackage: backupCreated ? backupPackage : null,
+    installedIno: lstatSync(packageRoot).ino,
   });
 }
 
-async function bootstrapClaudeCodeInstall() {
-  const pluginRoot = findClaudeCodePluginRoot();
-  if (!pluginRoot) {
-    const cacheRoot = join(
-      homedir(),
-      ".claude",
-      "plugins",
-      "cache",
-      CODEX_MARKETPLACE_NAME,
-      "claude-smart",
-    );
-    throw new Error(
-      `claude plugin install did not populate ${cacheRoot}. ` +
-        "Open Claude Code, run /plugins, verify claude-smart is installed " +
-        "from the ReflexioAI marketplace, then rerun `npx claude-smart install`.",
-    );
+// Copy this npm package to a stable per-host dir. The npx cache this runs from
+// may be pruned by npm between invocations, so no host may load from it.
+function installLocalPluginPackage(packageRoot, label) {
+  if (sameRealPath(PACKAGE_ROOT, packageRoot)) {
+    verifyLocalPluginPackage(packageRoot, label);
+    return packageRoot;
   }
+  // Held until commitLocalPluginPackage or the exit rollback releases it.
+  holdPackageInstallLock(packageRoot, label);
+  const stagedPackage = uniquePackagePath(packageRoot, ".claude-smart-copy");
+  rmSync(stagedPackage, { recursive: true, force: true });
+  let replaced = false;
+  try {
+    cpSync(PACKAGE_ROOT, stagedPackage, {
+      recursive: true,
+      force: true,
+      verbatimSymlinks: false,
+      filter: shouldCopyPath,
+    });
+    verifyLocalPluginPackage(stagedPackage, label);
+    replaceLocalPluginPackage(stagedPackage, packageRoot);
+    replaced = true;
+    verifyLocalPluginPackage(packageRoot, label);
+    return packageRoot;
+  } catch (err) {
+    // Nothing replaced: nothing to roll back, so do not keep others waiting.
+    if (!replaced) releasePackageInstallLock(packageRoot);
+    throw err;
+  } finally {
+    rmSync(stagedPackage, { recursive: true, force: true });
+  }
+}
+
+function installOpenCodePluginPackage() {
+  return installLocalPluginPackage(OPENCODE_LOCAL_PACKAGE_DIR, "OpenCode");
+}
+
+async function bootstrapClaudeCodeInstall(pluginRoot) {
   forcePluginRoot(pluginRoot);
   const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
   if (!bash) {
     throw new Error("bash is required to bootstrap claude-smart dependencies");
   }
+  // Services and the dashboard build start only after the install commits
+  // (startCommittedClaudeCodeServices), so a rollback never leaves processes
+  // running from, or writing into, a package it has replaced.
   const code = await runChecked(bash, [join(pluginRoot, "scripts", "smart-install.sh")], {
     cwd: pluginRoot,
+    env: { ...process.env, CLAUDE_SMART_DEFER_SERVICES: "1" },
   });
   if (code !== 0) {
     throw new Error(`smart-install.sh failed in ${pluginRoot}`);
@@ -1011,46 +1386,22 @@ async function bootstrapClaudeCodeInstall() {
   return pluginRoot;
 }
 
-async function refreshClaudeCodeCacheIfVendorMissing() {
-  const version = claudeCodePackageVersion();
-  if (!version) return null;
-  // Only ever inspect and repair the cache dir for the version we are
-  // installing. Other version dirs coexist in the cache and are not ours to
-  // judge — `findClaudeCodePluginRoot()` returns the highest one, which is a
-  // different plugin build whenever this package is a downgrade.
-  const pluginRoot = join(claudeCodeCacheRoot(), version);
-  if (!existsSync(pluginRoot)) return null;
-
-  const mismatch = claudeCodeVendorPayloadMismatch(pluginRoot);
-  if (!mismatch) return pluginRoot;
-
-  process.stderr.write(
-    `warning: cached claude-smart plugin is missing or has stale ${mismatch}; reinstalling from the bundled npm package.\n`,
-  );
-  let code = await runClaude(["plugin", "uninstall", PLUGIN_SPEC], {
-    spinnerLabel: "Removing stale claude-smart cache…",
+// What smart-install.sh defers under CLAUDE_SMART_DEFER_SERVICES: the
+// dashboard's first build (detached, as smart-install does); the backend and
+// dashboard are then started and reported by startAndReportServices.
+function startDeferredDashboardBuild(pluginRoot) {
+  const dashboardDir = join(pluginRoot, "dashboard");
+  const bash = resolveUsableBash();
+  if (!bash || !existsSync(dashboardDir) || existsSync(join(dashboardDir, ".next"))) return;
+  const child = spawn(bash, [join(pluginRoot, "scripts", "dashboard-build.sh")], {
+    cwd: pluginRoot,
+    env: runtimeEnv(),
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
   });
-  if (code !== 0) {
-    throw new Error(`could not remove stale ${PLUGIN_SPEC} cache (exit ${code})`);
-  }
-  code = await runClaude(["plugin", "install", PLUGIN_SPEC], {
-    spinnerLabel: "Refreshing claude-smart cache…",
-  });
-  if (code !== 0) {
-    throw new Error(`could not reinstall ${PLUGIN_SPEC} from the bundled package (exit ${code})`);
-  }
-
-  if (!existsSync(pluginRoot)) {
-    throw new Error(`Claude Code did not recreate the claude-smart plugin cache at ${pluginRoot}`);
-  }
-  const remainingMismatch = claudeCodeVendorPayloadMismatch(pluginRoot);
-  if (remainingMismatch) {
-    throw new Error(
-      `refreshed claude-smart cache still does not match the bundled npm package: ${remainingMismatch}`,
-    );
-  }
-  process.stdout.write("Refreshed stale claude-smart plugin cache from the bundled npm package.\n");
-  return pluginRoot;
+  child.on("error", () => {});
+  child.unref();
 }
 
 function isWindows() {
@@ -1098,6 +1449,10 @@ function assertSupportedRuntimePlatform() {
 }
 
 function runChecked(command, args, options = {}) {
+  // While a package install is uncommitted, run children in their own
+  // process group so an interrupt can stop the whole tree (uv, npm, ...)
+  // before rolling back; they are non-interactive there.
+  const group = !isWindows() && rollbackArmed();
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -1105,10 +1460,85 @@ function runChecked(command, args, options = {}) {
       shell: isWindows() && /\.(?:cmd|bat)$/i.test(command),
       stdio: "inherit",
       windowsHide: true,
+      detached: group,
     });
-    child.on("exit", (code) => resolve(typeof code === "number" ? code : 1));
-    child.on("error", () => resolve(1));
+    trackChild(child, group);
+    // While a signal handler is rolling back, the caller must not see the
+    // terminated child as a failure and exit first.
+    child.on("exit", (code) => terminatingOnSignal || resolve(typeof code === "number" ? code : 1));
+    child.on("error", () => terminatingOnSignal || resolve(1));
   });
+}
+
+// Children still running, so a signal handler can stop them before rolling
+// back a package they may be writing into.
+const activeChildren = new Map();
+let terminatingOnSignal = false;
+
+function trackChild(child, group) {
+  activeChildren.set(child, group);
+  const forget = () => activeChildren.delete(child);
+  child.on("exit", forget);
+  child.on("error", forget);
+}
+
+function processGroupAlive(pgid) {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err) {
+    return Boolean(err && err.code === "EPERM");
+  }
+}
+
+async function terminateActiveChildren(timeoutMs = 5000) {
+  await terminateChildren([...activeChildren.entries()], timeoutMs);
+}
+
+// Stops each [child, group] entry, waiting until every process group is
+// empty (SIGKILL after the grace period).
+async function terminateChildren(children, timeoutMs = 5000) {
+  // A process group is waited on until it is empty, not just its leader: a
+  // descendant (uv, npm) that ignores SIGTERM must not outlive the rollback.
+  const alive = ([child, group]) =>
+    group && !isWindows()
+      ? processGroupAlive(child.pid)
+      : child.exitCode === null && child.signalCode === null;
+  const signalAll = (signal) => {
+    for (const entry of children) {
+      if (!alive(entry)) continue;
+      const [child, group] = entry;
+      try {
+        if (isWindows()) {
+          // No process groups on Windows: taskkill /T ends the whole tree
+          // (uv, npm, ...) rather than only the direct child.
+          spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+            stdio: "ignore",
+            windowsHide: true,
+          });
+        } else if (group) {
+          process.kill(-child.pid, signal);
+        } else {
+          child.kill(signal);
+        }
+      } catch {
+        // Already gone.
+      }
+    }
+  };
+  const waitAll = async (ms) => {
+    const deadline = Date.now() + ms;
+    while (children.some(alive) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return !children.some(alive);
+  };
+  signalAll("SIGTERM");
+  if (!(await waitAll(timeoutMs))) {
+    signalAll("SIGKILL");
+    // A killed process may still be exiting; do not roll back under it.
+    await waitAll(timeoutMs);
+  }
 }
 
 function runSilentStatus(command, args, options = {}) {
@@ -1167,6 +1597,165 @@ function startBackendService(pluginRoot, host) {
   return runPluginService(pluginRoot, "backend-service.sh", "start", {
     CLAUDE_SMART_HOST: host,
   });
+}
+
+function httpProbe(url, timeoutMs = 1000) {
+  return new Promise((resolve) => {
+    let request;
+    try {
+      request = http.get(url, (response) => {
+        response.resume();
+        resolve({ status: response.statusCode || null, headers: response.headers });
+      });
+    } catch {
+      // e.g. a non-numeric BACKEND_PORT / DASHBOARD_PORT: an unsuccessful
+      // probe, not an install failure.
+      resolve({ status: null, headers: {} });
+      return;
+    }
+    request.on("error", () => resolve({ status: null, headers: {} }));
+    request.setTimeout(timeoutMs, () => request.destroy());
+  });
+}
+
+async function waitForHttp(url, attempts, isReady) {
+  for (let i = 0; i < attempts; i += 1) {
+    if (isReady(await httpProbe(url))) return true;
+    if (i + 1 < attempts) await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
+}
+
+// `backend-service.sh status` checks listener identity (a claude-smart backend
+// process, current or compatible version), which /health alone cannot: any
+// service on the port may answer it.
+function backendServiceStatus(pluginRoot) {
+  const script = join(pluginRoot, "scripts", "backend-service.sh");
+  const bash = resolveUsableBash();
+  if (!existsSync(script) || !bash) return "";
+  const result = spawnSync(bash, [script, "status"], {
+    cwd: pluginRoot,
+    env: runtimeEnv(),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+    timeout: PLUGIN_SERVICE_TIMEOUT_MS,
+    killSignal: "SIGTERM",
+  });
+  return String(result.stdout || "").trim().split(/\r?\n/).pop() || "";
+}
+
+// Same precedence as _lib.sh: an exported value wins over ~/.claude-smart/.env.
+function autostartDisabled(key) {
+  const value = process.env[key] || readEnvFile(CLAUDE_SMART_ENV_PATH).get(key);
+  return String(value || "").trim() === "0";
+}
+
+// backend-service.sh / dashboard-service.sh always exit 0 (they double as
+// hooks), so their status says nothing about whether a service is serving.
+// Report only what an HTTP probe observes.
+// True when hooks calling `url` reach the bundled backend install starts.
+// The Reflexio client joins absolute /api/... paths onto REFLEXIO_URL
+// (urljoin), so only the origin matters: http://localhost or
+// http://127.0.0.1 on BACKEND_PORT. The exact 8071 spellings also count,
+// because claude_smart_derive_reflexio_url_from_backend_port (_lib.sh)
+// rewrites them to BACKEND_PORT. Mirrors claude_smart_reflexio_url_is_custom_local.
+function isBundledBackendUrl(url) {
+  const port = (process.env.BACKEND_PORT || "").trim() || "8071";
+  const value = String(url || "").trim();
+  const rewritten = ["localhost", "127.0.0.1"].flatMap((host) => [
+    `http://${host}:8071`,
+    `http://${host}:8071/`,
+  ]);
+  if (rewritten.includes(value)) return true;
+  try {
+    const parsed = new URL(value);
+    return (
+      parsed.protocol === "http:" &&
+      ["localhost", "127.0.0.1"].includes(parsed.hostname) &&
+      // WHATWG URL drops the scheme's default port ("" for :80).
+      (parsed.port || "80") === port
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function startAndReportServices(pluginRoot, host, setup) {
+  const { managed, url: hooksUrl } = setup;
+  if (managed || (hooksUrl && !isBundledBackendUrl(hooksUrl))) {
+    // Hooks will not call the bundled backend, so stop one left running from
+    // an earlier local setup (stop only reaps claude-smart's own listener).
+    runPluginService(pluginRoot, "backend-service.sh", "stop");
+  }
+  if (managed) {
+    process.stdout.write("Managed mode: no local backend is started.\n");
+  } else if (hooksUrl && !isBundledBackendUrl(hooksUrl)) {
+    // A kept loopback URL other than the bundled endpoint is the user's own
+    // local Reflexio server: the hooks call it, not the bundled backend, so
+    // report on it and start nothing.
+    // Hooks call the origin (see isBundledBackendUrl), so probe it there.
+    let base = hooksUrl;
+    try {
+      base = `${new URL(hooksUrl).origin}/`;
+    } catch {
+      // Unparseable: the probe below simply fails.
+    }
+    const answering = await waitForHttp(`${base}health`, 3, ({ status }) => status === 200);
+    process.stdout.write(
+      `Hooks use the Reflexio server at ${hooksUrl}, which claude-smart does not start; ` +
+        `it is ${answering ? "answering" : "not answering"} ${base}health.\n`,
+    );
+  } else if (autostartDisabled("CLAUDE_SMART_BACKEND_AUTOSTART")) {
+    process.stdout.write("Backend autostart is disabled (CLAUDE_SMART_BACKEND_AUTOSTART=0).\n");
+  } else {
+    if (setup.hostChanged) {
+      // backend-service.sh start keeps any compatible running backend, which
+      // would keep the previous host's extraction bridge.
+      runPluginService(pluginRoot, "backend-service.sh", "stop");
+    }
+    startBackendService(pluginRoot, host);
+    const url = localBackendUrl();
+    if (await waitForHttp(`${url}health`, 5, ({ status }) => status === 200)) {
+      const status = backendServiceStatus(pluginRoot);
+      if (status.startsWith("running on")) {
+        process.stdout.write(`Backend healthy at ${url}.\n`);
+      } else {
+        process.stdout.write(
+          `Something answers ${url}health, but it is not a claude-smart backend this ` +
+            `install can use (backend-service.sh status: ${status || "unknown"}).\n`,
+        );
+      }
+    } else {
+      process.stdout.write(
+        `Backend is still starting (log: ${join(CLAUDE_SMART_STATE_DIR, "backend.log")}); ` +
+          "it is started again at the next session start if needed.\n",
+      );
+    }
+  }
+  if (autostartDisabled("CLAUDE_SMART_DASHBOARD_AUTOSTART")) {
+    process.stdout.write("Dashboard autostart is disabled (CLAUDE_SMART_DASHBOARD_AUTOSTART=0).\n");
+    return;
+  }
+  refreshDashboardService(pluginRoot);
+  const port = (process.env.DASHBOARD_PORT || "").trim() || "3001";
+  const url = `http://localhost:${port}/`;
+  // Same marker dashboard-service.sh trusts: a foreign app on the port answers
+  // the root page too, but only the claude-smart dashboard sends this header.
+  const isDashboard = ({ status, headers }) =>
+    status === 200 && headers["x-claude-smart-dashboard"] !== undefined;
+  if (await waitForHttp(`${url}api/health`, 3, isDashboard)) {
+    process.stdout.write(`Dashboard running at ${url}.\n`);
+  } else if ((await httpProbe(`${url}api/health`)).status !== null) {
+    process.stdout.write(
+      `Another app answers ${url} without the claude-smart dashboard marker; ` +
+        "the dashboard is not running there. Set DASHBOARD_PORT to a free port.\n",
+    );
+  } else {
+    process.stdout.write(
+      `Dashboard is building in the background (first build takes 1-2 minutes); it will serve ${url}.\n`,
+    );
+  }
 }
 
 function stopClaudeSmartServices(pluginRoot) {
@@ -1419,7 +2008,19 @@ function commandIsPublishHook(command) {
   );
 }
 
+// Returns false when pluginRoot is this package's own plugin dir: its
+// manifests are the pristine source restorePublishHooksFromSource copies
+// from, so pruning them would make read-only mode permanent. Publishing is
+// still skipped there, because the stop and session-end hooks honor
+// CLAUDE_SMART_READ_ONLY themselves.
 function prunePublishHooksForReadOnly(pluginRoot) {
+  if (sameRealPath(pluginRoot, join(PACKAGE_ROOT, "plugin"))) {
+    process.stdout.write(
+      "Read-only mode: publishing is skipped via CLAUDE_SMART_READ_ONLY; " +
+        "the source hook manifests are left unchanged.\n",
+    );
+    return false;
+  }
   for (const hookFile of ["hooks.json", "codex-hooks.json"]) {
     const hookPath = join(pluginRoot, "hooks", hookFile);
     if (!existsSync(hookPath)) continue;
@@ -1441,6 +2042,7 @@ function prunePublishHooksForReadOnly(pluginRoot) {
     }
     writeFileSync(hookPath, JSON.stringify(parsed, null, 2) + "\n");
   }
+  return true;
 }
 
 function restorePublishHooksFromSource(pluginRoot) {
@@ -1486,7 +2088,7 @@ function patchCodexHooksForNode(pluginRoot, nodePath) {
 }
 
 function ensurePluginRoot(pluginRoot) {
-  const reflexioDir = dirname(REFLEXIO_SETUP_ENV_PATH);
+  const reflexioDir = REFLEXIO_DIR;
   const pluginRootLink = join(reflexioDir, "plugin-root");
   mkdirSync(reflexioDir, { recursive: true });
   let pathNotReplaceable = false;
@@ -1845,6 +2447,7 @@ function cleanupCodexInstallState() {
   });
   rmSync(CODEX_MARKETPLACE_DIR, { recursive: true, force: true });
   rmSync(CODEX_PLUGIN_CACHE_DIR, { recursive: true, force: true });
+  repairPluginRoot(HOST_CODEX);
   try {
     rmSync(dirname(CODEX_PLUGIN_CACHE_DIR), { recursive: false, force: true });
   } catch {
@@ -2155,10 +2758,6 @@ async function runUpdate(args) {
     return;
   }
 
-  const pluginRoot = findClaudeCodePluginRoot();
-  if (pluginRoot) {
-    stopClaudeSmartServices(pluginRoot);
-  }
   process.stdout.write("Updating claude-smart by reinstalling from this package...\n");
   await runInstall(args, { retryInstallAfterUninstall: true });
 }
@@ -2205,6 +2804,18 @@ async function runUninstall(args) {
     process.exit(code);
   }
   stopClaudeSmartServices(join(PACKAGE_ROOT, "plugin"));
+  stopClaudeSmartServices(join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin"));
+  // The marketplace points at the copy removed below; drop it too so Claude
+  // Code is not left with an entry for a missing directory.
+  const marketplaceCode = await runClaude(["plugin", "marketplace", "remove", CODEX_MARKETPLACE_NAME]);
+  if (marketplaceCode !== 0) {
+    process.stderr.write(
+      `warning: could not remove the ${CODEX_MARKETPLACE_NAME} marketplace; remove it with: ` +
+        `claude plugin marketplace remove ${CODEX_MARKETPLACE_NAME}\n`,
+    );
+  }
+  rmSync(CLAUDE_CODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
+  repairPluginRoot(HOST_CLAUDE_CODE);
 
   process.stdout.write(
     [
@@ -2249,9 +2860,52 @@ async function runInstall(args, options = {}) {
     process.exit(1);
   }
 
-  const source = PACKAGE_ROOT;
+  snapshotInstallState();
+  const previousHost = installStateSnapshot.host;
   const setup = configureReflexioSetup(HOST_CLAUDE_CODE);
   const readOnly = setup.readOnly;
+  // Stop services running from the previous root (e.g. a pruned npx dir or an
+  // older copy) before the copy under them is replaced.
+  const previousRoot = activePluginRoot();
+  // Restart with the host that root was running for (e.g. Codex's bridge).
+  if (previousRoot) stopServicesForInstall(previousRoot, previousHost || HOST_CLAUDE_CODE);
+  let source;
+  try {
+    source = installLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "Claude Code");
+  } catch (err) {
+    process.stderr.write(
+      `error: could not prepare claude-smart Claude Code package: ${err && err.message ? err.message : err}\n`,
+    );
+    process.exit(1);
+  }
+  // Prepare the copy BEFORE registering it: re-adding the marketplace with
+  // a new path re-points an existing "reflexioai" entry (verified on Claude
+  // Code 2.1.280), and on a first migration from the npx dir there is no
+  // previous stable copy to roll back to. So Claude Code is only moved once
+  // the runtime it will load is ready; a failed bootstrap leaves the old
+  // registration (and ~/.reflexio/plugin-root) as they were.
+  let pluginRoot;
+  try {
+    // Claude Code runs a local-directory marketplace plugin in place, so the
+    // copy's plugin dir is the one runtime root to bootstrap and report.
+    pluginRoot = await bootstrapClaudeCodeInstall(join(source, "plugin"));
+    restorePublishHooksFromSource(pluginRoot);
+    if (readOnly && prunePublishHooksForReadOnly(pluginRoot)) {
+      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
+    }
+    process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
+    markLocalPluginPackagePrepared(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
+  } catch (err) {
+    // The exit rollback restores the previous plugin-root (install snapshot).
+    process.stderr.write(
+      `error: claude-smart dependency bootstrap failed: ${err && err.message ? err.message : err}\n`,
+    );
+    process.stderr.write(
+      "Claude Code was left on its previous claude-smart registration. Fix the issue above, " +
+        "then run `npx claude-smart install` again.\n",
+    );
+    process.exit(1);
+  }
 
   const steps = [
     { args: ["plugin", "marketplace", "add", source], label: "Adding marketplace…" },
@@ -2282,36 +2936,18 @@ async function runInstall(args, options = {}) {
     }
   }
 
-  try {
-    await refreshClaudeCodeCacheIfVendorMissing();
-    const pluginRoot = await bootstrapClaudeCodeInstall();
-    restorePublishHooksFromSource(pluginRoot);
-    if (readOnly) {
-      prunePublishHooksForReadOnly(pluginRoot);
-      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
-    }
-    process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
-    if (startBackendService(pluginRoot, HOST_CLAUDE_CODE)) {
-      process.stdout.write("Started claude-smart backend service.\n");
-    }
-    if (refreshDashboardService(pluginRoot)) {
-      process.stdout.write("Refreshed claude-smart dashboard service.\n");
-    }
-  } catch (err) {
-    process.stderr.write(
-      `error: claude-smart installed, but dependency bootstrap failed: ${err && err.message ? err.message : err}\n`,
-    );
-    process.stderr.write(
-      "Fix the issue above, then run /claude-smart:restart or restart Claude Code to retry.\n",
-    );
-    process.exit(1);
-  }
+  commitLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
+  startDeferredDashboardBuild(pluginRoot);
+  await startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup);
 
   process.stdout.write(
     [
       "",
       "claude-smart installed and dependencies are prepared. Restart Claude Code in your project.",
-      "The reflexio backend and dashboard auto-start on session start.",
+      // Only claim a local backend where one will actually run.
+      setup.managed || (setup.url && !isBundledBackendUrl(setup.url))
+        ? "The dashboard auto-starts on session start; no bundled backend runs in this setup."
+        : "The reflexio backend and dashboard auto-start on session start.",
       "Opt out with CLAUDE_SMART_BACKEND_AUTOSTART=0 or CLAUDE_SMART_DASHBOARD_AUTOSTART=0.",
       "",
     ].join("\n"),
@@ -2323,6 +2959,7 @@ async function runInstallCodex(args) {
     process.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n");
     process.exit(1);
   }
+  snapshotInstallState();
   const setup = configureReflexioSetup(HOST_CODEX);
   const readOnly = setup.readOnly;
 
@@ -2374,12 +3011,9 @@ async function runInstallCodex(args) {
     if (readOnly) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
-    if (startBackendService(cacheDir, HOST_CODEX)) {
-      process.stdout.write("Started claude-smart backend service.\n");
-    }
-    if (refreshDashboardService(cacheDir)) {
-      process.stdout.write("Refreshed claude-smart dashboard service.\n");
-    }
+    // The Codex runtime is installed: its host and marker state stand.
+    commitInstallState();
+    await startAndReportServices(cacheDir, HOST_CODEX, setup);
   } catch (err) {
     process.stderr.write(
       `error: automatic Codex plugin install failed: ${err && err.message ? err.message : err}\n`,
@@ -2429,6 +3063,7 @@ async function runInstallOpenCode(args) {
     process.stderr.write(prerequisiteError);
     process.exit(1);
   }
+  snapshotInstallState();
   const setup = configureReflexioSetup(HOST_OPENCODE);
   const readOnly = setup.readOnly;
   persistOpenCodePath();
@@ -2467,15 +3102,11 @@ async function runInstallOpenCode(args) {
     stopClaudeSmartServices(pluginRoot);
     process.exit(1);
   }
+  commitLocalPluginPackage(packageRoot);
   if (readOnly) {
     process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
   }
-  if (startBackendService(pluginRoot, HOST_OPENCODE)) {
-    process.stdout.write("Started claude-smart backend service.\n");
-  }
-  if (refreshDashboardService(pluginRoot)) {
-    process.stdout.write("Refreshed claude-smart dashboard service.\n");
-  }
+  await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
   }
@@ -2532,6 +3163,7 @@ async function runUninstallOpenCode(args) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
   }
   rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
+  repairPluginRoot(HOST_OPENCODE);
   try {
     rmdirSync(dirname(OPENCODE_LOCAL_PACKAGE_DIR));
   } catch {
@@ -2557,6 +3189,14 @@ async function main() {
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     printHelp();
     return;
+  }
+
+  if (cmd === "install" || cmd === "update" || cmd === "setup") {
+    // Service scripts run from the plugin dir; the dashboard they start must
+    // still edit the project install was run from (dashboard-service.sh).
+    if (!process.env.CLAUDE_SMART_DASHBOARD_WORKSPACE) {
+      process.env.CLAUDE_SMART_DASHBOARD_WORKSPACE = process.cwd();
+    }
   }
 
   if (cmd === "install") {
@@ -2595,8 +3235,6 @@ if (require.main === module) {
 module.exports = {
   assertSupportedRuntimePlatform,
   bootstrapPluginRuntime,
-  claudeCodePackageVersion,
-  claudeCodeVendorPayloadMismatch,
   codexMarketplacePluginRoot,
   copyCodexMarketplace,
   ensurePrivateNode,
@@ -2617,4 +3255,7 @@ module.exports = {
   prunePublishHooksForReadOnly,
   restorePublishHooksFromSource,
   stripJsonc,
+  terminateActiveChildren,
+  trackChild,
+  isBundledBackendUrl,
 };

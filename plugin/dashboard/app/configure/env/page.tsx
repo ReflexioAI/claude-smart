@@ -137,7 +137,7 @@ export default function ConfigureEnvPage() {
         {saved && (
           <div className="rounded-lg border border-border bg-accent/40 px-4 py-2.5 text-sm flex items-center gap-2">
             <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
-            Saved to ~/.reflexio/.env and Claude Code settings
+            Saved to ~/.claude-smart/.env and Claude Code settings
           </div>
         )}
 
@@ -145,7 +145,7 @@ export default function ConfigureEnvPage() {
           <div>
             <h2 className="text-sm font-semibold">claude-smart environment</h2>
             <p className="text-xs text-muted-foreground">
-              Writes to <code className="font-mono">~/.reflexio/.env</code>. Unknown
+              Writes to <code className="font-mono">~/.claude-smart/.env</code>. Unknown
               keys are preserved. These values are read by the Reflexio backend.
             </p>
           </div>

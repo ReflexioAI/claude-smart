@@ -1345,11 +1345,15 @@ def test_node_opencode_install_preserves_existing_claude_and_codex_state_on_wind
     assert local_package == home / ".claude-smart" / "opencode" / "claude-smart"
     assert (local_package / "plugin" / "scripts" / "smart-install.sh").exists()
     runtime_env = (home / ".claude-smart" / ".env").read_text()
-    setup_env = (home / ".reflexio" / ".env").read_text()
-    for text in [runtime_env, setup_env]:
-        assert "CLAUDE_SMART_HOST=opencode" in text
-        assert "CLAUDE_SMART_HOST=codex" not in text
-        assert 'CLAUDE_SMART_READ_ONLY="1"' in text
+    assert "CLAUDE_SMART_HOST=opencode" in runtime_env
+    assert "CLAUDE_SMART_HOST=codex" not in runtime_env
+    assert 'CLAUDE_SMART_READ_ONLY="1"' in runtime_env
+    # ~/.reflexio/.env belongs to other Reflexio tools and is never rewritten.
+    assert (home / ".reflexio" / ".env").read_text() == (
+        "# existing host state\n"
+        "CLAUDE_SMART_HOST=codex\n"
+        'CLAUDE_SMART_READ_ONLY="1"\n'
+    )
     assert f'CLAUDE_SMART_OPENCODE_PATH="{opencode_cmd}"' in runtime_env
     assert (claude_cache / "keep.txt").read_text() == "keep\n"
     assert (codex_cache / "keep.txt").read_text() == "keep\n"
