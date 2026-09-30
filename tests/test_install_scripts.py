@@ -85,6 +85,7 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         '  mkdir -p "$PWD/.venv/Scripts"\n'
         f"  cat > \"$PWD/.venv/bin/python\" <<'PYSH'\n"
         "#!/bin/sh\n"
+        'if [ "$1" = "-P" ]; then shift; fi\n'
         'if [ "$1" = "-" ] && [ "$2" = "onnxruntime" ] && [ -n "${CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS:-}" ]; then\n'
         '  exit "$CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS"\n'
         "fi\n"
@@ -3337,6 +3338,7 @@ def test_cli_sh_suppresses_installer_hook_payload_on_self_heal(tmp_path: Path) -
     )
     (venv_bin / "python").write_text(
         "#!/bin/sh\n"
+        'if [ "$1" = "-P" ]; then shift; fi\n'
         'if [ "$1" = "-" ]; then\n'
         '  [ -f "$HOME/import-ok" ] && exit 0\n'
         "  exit 1\n"
@@ -4464,6 +4466,7 @@ def test_backend_start_reaps_older_markerless_peer_from_other_root(
             plugin_root,
             "#!/bin/sh\n"
             'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
+            'if [ "$1" = "-P" ]; then shift; fi\n'
             'if [ "$1" = "-" ]; then exit 0; fi\n'
             'case "$1" in *backend-python-runner.py) printf "spawned backend\\n" >> "$HOME/python.log" ;; esac\n'
             "exit 0\n",
@@ -4599,6 +4602,7 @@ def test_backend_start_accepts_unknown_version_legacy_peer(
             plugin_root,
             "#!/bin/sh\n"
             'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
+            'if [ "$1" = "-P" ]; then shift; fi\n'
             'if [ "$1" = "-" ]; then exit 0; fi\n'
             'case "$1" in *backend-python-runner.py) printf "spawned backend\\n" >> "$HOME/python.log" ;; esac\n'
             "exit 0\n",
@@ -4707,6 +4711,7 @@ def test_backend_start_accepts_compatible_other_root_without_downgrade(
             plugin_root,
             "#!/bin/sh\n"
             'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
+            'if [ "$1" = "-P" ]; then shift; fi\n'
             'if [ "$1" = "-" ]; then exit 0; fi\n'
             'case "$1" in *backend-python-runner.py) printf "spawned backend\\n" >> "$HOME/python.log" ;; esac\n'
             "exit 0\n",
@@ -5176,6 +5181,7 @@ def test_backend_service_preflight_rejects_non_bundled_reflexio(
         plugin_root,
         "#!/bin/sh\n"
         'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
+        'if [ "$1" = "-P" ]; then shift; fi\n'
         'if [ "$1" = "-" ]; then\n'
         '  case "${2:-}" in\n'
         '    */vendor/reflexio) printf "outside bundled vendor\\n" >&2; exit 1 ;;\n'
@@ -5331,6 +5337,7 @@ def test_backend_start_missing_vendor_still_accepts_healthy_other_root(
             plugin_root,
             "#!/bin/sh\n"
             'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
+            'if [ "$1" = "-P" ]; then shift; fi\n'
             'if [ "$1" = "-" ]; then exit 0; fi\n'
             'case "$1" in *backend-python-runner.py) printf "spawned backend\\n" >> "$HOME/python.log" ;; esac\n'
             "exit 0\n",
@@ -5744,6 +5751,7 @@ def test_hook_entry_defaults_codex_citation_links_to_markdown(tmp_path: Path) ->
     shutil.copy2(HOOK_ENTRY, scripts / "hook_entry.sh")
     (venv_bin / "python").write_text(
         "#!/bin/sh\n"
+        'if [ "$1" = "-P" ]; then shift; fi\n'
         'if [ "$1" = "-" ]; then\n'
         "  cat >/dev/null\n"
         "  exit 0\n"

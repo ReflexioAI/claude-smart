@@ -559,7 +559,7 @@ verify_bundled_reflexio_import() {
     echo "bundled Reflexio package not found at $VENDORED_REFLEXIO" >&2
     return 1
   }
-  PYTHONPATH="$pythonpath" "$python_bin" - "$vendor_root_for_python" <<'PY'
+  PYTHONPATH="$pythonpath" "$python_bin" -P - "$vendor_root_for_python" <<'PY'
 from pathlib import Path
 import sys
 
@@ -787,7 +787,7 @@ ensure_vendored_reflexio_active() {
   [ -f "$vendor/pyproject.toml" ] || return 0
   plugin_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
   [ -x "$plugin_python" ] || return 0
-  if "$plugin_python" - "$vendor/pyproject.toml" <<'PY' >/dev/null 2>&1; then
+  if "$plugin_python" -P - "$vendor/pyproject.toml" <<'PY' >/dev/null 2>&1; then
 import importlib.metadata
 import re
 import sys
