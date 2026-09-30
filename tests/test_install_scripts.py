@@ -4203,7 +4203,7 @@ def test_backend_service_configures_shared_embedding_daemon() -> None:
 
     assert 'EMBEDDING_PORT="${EMBEDDING_PORT:-8072}"' in backend
     assert "REFLEXIO_EMBEDDING_PROVIDER:-local_service" in backend
-    assert "REFLEXIO_EMBEDDING_SERVICE_URL" in backend
+    assert "export REFLEXIO_EMBEDDING_SERVICE_URL" not in backend
 
 
 def test_backend_service_reports_local_embedding_degradation_without_cache_repair(

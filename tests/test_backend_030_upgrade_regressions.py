@@ -1,4 +1,7 @@
-"""The bundled backend must keep opening ``reflexio.db``, and probes must ignore cwd.
+"""Regressions from the 0.3.0 Reflexio vendor jump (0.2.28 -> 0.2.30).
+
+The bundled backend must keep opening ``reflexio.db``, probes must ignore cwd,
+and the local embedding daemon must actually start.
 
 claude-smart 0.3.0 bundled a Reflexio that resolves a null
 ``storage_config.db_path`` per org. When the shared ``reflexio.db`` held any
@@ -340,3 +343,52 @@ def test_pin_does_not_let_litellm_load_a_parent_dotenv(tmp_path: Path) -> None:
     )
 
     assert "probe=None" in result.stdout, result.stdout + result.stderr
+
+
+@requires_vendor
+def test_backend_env_makes_the_launcher_start_the_local_embedding_daemon(
+    tmp_path: Path,
+) -> None:
+    """Run the script's embedding env block, then ask the vendored launcher.
+
+    Reflexio's launcher skips the local embedding daemon whenever
+    REFLEXIO_EMBEDDING_SERVICE_URL is set, so the env backend-service.sh
+    builds must leave it unset for the daemon to start at all.
+    """
+    service = BACKEND_SERVICE.read_text()
+    start = service.index('export CLAUDE_SMART_USE_LOCAL_EMBEDDING="')
+    end = service.index("\nfi\n", start) + 4
+    probe = (
+        "from reflexio.cli.run_services import should_start_local_embedding_service\n"
+        "from reflexio.server.llm.providers.embedding_service_provider import (\n"
+        "    embedding_service_url,\n"
+        ")\n"
+        "print(should_start_local_embedding_service(), embedding_service_url())\n"
+    )
+    script = (
+        "export EMBEDDING_PORT=18999\n"
+        + service[start:end]
+        + f'"{sys.executable}" -P -c "$PROBE"\n'
+    )
+    env = _env(tmp_path)
+    for key in (
+        "REFLEXIO_EMBEDDING_SERVICE_URL",
+        "REFLEXIO_EMBEDDING_PROVIDER",
+        "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
+    ):
+        env.pop(key, None)
+    env["PROBE"] = probe
+
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env=env,
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=120,
+    )
+
+    assert result.stdout.strip().splitlines()[-1] == ("True http://127.0.0.1:18999"), (
+        result.stdout + result.stderr
+    )

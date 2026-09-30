@@ -63,7 +63,10 @@ export CLAUDE_SMART_USE_LOCAL_CLI="${CLAUDE_SMART_USE_LOCAL_CLI:-1}"
 export CLAUDE_SMART_USE_LOCAL_EMBEDDING="${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}"
 if [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-}" = "1" ]; then
   export REFLEXIO_EMBEDDING_PROVIDER="${REFLEXIO_EMBEDDING_PROVIDER:-local_service}"
-  export REFLEXIO_EMBEDDING_SERVICE_URL="${REFLEXIO_EMBEDDING_SERVICE_URL:-http://127.0.0.1:$EMBEDDING_PORT}"
+  # Do NOT default REFLEXIO_EMBEDDING_SERVICE_URL. Reflexio derives
+  # 127.0.0.1:$EMBEDDING_PORT itself, and since reflexio#425 its launcher
+  # treats ANY configured URL as a remote service and skips starting the
+  # local daemon -- defaulting it here left every install without embeddings.
 fi
 # The backend can be spawned from contexts whose PATH lacks the host
 # CLI dir (commonly ~/.local/bin or /opt/homebrew/bin). Pin the CLI
