@@ -249,3 +249,59 @@ def test_vendor_import_preflight_ignores_a_reflexio_package_in_cwd(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def _write_derived_db(home: Path) -> Path:
+    """What 0.3.0 created when it declined, or had no, ``reflexio.db``."""
+    derived = home / "data" / f"reflexio_{ORG}.db"
+    derived.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(derived)
+    conn.execute("CREATE TABLE written_by_030 (note TEXT)")
+    conn.commit()
+    conn.close()
+    return derived
+
+
+@requires_vendor
+def test_install_that_began_on_030_keeps_its_per_org_file(tmp_path: Path) -> None:
+    derived = _write_derived_db(tmp_path)
+    _write_config_with_null_db_path(tmp_path)
+
+    result = _run_runner(tmp_path, "--claude-smart-backend=1")
+
+    assert result.returncode == 0, result.stderr
+    assert _opened_db_path(tmp_path) == str(derived)
+    assert not (tmp_path / "data" / "reflexio.db").exists()
+
+
+@requires_vendor
+def test_history_wins_over_030_file_and_the_other_file_is_named(
+    tmp_path: Path,
+) -> None:
+    legacy = _write_legacy_db_with_foreign_label(tmp_path)
+    derived = _write_derived_db(tmp_path)
+    _write_config_with_null_db_path(tmp_path)
+
+    result = _run_runner(tmp_path, "--claude-smart-backend=1")
+
+    assert result.returncode == 0, result.stderr
+    assert _opened_db_path(tmp_path) == str(legacy)
+    assert str(derived) in result.stderr
+
+
+@requires_vendor
+def test_backend_runner_leaves_a_schema_invalid_config_untouched(
+    tmp_path: Path,
+) -> None:
+    _write_config_with_null_db_path(tmp_path)
+    config_file = _config_file(tmp_path)
+    config = json.loads(config_file.read_text())
+    config["storage_config"] = {"db_path": None, "not_a_field": True}
+    config_file.write_text(json.dumps(config))
+    before = config_file.read_bytes()
+
+    result = _run_runner(tmp_path, "--claude-smart-backend=1")
+
+    assert result.returncode == 0, result.stderr
+    assert config_file.read_bytes() == before
+    assert "could not pin SQLite db_path" in result.stderr

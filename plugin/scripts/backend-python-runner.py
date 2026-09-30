@@ -14,17 +14,22 @@ LEGACY_DB_FILENAME = "reflexio.db"
 
 
 def pin_legacy_sqlite_db_path() -> None:
-    """Point the org's SQLite storage at ``reflexio.db`` when no path is set.
+    """Point the org's SQLite storage at an explicit file when no path is set.
 
     Newer Reflexio resolves a null ``storage_config.db_path`` per org and
     refuses to adopt a shared ``reflexio.db`` holding rows another org
     labelled, opening an empty ``reflexio_<org>.db`` instead -- which made
-    0.3.0 installs look wiped. An explicit path bypasses that resolver, so
-    this writes the file claude-smart has always used. It must land on disk:
-    uvicorn runs in a child process that re-reads the config.
+    0.3.0 installs look wiped. An explicit path bypasses that resolver.
 
-    A path someone already set, and any non-SQLite storage, is left alone.
-    Failure is logged and swallowed so a pin problem never stops the backend.
+    The file pinned is ``reflexio.db``, the one every 0.2.x release used,
+    unless only the per-org file exists: an install that began on 0.3.0 keeps
+    everything there. When both exist the history in ``reflexio.db`` wins and
+    the per-org file is named in a warning rather than silently ignored.
+
+    It must land on disk: uvicorn runs in a child process that re-reads the
+    config. A path someone already set, and any non-SQLite storage, is left
+    alone, and a config that fails validation is never overwritten. Failure is
+    logged and swallowed so a pin problem never stops the backend.
 
     Returns:
         None: Side effect only -- may rewrite the org config file.
@@ -33,25 +38,44 @@ def pin_legacy_sqlite_db_path() -> None:
     if os.environ.get("CLAUDE_SMART_BACKEND") != "1" or not org_id:
         return
     try:
-        from reflexio.models.config_schema import StorageConfigSQLite
+        from reflexio.models.config_schema import (
+            StorageConfigSQLite,
+            validate_stored_config,
+        )
         from reflexio.server import LOCAL_STORAGE_PATH
         from reflexio.server.services.configurator.local_file_config_storage import (
             LocalFileConfigStorage,
+        )
+        from reflexio.server.services.storage.sqlite_storage._dataset_path import (
+            derive_db_path,
         )
 
         storage = LocalFileConfigStorage(org_id=org_id)
         config_file = Path(storage.config_file)
         if config_file.exists():
-            # load_config swallows a parse error and returns defaults, and
-            # saving those would overwrite the user's config. Refuse instead.
-            json.loads(config_file.read_text(encoding="utf-8"))
-        config = storage.load_config()
+            # load_config swallows parse AND validation errors and returns
+            # defaults; saving those would overwrite the user's config.
+            data = json.loads(config_file.read_text(encoding="utf-8"))
+            config = validate_stored_config(data)
+        else:
+            config = storage.load_config()
         storage_config = config.storage_config
         if not isinstance(storage_config, StorageConfigSQLite):
             return
         if storage_config.db_path is not None:
             return
-        storage_config.db_path = str(Path(LOCAL_STORAGE_PATH) / LEGACY_DB_FILENAME)
+
+        root = Path(LOCAL_STORAGE_PATH)
+        legacy = root / LEGACY_DB_FILENAME
+        derived = derive_db_path(root, org_id)
+        target = derived if derived.exists() and not legacy.exists() else legacy
+        if target == legacy and derived.exists():
+            print(
+                f"[claude-smart] using {legacy}; memories written by 0.3.0 "
+                f"remain in {derived} and are not merged",
+                file=sys.stderr,
+            )
+        storage_config.db_path = str(target)
         storage.save_config(config)
     except Exception as exc:  # noqa: BLE001 - never block backend start
         print(
