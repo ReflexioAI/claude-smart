@@ -63,7 +63,10 @@ export CLAUDE_SMART_USE_LOCAL_CLI="${CLAUDE_SMART_USE_LOCAL_CLI:-1}"
 export CLAUDE_SMART_USE_LOCAL_EMBEDDING="${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}"
 if [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-}" = "1" ]; then
   export REFLEXIO_EMBEDDING_PROVIDER="${REFLEXIO_EMBEDDING_PROVIDER:-local_service}"
-  export REFLEXIO_EMBEDDING_SERVICE_URL="${REFLEXIO_EMBEDDING_SERVICE_URL:-http://127.0.0.1:$EMBEDDING_PORT}"
+  # Do NOT default REFLEXIO_EMBEDDING_SERVICE_URL. Reflexio derives
+  # 127.0.0.1:$EMBEDDING_PORT itself, and since reflexio#425 its launcher
+  # treats ANY configured URL as a remote service and skips starting the
+  # local daemon -- defaulting it here left every install without embeddings.
 fi
 # The backend can be spawned from contexts whose PATH lacks the host
 # CLI dir (commonly ~/.local/bin or /opt/homebrew/bin). Pin the CLI
@@ -559,7 +562,7 @@ verify_bundled_reflexio_import() {
     echo "bundled Reflexio package not found at $VENDORED_REFLEXIO" >&2
     return 1
   }
-  PYTHONPATH="$pythonpath" "$python_bin" - "$vendor_root_for_python" <<'PY'
+  PYTHONPATH="$pythonpath" "$python_bin" -P - "$vendor_root_for_python" <<'PY'
 from pathlib import Path
 import sys
 
@@ -787,7 +790,7 @@ ensure_vendored_reflexio_active() {
   [ -f "$vendor/pyproject.toml" ] || return 0
   plugin_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
   [ -x "$plugin_python" ] || return 0
-  if "$plugin_python" - "$vendor/pyproject.toml" <<'PY' >/dev/null 2>&1; then
+  if "$plugin_python" -P - "$vendor/pyproject.toml" <<'PY' >/dev/null 2>&1; then
 import importlib.metadata
 import re
 import sys

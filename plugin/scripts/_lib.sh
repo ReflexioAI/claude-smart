@@ -338,7 +338,7 @@ claude_smart_python_imports() {
   module="$2"
   python_bin="$(claude_smart_plugin_python "$plugin_root")"
   [ -x "$python_bin" ] || return 1
-  "$python_bin" - "$module" <<'PY' >/dev/null 2>&1
+  "$python_bin" -P - "$module" <<'PY' >/dev/null 2>&1
 import importlib
 import sys
 
