@@ -252,9 +252,16 @@ def _fake_claude_install_script() -> str:
 
     Used by tests that don't care about install-retry semantics. The cache is
     seeded separately via _seed_fake_claude_cache, so this script just needs
-    to not error.
+    to not error. ``FAKE_CLAUDE_UPDATE_EXIT`` makes ``plugin update`` fail.
     """
-    return '#!/bin/sh\nprintf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\nexit 0\n'
+    return (
+        "#!/bin/sh\n"
+        'printf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\n'
+        'if [ "$1 $2" = "plugin update" ] && [ -n "${FAKE_CLAUDE_UPDATE_EXIT:-}" ]; then\n'
+        '  exit "$FAKE_CLAUDE_UPDATE_EXIT"\n'
+        "fi\n"
+        "exit 0\n"
+    )
 
 
 def _node_platform() -> str:
@@ -1616,6 +1623,25 @@ def test_node_install_summary_claims_a_backend_only_when_one_runs(
     assert ("stop" in log) is managed
 
 
+def test_node_install_survives_a_failed_version_record(tmp_path: Path) -> None:
+    """`plugin update` only refreshes the version Claude Code lists.
+
+    The runtime is already installed and correct when it runs, so a failure
+    there must warn with the manual command rather than fail the install.
+    """
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\n")
+
+    result = _run_fake_claude_code_install(
+        tmp_path, package_root, {"FAKE_CLAUDE_UPDATE_EXIT": "3"}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "`claude plugin update claude-smart@reflexioai` failed (exit 3)" in (
+        result.stderr
+    )
+    assert "claude-smart installed and dependencies are prepared" in result.stdout
+
+
 def test_node_install_bootstraps_stable_copy_in_managed_mode(tmp_path: Path) -> None:
     # Claude Code runs a local-directory marketplace plugin in place, so the
     # marketplace must be the stable copy (never the prunable npx dir) and that
@@ -1641,6 +1667,7 @@ def test_node_install_bootstraps_stable_copy_in_managed_mode(tmp_path: Path) -> 
     assert (tmp_path / "claude.log").read_text().splitlines() == [
         f"claude plugin marketplace add {stable_plugin.parent}",
         "claude plugin install claude-smart@reflexioai",
+        "claude plugin update claude-smart@reflexioai",
     ]
     assert (tmp_path / "bootstrap-ran").read_text().strip() == str(stable_plugin)
     assert (tmp_path / ".reflexio" / "plugin-root").resolve() == stable_plugin
@@ -3047,8 +3074,10 @@ def test_node_update_reads_managed_env(tmp_path: Path) -> None:
     assert "Using managed Reflexio" in result.stdout
     claude_log = (tmp_path / "claude.log").read_text()
     assert "claude plugin marketplace add" in claude_log
-    assert "claude plugin install claude-smart@reflexioai" in claude_log
-    assert "claude plugin update" not in claude_log
+    # `update` reinstalls from this package, then re-records the version:
+    # `plugin install` alone leaves Claude Code listing the previous one.
+    install_at = claude_log.index("claude plugin install claude-smart@reflexioai")
+    assert claude_log.index("claude plugin update claude-smart@reflexioai") > install_at
     env_text = env_path.read_text()
     assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in env_text
     assert 'REFLEXIO_API_KEY="rflx-test-secret"' in env_text
@@ -3104,6 +3133,7 @@ def test_node_update_retries_install_after_uninstall(tmp_path: Path) -> None:
         "claude plugin install claude-smart@reflexioai",
         "claude plugin uninstall claude-smart@reflexioai",
         "claude plugin install claude-smart@reflexioai",
+        "claude plugin update claude-smart@reflexioai",
     ]
 
 
@@ -3293,7 +3323,18 @@ def test_node_update_reinstalls_by_host() -> None:
         "await runInstall(args, { retryInstallAfterUninstall: true })" in node_installer
     )
     assert "await runInstallCodex(args)" in node_installer
-    assert 'runClaude(["plugin", "update", PLUGIN_SPEC]' not in node_installer
+    # Update means reinstall from this package; `plugin update` only
+    # re-records the version inside runInstall, after `plugin install`.
+    run_update = node_installer[
+        node_installer.index("async function runUpdate(args)") : node_installer.index(
+            "async function runUpdateCodex(args)"
+        )
+    ]
+    assert '"update"' not in run_update
+    run_install = node_installer[node_installer.index("async function runInstall(") :]
+    assert run_install.index('args: ["plugin", "install", PLUGIN_SPEC]') < (
+        run_install.index('runClaude(["plugin", "update", PLUGIN_SPEC]')
+    )
     assert "update --host codex" in node_installer
 
 

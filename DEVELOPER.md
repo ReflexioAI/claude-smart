@@ -612,7 +612,7 @@ claude-smart install --host codex                  # Codex
 claude-smart install --host opencode               # OpenCode
 ```
 
-Do **not** use `claude-smart update` for this loop — it wraps `claude plugin update claude-smart@reflexioai`, the end-user path for pulling a newer *published* release from the marketplace. It is version-driven (a same-version rebuild has nothing to update to) and updates from the registered source rather than re-ingesting a tarball you just built. Bumping the patch version with `make bump` sidesteps all version-dedup ambiguity if you'd rather not use `--force`.
+`claude-smart update` is the same reinstall as `claude-smart install` (it also retries once after `claude plugin uninstall` if the install step fails), not a fetch from a registry. Both finish with `claude plugin update claude-smart@reflexioai`, which only re-records the version Claude Code lists: `claude plugin install` is a no-op for an installed plugin, so without it `claude plugin list` and `/plugin` keep showing the previous version even though the new copy is what loads. Bumping the patch version with `make bump` sidesteps version-dedup ambiguity if you'd rather not uninstall first.
 
 For Reflexio backend changes, edit `open_source/reflexio/` and either:
 - Publish `reflexio-ai` to PyPI and use [Path B](#path-b-release-claude-smart-with-a-published-reflexio-update), or

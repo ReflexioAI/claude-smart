@@ -2936,6 +2936,22 @@ async function runInstall(args, options = {}) {
     }
   }
 
+  // `plugin install` is a no-op for an already-installed plugin: Claude Code
+  // keeps its recorded version (shown by `claude plugin list` and /plugin)
+  // even though the plugin loads in place from the updated copy. `plugin
+  // update` re-records it from the local marketplace -- no network, and a
+  // no-op when already current. Non-fatal: the runtime is already correct.
+  const recordCode = await runClaude(["plugin", "update", PLUGIN_SPEC], {
+    spinnerLabel: "Recording claude-smart version…",
+  });
+  if (recordCode !== 0) {
+    process.stderr.write(
+      `warning: \`claude plugin update ${PLUGIN_SPEC}\` failed (exit ${recordCode}); ` +
+        "claude-smart is installed, but Claude Code may still list the previous version. " +
+        `Run \`claude plugin update ${PLUGIN_SPEC}\` to refresh it.\n`,
+    );
+  }
+
   commitLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
   startDeferredDashboardBuild(pluginRoot);
   await startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup);
