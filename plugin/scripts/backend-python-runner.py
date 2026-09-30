@@ -38,6 +38,12 @@ def pin_legacy_sqlite_db_path() -> None:
     if os.environ.get("CLAUDE_SMART_BACKEND") != "1" or not org_id:
         return
     try:
+        # Must precede the imports below: sqlite_storage pulls in LiteLLM,
+        # whose import-time load_dotenv() would otherwise walk up to an
+        # unrelated .env before reflexio.cli installs the same guard.
+        from reflexio.cli.env_loader import block_implicit_dotenv_walkup
+
+        block_implicit_dotenv_walkup()
         from reflexio.models.config_schema import (
             StorageConfigSQLite,
             validate_stored_config,

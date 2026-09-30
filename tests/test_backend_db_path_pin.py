@@ -305,3 +305,38 @@ def test_backend_runner_leaves_a_schema_invalid_config_untouched(
     assert result.returncode == 0, result.stderr
     assert config_file.read_bytes() == before
     assert "could not pin SQLite db_path" in result.stderr
+
+
+@requires_vendor
+def test_pin_does_not_let_litellm_load_a_parent_dotenv(tmp_path: Path) -> None:
+    """The pin imports LiteLLM before reflexio.cli installs its dotenv guard.
+
+    LiteLLM's import-time ``load_dotenv()`` walks up to the first ``.env`` it
+    finds, so the pin installs the guard itself. A ``-c`` main has no
+    ``__file__``, so python-dotenv starts that walk at cwd -- one level below
+    the planted file here.
+    """
+    (tmp_path / ".env").write_text("CS_LEAK_PROBE=leaked\n")
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    script = (
+        "import importlib.util, os\n"
+        f"spec = importlib.util.spec_from_file_location('runner', {str(RUNNER)!r})\n"
+        "runner = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(runner)\n"
+        "os.environ['CLAUDE_SMART_BACKEND'] = '1'\n"
+        "runner.pin_legacy_sqlite_db_path()\n"
+        "print('probe=' + str(os.environ.get('CS_LEAK_PROBE')))\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-P", "-c", script],
+        env=_env(tmp_path / "home"),
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=120,
+    )
+
+    assert "probe=None" in result.stdout, result.stdout + result.stderr
