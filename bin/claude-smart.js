@@ -1287,12 +1287,15 @@ function commitLocalPluginPackage(packageRoot) {
         `${err && err.message ? err.message : err}\n`,
     );
   }
+  // Still under the package lock: once released, a concurrent install may
+  // replace the package and link a new env, and pruning against that
+  // uncommitted env would delete the one its rollback restores.
+  if (packageRoot === CLAUDE_CODE_LOCAL_PACKAGE_DIR) pruneInactiveClaudeCodeVenvs(packageRoot);
   try {
     releasePackageInstallLock(packageRoot);
   } catch {
     // A leftover lock dir is reclaimed as stale by the next install.
   }
-  if (packageRoot === CLAUDE_CODE_LOCAL_PACKAGE_DIR) pruneInactiveClaudeCodeVenvs(packageRoot);
   stoppedServices = null;
   commitInstallState();
 }
