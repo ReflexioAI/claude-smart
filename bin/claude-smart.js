@@ -77,6 +77,7 @@ const OPENCODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "opencode", "cla
 // Claude Code loads plugins from a local-directory marketplace in place
 // (<marketplace>/plugin), so this copy IS the runtime root, not a staging area.
 const CLAUDE_CODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "claude-code", "claude-smart");
+const CLAUDE_SMART_VENVS_DIR = join(CLAUDE_SMART_STATE_DIR, "venvs");
 const OPENCODE_PACKAGE_LOCK_TIMEOUT_MS = 120_000;
 const OPENCODE_PACKAGE_LOCK_STALE_MS = 10 * 60_000;
 const CODEX_CONFIG_PATH = join(homedir(), ".codex", "config.toml");
@@ -1291,8 +1292,42 @@ function commitLocalPluginPackage(packageRoot) {
   } catch {
     // A leftover lock dir is reclaimed as stale by the next install.
   }
+  if (packageRoot === CLAUDE_CODE_LOCAL_PACKAGE_DIR) pruneInactiveClaudeCodeVenvs(packageRoot);
   stoppedServices = null;
   commitInstallState();
+}
+
+// smart-install.sh keeps the Claude Code copy's Python env in
+// ~/.claude-smart/venvs/claude-code-<id> (linked from plugin/.venv) so Claude
+// Code's per-version plugin cache copy does not duplicate it. Each install gets
+// its own env so the package kept aside for rollback keeps a working one; once
+// the install commits, every env but the active one is unreferenced. Prunes
+// nothing when the active env cannot be resolved.
+function pruneInactiveClaudeCodeVenvs(packageRoot) {
+  let active;
+  try {
+    active = realpathSync(join(packageRoot, "plugin", ".venv"));
+  } catch {
+    return;
+  }
+  let entries;
+  try {
+    entries = readdirSync(CLAUDE_SMART_VENVS_DIR);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith("claude-code-")) continue;
+    const candidate = join(CLAUDE_SMART_VENVS_DIR, name);
+    try {
+      if (realpathSync(candidate) === active) continue;
+      rmSync(candidate, { recursive: true, force: true });
+    } catch (err) {
+      process.stderr.write(
+        `warning: could not remove unused Python env ${candidate}: ${err && err.message ? err.message : err}\n`,
+      );
+    }
+  }
 }
 
 // A newly created package whose runtime is now prepared is worth keeping

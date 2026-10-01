@@ -82,7 +82,7 @@ state:
 
 | Dependency | Installed/managed by | Location |
 | --- | --- | --- |
-| Python 3.12 env and Python packages | `uv sync --locked --python 3.12` | plugin `.venv` |
+| Python 3.12 env and Python packages | `uv sync --locked --python 3.12` | plugin `.venv`; for the Claude Code install (macOS/Linux) a symlink to `~/.claude-smart/venvs/claude-code-<id>`, so Claude Code's per-version plugin cache copy skips it. Inactive envs are pruned when an install commits. |
 | Runtime uv | installer if missing | `~/.local/bin` or `~/.cargo/bin` |
 | Runtime Node.js/npm | installer if missing | `~/.claude-smart/node/current` |
 | Dashboard packages/build | installer or first dashboard start | `plugin/dashboard/node_modules`, `plugin/dashboard/.next` |

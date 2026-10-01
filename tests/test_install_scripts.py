@@ -3806,6 +3806,111 @@ def test_smart_install_installs_vendored_reflexio(tmp_path: Path) -> None:
     assert f"--reinstall --no-deps {vendor}" in uv_log
 
 
+def _managed_claude_code_plugin_root(tmp_path: Path) -> Path:
+    return tmp_path / ".claude-smart" / "claude-code" / "claude-smart" / "plugin"
+
+
+def _run_smart_install(script: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(script)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_smart_install_keeps_managed_claude_code_venv_outside_the_plugin(
+    tmp_path: Path,
+) -> None:
+    """Claude Code copies the plugin dir per version but runs it in place.
+
+    A linked .venv is skipped by that copy, so the ~1 GB env is not duplicated
+    into ~/.claude/plugins/cache for every version.
+    """
+    plugin_root, script, env = _prepare_smart_install_sync_fixture(
+        tmp_path, mode="fresh", plugin_root=_managed_claude_code_plugin_root(tmp_path)
+    )
+
+    result = _run_smart_install(script, env)
+
+    assert result.returncode == 0, result.stderr
+    venv = plugin_root / ".venv"
+    assert venv.is_symlink()
+    target = Path(os.readlink(venv))
+    assert target.parent == tmp_path / ".claude-smart" / "venvs"
+    assert target.name.startswith("claude-code-")
+    assert (target / "bin" / "python").exists()
+    # A freshly linked env is empty by design, not corrupt.
+    assert "has no python executable" not in result.stderr
+
+
+def test_smart_install_keeps_an_in_place_venv_outside_the_managed_copy(
+    tmp_path: Path,
+) -> None:
+    plugin_root, script, env = _prepare_smart_install_sync_fixture(tmp_path, mode="fresh")
+
+    result = _run_smart_install(script, env)
+
+    assert result.returncode == 0, result.stderr
+    assert (plugin_root / ".venv").is_dir()
+    assert not (plugin_root / ".venv").is_symlink()
+    assert not (tmp_path / ".claude-smart" / "venvs").exists()
+
+
+def test_smart_install_replaces_a_dangling_venv_link(tmp_path: Path) -> None:
+    plugin_root, script, env = _prepare_smart_install_sync_fixture(
+        tmp_path, mode="fresh", plugin_root=_managed_claude_code_plugin_root(tmp_path)
+    )
+    (plugin_root / ".venv").symlink_to(tmp_path / "deleted-env")
+
+    result = _run_smart_install(script, env)
+
+    assert result.returncode == 0, result.stderr
+    target = Path(os.readlink(plugin_root / ".venv"))
+    assert target.parent == tmp_path / ".claude-smart" / "venvs"
+    assert (target / "bin" / "python").exists()
+
+
+def test_smart_install_clears_a_corrupt_linked_venv_in_place(tmp_path: Path) -> None:
+    """Removing only the link would leak the env it points at."""
+    plugin_root, script, env = _prepare_smart_install_sync_fixture(
+        tmp_path, mode="fresh", plugin_root=_managed_claude_code_plugin_root(tmp_path)
+    )
+    target = tmp_path / ".claude-smart" / "venvs" / "claude-code-corrupt"
+    (target / "lib").mkdir(parents=True)
+    (target / "lib" / "leftover").write_text("x")
+    (plugin_root / ".venv").symlink_to(target)
+
+    result = _run_smart_install(script, env)
+
+    assert result.returncode == 0, result.stderr
+    assert "has no python executable; recreating" in result.stderr
+    assert Path(os.readlink(plugin_root / ".venv")) == target
+    assert not (target / "lib" / "leftover").exists()
+    assert (target / "bin" / "python").exists()
+    assert sorted(p.name for p in target.parent.iterdir()) == ["claude-code-corrupt"]
+
+
+def test_node_install_prunes_inactive_claude_code_venvs_on_commit(
+    tmp_path: Path,
+) -> None:
+    venvs = tmp_path / ".claude-smart" / "venvs"
+    (venvs / "claude-code-old").mkdir(parents=True)
+    (venvs / "unrelated").mkdir()
+    package_root = _fake_claude_code_package(
+        tmp_path,
+        "#!/bin/sh\n"
+        'mkdir -p "$HOME/.claude-smart/venvs/claude-code-new/bin"\n'
+        'ln -s "$HOME/.claude-smart/venvs/claude-code-new" "$PWD/.venv"\n',
+    )
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {})
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(p.name for p in venvs.iterdir()) == ["claude-code-new", "unrelated"]
+
+
 def _prepare_smart_install_sync_fixture(
     tmp_path: Path, *, mode: str, plugin_root: Path | None = None
 ) -> tuple[Path, Path, dict[str, str]]:
