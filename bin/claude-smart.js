@@ -1217,6 +1217,7 @@ function rollbackLocalPluginPackages() {
         );
         repairPluginRoot();
       }
+      if (packageRoot === CLAUDE_CODE_LOCAL_PACKAGE_DIR) pruneInactiveClaudeCodeVenvs(packageRoot);
     } catch (err) {
       process.stderr.write(
         `warning: could not restore the previous claude-smart package from ${backupPackage}: ` +
@@ -1304,14 +1305,19 @@ function commitLocalPluginPackage(packageRoot) {
 // ~/.claude-smart/venvs/claude-code-<id> (linked from plugin/.venv) so Claude
 // Code's per-version plugin cache copy does not duplicate it. Each install gets
 // its own env so the package kept aside for rollback keeps a working one; once
-// the install commits, every env but the active one is unreferenced. Prunes
-// nothing when the active env cannot be resolved.
+// the install commits, every env but the active one is unreferenced. Also run
+// after a rollback (the failed install's env is discarded) and an uninstall
+// (no package left, so every env goes). Prunes nothing when the package's
+// .venv exists but cannot be resolved.
 function pruneInactiveClaudeCodeVenvs(packageRoot) {
-  let active;
-  try {
-    active = realpathSync(join(packageRoot, "plugin", ".venv"));
-  } catch {
-    return;
+  const link = join(packageRoot, "plugin", ".venv");
+  let active = null;
+  if (pathEntryExists(link)) {
+    try {
+      active = realpathSync(link);
+    } catch {
+      return;
+    }
   }
   let entries;
   try {
@@ -1323,7 +1329,7 @@ function pruneInactiveClaudeCodeVenvs(packageRoot) {
     if (!name.startsWith("claude-code-")) continue;
     const candidate = join(CLAUDE_SMART_VENVS_DIR, name);
     try {
-      if (realpathSync(candidate) === active) continue;
+      if (active !== null && realpathSync(candidate) === active) continue;
       rmSync(candidate, { recursive: true, force: true });
     } catch (err) {
       process.stderr.write(
@@ -2853,6 +2859,7 @@ async function runUninstall(args) {
     );
   }
   rmSync(CLAUDE_CODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
+  pruneInactiveClaudeCodeVenvs(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
   repairPluginRoot(HOST_CLAUDE_CODE);
 
   process.stdout.write(

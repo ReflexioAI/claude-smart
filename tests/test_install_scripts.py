@@ -2590,6 +2590,60 @@ def test_node_install_rolls_back_when_terminated_during_bootstrap(tmp_path: Path
     assert "restored the previous claude-smart package" in result.stderr
 
 
+def test_node_failed_install_discards_its_env_and_keeps_the_restored_one(
+    tmp_path: Path,
+) -> None:
+    venvs = tmp_path / ".claude-smart" / "venvs"
+    (venvs / "claude-code-old").mkdir(parents=True)
+    stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
+    (stable / "plugin").mkdir(parents=True)
+    (stable / "plugin" / ".venv").symlink_to(venvs / "claude-code-old")
+    package_root = _fake_claude_code_package(
+        tmp_path,
+        "#!/bin/sh\n"
+        'mkdir -p "$HOME/.claude-smart/venvs/claude-code-new"\n'
+        'ln -s "$HOME/.claude-smart/venvs/claude-code-new" "$PWD/.venv"\n'
+        "exit 7\n",
+    )
+
+    result = _run_fake_claude_code_install(tmp_path, package_root, {})
+
+    assert result.returncode != 0
+    assert "restored the previous claude-smart package" in result.stderr
+    assert sorted(p.name for p in venvs.iterdir()) == ["claude-code-old"]
+    assert (stable / "plugin" / ".venv").resolve() == (venvs / "claude-code-old").resolve()
+
+
+def test_node_claude_uninstall_removes_external_envs(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    venvs = tmp_path / ".claude-smart" / "venvs"
+    (venvs / "claude-code-active").mkdir(parents=True)
+    (venvs / "unrelated").mkdir()
+    claude_root = tmp_path / ".claude-smart" / "claude-code" / "claude-smart" / "plugin"
+    (claude_root / "scripts").mkdir(parents=True)
+    _write_executable(claude_root / "scripts" / "backend-service.sh", "#!/bin/sh\nexit 0\n")
+    (claude_root / ".venv").symlink_to(venvs / "claude-code-active")
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "claude", _fake_claude_install_script())
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    result = subprocess.run(
+        [node, str(package_root / "bin" / "claude-smart.js"), "uninstall"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(p.name for p in venvs.iterdir()) == ["unrelated"]
+
+
 def test_node_failed_install_restarts_the_services_it_stopped(tmp_path: Path) -> None:
     # Install stops the previous root's services before replacing it; when
     # the install does not commit they must come back from the restored root.
