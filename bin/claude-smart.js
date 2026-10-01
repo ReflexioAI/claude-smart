@@ -77,6 +77,7 @@ const OPENCODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "opencode", "cla
 // Claude Code loads plugins from a local-directory marketplace in place
 // (<marketplace>/plugin), so this copy IS the runtime root, not a staging area.
 const CLAUDE_CODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "claude-code", "claude-smart");
+const CLAUDE_SMART_VENVS_DIR = join(CLAUDE_SMART_STATE_DIR, "venvs");
 const OPENCODE_PACKAGE_LOCK_TIMEOUT_MS = 120_000;
 const OPENCODE_PACKAGE_LOCK_STALE_MS = 10 * 60_000;
 const CODEX_CONFIG_PATH = join(homedir(), ".codex", "config.toml");
@@ -1216,6 +1217,7 @@ function rollbackLocalPluginPackages() {
         );
         repairPluginRoot();
       }
+      if (packageRoot === CLAUDE_CODE_LOCAL_PACKAGE_DIR) pruneInactiveClaudeCodeVenvs(packageRoot);
     } catch (err) {
       process.stderr.write(
         `warning: could not restore the previous claude-smart package from ${backupPackage}: ` +
@@ -1286,6 +1288,10 @@ function commitLocalPluginPackage(packageRoot) {
         `${err && err.message ? err.message : err}\n`,
     );
   }
+  // Still under the package lock: once released, a concurrent install may
+  // replace the package and link a new env, and pruning against that
+  // uncommitted env would delete the one its rollback restores.
+  if (packageRoot === CLAUDE_CODE_LOCAL_PACKAGE_DIR) pruneInactiveClaudeCodeVenvs(packageRoot);
   try {
     releasePackageInstallLock(packageRoot);
   } catch {
@@ -1293,6 +1299,44 @@ function commitLocalPluginPackage(packageRoot) {
   }
   stoppedServices = null;
   commitInstallState();
+}
+
+// smart-install.sh keeps the Claude Code copy's Python env in
+// ~/.claude-smart/venvs/claude-code-<id> (linked from plugin/.venv) so Claude
+// Code's per-version plugin cache copy does not duplicate it. Each install gets
+// its own env so the package kept aside for rollback keeps a working one; once
+// the install commits, every env but the active one is unreferenced. Also run
+// after a rollback (the failed install's env is discarded) and an uninstall
+// (no package left, so every env goes). Prunes nothing when the package's
+// .venv exists but cannot be resolved.
+function pruneInactiveClaudeCodeVenvs(packageRoot) {
+  const link = join(packageRoot, "plugin", ".venv");
+  let active = null;
+  if (pathEntryExists(link)) {
+    try {
+      active = realpathSync(link);
+    } catch {
+      return;
+    }
+  }
+  let entries;
+  try {
+    entries = readdirSync(CLAUDE_SMART_VENVS_DIR);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith("claude-code-")) continue;
+    const candidate = join(CLAUDE_SMART_VENVS_DIR, name);
+    try {
+      if (active !== null && realpathSync(candidate) === active) continue;
+      rmSync(candidate, { recursive: true, force: true });
+    } catch (err) {
+      process.stderr.write(
+        `warning: could not remove unused Python env ${candidate}: ${err && err.message ? err.message : err}\n`,
+      );
+    }
+  }
 }
 
 // A newly created package whose runtime is now prepared is worth keeping
@@ -2815,6 +2859,7 @@ async function runUninstall(args) {
     );
   }
   rmSync(CLAUDE_CODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
+  pruneInactiveClaudeCodeVenvs(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
   repairPluginRoot(HOST_CLAUDE_CODE);
 
   process.stdout.write(

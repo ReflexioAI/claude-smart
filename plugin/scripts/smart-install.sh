@@ -531,12 +531,45 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 cd "$PLUGIN_ROOT"
+
+# Claude Code copies the plugin directory into ~/.claude/plugins/cache on every
+# install/update, yet runs it in place, so an in-place .venv (~1 GB) became an
+# unused duplicate per version. For the managed Claude Code copy, keep the env
+# outside the plugin directory and link it from .venv: Claude Code skips the
+# symlink when copying, and every "$PLUGIN_ROOT/.venv/bin/python" path still
+# resolves. One directory per install, so the package an update keeps aside for
+# rollback still owns its own env; the installer prunes inactive ones on commit.
+# Windows keeps the in-place .venv (symlinks need Developer Mode there).
+CLAUDE_SMART_VENVS_DIR="$HOME/.claude-smart/venvs"
+plugin_root_is_managed_claude_code_copy() {
+  local managed
+  claude_smart_is_windows && return 1
+  managed="$(claude_smart_canonical_dir "$HOME/.claude-smart/claude-code/claude-smart/plugin" 2>/dev/null)" || return 1
+  [ "$(pwd -P)" = "$managed" ]
+}
+plugin_venv_target() {
+  [ -L "$PLUGIN_ROOT/.venv" ] || return 1
+  readlink "$PLUGIN_ROOT/.venv"
+}
+if plugin_root_is_managed_claude_code_copy; then
+  if [ -L "$PLUGIN_ROOT/.venv" ] && [ ! -d "$PLUGIN_ROOT/.venv" ]; then
+    rm -f "$PLUGIN_ROOT/.venv"
+  fi
+  if [ ! -e "$PLUGIN_ROOT/.venv" ]; then
+    mkdir -p "$CLAUDE_SMART_VENVS_DIR"
+    venv_dir="$CLAUDE_SMART_VENVS_DIR/claude-code-$(date +%s)-$$"
+    mkdir "$venv_dir"
+    ln -s "$venv_dir" "$PLUGIN_ROOT/.venv"
+    venv_freshly_linked=1
+  fi
+fi
+
 # Self-heal a corrupt .venv before uv sync. uv refuses to reuse a venv that
 # exists but has no python executable (e.g. partial cleanup of an npm/npx
 # tree, an interrupted earlier install, or the underlying interpreter being
 # uninstalled) — it errors with "not a valid Python environment" instead of
 # rebuilding. Pre-clearing lets uv recreate it cleanly.
-if [ -d "$PLUGIN_ROOT/.venv" ]; then
+if [ -d "$PLUGIN_ROOT/.venv" ] && [ -z "${venv_freshly_linked:-}" ]; then
   if claude_smart_is_windows; then
     plugin_python_path="$PLUGIN_ROOT/.venv/Scripts/python.exe"
   else
@@ -544,7 +577,12 @@ if [ -d "$PLUGIN_ROOT/.venv" ]; then
   fi
   if [ ! -x "$plugin_python_path" ]; then
     echo "[claude-smart] .venv at $PLUGIN_ROOT/.venv has no python executable; recreating" >&2
-    rm -rf "$PLUGIN_ROOT/.venv"
+    if venv_target="$(plugin_venv_target)"; then
+      # Clear the linked env in place; removing only the link would leak it.
+      find "$venv_target" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    else
+      rm -rf "$PLUGIN_ROOT/.venv"
+    fi
   fi
 fi
 echo "[claude-smart] running uv sync..." >&2
