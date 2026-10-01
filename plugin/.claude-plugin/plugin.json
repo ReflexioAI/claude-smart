@@ -1,6 +1,6 @@
 {
   "name": "claude-smart",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Self-improving Claude Code, Codex, and OpenCode plugin that turns corrections into Preferences, Project-specific skills, and Shared skills",
   "author": {
     "name": "Yi Lu"
