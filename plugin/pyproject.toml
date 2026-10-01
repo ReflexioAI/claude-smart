@@ -28,7 +28,7 @@ dependencies = [
     # scripts/sync-reflexio-dep.py.
     "reflexio-ai>=0.2.28",
     # Keep both the PyPI baseline and vendored runtime above the security floor.
-    "litellm>=1.98.0,<2",
+    "litellm>=1.103.1,<2",
     "einops>=0.8.0",
     # Native SQLite vector KNN for local storage. Reflexio can fall back to
     # Python ranking without this, but installed claude-smart should include
