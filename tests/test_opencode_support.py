@@ -1141,6 +1141,11 @@ def test_node_opencode_install_from_npx_root_patches_config_to_local_file_packag
     local_package = Path(plugin_spec.removeprefix("file://"))
     assert local_package == Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
     assert (local_package / "plugin" / "scripts" / "smart-install.sh").exists()
+    v2_loader = Path(env["XDG_CONFIG_HOME"]) / "opencode" / "plugins" / "claude-smart.js"
+    assert v2_loader.is_file()
+    loader_text = v2_loader.read_text()
+    assert "claude-smart OpenCode V2 loader" in loader_text
+    assert "plugin/opencode/dist/server.mjs" in loader_text
 
 
 def test_node_opencode_install_requires_opencode_cli_even_with_api_key(
@@ -2034,6 +2039,92 @@ def test_node_opencode_assistant_buffer_tracks_last_assistant_turn() -> None:
         "beforeClear": "hello world\n\nstreamed later",
         "afterClear": "",
     }
+
+
+def test_node_opencode_v2_setup_registers_prompt_and_keeps_cache_header(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    fake_bash = tmp_path / "bash"
+    fake_bash.write_text(
+        "#!/bin/sh\n"
+        "cat >/dev/null || true\n"
+        "if [ \"${3:-}\" = \"user-prompt\" ]; then\n"
+        "  printf '%s\\n' '{\"hookSpecificOutput\":{\"additionalContext\":\"learned context\"}}'\n"
+        "else\n"
+        "  printf '%s\\n' '{}'\n"
+        "fi\n"
+    )
+    fake_bash.chmod(0o755)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        if (typeof mod.default.setup !== "function") throw new Error("missing setup");
+        const hooks = {{}};
+        const dispose = await mod.default.setup({{
+          location: {{ directory: "/repo" }},
+          session: {{
+            hook(name, fn) {{
+              hooks[name] = fn;
+              return {{ dispose() {{}} }};
+            }},
+          }},
+          tool: {{
+            hook(name, fn) {{
+              hooks[name] = fn;
+              return {{ dispose() {{}} }};
+            }},
+          }},
+          event: {{ async *subscribe() {{}} }},
+        }});
+        const system = [{{ type: "text", text: "cache-header" }}];
+        await hooks.prompt({{ sessionID: "s1", prompt: {{ text: "remember" }} }});
+        await hooks.context({{ sessionID: "s1", system }});
+        if (typeof dispose === "function") await dispose();
+        process.stdout.write(JSON.stringify({{
+          registered: Object.keys(hooks).sort(),
+          header: system[0].text,
+          injected: system.slice(1).map((part) => part.text),
+        }}));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["registered"] == ["context", "execute.after", "prompt"]
+    assert parsed["header"] == "cache-header"
+    assert parsed["injected"] == ["learned context"]
+
+
+def test_node_opencode_v2_loader_round_trip(tmp_path: Path) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    package = tmp_path / "pkg"
+    package.mkdir()
+    script = (
+        f"process.env.XDG_CONFIG_HOME = {json.dumps(str(tmp_path / 'xdg'))};"
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        f"const written = installer.writeOpenCodeV2Plugin({json.dumps(str(package))});"
+        "const kept = installer.removeOpenCodeV2Plugin();"
+        "installer.writeOpenCodeV2Plugin(" + json.dumps(str(package)) + ");"
+        "require('fs').writeFileSync(written, 'user file\\n');"
+        "const spared = installer.removeOpenCodeV2Plugin();"
+        "process.stdout.write(JSON.stringify({ written, kept, spared }));"
+    )
+    result = subprocess.run([node, "-e", script], text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["kept"] is True
+    assert parsed["spared"] is False
+    assert Path(parsed["written"]).read_text() == "user file\n"
 
 
 def test_node_opencode_server_injects_cached_context_for_session_ids(

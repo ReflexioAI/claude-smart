@@ -679,6 +679,43 @@ function opencodeLocalPluginSpec(packageRoot = OPENCODE_LOCAL_PACKAGE_DIR) {
   return pathToFileURL(packageRoot).href;
 }
 
+const OPENCODE_V2_PLUGIN_MARKER = "claude-smart OpenCode V2 loader";
+
+function opencodeV2PluginFile() {
+  return join(opencodeGlobalConfigDir(), "plugins", "claude-smart.js");
+}
+
+function opencodeV2ServerURL(packageRoot = OPENCODE_LOCAL_PACKAGE_DIR) {
+  return pathToFileURL(join(packageRoot, "plugin", "opencode", "dist", "server.mjs")).href;
+}
+
+function writeOpenCodeV2Plugin(packageRoot = OPENCODE_LOCAL_PACKAGE_DIR) {
+  const target = opencodeV2PluginFile();
+  const entry = opencodeV2ServerURL(packageRoot);
+  const body = [
+    `// ${OPENCODE_V2_PLUGIN_MARKER}`,
+    "// OpenCode V2 auto-loads this directory. Reinstall claude-smart to refresh.",
+    `export { default } from ${JSON.stringify(entry)};`,
+    "",
+  ].join("\n");
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, body);
+  return target;
+}
+
+function removeOpenCodeV2Plugin() {
+  const target = opencodeV2PluginFile();
+  let text = "";
+  try {
+    text = readFileSync(target, "utf8");
+  } catch {
+    return false;
+  }
+  if (!text.includes(OPENCODE_V2_PLUGIN_MARKER)) return false;
+  rmSync(target);
+  return true;
+}
+
 function isOpenCodeLocalPackagePath(packagePath) {
   return (
     sameRealPath(packagePath, OPENCODE_LOCAL_PACKAGE_DIR) ||
@@ -2352,8 +2389,9 @@ function printHelp() {
       "OpenCode install:",
       `  1. Copies this package to ${OPENCODE_LOCAL_PACKAGE_DIR}`,
       "  2. Adds that local file:// package to OpenCode's plugin list in opencode.json",
-      "  3. Prepares local services now from the copied plugin runtime",
-      "  4. Restart OpenCode.",
+      "  3. Writes an OpenCode V2 loader into the OpenCode plugins directory",
+      "  4. Prepares local services now from the copied plugin runtime",
+      "  5. Restart OpenCode.",
       "",
       "Update:",
       "  npx claude-smart update                        Reinstall Claude Code support from this package",
@@ -3167,6 +3205,7 @@ async function runInstallOpenCode(args) {
   if (readOnly) {
     process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
   }
+  const v2PluginFile = writeOpenCodeV2Plugin(packageRoot);
   await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
@@ -3176,6 +3215,7 @@ async function runInstallOpenCode(args) {
       "",
       `${result.changed ? "Updated" : "OpenCode config already includes"} "${pluginSpec}" in ${result.configPath}.`,
       `Prepared claude-smart OpenCode package at ${packageRoot}.`,
+      `Wrote the OpenCode V2 loader at ${v2PluginFile}.`,
       "claude-smart OpenCode support is installed.",
       "Restart OpenCode in your project so it loads the plugin.",
       "",
@@ -3223,6 +3263,7 @@ async function runUninstallOpenCode(args) {
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
   }
+  removeOpenCodeV2Plugin();
   rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
   repairPluginRoot(HOST_OPENCODE);
   try {
@@ -3304,6 +3345,8 @@ module.exports = {
   patchCodexHooksForNode,
   opencodeConfigPath,
   opencodeLocalPluginSpec,
+  writeOpenCodeV2Plugin,
+  removeOpenCodeV2Plugin,
   installOpenCodePluginPackage,
   patchOpenCodePluginConfig,
   parseHost,
