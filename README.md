@@ -82,7 +82,7 @@ Then fully quit and reopen Codex so hooks reload.
 npx claude-smart install --host opencode
 ```
 
-Then restart OpenCode in your project so it loads the plugin. OpenCode V1 reads the `file://` entry in `opencode.json`. OpenCode V2 does not run that V1 plugin shape; the installer also writes a loader into the OpenCode plugins directory (`$XDG_CONFIG_HOME/opencode/plugins/claude-smart.js`, or `~/.config/opencode/plugins/claude-smart.js`) that exports the V2 `setup()` bridge. Add `--global` to install for all OpenCode projects on this machine instead.
+Then restart OpenCode so it loads the plugin. OpenCode V1 reads the `file://` entry in `opencode.json`. `--global` changes only that V1 entry, from the project config to the user config. OpenCode V2 does not run the V1 plugin shape. The installer always writes a loader into the global OpenCode plugins directory (`$XDG_CONFIG_HOME/opencode/plugins/claude-smart.js`, or `~/.config/opencode/plugins/claude-smart.js`) that exports the V2 `setup()` bridge. If that path is already a file we did not generate, install leaves it alone and says so.
 
 ### Uninstall
 

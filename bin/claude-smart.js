@@ -689,18 +689,39 @@ function opencodeV2ServerURL(packageRoot = OPENCODE_LOCAL_PACKAGE_DIR) {
   return pathToFileURL(join(packageRoot, "plugin", "opencode", "dist", "server.mjs")).href;
 }
 
-function writeOpenCodeV2Plugin(packageRoot = OPENCODE_LOCAL_PACKAGE_DIR) {
-  const target = opencodeV2PluginFile();
+function opencodeV2PluginBody(packageRoot = OPENCODE_LOCAL_PACKAGE_DIR) {
   const entry = opencodeV2ServerURL(packageRoot);
-  const body = [
+  return [
     `// ${OPENCODE_V2_PLUGIN_MARKER}`,
     "// OpenCode V2 auto-loads this directory. Reinstall claude-smart to refresh.",
     `export { default } from ${JSON.stringify(entry)};`,
     "",
   ].join("\n");
+}
+
+function isGeneratedOpenCodeV2Loader(text) {
+  const lines = String(text).split("\n");
+  if (lines.length !== 4 || lines[3] !== "") return false;
+  if (lines[0] !== `// ${OPENCODE_V2_PLUGIN_MARKER}`) return false;
+  if (lines[1] !== "// OpenCode V2 auto-loads this directory. Reinstall claude-smart to refresh.") return false;
+  return /^export \{ default \} from "file:\/\/.+";$/.test(lines[2]);
+}
+
+function writeOpenCodeV2Plugin(packageRoot = OPENCODE_LOCAL_PACKAGE_DIR) {
+  const target = opencodeV2PluginFile();
+  const body = opencodeV2PluginBody(packageRoot);
   mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, body);
-  return target;
+  let existing = null;
+  try {
+    existing = readFileSync(target, "utf8");
+  } catch {
+    existing = null;
+  }
+  if (existing !== null && existing !== body && !isGeneratedOpenCodeV2Loader(existing)) {
+    return { path: target, status: "conflict" };
+  }
+  if (existing !== body) writeFileSync(target, body);
+  return { path: target, status: existing === body ? "unchanged" : "wrote" };
 }
 
 function removeOpenCodeV2Plugin() {
@@ -711,7 +732,7 @@ function removeOpenCodeV2Plugin() {
   } catch {
     return false;
   }
-  if (!text.includes(OPENCODE_V2_PLUGIN_MARKER)) return false;
+  if (!isGeneratedOpenCodeV2Loader(text)) return false;
   rmSync(target);
   return true;
 }
@@ -3215,7 +3236,9 @@ async function runInstallOpenCode(args) {
       "",
       `${result.changed ? "Updated" : "OpenCode config already includes"} "${pluginSpec}" in ${result.configPath}.`,
       `Prepared claude-smart OpenCode package at ${packageRoot}.`,
-      `Wrote the OpenCode V2 loader at ${v2PluginFile}.`,
+      v2PluginFile.status === "conflict"
+        ? `Left an existing OpenCode plugin in place at ${v2PluginFile.path}. It is not a claude-smart loader; move it aside and reinstall to write the V2 loader.`
+        : `Wrote the OpenCode V2 loader at ${v2PluginFile.path}.`,
       "claude-smart OpenCode support is installed.",
       "Restart OpenCode in your project so it loads the plugin.",
       "",

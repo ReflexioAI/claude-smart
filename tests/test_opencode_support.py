@@ -2114,17 +2114,20 @@ def test_node_opencode_v2_loader_round_trip(tmp_path: Path) -> None:
         f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
         f"const written = installer.writeOpenCodeV2Plugin({json.dumps(str(package))});"
         "const kept = installer.removeOpenCodeV2Plugin();"
-        "installer.writeOpenCodeV2Plugin(" + json.dumps(str(package)) + ");"
-        "require('fs').writeFileSync(written, 'user file\\n');"
+        "const again = installer.writeOpenCodeV2Plugin(" + json.dumps(str(package)) + ");"
+        "require('fs').writeFileSync(written.path, '// claude-smart OpenCode V2 loader\\nuser edit\\n');"
         "const spared = installer.removeOpenCodeV2Plugin();"
-        "process.stdout.write(JSON.stringify({ written, kept, spared }));"
+        "require('fs').writeFileSync(written.path, 'other plugin\\n');"
+        "const conflict = installer.writeOpenCodeV2Plugin(" + json.dumps(str(package)) + ");"
+        "process.stdout.write(JSON.stringify({ written: written.path, kept, spared, conflict: conflict.status, still: require('fs').readFileSync(written.path, 'utf8') }));"
     )
     result = subprocess.run([node, "-e", script], text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
     assert parsed["kept"] is True
     assert parsed["spared"] is False
-    assert Path(parsed["written"]).read_text() == "user file\n"
+    assert parsed["conflict"] == "conflict"
+    assert parsed["still"] == "other plugin\n"
 
 
 def test_node_opencode_server_injects_cached_context_for_session_ids(
