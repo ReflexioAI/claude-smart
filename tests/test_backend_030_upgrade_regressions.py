@@ -113,6 +113,12 @@ def _write_legacy_db_with_foreign_label(home: Path) -> Path:
     conn = sqlite3.connect(legacy)
     conn.execute("CREATE TABLE claude_smart_history (note TEXT)")
     conn.execute("INSERT INTO claude_smart_history VALUES ('remembered')")
+    # A 0.2.x file carries the retired learning_jobs queue; newer reflexio
+    # no longer creates it, so model the legacy table explicitly.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS learning_jobs "
+        "(org_id TEXT NOT NULL, user_id TEXT NOT NULL)"
+    )
     conn.execute(
         "INSERT INTO learning_jobs (org_id, user_id) VALUES ('e2e-other-org', 'u')"
     )
