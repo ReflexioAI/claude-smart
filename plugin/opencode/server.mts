@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url"
 import { AssistantBuffer } from "./assistant-buffer.js"
 import { sessionIDFrom } from "./internal.js"
 import { chatMessagePayload, eventPayload, stopPayload, toolAfterPayload } from "./payload.js"
+import { createSetup } from "./v2.js"
 
 type HookResult = Record<string, unknown>
 
@@ -310,4 +311,6 @@ async function server(input: PluginInput) {
 export default {
   id: "claude-smart",
   server,
+  // V1 calls server(). OpenCode V2 reads setup() and ignores server().
+  setup: createSetup(server),
 }

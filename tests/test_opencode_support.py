@@ -805,7 +805,8 @@ fs.writeFileSync(
     stdin: fs.readFileSync(0, "utf8"),
     env: {{
       CLAUDE_SMART_HOST: process.env.CLAUDE_SMART_HOST,
-      CLAUDE_SMART_INTERNAL: process.env.CLAUDE_SMART_INTERNAL
+      CLAUDE_SMART_INTERNAL: process.env.CLAUDE_SMART_INTERNAL,
+      PWD: process.env.PWD
     }}
   }})
 );
@@ -850,13 +851,16 @@ process.stdout.write(JSON.stringify({{
         "result": "bridge output",
     }
     call = json.loads(call_log.read_text())
-    assert call["env"] == {
-        "CLAUDE_SMART_HOST": "opencode",
-        "CLAUDE_SMART_INTERNAL": "1",
-    }
-    assert call["args"][:4] == ["run", "--pure", "--format", "json"]
+    assert call["env"]["CLAUDE_SMART_HOST"] == "opencode"
+    assert call["env"]["CLAUDE_SMART_INTERNAL"] == "1"
+    # No `--pure` / `--dir`: `opencode run` rejects both. Isolation comes from
+    # cwd (which holds the temp .opencode/opencode.json defining AGENT_NAME),
+    # and $PWD is refreshed so opencode resolves the project root correctly.
+    assert call["args"][:3] == ["run", "--format", "json"]
     assert "--agent" in call["args"]
-    assert "--dir" in call["args"]
+    assert "--pure" not in call["args"]
+    assert "--dir" not in call["args"]
+    assert call["env"]["PWD"] == call["cwd"]
     assert call["dotConfigExists"] is True
     assert call["rootConfigExists"] is False
     assert "--model" not in call["args"]
@@ -1141,6 +1145,11 @@ def test_node_opencode_install_from_npx_root_patches_config_to_local_file_packag
     local_package = Path(plugin_spec.removeprefix("file://"))
     assert local_package == Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
     assert (local_package / "plugin" / "scripts" / "smart-install.sh").exists()
+    v2_loader = Path(env["XDG_CONFIG_HOME"]) / "opencode" / "plugins" / "claude-smart.js"
+    assert v2_loader.is_file()
+    loader_text = v2_loader.read_text()
+    assert "claude-smart OpenCode V2 loader" in loader_text
+    assert "plugin/opencode/dist/server.mjs" in loader_text
 
 
 def test_node_opencode_install_requires_opencode_cli_even_with_api_key(
@@ -2036,6 +2045,102 @@ def test_node_opencode_assistant_buffer_tracks_last_assistant_turn() -> None:
     }
 
 
+def test_node_opencode_v2_setup_registers_prompt_and_keeps_cache_header(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    fake_bash = tmp_path / "bash"
+    fake_bash.write_text(
+        "#!/bin/sh\n"
+        "cat >/dev/null || true\n"
+        "if [ \"${3:-}\" = \"user-prompt\" ]; then\n"
+        "  printf '%s\\n' '{\"hookSpecificOutput\":{\"additionalContext\":\"learned context\"}}'\n"
+        "else\n"
+        "  printf '%s\\n' '{}'\n"
+        "fi\n"
+    )
+    fake_bash.chmod(0o755)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        if (typeof mod.default.setup !== "function") throw new Error("missing setup");
+        const hooks = {{}};
+        const dispose = await mod.default.setup({{
+          location: {{ directory: "/repo" }},
+          session: {{
+            hook(name, fn) {{
+              hooks[name] = fn;
+              return {{ dispose() {{}} }};
+            }},
+          }},
+          tool: {{
+            hook(name, fn) {{
+              hooks[name] = fn;
+              return {{ dispose() {{}} }};
+            }},
+          }},
+          event: {{ async *subscribe() {{}} }},
+        }});
+        const system = [
+          {{ type: "text", text: "cache-header" }},
+          {{ type: "text", text: "stable system body" }},
+        ];
+        await hooks.prompt({{ sessionID: "s1", prompt: {{ text: "remember" }} }});
+        await hooks.context({{ sessionID: "s1", system }});
+        if (typeof dispose === "function") await dispose();
+        process.stdout.write(JSON.stringify({{
+          registered: Object.keys(hooks).sort(),
+          header: system[0].text,
+          body: system[1].text,
+          injected: system.slice(2).map((part) => part.text),
+          injectedLast: system[system.length - 1].text,
+        }}));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["registered"] == ["context", "execute.after", "prompt"]
+    assert parsed["header"] == "cache-header"
+    assert parsed["body"] == "stable system body"
+    assert parsed["injected"] == ["learned context"]
+    assert parsed["injectedLast"] == "learned context"
+
+
+def test_node_opencode_v2_loader_round_trip(tmp_path: Path) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    package = tmp_path / "pkg"
+    package.mkdir()
+    script = (
+        f"process.env.XDG_CONFIG_HOME = {json.dumps(str(tmp_path / 'xdg'))};"
+        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        f"const written = installer.writeOpenCodeV2Plugin({json.dumps(str(package))});"
+        "const kept = installer.removeOpenCodeV2Plugin();"
+        "const again = installer.writeOpenCodeV2Plugin(" + json.dumps(str(package)) + ");"
+        "require('fs').writeFileSync(written.path, '// claude-smart OpenCode V2 loader\\nuser edit\\n');"
+        "const spared = installer.removeOpenCodeV2Plugin();"
+        "require('fs').writeFileSync(written.path, 'other plugin\\n');"
+        "const conflict = installer.writeOpenCodeV2Plugin(" + json.dumps(str(package)) + ");"
+        "process.stdout.write(JSON.stringify({ written: written.path, kept, spared, conflict: conflict.status, still: require('fs').readFileSync(written.path, 'utf8') }));"
+    )
+    result = subprocess.run([node, "-e", script], text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["kept"] is True
+    assert parsed["spared"] is False
+    assert parsed["conflict"] == "conflict"
+    assert parsed["still"] == "other plugin\n"
+
+
 def test_node_opencode_server_injects_cached_context_for_session_ids(
     tmp_path: Path,
 ) -> None:
@@ -2409,6 +2514,185 @@ def test_node_opencode_server_keeps_multi_segment_assistant_text(
     ]
 
 
+def test_node_opencode_v2_setup_merges_text_events_into_stop(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    log_path = tmp_path / "calls.jsonl"
+    _write_fake_bash_recorder(tmp_path)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      const fs = require("fs");
+      const readCalls = () =>
+        fs.readFileSync(process.env.CALL_LOG, "utf8").trim()
+          .split("\\n").filter(Boolean).map((line) => JSON.parse(line));
+      const stopPayloads = () =>
+        readCalls()
+          .filter((call) => Array.isArray(call.args) && call.args.includes("stop"))
+          .map((call) => JSON.parse(call.payload));
+      const waitForStops = async (n) => {{
+        for (let i = 0; i < 200 && stopPayloads().length < n; i += 1) {{
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }}
+      }};
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        const queue = [];
+        let wake = null;
+        const push = (event) => {{
+          queue.push(event);
+          if (wake) {{ const w = wake; wake = null; w(); }}
+        }};
+        const hooks = {{}};
+        const ctx = {{
+          location: {{ directory: "/repo" }},
+          sessionsOutliveDispose: true,
+          session: {{ hook: async (name, fn) => {{ hooks[name] = fn; return {{ dispose() {{}} }}; }} }},
+          tool: {{ hook: async () => ({{ dispose() {{}} }}) }},
+          event: {{
+            subscribe: () => (async function* () {{
+              for (;;) {{
+                if (!queue.length) await new Promise((resolve) => {{ wake = resolve; }});
+                while (queue.length) yield queue.shift();
+              }}
+            }})(),
+          }},
+        }};
+        const dispose = await mod.default.setup(ctx);
+        await hooks.prompt({{ sessionID: "s-v2", prompt: {{ text: "first prompt" }} }});
+        push({{ type: "session.text.ended", data: {{ sessionID: "s-v2", assistantMessageID: "m1", ordinal: 0, text: "First part" }} }});
+        push({{ type: "session.text.ended", data: {{ sessionID: "s-v2", assistantMessageID: "m1", ordinal: 1, text: "Second part" }} }});
+        push({{ type: "session.execution.succeeded", data: {{ sessionID: "s-v2" }} }});
+        await waitForStops(1);
+        await hooks.prompt({{ sessionID: "s-v2", prompt: {{ text: "second prompt" }} }});
+        push({{ type: "session.text.ended", data: {{ sessionID: "s-v2", assistantMessageID: "m2", ordinal: 0, text: "Final answer" }} }});
+        push({{ type: "session.execution.succeeded", data: {{ sessionID: "s-v2" }} }});
+        await waitForStops(2);
+        await dispose();
+        process.stdout.write(JSON.stringify(stopPayloads()));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [
+        {
+            "session_id": "s-v2",
+            "cwd": "/repo",
+            "last_assistant_message": "First part\n\nSecond part",
+        },
+        {
+            "session_id": "s-v2",
+            "cwd": "/repo",
+            "last_assistant_message": "Final answer",
+        },
+    ]
+
+
+def test_node_opencode_v2_reload_flushes_only_prompted_instance(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    log_path = tmp_path / "calls.jsonl"
+    _write_fake_bash_recorder(tmp_path)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      const fs = require("fs");
+      const readCalls = () =>
+        fs.readFileSync(process.env.CALL_LOG, "utf8").trim()
+          .split("\\n").filter(Boolean).map((line) => JSON.parse(line));
+      const stopPayloads = () =>
+        readCalls()
+          .filter((call) => Array.isArray(call.args) && call.args.includes("stop"))
+          .map((call) => JSON.parse(call.payload));
+      const waitForStops = async (n) => {{
+        for (let i = 0; i < 200 && stopPayloads().length < n; i += 1) {{
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }}
+      }};
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        const subscribers = [];
+        const push = (event) => {{ for (const deliver of subscribers) deliver(event); }};
+        const makeSubscribe = () => {{
+          const queue = [];
+          let wake = null;
+          subscribers.push((event) => {{
+            queue.push(event);
+            if (wake) {{ const w = wake; wake = null; w(); }}
+          }});
+          return () => (async function* () {{
+            for (;;) {{
+              if (!queue.length) await new Promise((resolve) => {{ wake = resolve; }});
+              while (queue.length) yield queue.shift();
+            }}
+          }})();
+        }};
+        const makeCtx = () => {{
+          const hooks = {{}};
+          return {{
+            hooks,
+            ctx: {{
+              location: {{ directory: "/repo" }},
+              sessionsOutliveDispose: true,
+              session: {{ hook: async (name, fn) => {{ hooks[name] = fn; return {{ dispose() {{}} }}; }} }},
+              tool: {{ hook: async () => ({{ dispose() {{}} }}) }},
+              event: {{ subscribe: makeSubscribe() }},
+            }},
+          }};
+        }};
+        const first = makeCtx();
+        const second = makeCtx();
+        await mod.default.setup(first.ctx);
+        await mod.default.setup(second.ctx);
+        await first.hooks.prompt({{ sessionID: "s-reload", prompt: {{ text: "only this instance got the prompt" }} }});
+        push({{ type: "session.text.ended", data: {{ sessionID: "s-reload", assistantMessageID: "m1", ordinal: 0, text: "Only once" }} }});
+        push({{ type: "session.execution.succeeded", data: {{ sessionID: "s-reload" }} }});
+        await waitForStops(1);
+        push({{ type: "session.created", data: {{ sessionID: "s-created" }} }});
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const stops = stopPayloads();
+        const prompts = readCalls().filter(
+          (call) => Array.isArray(call.args) && call.args.includes("user-prompt"),
+        );
+        const sessionStarts = readCalls().filter(
+          (call) => Array.isArray(call.args) && call.args.includes("session-start"),
+        );
+        process.stdout.write(JSON.stringify({{ stops, promptCount: prompts.length, sessionStartCount: sessionStarts.length }}));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    # Events are broadcast to every live instance, but only the instance that
+    # received the prompt registered the session with V1 and may flush it, so
+    # the second (unprompted) instance must stay silent.
+    assert parsed["stops"] == [
+        {
+            "session_id": "s-reload",
+            "cwd": "/repo",
+            "last_assistant_message": "Only once",
+        },
+    ]
+    assert parsed["promptCount"] == 1
+    # session.created is broadcast too; only the newest instance may run its
+    # session-start hook and service starts.
+    assert parsed["sessionStartCount"] == 1
+
+
 def test_opencode_dist_files_are_packaged() -> None:
     package = _read_json("package.json")
 
@@ -2444,7 +2728,7 @@ def test_opencode_dist_matches_typescript_sources(tmp_path: Path) -> None:
         f"run `npm ci` if @types/node is missing.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
-    for filename in ("assistant-buffer.js", "internal.js", "payload.js", "server.mjs"):
+    for filename in ("assistant-buffer.js", "internal.js", "payload.js", "server.mjs", "v2.js"):
         expected = REPO_ROOT / "plugin" / "opencode" / "dist" / filename
         generated = out_dir / filename
         assert filecmp.cmp(expected, generated, shallow=False), filename
