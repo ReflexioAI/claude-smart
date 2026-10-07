@@ -805,7 +805,8 @@ fs.writeFileSync(
     stdin: fs.readFileSync(0, "utf8"),
     env: {{
       CLAUDE_SMART_HOST: process.env.CLAUDE_SMART_HOST,
-      CLAUDE_SMART_INTERNAL: process.env.CLAUDE_SMART_INTERNAL
+      CLAUDE_SMART_INTERNAL: process.env.CLAUDE_SMART_INTERNAL,
+      PWD: process.env.PWD
     }}
   }})
 );
@@ -850,13 +851,16 @@ process.stdout.write(JSON.stringify({{
         "result": "bridge output",
     }
     call = json.loads(call_log.read_text())
-    assert call["env"] == {
-        "CLAUDE_SMART_HOST": "opencode",
-        "CLAUDE_SMART_INTERNAL": "1",
-    }
-    assert call["args"][:4] == ["run", "--pure", "--format", "json"]
+    assert call["env"]["CLAUDE_SMART_HOST"] == "opencode"
+    assert call["env"]["CLAUDE_SMART_INTERNAL"] == "1"
+    # No `--pure` / `--dir`: `opencode run` rejects both. Isolation comes from
+    # cwd (which holds the temp .opencode/opencode.json defining AGENT_NAME),
+    # and $PWD is refreshed so opencode resolves the project root correctly.
+    assert call["args"][:3] == ["run", "--format", "json"]
     assert "--agent" in call["args"]
-    assert "--dir" in call["args"]
+    assert "--pure" not in call["args"]
+    assert "--dir" not in call["args"]
+    assert call["env"]["PWD"] == call["cwd"]
     assert call["dotConfigExists"] is True
     assert call["rootConfigExists"] is False
     assert "--model" not in call["args"]
