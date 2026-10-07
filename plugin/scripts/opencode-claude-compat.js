@@ -116,15 +116,15 @@ function runOpenCode({ prompt, model, workDir }) {
     throw new Error("opencode CLI not found on PATH");
   }
 
+  // No `--pure` / `--dir`: `opencode run` rejects both (it did on 2.0.23 and
+  // 2.0.24). Isolation comes from `cwd: workDir` below, which carries the
+  // temp `.opencode/opencode.json` that defines AGENT_NAME.
   const args = [
     "run",
-    "--pure",
     "--format",
     "json",
     "--agent",
     AGENT_NAME,
-    "--dir",
-    workDir,
   ];
   const selectedModel = opencodeModel(model);
   if (selectedModel) {
@@ -141,6 +141,10 @@ function runOpenCode({ prompt, model, workDir }) {
     encoding: "utf8",
     env: {
       ...process.env,
+      // opencode resolves the project root from $PWD, not the spawn cwd.
+      // A stale inherited PWD points at the caller's directory, so the temp
+      // `.opencode/opencode.json` defining AGENT_NAME is never read.
+      PWD: workDir,
       CLAUDE_SMART_HOST: "opencode",
       CLAUDE_SMART_INTERNAL: "1",
       CLAUDE_CODE_ENTRYPOINT: "optimizer",
@@ -156,8 +160,10 @@ function runOpenCode({ prompt, model, workDir }) {
     throw proc.error;
   }
   if (proc.status !== 0) {
-    const stderr = String(proc.stderr || "").trim().slice(0, 500);
-    throw new Error(`opencode CLI exited ${proc.status}: ${stderr}`);
+    // opencode reports CLI errors as JSON on stdout and leaves stderr empty.
+    const stderr = String(proc.stderr || "").trim().slice(0, 300);
+    const stdout = String(proc.stdout || "").trim().slice(0, 300);
+    throw new Error(`opencode CLI exited ${proc.status}: ${stderr || stdout}`);
   }
   const content = parseOpenCodeJson(proc.stdout);
   if (!content) {
