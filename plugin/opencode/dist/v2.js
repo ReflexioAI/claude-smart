@@ -69,15 +69,24 @@ export function createSetup(server) {
                     try {
                         const system = Array.isArray(event.system) ? event.system : [];
                         const before = system.map((part) => (typeof part === "string" ? part : part && part.text || ""));
-                        // V1 mutates the array it is handed. Hand it a copy, then splice
-                        // additions after index 0: system[0] is a prompt-cache header.
+                        // V1 mutates the array it is handed. Hand it a copy, then append
+                        // additions at the END.
+                        //
+                        // Cache compatibility: opencode's Anthropic Messages provider adds
+                        // cache breakpoints on system[0] and system[last] and treats the
+                        // parts between them as one cached block. The injected rules are
+                        // relevance-gated and change between turns, so inserting them at
+                        // index 1 would shift the cached prefix and throw away prompt-cache
+                        // hits on the stable system body. Appending keeps the whole stable
+                        // prefix byte-identical across turns; only the small rules tail is
+                        // re-sent. This matches the V1 native code (output.system.push).
                         const output = { system: before.slice() };
                         await v1["experimental.chat.system.transform"]({ sessionID: event.sessionID }, output);
                         if (!Array.isArray(output.system))
                             return;
                         const added = output.system.filter((item) => !before.includes(item));
                         if (added.length) {
-                            event.system.splice(1, 0, ...added.map((text) => ({ type: "text", text })));
+                            event.system.push(...added.map((text) => ({ type: "text", text })));
                         }
                     }
                     catch {
