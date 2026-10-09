@@ -178,14 +178,10 @@ def test_failed_publish_retries_frozen_batch_before_new_turns(session_dir) -> No
     assert _publish("s1", adapter) == ("ok", 1)
     assert _publish("s1", adapter) == ("nothing", 0)
 
-    assert [item["content"] for item in adapter.calls[0]["interactions"]] == [
-        "first"
-    ]
+    assert [item["content"] for item in adapter.calls[0]["interactions"]] == ["first"]
     assert adapter.calls[1]["interactions"] == adapter.calls[0]["interactions"]
     assert adapter.calls[1]["request_id"] == adapter.calls[0]["request_id"]
-    assert [item["content"] for item in adapter.calls[2]["interactions"]] == [
-        "second"
-    ]
+    assert [item["content"] for item in adapter.calls[2]["interactions"]] == ["second"]
     assert adapter.calls[2]["request_id"] != adapter.calls[1]["request_id"]
 
 
@@ -209,9 +205,7 @@ def test_success_does_not_hide_turn_appended_during_publish(session_dir) -> None
             # `user_id` is buffer bookkeeping and is no longer put on the
             # wire (it is sent once at the request level). `created_at` is
             # deliberately not sent either — see state.unpublished_slice.
-            "retrieved_learnings": [
-                {"kind": "profile", "learning_id": "p2"}
-            ],
+            "retrieved_learnings": [{"kind": "profile", "learning_id": "p2"}],
         }
     ]
 
@@ -312,22 +306,17 @@ def test_overlapping_publishers_adopt_one_frozen_batch(
 
     assert first_result == [("ok", 2)]
     assert second_result == [("ok", 2)]
-    assert first_adapter.calls[0]["request_id"] == second_adapter.calls[0][
-        "request_id"
-    ]
-    assert first_adapter.calls[0]["interactions"] == second_adapter.calls[0][
-        "interactions"
-    ]
+    assert first_adapter.calls[0]["request_id"] == second_adapter.calls[0]["request_id"]
+    assert (
+        first_adapter.calls[0]["interactions"]
+        == second_adapter.calls[0]["interactions"]
+    )
 
 
 def test_invalid_empty_attempt_marker_is_skipped(session_dir) -> None:
     state.append(
         "s1",
-        {
-            "retrieved_learning_refs": [
-                {"kind": "profile", "learning_id": "p1"}
-            ]
-        },
+        {"retrieved_learning_refs": [{"kind": "profile", "learning_id": "p1"}]},
     )
     state.append("s1", {"publish_attempt": {"start": 0, "end": 1}})
     _append_assistant("s1", 2)
@@ -422,3 +411,24 @@ def test_watermark_advances_even_if_reading_warnings_blows_up(session_dir) -> No
     ) == ("ok", 1)
 
     assert state.read_all("s1")[-1]["published_up_to"] == 1
+
+
+def test_http_200_rejection_keeps_batch_retryable(session_dir) -> None:
+    class Client:
+        def _make_request(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {"success": False, "message": "StorageError"}
+
+    _append_user("rejected", 1)
+    adapter = Adapter(url="https://example.com")
+    adapter._client = Client()
+    result = publish.publish_unpublished(
+        session_id="rejected",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=adapter,
+    )
+    assert result == ("failed", 1)
+    records = state.read_all("rejected")
+    assert state.published_record_offset(records) == 0
+    assert state.pending_publish_end(records, 0) is not None

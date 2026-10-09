@@ -55,3 +55,19 @@ Reflexio's provider priority is `claude-code > local > anthropic > gemini > ... 
 rm -rf ~/.claude-smart/sessions/
 rm -rf ~/.reflexio/data/           # reflexio SQLite store
 ```
+
+### Diagnose automatic publishing failures
+
+`~/.claude-smart/hook.log` includes `publish-result` records with the plugin version,
+backend scheme/hostname/port, publish count, exception class, and HTTP status when
+available. These records omit credentials, URL paths/query parameters, response
+bodies, and interaction content. A logging failure never changes publication success.
+Compare the recorded destination with `~/.claude-smart/.env` when a manual command
+works but automatic publishing fails; an older host plugin may still read the legacy
+`~/.reflexio/.env`. Update that host's installation and start a fresh session.
+
+Publication also checks the response's `success` field: an HTTP 200 rejection
+leaves the buffer retryable. Null characters in captured text are represented as
+literal `\u0000` escapes for PostgreSQL storage. Messages with more than 1,000 tool
+entries use empty-text continuation messages, preserving the complete ordered
+activity rather than dropping excess tools. Original local records are retained.

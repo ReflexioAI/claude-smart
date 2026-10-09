@@ -56,6 +56,8 @@ class PublishResult:
 
     ok: bool
     request_id: str | None = None
+    error_type: str | None = None
+    http_status: int | None = None
 
     def __bool__(self) -> bool:
         return self.ok
@@ -85,7 +87,7 @@ class Adapter:
     # -----------------------------------------------------------------
 
     def _get_client(self) -> Any | None:
-        """Return the ReflexioClient, or None if reflexio is unreachable/unimportable."""
+        """Return the Reflexio client, or None when it cannot be loaded."""
         if self._client is not None:
             return self._client
         try:
@@ -124,7 +126,9 @@ class Adapter:
             return PublishResult(True)
         client = self._get_client()
         if client is None:
-            return PublishResult(False)
+            result = PublishResult(False, error_type="ClientUnavailable")
+            self._log_publish(result, session_id, project_id, len(interactions))
+            return result
         result, response = self._attempt_publish(
             client,
             session_id=session_id,
@@ -135,6 +139,7 @@ class Adapter:
             override_learning_stall=override_learning_stall,
             skip_aggregation=skip_aggregation,
         )
+        self._log_publish(result, session_id, project_id, len(interactions))
         if result.ok:
             # Deliberately outside `_attempt_publish` and every try inside it.
             # The publish has already been accepted, and `publish_unpublished`
@@ -148,6 +153,41 @@ class Adapter:
             except Exception as exc:  # noqa: BLE001 — diagnostics must never fail a publish.
                 _LOGGER.debug("could not read publish warnings: %s", exc)
         return result
+
+    def _log_publish(
+        self, result: PublishResult, session_id: str, project_id: str, count: int
+    ) -> None:
+        """Record useful transport diagnostics without credentials or payloads."""
+        try:
+            import json
+            from pathlib import Path
+            from urllib.parse import urlsplit
+
+            from claude_smart import hook_log
+
+            url = urlsplit(self.url)
+            manifest = (
+                Path(__file__).resolve().parents[2] / ".codex-plugin" / "plugin.json"
+            )
+            version = json.loads(manifest.read_text()).get("version", "unknown")
+            hook_log.log_event(
+                event="publish-result",
+                host=runtime.host(),
+                session_id=session_id,
+                project_id=project_id,
+                publish_status="ok" if result.ok else "failed",
+                publish_count=count,
+                extra={
+                    "plugin_version": version,
+                    "backend_scheme": url.scheme,
+                    "backend_host": url.hostname,
+                    "backend_port": url.port,
+                    "error_type": result.error_type,
+                    "http_status": result.http_status,
+                },
+            )
+        except Exception:  # noqa: BLE001 — telemetry must never affect publication.
+            return
 
     def _attempt_publish(
         self,
@@ -167,7 +207,7 @@ class Adapter:
         is outside this method's ``except`` — see the caller.
         """
         try:
-            interaction_list = list(interactions)
+            interaction_list = _storage_safe_interactions(interactions)
             raw_request = getattr(client, "_make_request", None)
             if request_id is not None and callable(raw_request):
                 payload: dict[str, Any] = {
@@ -189,7 +229,7 @@ class Adapter:
                         json=payload,
                         params=None,
                     )
-                    return PublishResult(True, request_id), raw_response
+                    return _confirmed_publish(raw_response, request_id), raw_response
                 except Exception as exc:  # noqa: BLE001
                     if not _needs_raw_retrieved_learning_publish(interaction_list):
                         raise
@@ -210,7 +250,9 @@ class Adapter:
                         json=fallback_payload,
                         params=None,
                     )
-                    return PublishResult(True, request_id), fallback_response
+                    return _confirmed_publish(
+                        fallback_response, request_id
+                    ), fallback_response
             if _needs_raw_retrieved_learning_publish(interaction_list):
                 _LOGGER.warning(
                     "Stable raw publishing is unavailable; publishing "
@@ -231,11 +273,16 @@ class Adapter:
             response = client.publish_interaction(**kwargs)
             response_request_id = getattr(response, "request_id", None)
             if isinstance(response_request_id, str) and response_request_id:
-                return PublishResult(True, response_request_id), response
-            return PublishResult(True), response
+                return _confirmed_publish(response, response_request_id), response
+            return _confirmed_publish(response), response
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("publish_interaction failed: %s", exc)
-            return PublishResult(False), None
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            return PublishResult(
+                False,
+                error_type=type(exc).__name__,
+                http_status=status if isinstance(status, int) else None,
+            ), None
 
     def apply_extraction_defaults(self, *, window_size: int, stride_size: int) -> bool:
         """Push claude-smart's preferred extraction defaults to the reflexio server.
@@ -556,8 +603,56 @@ def _publish_warnings(response: Any) -> list[str]:
     return [str(item) for item in value]
 
 
+def _escape_nulls(value: Any) -> Any:
+    """Represent null characters visibly; PostgreSQL JSON cannot store them."""
+    if isinstance(value, str):
+        return value.replace("\x00", "\\u0000")
+    if isinstance(value, dict):
+        return {key: _escape_nulls(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_escape_nulls(item) for item in value]
+    return value
+
+
+def _storage_safe_interactions(
+    interactions: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep complete tool activity within the server's per-message limit."""
+    result = []
+    for original in interactions:
+        item = _escape_nulls(original)
+        tools = item.get("tools_used", [])
+        if len(tools) <= 1000:
+            result.append(item)
+            continue
+        result.append({**item, "tools_used": tools[:1000]})
+        for start in range(1000, len(tools), 1000):
+            result.append(
+                {
+                    "role": item.get("role", "Assistant"),
+                    "content": "",
+                    "tools_used": tools[start : start + 1000],
+                }
+            )
+    return result
+
+
+def _confirmed_publish(response: Any, request_id: str | None = None) -> PublishResult:
+    """HTTP success alone does not confirm that interactions were saved."""
+    success = (
+        dict.get(response, "success")
+        if isinstance(response, dict)
+        else getattr(response, "success", None)
+    )
+    if success is False:
+        return PublishResult(
+            False, request_id, error_type="ServerRejected", http_status=200
+        )
+    return PublishResult(True, request_id)
+
+
 def _extract_items(response: Any, field: str) -> list[Any]:
-    """Pull a list field from a reflexio response object or dict, tolerating shape drift."""
+    """Pull a list field from a reflexio response object or dict."""
     if response is None:
         return []
     if isinstance(response, dict):
@@ -594,7 +689,7 @@ def _without_retrieved_learnings(
 
 
 def _filter_rejected_agent_playbooks(items: list[Any]) -> list[Any]:
-    """Drop rejected shared skills defensively, even if an older backend ignores filters."""
+    """Drop rejected shared skills defensively, even if a backend ignores filters."""
     return [
         item
         for item in items
