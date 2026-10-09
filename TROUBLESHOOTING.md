@@ -69,7 +69,10 @@ works but automatic publishing fails; an older host plugin may still read the le
 
 Publication requires an explicit `success: true` acknowledgement. HTTP 200
 rejections, empty responses, or malformed success fields leave the buffer
-retryable unless exact stored data can be verified. Field-drop warnings from
+retryable unless exact stored data can be verified. Legacy "Interaction queued
+for processing" responses also require stored-request confirmation because their
+background task may not have saved anything yet. Publishing stays asynchronous
+and does not wait for extraction or poll for storage. Field-drop warnings from
 every chunk remain observable even if a later chunk fails. Null characters in
 captured text are represented as literal `\u0000` escapes for PostgreSQL storage. Messages with more than 1,000 tool
 entries use labelled continuation messages so all tools remain visible to learning.

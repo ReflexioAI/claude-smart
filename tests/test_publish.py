@@ -1039,3 +1039,139 @@ def test_malformed_ack_advances_watermark_only_after_exact_storage_confirmation(
     assert state.published_record_offset(records) == (1 if committed else 0)
     if not committed:
         assert state.pending_publish_end(records, 0) is not None
+
+
+@pytest.mark.parametrize("storage_succeeds", [False, True])
+@pytest.mark.parametrize("message_count", [1, 1001])
+def test_real_publish_route_requires_storage_before_watermark(
+    session_dir, monkeypatch, storage_succeeds, message_count
+):
+    import asyncio
+    import importlib
+    import inspect
+
+    from fastapi import BackgroundTasks
+    from reflexio.models.api_schema.domain.entities import (
+        PublishUserInteractionRequest,
+        PublishUserInteractionResponse,
+    )
+    from reflexio.server.routes import interactions as routes
+    from starlette.requests import Request as HttpRequest
+
+    route = inspect.unwrap(routes.publish_user_interaction)
+    legacy = "background_tasks" in inspect.signature(route).parameters
+    saved = {}
+
+    def persist(*, org_id, request, **kwargs):
+        if not storage_succeeds:
+            return PublishUserInteractionResponse(
+                success=False, message="Storage failed"
+            )
+        if request.request_id in saved:
+            return PublishUserInteractionResponse(
+                success=False, message="Request already exists"
+            )
+        saved[request.request_id] = request.model_dump(mode="json")
+        return PublishUserInteractionResponse(success=True)
+
+    monkeypatch.setattr(routes.publisher_api, "add_user_interaction", persist)
+    if not legacy:
+        waiting = importlib.import_module(
+            "reflexio.server.services.durable_learning.waiting"
+        )
+
+        async def acquire(*args):
+            return True
+
+        monkeypatch.setattr(waiting, "acquire_ingestion", acquire)
+        monkeypatch.setattr(waiting, "release_ingestion", lambda *args: None)
+
+        # wait_for_response=False must never wait for extraction.
+        def unexpected_waiter(*args):
+            raise AssertionError("publish must not wait for extraction")
+
+        monkeypatch.setattr(waiting, "acquire_waiter", unexpected_waiter)
+
+    class Client:
+        def __init__(self):
+            self.backgrounds = []
+            self.ids = []
+
+        def _make_request(self, method, path, **kwargs):
+            payload = kwargs["json"]
+            if path == "/api/get_requests":
+                stored = saved.get(payload["request_id"])
+                return (
+                    _stored_request_response(stored)
+                    if stored
+                    else {"success": True, "sessions": []}
+                )
+            self.ids.append(payload["request_id"])
+            route_kwargs: dict[str, Any] = dict(
+                request=HttpRequest(
+                    {
+                        "type": "http",
+                        "method": "POST",
+                        "path": "/api/publish_interaction",
+                        "headers": [],
+                        "client": ("127.0.0.1", 1),
+                    }
+                ),
+                payload=PublishUserInteractionRequest(**payload),
+                org_id="org",
+                wait_for_response=False,
+                _gate=None,
+            )
+            if legacy:
+                background = BackgroundTasks()
+                route_kwargs["background_tasks"] = background
+                response = route(**route_kwargs)
+                self.backgrounds.append(background)
+            else:
+                response = asyncio.run(route(**route_kwargs))
+                # Real modern route awaits the mocked ingestion before its ACK.
+                assert (payload["request_id"] in saved) == storage_succeeds
+            return response.model_dump(mode="json")
+
+    for index in range(message_count):
+        _append_user("route-storage", index + 1, f"question {index}")
+    client = Client()
+    adapter = Adapter(url="https://example.com")
+    adapter._client = client
+    kwargs: dict[str, Any] = dict(
+        session_id="route-storage",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=adapter,
+    )
+    chunks = (message_count + 999) // 1000
+    result = publish.publish_unpublished(**kwargs)
+    assert result == (
+        "ok" if not legacy and storage_succeeds else "failed",
+        message_count,
+    )
+    if legacy:
+        assert saved == {}
+        assert state.published_record_offset(state.read_all("route-storage")) == 0
+        asyncio.run(client.backgrounds[-1]())
+        assert len(saved) == (1 if storage_succeeds else 0)
+        for chunk_index in range(chunks):
+            result = publish.publish_unpublished(**kwargs)
+            complete = storage_succeeds and chunk_index == chunks - 1
+            assert result == ("recovered" if complete else "failed", message_count)
+            assert state.published_record_offset(state.read_all("route-storage")) == (
+                message_count if complete else 0
+            )
+            if not complete or chunks == 1:
+                asyncio.run(client.backgrounds[-1]())
+        assert len(saved) == (chunks if storage_succeeds else 0)
+        # Every retry targets the same deterministic chunk IDs; no new records.
+        assert len(set(client.ids)) == (chunks if storage_succeeds else 1)
+        if chunks == 1:
+            assert client.ids[0] == client.ids[1]
+    else:
+        assert len(saved) == (chunks if storage_succeeds else 0)
+        assert state.published_record_offset(state.read_all("route-storage")) == (
+            message_count if storage_succeeds else 0
+        )

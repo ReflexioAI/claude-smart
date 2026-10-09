@@ -892,6 +892,17 @@ def _confirmed_publish(response: Any, request_id: str | None = None) -> PublishR
             else "InvalidPublishAcknowledgement",
             http_status=200,
         )
+    message = (
+        dict.get(response, "message")
+        if isinstance(response, dict)
+        else getattr(response, "message", None)
+    )
+    if message == "Interaction queued for processing":
+        # Legacy routes acknowledge a background task before durable storage.
+        # Stable raw callers must verify the stored request before retiring it.
+        return PublishResult(
+            False, request_id, error_type="StorageNotConfirmed", http_status=200
+        )
     return PublishResult(True, request_id)
 
 

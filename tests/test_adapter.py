@@ -1713,3 +1713,38 @@ def test_earlier_chunk_warnings_survive_later_outcomes(caplog, later):
     assert caplog.text.count("ignored unrecognised field(s) unused") == 1
     assert "secret-payload" not in caplog.text
     assert "secret-response-body" not in caplog.text
+
+
+@pytest.mark.parametrize("typed", [False, True])
+def test_legacy_queue_acknowledgement_does_not_confirm_storage(typed):
+    from reflexio.models.api_schema.domain.entities import (
+        PublishUserInteractionResponse,
+    )
+
+    response = PublishUserInteractionResponse(
+        success=True, message="Interaction queued for processing"
+    )
+    ack = response if typed else response.model_dump(mode="json")
+    result = reflexio_adapter._confirmed_publish(ack, "stable")
+    assert not result
+    assert result.error_type == "StorageNotConfirmed"
+
+
+def test_legacy_sdk_queued_publish_without_stable_read_path_fails_closed():
+    from reflexio.models.api_schema.domain.entities import (
+        PublishUserInteractionResponse,
+    )
+
+    class Client:
+        def publish_interaction(self, **kwargs):
+            return PublishUserInteractionResponse(
+                success=True, message="Interaction queued for processing"
+            )
+
+    result = _adapter_with(Client()).publish(
+        session_id="session",
+        project_id="project",
+        interactions=[{"content": "question"}],
+    )
+    assert not result
+    assert result.error_type == "StorageNotConfirmed"
