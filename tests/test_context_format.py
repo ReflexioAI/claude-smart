@@ -319,7 +319,7 @@ def test_render_inline_compact_with_registry_can_emit_osc8_when_requested(
 
     assert "\x1b]8;;http://localhost:3001/rules/s1-17\x1b\\" in md
     assert "\x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\" in md
-    assert "Available linked titles:" in md
+    assert "Available linked titles:" not in md
     assert "Include only memories that materially changed the response." in md
     assert (
         "Run uv sync after pyproject edits\x1b]8;;\x1b\\ | "

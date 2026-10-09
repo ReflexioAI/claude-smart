@@ -270,11 +270,10 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
     link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
     if link_style == "osc8" and marker_parts:
         example = cs_cite.build_marker(marker_parts[0], "osc8")
-        available = " · ".join(marker_parts)
         return _remoteize_citation_instruction(
             f"{gate} If you do, use this final marker format, preserving its "
             f"hidden OSC 8 terminal link: `{example}`. Include only memories "
-            f"that materially changed the response. Available linked titles: {available}. "
+            "that materially changed the response. Use their links above. "
             "Separate multiple linked memories with the visible ` | ` separator."
         )
     if link_style == "osc8":
