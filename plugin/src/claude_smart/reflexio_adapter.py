@@ -167,11 +167,30 @@ class Adapter:
 
             from claude_smart import hook_log
 
-            url = urlsplit(self.url)
+            url = None
+            scheme = None
+            hostname = None
+            try:
+                url = urlsplit(self.url)
+                scheme = url.scheme
+                hostname = url.hostname
+            except ValueError:
+                pass
             manifest = (
                 Path(__file__).resolve().parents[2] / ".codex-plugin" / "plugin.json"
             )
-            version = json.loads(manifest.read_text()).get("version", "unknown")
+            version = "unknown"
+            try:
+                metadata = json.loads(manifest.read_text())
+                candidate = metadata.get("version")
+                if isinstance(candidate, str) and candidate:
+                    version = candidate
+            except (OSError, ValueError, AttributeError):
+                pass
+            try:
+                port = url.port if url is not None else None
+            except ValueError:
+                port = None
             hook_log.log_event(
                 event="publish-result",
                 host=runtime.host(),
@@ -181,9 +200,9 @@ class Adapter:
                 publish_count=count,
                 extra={
                     "plugin_version": version,
-                    "backend_scheme": url.scheme,
-                    "backend_host": url.hostname,
-                    "backend_port": url.port,
+                    "backend_scheme": scheme,
+                    "backend_host": hostname,
+                    "backend_port": port,
                     "error_type": result.error_type,
                     "http_status": result.http_status,
                 },
@@ -210,6 +229,8 @@ class Adapter:
         """
         try:
             interaction_list = _storage_safe_interactions(interactions)
+            if not interaction_list:
+                return PublishResult(True), None
             raw_request = getattr(client, "_make_request", None)
             if len(interaction_list) > 1000 and (
                 request_id is None or not callable(raw_request)
@@ -243,11 +264,14 @@ class Adapter:
                         "override_learning_stall": override_learning_stall,
                         "source": _SOURCE,
                     }
-                    if len(interaction_list) > 1000 and _stored_publish_matches(
-                        raw_request, payload
-                    ):
-                        confirmed_ids.append(chunk_id)
-                        continue
+                    if len(interaction_list) > 1000:
+                        try:
+                            stored = _stored_publish_matches(raw_request, payload)
+                        except Exception:  # noqa: BLE001 — a read outage must not block fresh writes.
+                            stored = False
+                        if stored:
+                            confirmed_ids.append(chunk_id)
+                            continue
                     try:
                         raw_response = raw_request(
                             "POST",
@@ -256,37 +280,21 @@ class Adapter:
                             params=None,
                         )
                     except Exception as exc:  # noqa: BLE001
-                        if len(interaction_list) > 1000 and _stored_publish_matches(
-                            raw_request, payload
-                        ):
+                        try:
+                            stored = _stored_publish_matches(raw_request, payload)
+                        except Exception:  # noqa: BLE001 — preserve the publish failure.
+                            raise exc
+                        if stored:
                             confirmed_ids.append(chunk_id)
                             continue
-                        if len(
-                            interaction_list
-                        ) > 1000 or not _needs_raw_retrieved_learning_publish(chunk):
-                            raise
-                        _LOGGER.warning(
-                            "Could not confirm retrieved-learning links; retrying "
-                            "the base interaction with the same request ID: %s",
-                            exc,
-                        )
-                        fallback_payload = {
-                            **payload,
-                            "interaction_data_list": _without_retrieved_learnings(
-                                chunk
-                            ),
-                        }
-                        raw_response = raw_request(
-                            "POST",
-                            "/api/publish_interaction",
-                            json=fallback_payload,
-                            params=None,
-                        )
+                        raise
                     result = _confirmed_publish(raw_response, chunk_id)
                     if not result:
-                        if len(interaction_list) <= 1000 or not _stored_publish_matches(
-                            raw_request, payload
-                        ):
+                        try:
+                            stored = _stored_publish_matches(raw_request, payload)
+                        except Exception:  # noqa: BLE001 — preserve rejection diagnostics.
+                            return result, raw_response
+                        if not stored:
                             return result, raw_response
                     confirmed_ids.append(chunk_id)
                 return PublishResult(
@@ -752,6 +760,39 @@ def _escape_nulls(value: Any) -> Any:
     return value
 
 
+def _has_publish_content(item: dict[str, Any]) -> bool:
+    """Mirror pinned InteractionData.carries_content before tool expansion.
+
+    Unlike model construction this supports more than 1,000 unsplit tools.
+    Whitespace-only placeholders carry no learning data and are retired locally.
+    """
+    if item.get("user_action", "none") != "none":
+        return True
+    fields = (
+        "content",
+        "shadow_content",
+        "expert_content",
+        "interacted_image_url",
+        "image_encoding",
+        "tools_used",
+        "citations",
+        "retrieved_learnings",
+    )
+    carries_content = any(
+        value.strip() if isinstance(value, str) else value
+        for value in (item.get(field) for field in fields)
+    )
+    if not carries_content and set(item) - {
+        *fields,
+        "role",
+        "created_at",
+        "user_action",
+        "user_action_description",
+    }:
+        raise ValueError("Empty interaction contains unrecognized fields")
+    return bool(carries_content)
+
+
 def _storage_safe_interactions(
     interactions: Sequence[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -759,6 +800,8 @@ def _storage_safe_interactions(
     result = []
     for original in interactions:
         item = _escape_nulls(original)
+        if not _has_publish_content(item):
+            continue
         tools = item.get("tools_used", [])
         if len(tools) <= 1000:
             result.append(item)

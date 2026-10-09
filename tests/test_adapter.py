@@ -36,7 +36,7 @@ class _FakeClient:
         if not self._publish_ok:
             raise RuntimeError("reflexio unreachable")
 
-    def _make_request(self, method, path, **kwargs):
+    def _make_request(self, method, path, **kwargs) -> Any:
         self.raw_request = {"method": method, "path": path, **kwargs}
         if not self._publish_ok:
             raise RuntimeError("reflexio unreachable")
@@ -352,13 +352,15 @@ def test_missing_raw_request_helper_falls_back_without_optional_links(
     ]
 
 
-def test_ambiguous_raw_failure_retries_base_with_same_request_id() -> None:
+def test_unconfirmed_raw_failure_retries_original_with_same_request_id() -> None:
     class ResponseLossClient(_FakeClient):
         def __init__(self):
             super().__init__()
             self.raw_requests = []
 
         def _make_request(self, method, path, **kwargs):
+            if path == "/api/get_requests":
+                return {"success": True, "sessions": []}
             self.raw_requests.append(kwargs["json"])
             if len(self.raw_requests) == 1:
                 raise TimeoutError("response was lost after send")
@@ -369,7 +371,7 @@ def test_ambiguous_raw_failure_retries_base_with_same_request_id() -> None:
     client = ResponseLossClient()
     adapter = _adapter_with(client)
 
-    ok = adapter.publish(
+    kwargs: dict[str, Any] = dict(
         session_id="s1",
         project_id="p1",
         request_id="stable-request",
@@ -383,8 +385,9 @@ def test_ambiguous_raw_failure_retries_base_with_same_request_id() -> None:
             }
         ],
     )
-
-    assert ok.ok is True
+    assert not adapter.publish(**kwargs)
+    assert len(client.raw_requests) == 1
+    assert adapter.publish(**kwargs)
     assert len(client.raw_requests) == 2
     assert {request["request_id"] for request in client.raw_requests} == {
         "stable-request"
@@ -392,9 +395,7 @@ def test_ambiguous_raw_failure_retries_base_with_same_request_id() -> None:
     assert client.raw_requests[0]["interaction_data_list"][0][
         "retrieved_learnings"
     ] == [{"kind": "profile", "learning_id": "profile-1"}]
-    assert client.raw_requests[1]["interaction_data_list"] == [
-        {"role": "Assistant", "content": "done"}
-    ]
+    assert client.raw_requests[1] == client.raw_requests[0]
 
 
 def test_ambiguous_raw_failure_does_not_retry_through_public_sdk() -> None:
@@ -1433,4 +1434,195 @@ def test_multi_chunk_failure_never_strips_learning_links():
     assert (
         client.sent[0]["interaction_data_list"][0]["retrieved_learnings"]
         == messages[0]["retrieved_learnings"]
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("content", "visible"),
+        ("shadow_content", "shadow"),
+        ("expert_content", "expert"),
+        ("tools_used", [{"tool_name": "Bash"}]),
+        ("citations", [{"kind": "profile", "real_id": "profile-id"}]),
+        ("retrieved_learnings", [{"kind": "profile", "learning_id": "profile-id"}]),
+        ("interacted_image_url", "https://example.com/image.png"),
+        ("image_encoding", "aGVsbG8="),
+        ("user_action", "click"),
+    ],
+)
+def test_content_filter_preserves_server_content_bearing_fields(field, value):
+    from reflexio.models.api_schema.domain.entities import InteractionData
+
+    item = {"role": "Assistant", "content": " ", field: value}
+    if field == "user_action":
+        item["user_action_description"] = "clicked"
+    assert reflexio_adapter._has_publish_content(item)
+    carries_content = getattr(InteractionData(**item), "carries_content", None)
+    if callable(carries_content):
+        assert carries_content()
+    assert reflexio_adapter._storage_safe_interactions([item]) == [item]
+
+
+def test_empty_tail_does_not_create_rejected_empty_request():
+    from reflexio.models.api_schema.domain.entities import PublishUserInteractionRequest
+
+    class Client:
+        def __init__(self):
+            self.payloads = []
+
+        def _make_request(self, method, path, **kwargs):
+            assert path == "/api/publish_interaction"
+            payload = kwargs["json"]
+            validated = PublishUserInteractionRequest(**payload)
+            assert len(validated.interaction_data_list) == 1000
+            self.payloads.append(payload)
+            return {"success": True}
+
+    client = Client()
+    messages = [{"role": "User", "content": str(i)} for i in range(1000)]
+    messages.append({"role": "Assistant", "content": "  "})
+    assert _adapter_with(client).publish(
+        session_id="session",
+        project_id="project",
+        request_id="stable",
+        interactions=messages,
+    )
+    assert len(client.payloads) == 1
+    assert len(client.payloads[0]["interaction_data_list"]) == 1000
+
+
+@pytest.mark.parametrize("rejected", [False, True])
+def test_failed_confirmation_preserves_publish_diagnostics(rejected):
+    class HTTPFailure(Exception):
+        response = SimpleNamespace(status_code=429)
+
+    class Client:
+        def _make_request(self, method, path, **kwargs):
+            if path == "/api/get_requests":
+                raise ValueError("confirmation unavailable")
+            if rejected:
+                return {"success": False}
+            raise HTTPFailure("publish unavailable")
+
+    result = _adapter_with(Client()).publish(
+        session_id="session",
+        project_id="project",
+        request_id="stable",
+        interactions=[{"content": "hi"}],
+    )
+    assert not result
+    assert result.error_type == ("ServerRejected" if rejected else "HTTPFailure")
+    assert result.http_status == (200 if rejected else 429)
+
+
+@pytest.mark.parametrize("manifest_failure", ["missing", "malformed"])
+def test_publish_diagnostics_survive_missing_or_malformed_manifest(
+    tmp_path, monkeypatch, manifest_failure
+):
+    import json
+    from pathlib import Path
+
+    from claude_smart import hook_log
+
+    original_read = Path.read_text
+
+    def read(path, *args, **kwargs):
+        if path.name == "plugin.json":
+            if manifest_failure == "missing":
+                raise FileNotFoundError("no plugin manifest")
+            return "{malformed"
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    path = tmp_path / "hook.log"
+    monkeypatch.setattr(hook_log, "_LOG_PATH", path)
+    adapter = reflexio_adapter.Adapter(
+        url="https://secret-user:secret-password@example.com/private?key=secret-key"
+    )
+    adapter._client = _FakeClient()
+    assert adapter.publish(
+        session_id="session",
+        project_id="project",
+        interactions=[{"content": "secret-content"}],
+    )
+    record = json.loads(path.read_text())
+    assert record["plugin_version"] == "unknown"
+    assert record["backend_host"] == "example.com"
+    assert record["event"] == "publish-result"
+    assert all(
+        secret not in path.read_text()
+        for secret in (
+            "secret-user",
+            "secret-password",
+            "secret-key",
+            "secret-content",
+            "/private",
+        )
+    )
+
+
+def test_publish_diagnostics_survive_invalid_port(tmp_path, monkeypatch):
+    import json
+
+    from claude_smart import hook_log
+
+    path = tmp_path / "hook.log"
+    monkeypatch.setattr(hook_log, "_LOG_PATH", path)
+    adapter = reflexio_adapter.Adapter(
+        url="https://secret-user:secret-password@example.com:invalid/private?key=secret-key"
+    )
+    adapter._client = _FakeClient()
+    assert adapter.publish(
+        session_id="session",
+        project_id="project",
+        interactions=[{"content": "secret-content"}],
+    )
+    record = json.loads(path.read_text())
+    assert record["backend_port"] is None
+    assert record["backend_host"] == "example.com"
+    assert record["event"] == "publish-result"
+    assert all(
+        secret not in path.read_text()
+        for secret in (
+            "secret-user",
+            "secret-password",
+            "secret-key",
+            "secret-content",
+            "/private",
+        )
+    )
+
+
+def test_publish_diagnostics_survive_malformed_url(tmp_path, monkeypatch):
+    import json
+
+    from claude_smart import hook_log
+
+    path = tmp_path / "hook.log"
+    monkeypatch.setattr(hook_log, "_LOG_PATH", path)
+    adapter = reflexio_adapter.Adapter(
+        url="https://secret-user:secret-password@[broken/private?key=secret-key"
+    )
+    adapter._client = _FakeClient()
+    assert adapter.publish(
+        session_id="session",
+        project_id="project",
+        interactions=[{"content": "secret-content"}],
+    )
+    record = json.loads(path.read_text())
+    assert record["event"] == "publish-result"
+    assert record["backend_scheme"] is None
+    assert record["backend_host"] is None
+    assert record["backend_port"] is None
+    assert all(
+        secret not in path.read_text()
+        for secret in (
+            "secret-user",
+            "secret-password",
+            "secret-key",
+            "secret-content",
+            "/private",
+            "[broken",
+        )
     )

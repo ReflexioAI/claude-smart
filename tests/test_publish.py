@@ -669,5 +669,141 @@ def test_existing_chunk_mismatch_keeps_watermark_unadvanced(session_dir, mismatc
     assert len(client.sent) == 2
     # Retry refuses to skip an existing request whose contents/scope cannot match.
     assert publish.publish_unpublished(**kwargs) == ("failed", 1001)
-    assert len(client.sent) == 2
+    assert len(client.sent) == 3
+    assert client.sent[0] == client.sent[-1]
     assert state.published_record_offset(state.read_all("mismatch")) == 0
+
+
+@pytest.mark.parametrize("mixed_empty", [False, True])
+@pytest.mark.parametrize("learning_links", [False, True])
+def test_single_committed_lost_ack_recovers_after_duplicate_rejection(
+    session_dir, mixed_empty, learning_links
+):
+    class Client:
+        def __init__(self):
+            self.saved = None
+            self.sent = []
+            self.query_unavailable = True
+
+        def _make_request(self, method, path, **kwargs):
+            payload = kwargs["json"]
+            if path == "/api/get_requests":
+                if self.query_unavailable:
+                    self.query_unavailable = False
+                    raise TimeoutError("temporary read failure")
+                assert self.saved is not None
+                assert payload["request_id"] == self.saved["request_id"]
+                return _stored_request_response(self.saved)
+            self.sent.append(payload)
+            if self.saved is not None:
+                return {"success": False, "message": "Request already exists"}
+            self.saved = payload
+            raise TimeoutError("committed acknowledgement lost")
+
+    _append_user("single", 1, "question")
+    if mixed_empty:
+        _append_assistant("single", 2, "  ")
+    if learning_links:
+        _inject_profile("single", "profile-id", 2)
+    _append_assistant("single", 3, "answer")
+    client = Client()
+    adapter = Adapter(url="https://example.com")
+    adapter._client = client
+    kwargs: dict[str, Any] = dict(
+        session_id="single",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=adapter,
+    )
+    count = 3 if mixed_empty else 2
+    assert publish.publish_unpublished(**kwargs) == ("failed", count)
+    assert state.published_record_offset(state.read_all("single")) == 0
+    from reflexio.models.api_schema.domain.entities import InteractionData
+
+    expected = (
+        "failed"
+        if learning_links and "retrieved_learnings" not in InteractionData.model_fields
+        else "ok"
+    )
+    assert publish.publish_unpublished(**kwargs) == (expected, count)
+    assert client.sent[0] == client.sent[1]
+    if learning_links:
+        assert client.sent[0]["interaction_data_list"][-1]["retrieved_learnings"] == [
+            {"kind": "profile", "learning_id": "profile-id"}
+        ]
+    if expected == "failed":
+        # An older read/schema contract cannot prove that links were retained.
+        assert state.published_record_offset(state.read_all("single")) == 0
+        return
+    assert client.saved is not None
+    assert [item["content"] for item in client.saved["interaction_data_list"]] == [
+        "question",
+        "answer",
+    ]
+    assert state.read_all("single")[-1]["request_id"] == client.saved["request_id"]
+    assert publish.publish_unpublished(**kwargs) == ("nothing", 0)
+
+
+def test_empty_only_batch_is_retired_without_network(session_dir):
+    class Client:
+        def _make_request(self, *args, **kwargs):
+            raise AssertionError("empty placeholders must not be sent")
+
+    _append_assistant("empty", 1, "  ")
+    adapter = Adapter(url="https://example.com")
+    adapter._client = Client()
+    assert publish.publish_unpublished(
+        session_id="empty",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=adapter,
+    ) == ("ok", 1)
+    assert state.read_all("empty")[-1] == {"published_up_to": 1}
+
+
+def test_large_fresh_publish_succeeds_despite_read_outage_and_replay_fails_closed(
+    session_dir,
+):
+    class Client:
+        def __init__(self):
+            self.sent = []
+            self.saved = set()
+
+        def _make_request(self, method, path, **kwargs):
+            if path == "/api/get_requests":
+                raise TimeoutError("read API unavailable")
+            payload = kwargs["json"]
+            self.sent.append(payload)
+            if payload["request_id"] in self.saved:
+                return {"success": False, "message": "Request already exists"}
+            self.saved.add(payload["request_id"])
+            return {"success": True}
+
+    for i in range(1001):
+        _append_user("unreadable", i, str(i))
+    client = Client()
+    adapter = Adapter(url="https://example.com")
+    adapter._client = client
+    kwargs: dict[str, Any] = dict(
+        session_id="unreadable",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=adapter,
+    )
+    assert publish.publish_unpublished(**kwargs) == ("ok", 1001)
+    records = state.read_all("unreadable")
+    marker = records[-1]
+    assert marker["published_up_to"] == 1001
+    assert len(marker["request_ids"]) == 2
+    # Simulate loss of the local watermark after remote durable acceptance.
+    import json
+
+    state.session_path("unreadable").write_text(
+        "\n".join(json.dumps(row) for row in records[:-1]) + "\n"
+    )
+    assert publish.publish_unpublished(**kwargs) == ("failed", 1001)
+    assert state.published_record_offset(state.read_all("unreadable")) == 0
+    assert client.sent[0] == client.sent[-1]
