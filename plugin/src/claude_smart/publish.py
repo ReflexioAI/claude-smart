@@ -14,7 +14,7 @@ from typing import Any, Literal
 from claude_smart import state
 from claude_smart.reflexio_adapter import Adapter
 
-PublishStatus = Literal["nothing", "ok", "failed"]
+PublishStatus = Literal["nothing", "ok", "recovered", "failed"]
 
 
 def _publish_request_id(session_id: str, start: int, end: int) -> str:
@@ -97,7 +97,9 @@ def publish_unpublished(
     Returns:
         tuple[PublishStatus, int]: ``("nothing", 0)`` if the buffer has no
             unpublished turns, ``("ok", n)`` after a successful publish of
-            ``n`` interactions, or ``("failed", n)`` if reflexio rejected or
+            ``n`` interactions, ``("recovered", n)`` when storage was verified
+            after a lost acknowledgement (extraction options are not confirmed),
+            or ``("failed", n)`` if reflexio rejected or
             was unreachable. On ``"failed"`` the watermark is not advanced,
             so the next hook retries the same batch.
     """
@@ -125,5 +127,7 @@ def publish_unpublished(
         if result.request_ids:
             marker["request_ids"] = list(result.request_ids)
         state.append(session_id, marker)
-        return ("ok", len(interactions))
+        if result.no_op:
+            return ("nothing", 0)
+        return ("recovered" if result.recovered else "ok", len(interactions))
     return ("failed", len(interactions))

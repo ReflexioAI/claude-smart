@@ -504,7 +504,7 @@ def test_partial_chunk_failure_retries_same_ids_and_keeps_full_lineage(
     assert frozen_end is not None
     _append_user("chunked", 1000, "later")
     client.fail = False
-    assert publish.publish_unpublished(**kwargs) == ("ok", 999)
+    assert publish.publish_unpublished(**kwargs) == ("recovered", 999)
     if failure == "rejection":
         assert client.payloads[1] == client.payloads[2]
     assert [len(p["interaction_data_list"]) for p in client.payloads] == (
@@ -723,7 +723,7 @@ def test_single_committed_lost_ack_recovers_after_duplicate_rejection(
     expected = (
         "failed"
         if learning_links and "retrieved_learnings" not in InteractionData.model_fields
-        else "ok"
+        else "recovered"
     )
     assert publish.publish_unpublished(**kwargs) == (expected, count)
     assert client.sent[0] == client.sent[1]
@@ -758,7 +758,7 @@ def test_empty_only_batch_is_retired_without_network(session_dir):
         force_extraction=False,
         skip_aggregation=False,
         adapter=adapter,
-    ) == ("ok", 1)
+    ) == ("nothing", 0)
     assert state.read_all("empty")[-1] == {"published_up_to": 1}
 
 

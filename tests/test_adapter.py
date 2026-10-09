@@ -1626,3 +1626,20 @@ def test_publish_diagnostics_survive_malformed_url(tmp_path, monkeypatch):
             "[broken",
         )
     )
+
+
+def test_publish_diagnostics_identify_storage_recovery(tmp_path, monkeypatch):
+    import json
+
+    from claude_smart import hook_log
+
+    path = tmp_path / "hook.log"
+    monkeypatch.setattr(hook_log, "_LOG_PATH", path)
+    adapter = reflexio_adapter.Adapter(url="https://example.com")
+    adapter._log_publish(
+        reflexio_adapter.PublishResult(True, "stable", recovered=True),
+        "session",
+        "project",
+        2,
+    )
+    assert json.loads(path.read_text())["publish_status"] == "recovered"

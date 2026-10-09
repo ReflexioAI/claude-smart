@@ -60,6 +60,8 @@ class PublishResult:
     error_type: str | None = None
     http_status: int | None = None
     request_ids: tuple[str, ...] | None = None
+    recovered: bool = False
+    no_op: bool = False
 
     def __bool__(self) -> bool:
         return self.ok
@@ -141,7 +143,9 @@ class Adapter:
             override_learning_stall=override_learning_stall,
             skip_aggregation=skip_aggregation,
         )
-        self._log_publish(result, session_id, project_id, len(interactions))
+        self._log_publish(
+            result, session_id, project_id, 0 if result.no_op else len(interactions)
+        )
         if result.ok:
             # Deliberately outside `_attempt_publish` and every try inside it.
             # The publish has already been accepted, and `publish_unpublished`
@@ -196,7 +200,15 @@ class Adapter:
                 host=runtime.host(),
                 session_id=session_id,
                 project_id=project_id,
-                publish_status="ok" if result.ok else "failed",
+                publish_status=(
+                    "nothing"
+                    if result.no_op
+                    else "recovered"
+                    if result.recovered
+                    else "ok"
+                )
+                if result.ok
+                else "failed",
                 publish_count=count,
                 extra={
                     "plugin_version": version,
@@ -230,7 +242,7 @@ class Adapter:
         try:
             interaction_list = _storage_safe_interactions(interactions)
             if not interaction_list:
-                return PublishResult(True), None
+                return PublishResult(True, no_op=True), None
             raw_request = getattr(client, "_make_request", None)
             if len(interaction_list) > 1000 and (
                 request_id is None or not callable(raw_request)
@@ -240,6 +252,7 @@ class Adapter:
                 ), None
             if request_id is not None and callable(raw_request):
                 confirmed_ids: list[str] = []
+                recovered = False
                 raw_response: Any = None
                 for index, start in enumerate(range(0, len(interaction_list), 1000)):
                     chunk = interaction_list[start : start + 1000]
@@ -270,6 +283,7 @@ class Adapter:
                         except Exception:  # noqa: BLE001 — a read outage must not block fresh writes.
                             stored = False
                         if stored:
+                            recovered = True
                             confirmed_ids.append(chunk_id)
                             continue
                     try:
@@ -285,6 +299,7 @@ class Adapter:
                         except Exception:  # noqa: BLE001 — preserve the publish failure.
                             raise exc
                         if stored:
+                            recovered = True
                             confirmed_ids.append(chunk_id)
                             continue
                         raise
@@ -296,6 +311,7 @@ class Adapter:
                             return result, raw_response
                         if not stored:
                             return result, raw_response
+                        recovered = True
                     confirmed_ids.append(chunk_id)
                 return PublishResult(
                     True,
@@ -303,6 +319,7 @@ class Adapter:
                     request_ids=tuple(confirmed_ids)
                     if len(confirmed_ids) > 1
                     else None,
+                    recovered=recovered,
                 ), raw_response
             if _needs_raw_retrieved_learning_publish(interaction_list):
                 _LOGGER.warning(

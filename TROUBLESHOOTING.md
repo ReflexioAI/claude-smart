@@ -76,7 +76,11 @@ and advance the local watermark only after every request is accepted. Failed bat
 retry with the same IDs. Before replaying a request in a large batch, the plugin
 queries that exact request and verifies its stored content, tools, and learning
 links; matching accepted requests are skipped. Single requests also use this
-confirmation after a rejected or lost acknowledgement. Preflight read failures
+confirmation after a rejected or lost acknowledgement. Verified recovery confirms
+storage only: the read API cannot prove or rerun forced extraction, stall override,
+or aggregation options. `/learn` reports this limitation instead of claiming
+forced extraction succeeded; a fresh acknowledgement reports the extraction
+request was accepted. Preflight read failures
 allow the original write to proceed; rejected or lost acknowledgements still
 require verified storage before advancing. Failed verification, mismatched data,
 or nonempty fields absent from the read API (citations and image encoding) leave
