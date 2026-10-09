@@ -83,3 +83,56 @@ def test_dashboard_build_starts_the_dashboard_when_a_fresh_build_completes(
     log = tmp_path / "dashboard-service.log"
     assert log.is_file()
     assert log.read_text().splitlines() == [f"start {project.resolve()}"]
+
+
+@pytest.mark.parametrize("ignore_rule", ["*", ".claude-smart/"])
+def test_packaged_dashboard_generates_utilities_inside_ignored_home_repo(
+    tmp_path: Path,
+    ignore_rule: str,
+) -> None:
+    modules = DASHBOARD_ROOT / "node_modules"
+    if not (modules / "@tailwindcss" / "postcss").is_dir():
+        pytest.skip("run npm ci in plugin/dashboard to verify real Tailwind output")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text(ignore_rule + "\n")
+    dashboard = tmp_path / ".claude-smart" / "dashboard"
+    dashboard.mkdir(parents=True)
+    for name in ("app", "components", "lib", "scripts", "package.json"):
+        source = DASHBOARD_ROOT / name
+        if source.is_dir():
+            shutil.copytree(source, dashboard / name)
+        else:
+            shutil.copy2(source, dashboard / name)
+    # npm drops .gitignore from its payload. Start without one, as users do.
+    (dashboard / "node_modules").symlink_to(modules, target_is_directory=True)
+    script = r"""
+const fs = require('node:fs');
+const postcss = require('postcss');
+const tailwind = require('@tailwindcss/postcss');
+const from = require('node:path').resolve('app/globals.css');
+async function compile() {
+  return (await postcss([tailwind({base: process.cwd()})]).process(
+    fs.readFileSync(from, 'utf8'), {from}
+  )).css;
+}
+(async () => {
+  const before = await compile();
+  require('./scripts/prepare-tailwind-sources.cjs');
+  const after = await compile();
+  for (const selector of ['.flex {', '.grid {', '.p-4 {']) {
+    if (process.env.EXPECT_IGNORED === '1' && before.includes(selector)) throw Error('fixture did not reproduce ignored sources');
+    if (!after.includes(selector)) throw Error('missing utility: ' + selector);
+  }
+})().catch(error => { console.error(error); process.exit(1); });
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=dashboard,
+        text=True,
+        env={**os.environ, "EXPECT_IGNORED": "1" if ignore_rule == "*" else "0"},
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / ".gitignore").read_text() == ignore_rule + "\n"
