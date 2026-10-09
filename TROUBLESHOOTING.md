@@ -79,9 +79,10 @@ links; matching accepted requests are skipped. Single requests also use this
 confirmation after a rejected or lost acknowledgement. Verified recovery confirms
 storage only: the read API cannot prove or rerun forced extraction, stall override,
 or aggregation options. `/learn` reports this limitation and exits nonzero;
-storage recovery still advances the local watermark. A new real interaction or
-note can request extraction again. A fresh acknowledgement reports the extraction
-request was accepted. Preflight read failures
+storage recovery still advances the local watermark. Run `/learn` again without
+adding another note to publish any remaining buffered interactions or an existing
+pending note. If none remain, a new real interaction or note can request extraction.
+A fresh acknowledgement reports the extraction request was accepted. Preflight read failures
 allow the original write to proceed; rejected or lost acknowledgements still
 require verified storage before advancing. Failed verification, mismatched data,
 or nonempty fields absent from the read API (citations and image encoding) leave

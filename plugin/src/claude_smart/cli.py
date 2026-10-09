@@ -2083,7 +2083,9 @@ def cmd_learn(args: argparse.Namespace) -> int:
             f"interactions.\n"
             "Recovery confirms storage only; forced extraction, stall override, "
             "and aggregation options were not verified or rerun.\n"
-            "Run learn with a new note to request extraction on a new interaction.\n"
+            "Run learn again without --note to publish any remaining buffered "
+            "interactions.\n"
+            "If none remain, a new interaction or note can request extraction.\n"
         )
         return 1
     if status == "nothing":

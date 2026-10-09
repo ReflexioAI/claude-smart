@@ -135,9 +135,17 @@ def test_cmd_learn_blank_note_is_ignored(session_dir, fake_publish) -> None:
     assert len(state.read_all("s1")) == 2
 
 
-@pytest.mark.parametrize("mode", ["recovery", "fresh", "empty"])
+@pytest.mark.parametrize(
+    "mode,note",
+    [
+        ("recovery", None),
+        ("recovery", "remember the pending note"),
+        ("fresh", None),
+        ("empty", None),
+    ],
+)
 def test_real_learn_distinguishes_storage_recovery_from_extraction_request(
-    session_dir, monkeypatch, capsys, mode
+    session_dir, monkeypatch, capsys, mode, note
 ):
     from claude_smart.reflexio_adapter import Adapter
     from reflexio.models.api_schema.domain.entities import Interaction, Request
@@ -196,10 +204,13 @@ def test_real_learn_distinguishes_storage_recovery_from_extraction_request(
                     }
                 ).model_dump(mode="json", exclude_none=True)
             self.sent.append(payload)
-            if self.saved is not None:
+            if (
+                self.saved is not None
+                and payload["request_id"] == self.saved["request_id"]
+            ):
                 return {"success": False, "message": "Request already exists"}
             self.saved = payload
-            if mode == "recovery":
+            if mode == "recovery" and len(self.sent) == 1:
                 raise TimeoutError("committed response lost")
             return {"success": True}
 
@@ -221,7 +232,9 @@ def test_real_learn_distinguishes_storage_recovery_from_extraction_request(
             override_learning_stall=False,
             skip_aggregation=False,
         ) == ("failed", 2)
-    assert cli.cmd_learn(_make_args(session="s1")) == (1 if mode == "recovery" else 0)
+    assert cli.cmd_learn(_make_args(session="s1", note=note)) == (
+        1 if mode == "recovery" else 0
+    )
     out = capsys.readouterr().out
     if mode == "recovery":
         assert "Recovered stored publication" in out
@@ -238,7 +251,24 @@ def test_real_learn_distinguishes_storage_recovery_from_extraction_request(
         )
         assert client.sent[1]["force_extraction"] is True
         assert client.sent[1]["override_learning_stall"] is True
-        assert len([r for r in state.read_all("s1") if r.get("role")]) == 2
+        assert len([r for r in state.read_all("s1") if r.get("role")]) == (
+            3 if note else 2
+        )
+        assert "Run learn again without --note" in out
+        assert "Run learn with a new note" not in out
+        if note:
+            _, pending = state.unpublished_slice(state.read_all("s1"))
+            assert [item["content"] for item in pending] == [note]
+            assert cli.cmd_learn(_make_args(session="s1")) == 0
+            assert "Requested forced extraction" in capsys.readouterr().out
+            assert client.sent[-1]["request_id"] != client.sent[0]["request_id"]
+            assert [
+                item["content"] for item in client.sent[-1]["interaction_data_list"]
+            ] == [note]
+            assert (
+                len([r for r in state.read_all("s1") if r.get("content") == note]) == 1
+            )
+            assert state.unpublished_slice(state.read_all("s1"))[1] == []
     elif mode == "fresh":
         assert "Requested forced extraction" in out
         assert len(client.sent) == 1
