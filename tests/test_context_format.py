@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from claude_smart import context_format, cs_cite, runtime
 
 
@@ -498,3 +499,15 @@ def test_title_from_content_truncates_with_ellipsis() -> None:
 def test_title_from_content_splits_on_sentence_boundary() -> None:
     text = "First sentence. Second sentence."
     assert context_format._title_from_content(text) == "First sentence"
+
+
+@pytest.mark.parametrize("link_style", ["markdown", "osc8"])
+def test_compact_citation_guidance_does_not_grow_with_unused_memories(
+    monkeypatch,
+    link_style: str,
+) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", link_style)
+    titles = [f"rule-{index}" for index in range(50)]
+    assert context_format._compact_citation_instruction(titles) == (
+        context_format._compact_citation_instruction(titles[:1])
+    )
