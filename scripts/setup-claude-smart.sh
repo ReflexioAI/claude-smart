@@ -127,19 +127,17 @@ ensure_local_env_defaults() {
   # Migrate only after the user has answered every required prompt. Doing this
   # before prompting would make EOF/help inspection change configuration.
   if [ ! -e "$LEGACY_MIGRATION_MARKER" ] && [ -f "$LEGACY_REFLEXIO_ENV" ]; then
-    local key ignored value
-    while IFS='=' read -r key ignored || [ -n "$key" ]; do
+    local key line
+    while IFS= read -r line || [ -n "$line" ]; do
+      key="${line%%=*}"
+      [ "$key" != "$line" ] || continue
       key="${key#"${key%%[![:space:]]*}"}"
       key="${key#export }"
       key="${key%"${key##*[![:space:]]}"}"
-      case "$key" in
-        CLAUDE_SMART_*)
-          if ! get_env_value "$key" >/dev/null 2>&1; then
-            value="$(REFLEXIO_ENV="$LEGACY_REFLEXIO_ENV" get_env_value "$key")"
-            append_env_value "$key" "$value"
-          fi
-          ;;
-      esac
+      if [[ "$key" =~ ^CLAUDE_SMART_[A-Z0-9_]+$ ]] && ! get_env_value "$key" >/dev/null 2>&1; then
+        # Preserve the encoded value; re-quoting doubles Windows backslashes.
+        append_env_raw "$key" "${line#*=}"
+      fi
     done < "$LEGACY_REFLEXIO_ENV"
   fi
   mkdir -p "$(dirname "$REFLEXIO_ENV")"

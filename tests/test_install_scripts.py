@@ -8346,14 +8346,64 @@ def test_local_legacy_runtime_flags_migrate_without_connection_keys(
     assert legacy.read_text() == original
 
 
-def test_setup_local_preserves_legacy_read_only_choice(tmp_path: Path) -> None:
+@pytest.mark.parametrize("runtime_read_only", [None, "0"])
+def test_setup_local_preserves_legacy_read_only_choice(
+    tmp_path: Path,
+    runtime_read_only: str | None,
+) -> None:
     legacy = tmp_path / ".reflexio" / ".env"
     legacy.parent.mkdir()
     original = '# local flags\nexport CLAUDE_SMART_READ_ONLY="1"\nCLAUDE_SMART_CLI_TIMEOUT="90"\n'
     legacy.write_text(original)
+    runtime_file = tmp_path / ".claude-smart" / ".env"
+    if runtime_read_only is not None:
+        runtime_file.parent.mkdir()
+        runtime_file.write_text(f'CLAUDE_SMART_READ_ONLY="{runtime_read_only}"\n')
     result = _run_setup_script(tmp_path, "claude-code\nlocal\n")
     assert result.returncode == 0, result.stderr
     runtime = (tmp_path / ".claude-smart" / ".env").read_text()
-    assert 'CLAUDE_SMART_READ_ONLY="1"' in runtime
+    expected = runtime_read_only if runtime_read_only is not None else "1"
+    assert f'CLAUDE_SMART_READ_ONLY="{expected}"' in runtime
     assert 'CLAUDE_SMART_CLI_TIMEOUT="90"' in runtime
     assert legacy.read_text() == original
+
+
+@pytest.mark.parametrize("installer", ["node", "bash"])
+def test_legacy_windows_cli_path_keeps_original_backslashes(
+    tmp_path: Path,
+    installer: str,
+) -> None:
+    legacy = tmp_path / ".reflexio" / ".env"
+    legacy.parent.mkdir()
+    windows_path = r"C:\Users\Alice\claude.exe"
+    legacy.write_text(f'export CLAUDE_SMART_CLI_PATH="{windows_path}"\n')
+    if installer == "bash":
+        result = _run_setup_script(tmp_path, "claude-code\nlocal\n")
+    else:
+        result = subprocess.run(
+            [
+                "node",
+                "-e",
+                f"require({json.dumps(str(NODE_INSTALLER))}).configureReflexioSetup('claude-code')",
+            ],
+            env=_isolated_env(tmp_path),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    assert result.returncode == 0, result.stderr
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. "{LIB}"; claude_smart_source_reflexio_env; printf "%s" "$CLAUDE_SMART_CLI_PATH"',
+        ],
+        env=_isolated_env(tmp_path),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == windows_path

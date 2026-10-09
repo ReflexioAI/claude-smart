@@ -460,11 +460,25 @@ function migrateLegacyManagedEnvOnce() {
   const legacy = readEnvFile(LEGACY_REFLEXIO_ENV_PATH);
   // Local pre-split installs also stored runtime flags here. Keep user choices
   // (especially read-only) without importing another server's connection keys.
-  const runtimeValues = {};
-  for (const [key, value] of legacy) {
-    if (key.startsWith("CLAUDE_SMART_") && !runtime.has(key)) runtimeValues[key] = value;
+  const runtimeLines = new Map();
+  if (existsSync(LEGACY_REFLEXIO_ENV_PATH)) {
+    for (const line of readFileSync(LEGACY_REFLEXIO_ENV_PATH, "utf8").split(/\r?\n/)) {
+      const parsed = parseEnvLine(line);
+      if (parsed && /^CLAUDE_SMART_[A-Z0-9_]+$/.test(parsed.key) && !runtime.has(parsed.key)) {
+        runtimeLines.set(parsed.key, line);
+      }
+    }
   }
-  if (Object.keys(runtimeValues).length) setEnvVars(CLAUDE_SMART_ENV_PATH, runtimeValues);
+  if (runtimeLines.size) {
+    const existing = existsSync(CLAUDE_SMART_ENV_PATH)
+      ? readFileSync(CLAUDE_SMART_ENV_PATH, "utf8") : "";
+    // Keep the original quoting: the readers do not decode doubled backslashes,
+    // so re-escaping a Windows path would change its value.
+    const separator = existing && !existing.endsWith("\n") ? "\n" : "";
+    mkdirSync(dirname(CLAUDE_SMART_ENV_PATH), { recursive: true });
+    writePrivateFile(CLAUDE_SMART_ENV_PATH,
+      `${existing}${separator}${[...runtimeLines.values()].join("\n")}\n`);
+  }
   if ((runtime.get("REFLEXIO_API_KEY") || "").trim()) return;
   const apiKey = (legacy.get("REFLEXIO_API_KEY") || "").trim();
   // A key with no URL meant the managed service to older installers (and to
