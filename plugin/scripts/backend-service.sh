@@ -925,6 +925,9 @@ case "$CMD" in
     if stop_stale_backend_listener_if_owned; then
       claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
         "[claude-smart] backend: existing claude-smart backend is older than plugin $PLUGIN_VERSION; restarting local services"
+    elif ! backend_healthy && stop_backend_listener_if_owned; then
+      claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
+        "[claude-smart] backend: stopped an unhealthy owned listener; restarting local services"
     fi
     stop_stale_embedding_listener_if_owned || true
     if port_occupied; then
@@ -981,7 +984,8 @@ case "$CMD" in
     # setsid/python os.setsid make this pid the new process group leader;
     # sampling immediately can race and capture the caller's pgid instead.
     # On Windows, claude_smart_kill_tree translates the MSYS pid to WINPID.
-    set -- services start --only backend --no-reload --workers "$workers"
+    set -- services start --only backend --no-reload --workers "$workers" \
+      --backend-host "${CLAUDE_SMART_BACKEND_HOST:-127.0.0.1}"
     # The runner streams the backend's own output into "$LOG_FILE" through the
     # capped appender. Its own fds are closed by claude_smart_spawn_detached so
     # a long-lived daemon cannot hold the hook's stdout -- claude-smart#163.

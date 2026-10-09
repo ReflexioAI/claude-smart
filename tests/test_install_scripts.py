@@ -1720,9 +1720,10 @@ def test_node_install_summary_claims_a_backend_only_when_one_runs(
         in result.stdout
     )
     assert claims is not managed
-    # Entering managed mode stops a bundled backend left from local mode.
+    # Managed mode stops the old backend; local reinstall restarts it so a
+    # healthy listener still using an old bind address cannot survive upgrade.
     log = (tmp_path / "backend-service.log").read_text().splitlines()
-    assert ("stop" in log) is managed
+    assert log == (["stop"] if managed else ["stop", "start"])
 
 
 def test_node_install_survives_a_failed_version_record(tmp_path: Path) -> None:
@@ -1836,7 +1837,10 @@ def test_node_install_ignores_foreign_reflexio_env_and_probes_backend(
     assert "REFLEXIO_URL" not in runtime_text
     assert "REFLEXIO_API_KEY" not in runtime_text
     assert "CLAUDE_SMART_HOST=claude-code" in runtime_text
-    assert (tmp_path / "backend-service.log").read_text().splitlines() == ["start"]
+    assert (tmp_path / "backend-service.log").read_text().splitlines() == [
+        "stop",
+        "start",
+    ]
     healthy = f"Backend healthy at http://localhost:{port}/." in result.stdout
     assert healthy is (backend_state == "up")
     assert ("Backend is still starting" in result.stdout) is not backend_up
@@ -2547,7 +2551,7 @@ def test_install_restarts_a_running_backend_when_the_host_changes(
 
     assert result.returncode == 0, result.stderr
     log = (tmp_path / "backend-service.log").read_text().splitlines()
-    assert log == (["stop", "start"] if previous_host != "claude-code" else ["start"])
+    assert log == ["stop", "start"]
 
 
 def test_interrupt_during_a_codex_cli_step_stops_its_descendants(
@@ -4760,8 +4764,12 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
     assert "restarting local services" not in backend_log
 
 
+@pytest.mark.parametrize("same_root", [False, True])
+@pytest.mark.parametrize("bind_host", [None, "", "0.0.0.0"])
 def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
     tmp_path: Path,
+    same_root: bool,
+    bind_host: str | None,
 ) -> None:
     if os.name == "nt":
         pytest.skip("process termination fixture is POSIX-only")
@@ -4774,6 +4782,9 @@ def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
     (old_root / ".codex-plugin" / "plugin.json").write_text(
         json.dumps({"version": "0.0.1"})
     )
+    if same_root:
+        old_root = plugin_root
+        old_vendor = plugin_root / "vendor" / "reflexio"
     (tmp_path / "stale-listener").write_text("1\n")
     stale = subprocess.Popen(["/bin/sleep", "60"])
     stale_runner = subprocess.Popen(["/bin/sleep", "60"])
@@ -4865,6 +4876,8 @@ def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
             STALE_PID=str(stale.pid),
             STALE_RUNNER_PID=str(stale_runner.pid),
         )
+        if bind_host is not None:
+            env["CLAUDE_SMART_BACKEND_HOST"] = bind_host
 
         result = subprocess.run(
             ["bash", str(plugin_root / "scripts" / "backend-service.sh"), "start"],
@@ -4880,8 +4893,14 @@ def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
         stale.wait(timeout=5)
         assert "spawned backend" in (tmp_path / "python.log").read_text()
         assert (
-            "older than plugin"
-            in (tmp_path / ".claude-smart" / "backend.log").read_text()
+            f"--backend-host {bind_host or '127.0.0.1'}"
+            in (tmp_path / "python.log").read_text()
+        )
+        recovery_reason = (
+            "unhealthy owned listener" if same_root else "older than plugin"
+        )
+        assert (
+            recovery_reason in (tmp_path / ".claude-smart" / "backend.log").read_text()
         )
     finally:
         if stale.poll() is None:

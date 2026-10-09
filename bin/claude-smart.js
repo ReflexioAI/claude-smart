@@ -1761,11 +1761,10 @@ async function startAndReportServices(pluginRoot, host, setup) {
   } else if (autostartDisabled("CLAUDE_SMART_BACKEND_AUTOSTART")) {
     process.stdout.write("Backend autostart is disabled (CLAUDE_SMART_BACKEND_AUTOSTART=0).\n");
   } else {
-    if (setup.hostChanged) {
-      // backend-service.sh start keeps any compatible running backend, which
-      // would keep the previous host's extraction bridge.
-      runPluginService(pluginRoot, "backend-service.sh", "stop");
-    }
+    // A same-root backend can be healthy but still use the previous payload's
+    // bind address or extraction bridge. Preparation succeeded before this
+    // point; restart only owned services to apply the installed configuration.
+    runPluginService(pluginRoot, "backend-service.sh", "stop");
     startBackendService(pluginRoot, host);
     const url = localBackendUrl();
     if (await waitForHttp(`${url}health`, 5, ({ status }) => status === 200)) {
