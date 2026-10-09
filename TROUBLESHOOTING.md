@@ -69,5 +69,16 @@ works but automatic publishing fails; an older host plugin may still read the le
 Publication also checks the response's `success` field: an HTTP 200 rejection
 leaves the buffer retryable. Null characters in captured text are represented as
 literal `\u0000` escapes for PostgreSQL storage. Messages with more than 1,000 tool
-entries use empty-text continuation messages, preserving the complete ordered
-activity rather than dropping excess tools. Original local records are retained.
+entries use labelled continuation messages so all tools remain visible to learning.
+Requests contain at most 1,000 messages; larger batches use stable per-request IDs
+and advance the local watermark only after every request is accepted. Failed batches
+retry with the same IDs. Before replaying a request in a large batch, the plugin
+queries that exact request and verifies its stored content, tools, and learning
+links; matching accepted requests are skipped. Confirmation query failures,
+mismatched data, or nonempty fields absent from the read API (citations and
+image encoding) leave the batch retryable. Recovery requires a backend/read
+contract that exposes the submitted fields; older local models that cannot
+confirm learning links also fail safely. Large-batch retries keep learning links
+unchanged. All accepted request IDs are retained in the local watermark. Null
+escaping also covers nested mapping keys and tuple values; a key collision fails before sending instead of losing data.
+Original local records are retained.

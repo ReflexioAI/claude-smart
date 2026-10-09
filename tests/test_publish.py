@@ -6,6 +6,7 @@ import threading
 from collections.abc import Callable
 from typing import Any, cast
 
+import pytest
 from claude_smart import publish, state
 from claude_smart.reflexio_adapter import Adapter, PublishResult
 
@@ -432,3 +433,241 @@ def test_http_200_rejection_keeps_batch_retryable(session_dir) -> None:
     records = state.read_all("rejected")
     assert state.published_record_offset(records) == 0
     assert state.pending_publish_end(records, 0) is not None
+
+
+@pytest.mark.parametrize("failure", ["rejection", "timeout"])
+def test_partial_chunk_failure_retries_same_ids_and_keeps_full_lineage(
+    session_dir, failure
+):
+    class Client:
+        def __init__(self):
+            self.payloads = []
+            self.queries = []
+            self.saved = {}
+            self.fail = True
+            self.query_unavailable = False
+
+        def _make_request(self, method, path, **kwargs):
+            payload = kwargs["json"]
+            if path == "/api/get_requests":
+                self.queries.append(payload)
+                assert set(payload) == {"request_id", "user_id", "session_id", "top_k"}
+                assert payload["top_k"] == 1
+                if self.query_unavailable:
+                    self.query_unavailable = False
+                    raise TimeoutError("confirmation query unavailable")
+                saved = self.saved.get(payload["request_id"])
+                return (
+                    _stored_request_response(saved)
+                    if saved
+                    else {"success": True, "sessions": []}
+                )
+            self.payloads.append(payload)
+            if payload["request_id"] in self.saved:
+                return {"success": False, "message": "Request already exists"}
+            if len(self.payloads) == 2 and self.fail:
+                if failure == "timeout":
+                    self.saved[payload["request_id"]] = payload
+                    self.query_unavailable = True
+                    raise TimeoutError("acknowledgement lost")
+                return {"success": False}
+            self.saved[payload["request_id"]] = payload
+            return {"success": True}
+
+    for i in range(998):
+        _append_user("chunked", i, content=f"user-{i}")
+    state.append(
+        "chunked",
+        {
+            "role": "Assistant",
+            "content": "done",
+            "tools_used": [
+                {"tool_name": "Bash", "tool_data": {"output": str(i)}}
+                for i in range(2001)
+            ],
+        },
+    )
+    client = Client()
+    adapter = Adapter(url="https://example.com")
+    adapter._client = client
+    kwargs: dict[str, Any] = dict(
+        session_id="chunked",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=adapter,
+    )
+    assert publish.publish_unpublished(**kwargs) == ("failed", 999)
+    records = state.read_all("chunked")
+    assert state.published_record_offset(records) == 0
+    frozen_end = state.pending_publish_end(records, 0)
+    assert frozen_end is not None
+    _append_user("chunked", 1000, "later")
+    client.fail = False
+    assert publish.publish_unpublished(**kwargs) == ("ok", 999)
+    if failure == "rejection":
+        assert client.payloads[1] == client.payloads[2]
+    assert [len(p["interaction_data_list"]) for p in client.payloads] == (
+        [1000, 1, 1] if failure == "rejection" else [1000, 1]
+    )
+    ids = [p["request_id"] for p in client.payloads[:2]]
+    assert ids[0] != ids[1]
+    marker = state.read_all("chunked")[-1]
+    assert marker["published_up_to"] == frozen_end
+    assert marker["request_id"] == ids[-1]
+    assert marker["request_ids"] == ids
+    saved = [
+        x for batch in client.saved.values() for x in batch["interaction_data_list"]
+    ]
+    assert len(saved) == 1001
+    assert [x["content"] for x in saved[:998]] == [f"user-{i}" for i in range(998)]
+    assert [
+        tool["tool_data"]["output"] for x in saved[998:] for tool in x["tools_used"]
+    ] == [str(i) for i in range(2001)]
+    assert publish.publish_unpublished(**kwargs) == ("ok", 1)
+    assert client.payloads[-1]["request_id"] not in ids
+    assert client.payloads[-1]["interaction_data_list"][0]["content"] == "later"
+
+
+def test_null_key_collision_retains_frozen_batch(session_dir):
+    state.append(
+        "collision",
+        {
+            "role": "Assistant",
+            "content": "done",
+            "tools_used": [
+                {
+                    "tool_name": "Bash",
+                    "tool_data": {"input": {"a\x00b": "first", "a\\u0000b": "second"}},
+                }
+            ],
+        },
+    )
+
+    class Client:
+        def _make_request(self, *args, **kwargs):
+            raise AssertionError("colliding payload must not be sent")
+
+    adapter = Adapter(url="https://example.com")
+    adapter._client = Client()
+    assert publish.publish_unpublished(
+        session_id="collision",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=adapter,
+    ) == ("failed", 1)
+    records = state.read_all("collision")
+    assert state.published_record_offset(records) == 0
+    assert state.pending_publish_end(records, 0) is not None
+
+
+def _stored_request_response(payload):
+    from reflexio.models.api_schema.domain.entities import Interaction, Request
+    from reflexio.models.api_schema.retriever_schema import GetRequestsViewResponse
+    from reflexio.models.api_schema.ui.converters import to_interaction_view
+
+    request = Request(
+        **{
+            key: payload[key]
+            for key in (
+                "request_id",
+                "user_id",
+                "session_id",
+                "agent_version",
+                "source",
+                "evaluation_only",
+            )
+        }
+    )
+    interactions = [
+        to_interaction_view(
+            Interaction(
+                user_id=payload["user_id"],
+                request_id=payload["request_id"],
+                interaction_id=i + 1,
+                created_at=100,
+                **item,
+            )
+        )
+        for i, item in enumerate(payload["interaction_data_list"])
+    ]
+    return GetRequestsViewResponse.model_validate(
+        {
+            "success": True,
+            "has_more": True,
+            "sessions": [
+                {
+                    "session_id": payload["session_id"],
+                    "requests": [{"request": request, "interactions": interactions}],
+                }
+            ],
+        }
+    ).model_dump(mode="json", exclude_none=True)
+
+
+@pytest.mark.parametrize(
+    "mismatch", ["content", "tools", "links", "scope", "unobservable"]
+)
+def test_existing_chunk_mismatch_keeps_watermark_unadvanced(session_dir, mismatch):
+    class Client:
+        def __init__(self):
+            self.sent = []
+            self.saved = None
+
+        def _make_request(self, method, path, **kwargs):
+            payload = kwargs["json"]
+            if path == "/api/get_requests":
+                if (
+                    self.saved is None
+                    or payload["request_id"] != self.saved["request_id"]
+                ):
+                    return {"success": True, "sessions": []}
+                response = _stored_request_response(self.saved)
+                stored = response["sessions"][0]["requests"][0]
+                if mismatch == "content":
+                    stored["interactions"][0]["content"] = "different"
+                elif mismatch == "tools":
+                    stored["interactions"][-1]["tools_used"] = []
+                elif mismatch == "links":
+                    stored["interactions"][-1]["retrieved_learnings"] = []
+                elif mismatch == "scope":
+                    stored["request"]["user_id"] = "another-project"
+                return response
+            self.sent.append(payload)
+            if self.saved is None:
+                self.saved = payload
+                return {"success": True}
+            return {"success": False}
+
+    for i in range(999):
+        _append_user("mismatch", i, str(i))
+    assistant = {
+        "role": "Assistant",
+        "content": "done",
+        "tools_used": [{"tool_name": "Bash", "tool_data": {"output": "activity"}}],
+    }
+    if mismatch == "links":
+        assistant["retrieved_learnings"] = [
+            {"kind": "profile", "learning_id": "profile-id"}
+        ]
+    if mismatch == "unobservable":
+        assistant["image_encoding"] = "aGVsbG8="
+    state.append("mismatch", assistant)
+    _append_user("mismatch", 1001, "last")
+    client = Client()
+    adapter = Adapter(url="https://example.com")
+    adapter._client = client
+    kwargs: dict[str, Any] = dict(
+        session_id="mismatch",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=adapter,
+    )
+    assert publish.publish_unpublished(**kwargs) == ("failed", 1001)
+    assert len(client.sent) == 2
+    # Retry refuses to skip an existing request whose contents/scope cannot match.
+    assert publish.publish_unpublished(**kwargs) == ("failed", 1001)
+    assert len(client.sent) == 2
+    assert state.published_record_offset(state.read_all("mismatch")) == 0

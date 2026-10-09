@@ -122,6 +122,8 @@ def publish_unpublished(
         confirmed_request_id = result.request_id
         if isinstance(confirmed_request_id, str) and confirmed_request_id:
             marker["request_id"] = confirmed_request_id
+        if result.request_ids:
+            marker["request_ids"] = list(result.request_ids)
         state.append(session_id, marker)
         return ("ok", len(interactions))
     return ("failed", len(interactions))

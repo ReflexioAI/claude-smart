@@ -1239,14 +1239,16 @@ def test_publish_does_not_confirm_server_rejection(raw):
 
 
 def test_storage_safe_interactions_preserves_all_tools_without_mutation():
-    tools = [{"tool_name": "Bash", "output": str(i)} for i in range(3134)]
+    tools = [
+        {"tool_name": "Bash", "tool_data": {"output": str(i)}} for i in range(3134)
+    ]
     original = {"role": "Assistant", "content": "original", "tools_used": tools}
     result = reflexio_adapter._storage_safe_interactions([original])
     assert len(result) == 4
     assert [len(x["tools_used"]) for x in result] == [1000, 1000, 1000, 134]
     assert [tool for x in result for tool in x["tools_used"]] == tools
     assert result[0]["content"] == "original"
-    assert all(x["content"] == "" for x in result[1:])
+    assert all(x["content"] == "Tool activity continued." for x in result[1:])
     assert len(original["tools_used"]) == 3134
 
 
@@ -1254,9 +1256,181 @@ def test_storage_safe_interactions_encodes_nested_nulls_without_truncation():
     original = {
         "role": "Assistant",
         "content": "a\x00b",
-        "tools_used": [{"tool_name": "Bash", "output": {"nested": ["PNG\x00tail"]}}],
+        "tools_used": [
+            {"tool_name": "Bash", "tool_data": {"output": {"nested": ["PNG\x00tail"]}}}
+        ],
     }
     result = reflexio_adapter._storage_safe_interactions([original])[0]
     assert result["content"] == "a\\u0000b"
-    assert result["tools_used"][0]["output"]["nested"] == ["PNG\\u0000tail"]
+    assert result["tools_used"][0]["tool_data"]["output"]["nested"] == [
+        "PNG\\u0000tail"
+    ]
     assert original["content"] == "a\x00b"
+
+
+def test_overflow_tools_reach_supported_reflexio_history_formatter():
+    from reflexio.models.api_schema.domain.entities import Interaction
+    from reflexio.server.services.service_utils import (
+        format_interactions_to_history_string,
+    )
+
+    tools = [
+        {"tool_name": "Bash", "tool_data": {"output": f"tool-result-{i}"}}
+        for i in range(2001)
+    ]
+    transformed = reflexio_adapter._storage_safe_interactions(
+        [{"role": "Assistant", "content": "finished", "tools_used": tools}]
+    )
+    history = format_interactions_to_history_string(
+        [
+            Interaction(user_id="project", request_id="request", **item)
+            for item in transformed
+        ]
+    )
+    assert "tool-result-2000" in history
+    assert history.index("tool-result-999") < history.index("tool-result-1000")
+    assert history.count("finished") == 1
+
+
+def test_storage_safe_interactions_escapes_keys_and_tuple_strings():
+    import json
+
+    original = {
+        "role": "Assistant",
+        "content": "done",
+        "tools_used": [
+            {
+                "tool_name": "Bash",
+                "tool_data": {
+                    "input": {
+                        "nested\x00key": (
+                            {"value\x00key": "value\x00tail"},
+                            "tuple\x00tail",
+                        )
+                    }
+                },
+            }
+        ],
+    }
+    transformed = reflexio_adapter._storage_safe_interactions([original])
+    wire = json.loads(json.dumps(transformed))
+    inputs = wire[0]["tools_used"][0]["tool_data"]["input"]
+    assert inputs == {
+        "nested\\u0000key": [
+            {"value\\u0000key": "value\\u0000tail"},
+            "tuple\\u0000tail",
+        ]
+    }
+    assert "\x00" not in str(wire)
+    assert "nested\x00key" in original["tools_used"][0]["tool_data"]["input"]
+
+
+@pytest.mark.parametrize("keys", [("a\x00b", "a\\u0000b"), ("a\\u0000b", "a\x00b")])
+def test_null_key_collision_fails_before_any_request(keys):
+    client = _FakeClient()
+    adapter = _adapter_with(client)
+    result = adapter.publish(
+        session_id="session",
+        project_id="project",
+        request_id="stable",
+        interactions=[
+            {
+                "role": "Assistant",
+                "content": "done",
+                "tools_used": [
+                    {
+                        "tool_name": "Bash",
+                        "tool_data": {
+                            "input": dict(zip(keys, ("first", "second"), strict=True))
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+    assert not result
+    assert result.error_type == "ValueError"
+    assert client.raw_request == {}
+    assert client.published_kwargs == {}
+
+
+@pytest.mark.parametrize("stable_id,raw_available", [(None, True), ("stable", False)])
+def test_multi_request_publish_requires_stable_raw_transport(
+    stable_id, raw_available, monkeypatch
+):
+    client = _FakeClient()
+    if not raw_available:
+        monkeypatch.setattr(client, "_make_request", None)
+    result = _adapter_with(client).publish(
+        session_id="session",
+        project_id="project",
+        request_id=stable_id,
+        interactions=[{"role": "User", "content": str(i)} for i in range(1001)],
+    )
+    assert not result
+    assert result.error_type == "StablePublishingUnavailable"
+    assert client.raw_request == {}
+    assert client.published_kwargs == {}
+
+
+@pytest.mark.parametrize("count,expected_sizes", [(1000, [1000]), (1001, [1000, 1])])
+def test_raw_publish_bounds_requests_and_preserves_order(count, expected_sizes):
+    class Client:
+        def __init__(self):
+            self.payloads = []
+
+        def _make_request(self, method, path, **kwargs):
+            if path == "/api/get_requests":
+                assert kwargs["json"]["top_k"] == 1
+                return {"success": True, "sessions": []}
+            self.payloads.append(kwargs["json"])
+            return {"success": True}
+
+    client = Client()
+    result = _adapter_with(client).publish(
+        session_id="session",
+        project_id="project",
+        request_id="stable",
+        interactions=[{"role": "User", "content": str(i)} for i in range(count)],
+    )
+    assert result
+    assert [len(p["interaction_data_list"]) for p in client.payloads] == expected_sizes
+    assert [
+        x["content"] for p in client.payloads for x in p["interaction_data_list"]
+    ] == [str(i) for i in range(count)]
+    ids = tuple(p["request_id"] for p in client.payloads)
+    assert ids[0] == "stable"
+    assert result.request_id == ids[-1]
+    assert result.request_ids == (ids if count > 1000 else None)
+
+
+def test_multi_chunk_failure_never_strips_learning_links():
+    class Client:
+        def __init__(self):
+            self.sent = []
+
+        def _make_request(self, method, path, **kwargs):
+            if path == "/api/get_requests":
+                return {"success": True, "sessions": []}
+            self.sent.append(kwargs["json"])
+            raise TimeoutError("unconfirmed request")
+
+    client = Client()
+    messages: list[dict[str, Any]] = [
+        {"role": "User", "content": str(i)} for i in range(1001)
+    ]
+    messages[0]["retrieved_learnings"] = [
+        {"kind": "profile", "learning_id": "profile-id"}
+    ]
+    result = _adapter_with(client).publish(
+        session_id="session",
+        project_id="project",
+        request_id="stable",
+        interactions=messages,
+    )
+    assert not result
+    assert len(client.sent) == 1
+    assert (
+        client.sent[0]["interaction_data_list"][0]["retrieved_learnings"]
+        == messages[0]["retrieved_learnings"]
+    )

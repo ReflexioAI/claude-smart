@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -58,6 +59,7 @@ class PublishResult:
     request_id: str | None = None
     error_type: str | None = None
     http_status: int | None = None
+    request_ids: tuple[str, ...] | None = None
 
     def __bool__(self) -> bool:
         return self.ok
@@ -209,50 +211,91 @@ class Adapter:
         try:
             interaction_list = _storage_safe_interactions(interactions)
             raw_request = getattr(client, "_make_request", None)
+            if len(interaction_list) > 1000 and (
+                request_id is None or not callable(raw_request)
+            ):
+                return PublishResult(
+                    False, error_type="StablePublishingUnavailable"
+                ), None
             if request_id is not None and callable(raw_request):
-                payload: dict[str, Any] = {
-                    "request_id": request_id,
-                    "user_id": project_id,
-                    "interaction_data_list": interaction_list,
-                    "agent_version": runtime.agent_version(),
-                    "session_id": session_id,
-                    "skip_aggregation": skip_aggregation,
-                    "force_extraction": force_extraction,
-                    "evaluation_only": False,
-                    "override_learning_stall": override_learning_stall,
-                    "source": _SOURCE,
-                }
-                try:
-                    raw_response = raw_request(
-                        "POST",
-                        "/api/publish_interaction",
-                        json=payload,
-                        params=None,
+                confirmed_ids: list[str] = []
+                raw_response: Any = None
+                for index, start in enumerate(range(0, len(interaction_list), 1000)):
+                    chunk = interaction_list[start : start + 1000]
+                    chunk_id = (
+                        request_id
+                        if index == 0
+                        else str(
+                            uuid.uuid5(
+                                uuid.NAMESPACE_URL, f"claude-smart:{request_id}:{index}"
+                            )
+                        )
                     )
-                    return _confirmed_publish(raw_response, request_id), raw_response
-                except Exception as exc:  # noqa: BLE001
-                    if not _needs_raw_retrieved_learning_publish(interaction_list):
-                        raise
-                    _LOGGER.warning(
-                        "Could not confirm retrieved-learning links; retrying "
-                        "the base interaction with the same request ID: %s",
-                        exc,
-                    )
-                    fallback_payload = {
-                        **payload,
-                        "interaction_data_list": _without_retrieved_learnings(
-                            interaction_list
-                        ),
+                    payload: dict[str, Any] = {
+                        "request_id": chunk_id,
+                        "user_id": project_id,
+                        "interaction_data_list": chunk,
+                        "agent_version": runtime.agent_version(),
+                        "session_id": session_id,
+                        "skip_aggregation": skip_aggregation,
+                        "force_extraction": force_extraction,
+                        "evaluation_only": False,
+                        "override_learning_stall": override_learning_stall,
+                        "source": _SOURCE,
                     }
-                    fallback_response = raw_request(
-                        "POST",
-                        "/api/publish_interaction",
-                        json=fallback_payload,
-                        params=None,
-                    )
-                    return _confirmed_publish(
-                        fallback_response, request_id
-                    ), fallback_response
+                    if len(interaction_list) > 1000 and _stored_publish_matches(
+                        raw_request, payload
+                    ):
+                        confirmed_ids.append(chunk_id)
+                        continue
+                    try:
+                        raw_response = raw_request(
+                            "POST",
+                            "/api/publish_interaction",
+                            json=payload,
+                            params=None,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        if len(interaction_list) > 1000 and _stored_publish_matches(
+                            raw_request, payload
+                        ):
+                            confirmed_ids.append(chunk_id)
+                            continue
+                        if len(
+                            interaction_list
+                        ) > 1000 or not _needs_raw_retrieved_learning_publish(chunk):
+                            raise
+                        _LOGGER.warning(
+                            "Could not confirm retrieved-learning links; retrying "
+                            "the base interaction with the same request ID: %s",
+                            exc,
+                        )
+                        fallback_payload = {
+                            **payload,
+                            "interaction_data_list": _without_retrieved_learnings(
+                                chunk
+                            ),
+                        }
+                        raw_response = raw_request(
+                            "POST",
+                            "/api/publish_interaction",
+                            json=fallback_payload,
+                            params=None,
+                        )
+                    result = _confirmed_publish(raw_response, chunk_id)
+                    if not result:
+                        if len(interaction_list) <= 1000 or not _stored_publish_matches(
+                            raw_request, payload
+                        ):
+                            return result, raw_response
+                    confirmed_ids.append(chunk_id)
+                return PublishResult(
+                    True,
+                    confirmed_ids[-1],
+                    request_ids=tuple(confirmed_ids)
+                    if len(confirmed_ids) > 1
+                    else None,
+                ), raw_response
             if _needs_raw_retrieved_learning_publish(interaction_list):
                 _LOGGER.warning(
                     "Stable raw publishing is unavailable; publishing "
@@ -603,13 +646,108 @@ def _publish_warnings(response: Any) -> list[str]:
     return [str(item) for item in value]
 
 
+def _stored_publish_matches(raw_request: Any, payload: dict[str, Any]) -> bool:
+    """Confirm the exact stored request before recovering a lost acknowledgement.
+
+    GetRequests exposes complete text/tool/link fields, but not citations or
+    image_encoding. Nonempty omitted fields cannot safely confirm a replay.
+    """
+    response = raw_request(
+        "POST",
+        "/api/get_requests",
+        json={key: payload[key] for key in ("request_id", "user_id", "session_id")}
+        | {"top_k": 1},
+        params=None,
+    )
+    if not isinstance(response, dict) or response.get("success") is not True:
+        raise ValueError("Stored publish confirmation query failed")
+    sessions = response.get("sessions")
+    if not isinstance(sessions, list):
+        raise ValueError("Stored publish confirmation query is incomplete")
+    if not sessions:
+        return False
+    if len(sessions) != 1 or sessions[0].get("session_id") != payload["session_id"]:
+        raise ValueError("Stored publish confirmation returned another session")
+    requests = sessions[0].get("requests")
+    if not isinstance(requests, list) or len(requests) != 1:
+        raise ValueError("Stored publish confirmation returned another request")
+    stored = requests[0]
+    request = stored.get("request", {})
+    for key in (
+        "request_id",
+        "user_id",
+        "session_id",
+        "source",
+        "agent_version",
+        "evaluation_only",
+    ):
+        if request.get(key) != payload[key]:
+            raise ValueError("Stored publish request identity does not match")
+    interactions = stored.get("interactions")
+    if not isinstance(interactions, list) or len(interactions) != len(
+        payload["interaction_data_list"]
+    ):
+        raise ValueError("Stored publish interaction count does not match")
+
+    from reflexio.models.api_schema.common import ToolUsed
+    from reflexio.models.api_schema.domain.entities import InteractionData
+
+    omitted = {"created_at", "citations", "image_encoding"}
+    visible = set(InteractionData.model_fields) - omitted
+    expected = payload["interaction_data_list"]
+    for item in expected:
+        if any(item.get(key) for key in ("citations", "image_encoding")) or set(
+            item
+        ) - set(InteractionData.model_fields):
+            raise ValueError("Stored publish contains fields that cannot be verified")
+        if any(
+            set(tool) - set(ToolUsed.model_fields)
+            for tool in item.get("tools_used", [])
+        ):
+            raise ValueError(
+                "Stored publish contains tool fields that cannot be verified"
+            )
+        if any(
+            set(ref) - {"kind", "learning_id"}
+            for ref in item.get("retrieved_learnings", [])
+        ):
+            raise ValueError(
+                "Stored publish contains learning fields that cannot be verified"
+            )
+    ordered = sorted(
+        interactions, key=lambda item: (item["created_at"], item["interaction_id"])
+    )
+    for item, original in zip(ordered, expected, strict=True):
+        if (
+            item.get("request_id") != payload["request_id"]
+            or item.get("user_id") != payload["user_id"]
+        ):
+            raise ValueError("Stored publish interaction identity does not match")
+        # Real schema defaults normalize omitted content, tool status and lists.
+        observed = InteractionData(
+            **{key: item[key] for key in visible if key in item}
+        ).model_dump(mode="json", exclude=omitted)
+        normalized = InteractionData(**original).model_dump(
+            mode="json", exclude=omitted
+        )
+        if observed != normalized:
+            raise ValueError("Stored publish interaction payload does not match")
+    return True
+
+
 def _escape_nulls(value: Any) -> Any:
     """Represent null characters visibly; PostgreSQL JSON cannot store them."""
     if isinstance(value, str):
         return value.replace("\x00", "\\u0000")
     if isinstance(value, dict):
-        return {key: _escape_nulls(item) for key, item in value.items()}
-    if isinstance(value, list):
+        result = {}
+        for key, item in value.items():
+            escaped_key = _escape_nulls(key)
+            if escaped_key in result:
+                raise ValueError("Null escaping would overwrite a mapping key")
+            result[escaped_key] = _escape_nulls(item)
+        return result
+    if isinstance(value, (list, tuple)):
         return [_escape_nulls(item) for item in value]
     return value
 
@@ -630,7 +768,7 @@ def _storage_safe_interactions(
             result.append(
                 {
                     "role": item.get("role", "Assistant"),
-                    "content": "",
+                    "content": "Tool activity continued.",
                     "tools_used": tools[start : start + 1000],
                 }
             )
