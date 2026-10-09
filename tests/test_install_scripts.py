@@ -1240,8 +1240,7 @@ def _run_setup_script(tmp_path: Path, stdin: str) -> subprocess.CompletedProcess
         text=True,
         capture_output=True,
         check=False,
-        # The wizard re-prompts forever at EOF; a wrong default must fail the
-        # test instead of hanging the suite.
+        # Bound failures even if a future regression re-prompts at EOF.
         timeout=60,
     )
 
@@ -1254,6 +1253,48 @@ def test_setup_script_local_mode_creates_env(tmp_path: Path) -> None:
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
     assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in text
     assert 'CLAUDE_SMART_READ_ONLY="0"' in text
+
+
+@pytest.mark.parametrize(
+    "stdin",
+    ["", "claude-code\n", "claude-code\nmanaged\n", "claude-code\nmanaged\nkey\n"],
+)
+def test_setup_eof_preserves_existing_configuration(tmp_path: Path, stdin: str) -> None:
+    state = tmp_path / ".claude-smart"
+    state.mkdir()
+    config = state / ".env"
+    original = 'REFLEXIO_URL="https://example.com/"\nREFLEXIO_API_KEY="existing-key"\n'
+    config.write_text(original)
+    result = _run_setup_script(tmp_path, stdin)
+    assert result.returncode != 0
+    assert "Input ended" in result.stderr
+    assert config.read_text() == original
+    assert not (state / "legacy-reflexio-env-checked").exists()
+
+
+@pytest.mark.parametrize("runner", ["node", "bash"])
+@pytest.mark.parametrize("argument", ["--help", "-h", "help", "--unknown"])
+def test_setup_arguments_have_no_side_effects(
+    tmp_path: Path, runner: str, argument: str
+) -> None:
+    command = (
+        [runner, str(NODE_INSTALLER), "setup"]
+        if runner == "node"
+        else [runner, str(SETUP_CLAUDE_SMART)]
+    )
+    result = subprocess.run(
+        [*command, argument],
+        input="",
+        env=_isolated_env(tmp_path),
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    expected = (1 if runner == "node" else 2) if argument == "--unknown" else 0
+    assert result.returncode == expected, result.stderr
+    assert "Host (" not in result.stderr
+    assert not (tmp_path / ".claude-smart").exists()
 
 
 def test_setup_script_local_mode_cleans_managed_keys(tmp_path: Path) -> None:
@@ -8250,3 +8291,50 @@ def test_install_private_node_download_failure_is_dashboard_only(
     assert marker.is_file()
     assert "could not download Node.js checksums" in marker.read_text()
     assert not (tmp_path / ".claude-smart" / "install-failed").exists()
+
+
+@pytest.mark.parametrize("runtime_read_only", [None, "0"])
+def test_local_legacy_runtime_flags_migrate_without_connection_keys(
+    tmp_path: Path,
+    runtime_read_only: str | None,
+) -> None:
+    legacy = tmp_path / ".reflexio" / ".env"
+    legacy.parent.mkdir()
+    original = 'REFLEXIO_URL="http://localhost:8081/"\nREFLEXIO_API_KEY="other-server-key"\nCLAUDE_SMART_READ_ONLY="1"\nCLAUDE_SMART_CLI_TIMEOUT="90"\n'
+    legacy.write_text(original)
+    runtime = tmp_path / ".claude-smart" / ".env"
+    if runtime_read_only is not None:
+        runtime.parent.mkdir()
+        runtime.write_text(f'CLAUDE_SMART_READ_ONLY="{runtime_read_only}"\n')
+    result = subprocess.run(
+        [
+            "node",
+            "-e",
+            f"require({json.dumps(str(NODE_INSTALLER))}).configureReflexioSetup('claude-code')",
+        ],
+        env=_isolated_env(tmp_path),
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    text = runtime.read_text()
+    expected = runtime_read_only if runtime_read_only is not None else "1"
+    assert f'CLAUDE_SMART_READ_ONLY="{expected}"' in text
+    assert 'CLAUDE_SMART_CLI_TIMEOUT="90"' in text
+    assert "other-server-key" not in text
+    assert legacy.read_text() == original
+
+
+def test_setup_local_preserves_legacy_read_only_choice(tmp_path: Path) -> None:
+    legacy = tmp_path / ".reflexio" / ".env"
+    legacy.parent.mkdir()
+    original = '# local flags\nexport CLAUDE_SMART_READ_ONLY="1"\nCLAUDE_SMART_CLI_TIMEOUT="90"\n'
+    legacy.write_text(original)
+    result = _run_setup_script(tmp_path, "claude-code\nlocal\n")
+    assert result.returncode == 0, result.stderr
+    runtime = (tmp_path / ".claude-smart" / ".env").read_text()
+    assert 'CLAUDE_SMART_READ_ONLY="1"' in runtime
+    assert 'CLAUDE_SMART_CLI_TIMEOUT="90"' in runtime
+    assert legacy.read_text() == original

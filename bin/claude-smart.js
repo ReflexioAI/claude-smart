@@ -456,8 +456,16 @@ function migrateLegacyManagedEnv() {
 }
 
 function migrateLegacyManagedEnvOnce() {
-  if ((readEnvFile(CLAUDE_SMART_ENV_PATH).get("REFLEXIO_API_KEY") || "").trim()) return;
+  const runtime = readEnvFile(CLAUDE_SMART_ENV_PATH);
   const legacy = readEnvFile(LEGACY_REFLEXIO_ENV_PATH);
+  // Local pre-split installs also stored runtime flags here. Keep user choices
+  // (especially read-only) without importing another server's connection keys.
+  const runtimeValues = {};
+  for (const [key, value] of legacy) {
+    if (key.startsWith("CLAUDE_SMART_") && !runtime.has(key)) runtimeValues[key] = value;
+  }
+  if (Object.keys(runtimeValues).length) setEnvVars(CLAUDE_SMART_ENV_PATH, runtimeValues);
+  if ((runtime.get("REFLEXIO_API_KEY") || "").trim()) return;
   const apiKey = (legacy.get("REFLEXIO_API_KEY") || "").trim();
   // A key with no URL meant the managed service to older installers (and to
   // the Reflexio client, whose default URL it is), so it migrates as such.
@@ -465,7 +473,7 @@ function migrateLegacyManagedEnvOnce() {
   if (!apiKey || isLoopbackUrl(url)) return;
   const values = {};
   for (const key of ["REFLEXIO_API_KEY", REFLEXIO_USER_ID_ENV, CLAUDE_SMART_READ_ONLY_ENV]) {
-    if (legacy.has(key)) values[key] = legacy.get(key);
+    if (legacy.has(key) && !runtime.has(key)) values[key] = legacy.get(key);
   }
   values.REFLEXIO_URL = url;
   setEnvVars(CLAUDE_SMART_ENV_PATH, values);
@@ -2873,6 +2881,13 @@ async function runUninstall(args) {
 }
 
 async function runSetup(args) {
+  if (args.some((arg) => ["--help", "-h", "help"].includes(arg))) {
+    printHelp();
+    return;
+  }
+  if (args.length) {
+    throw new Error(`unknown setup argument '${args[0]}'. Try 'claude-smart setup --help'.`);
+  }
   const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
   if (!bash) {
     process.stderr.write("error: bash is required to run claude-smart setup.\n");
