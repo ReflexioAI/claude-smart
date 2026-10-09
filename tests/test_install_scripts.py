@@ -1815,7 +1815,7 @@ def test_node_install_ignores_foreign_reflexio_env_and_probes_backend(
                 self.send_response(200 if self.path == "/health" else 404)
                 self.end_headers()
 
-            def log_message(self, *_args: object) -> None:
+            def log_message(self, format: str, *_args: object) -> None:
                 pass
 
         server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Health)
@@ -1866,7 +1866,7 @@ def test_node_install_reports_dashboard_only_when_marker_answers(
                 self.send_header("x-claude-smart-dashboard", "1")
             self.end_headers()
 
-        def log_message(self, *_args: object) -> None:
+        def log_message(self, format: str, *_args: object) -> None:
             pass
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), App)
@@ -2936,7 +2936,7 @@ def test_node_install_reports_the_custom_local_server_hooks_use(
             self.send_response(200 if self.path == "/health" else 404)
             self.end_headers()
 
-        def log_message(self, *_args: object) -> None:
+        def log_message(self, format: str, *_args: object) -> None:
             pass
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Health)
