@@ -660,6 +660,8 @@ def _stored_publish_matches(raw_request: Any, payload: dict[str, Any]) -> bool:
     GetRequests exposes complete text/tool/link fields, but not citations or
     image_encoding. Nonempty omitted fields cannot safely confirm a replay.
     """
+    import json
+
     response = raw_request(
         "POST",
         "/api/get_requests",
@@ -700,7 +702,7 @@ def _stored_publish_matches(raw_request: Any, payload: dict[str, Any]) -> bool:
     from reflexio.models.api_schema.common import ToolUsed
     from reflexio.models.api_schema.domain.entities import InteractionData
 
-    omitted = {"created_at", "citations", "image_encoding"}
+    omitted = {"citations", "image_encoding"}
     visible = set(InteractionData.model_fields) - omitted
     expected = payload["interaction_data_list"]
     for item in expected:
@@ -722,9 +724,8 @@ def _stored_publish_matches(raw_request: Any, payload: dict[str, Any]) -> bool:
             raise ValueError(
                 "Stored publish contains learning fields that cannot be verified"
             )
-    ordered = sorted(
-        interactions, key=lambda item: (item["created_at"], item["interaction_id"])
-    )
+    # Ingestion IDs preserve payload order even for backdated timestamps.
+    ordered = sorted(interactions, key=lambda item: item["interaction_id"])
     for item, original in zip(ordered, expected, strict=True):
         if (
             item.get("request_id") != payload["request_id"]
@@ -732,13 +733,18 @@ def _stored_publish_matches(raw_request: Any, payload: dict[str, Any]) -> bool:
         ):
             raise ValueError("Stored publish interaction identity does not match")
         # Real schema defaults normalize omitted content, tool status and lists.
+        # Caller-provided timestamps are part of the payload; server defaults are not.
+        excluded = omitted if "created_at" in original else omitted | {"created_at"}
         observed = InteractionData(
             **{key: item[key] for key in visible if key in item}
-        ).model_dump(mode="json", exclude=omitted)
+        ).model_dump(mode="json", exclude=excluded)
         normalized = InteractionData(**original).model_dump(
-            mode="json", exclude=omitted
+            mode="json", exclude=excluded
         )
-        if observed != normalized:
+        # JSON equality must distinguish booleans from integer tool values.
+        if json.dumps(observed, sort_keys=True, separators=(",", ":")) != json.dumps(
+            normalized, sort_keys=True, separators=(",", ":")
+        ):
             raise ValueError("Stored publish interaction payload does not match")
     return True
 

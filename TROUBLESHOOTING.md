@@ -85,7 +85,8 @@ contract that exposes the submitted fields; older local models that cannot
 confirm learning links also fail safely. Stable raw retries keep the original
 payload and learning links unchanged; an unconfirmed failure waits for the next
 retry instead of sending a stripped payload. All accepted request IDs are retained
-in the local watermark. Null escaping also covers nested mapping keys and tuple
+in the local watermark. The dashboard uses every accepted request ID for host
+attribution, including earlier chunks. Null escaping also covers nested mapping keys and tuple
 values; a key collision fails before sending instead of losing data.
 Empty placeholders are filtered before splitting; an empty-only batch advances
 the local watermark without sending a request. Original local records are retained.

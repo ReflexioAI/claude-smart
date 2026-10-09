@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -43,7 +42,7 @@ def test_dashboard_config_can_toggle_read_only_mode() -> None:
     assert '"CLAUDE_SMART_READ_ONLY"' in config
     assert "CLAUDE_SMART_READ_ONLY: boolean;" in types
     assert '<Label htmlFor="read-only-mode">CLAUDE_SMART_READ_ONLY</Label>' in page
-    assert 'checked={!!config.CLAUDE_SMART_READ_ONLY}' in page
+    assert "checked={!!config.CLAUDE_SMART_READ_ONLY}" in page
     assert 'update("CLAUDE_SMART_READ_ONLY", v)' in page
 
 
@@ -101,8 +100,13 @@ def test_dashboard_settings_read_configured_reflexio_url_only() -> None:
     assert "Reflexio endpoint (dashboard)" not in page
 
 
-def _run_config_module(tmp_path: Path, script: str, env_extra: dict[str, str]) -> str:
-    """Run config-file.ts under Node's type stripping with HOME=tmp_path."""
+def _run_config_module(
+    tmp_path: Path,
+    script: str,
+    env_extra: dict[str, str],
+    module_name: str = "config-file",
+) -> str:
+    """Run a dashboard library module with Node type stripping and HOME=tmp_path."""
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required")
@@ -114,7 +118,7 @@ def _run_config_module(tmp_path: Path, script: str, env_extra: dict[str, str]) -
     env = {k: v for k, v in os.environ.items() if not k.startswith("REFLEXIO_")}
     env["HOME"] = str(tmp_path)
     env.update(env_extra)
-    module = REPO_ROOT / "plugin" / "dashboard" / "lib" / "config-file.ts"
+    module = REPO_ROOT / "plugin" / "dashboard" / "lib" / f"{module_name}.ts"
     result = subprocess.run(
         [
             node,
@@ -132,7 +136,9 @@ def _run_config_module(tmp_path: Path, script: str, env_extra: dict[str, str]) -
     return result.stdout
 
 
-def test_dashboard_proxy_prefers_the_saved_file_over_its_launch_env(tmp_path: Path) -> None:
+def test_dashboard_proxy_prefers_the_saved_file_over_its_launch_env(
+    tmp_path: Path,
+) -> None:
     # dashboard-service.sh exports the file before launching Next, so the
     # inherited env goes stale after a Configure save. File wins, like hooks.
     env_file = tmp_path / ".claude-smart" / ".env"
@@ -147,7 +153,9 @@ def test_dashboard_proxy_prefers_the_saved_file_over_its_launch_env(tmp_path: Pa
 
     # `export KEY=value` is valid in the file (the shell and Python loaders
     # strip the prefix); it must not fall through to the launch env.
-    env_file.write_text('export REFLEXIO_URL="https://c.example/"\nexport REFLEXIO_API_KEY="kc"\n')
+    env_file.write_text(
+        'export REFLEXIO_URL="https://c.example/"\nexport REFLEXIO_API_KEY="kc"\n'
+    )
     out = _run_config_module(
         tmp_path,
         "process.stdout.write(JSON.stringify(await m.managedReflexioSettings()));",
@@ -164,12 +172,16 @@ def test_dashboard_proxy_prefers_the_saved_file_over_its_launch_env(tmp_path: Pa
     assert json.loads(out) == {"url": "https://a.example/", "apiKey": "ka"}
 
 
-def test_dashboard_save_does_not_turn_off_absent_local_providers(tmp_path: Path) -> None:
+def test_dashboard_save_does_not_turn_off_absent_local_providers(
+    tmp_path: Path,
+) -> None:
     # A managed file has no local-provider flags. Saving the Configure page
     # must not write them as 0, or a later switch to local mode keeps them off.
     env_file = tmp_path / ".claude-smart" / ".env"
     env_file.parent.mkdir()
-    env_file.write_text('REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="k"\n')
+    env_file.write_text(
+        'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="k"\n'
+    )
     _run_config_module(tmp_path, "await m.writeConfig(await m.readConfig());", {})
     text = env_file.read_text()
     assert "CLAUDE_SMART_USE_LOCAL_CLI=0" not in text
@@ -197,10 +209,13 @@ def test_dashboard_clearing_the_key_drops_a_remote_url(tmp_path: Path) -> None:
     # and services remote with no credentials.
     env_file = tmp_path / ".claude-smart" / ".env"
     env_file.parent.mkdir()
-    env_file.write_text('REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="k"\n')
+    env_file.write_text(
+        'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="k"\n'
+    )
     _run_config_module(
         tmp_path,
-        'await m.writeConfig({ REFLEXIO_URL: "https://www.reflexio.ai/", REFLEXIO_API_KEY: "" });',
+        'await m.writeConfig({ REFLEXIO_URL: "https://www.reflexio.ai/", '
+        'REFLEXIO_API_KEY: "" });',
         {},
     )
     text = env_file.read_text()
@@ -210,3 +225,36 @@ def test_dashboard_clearing_the_key_drops_a_remote_url(tmp_path: Path) -> None:
     _run_config_module(tmp_path, 'await m.writeConfig({ REFLEXIO_API_KEY: "" });', {})
     assert "REFLEXIO_URL=" in env_file.read_text()
 
+
+@pytest.mark.parametrize(
+    "invalid_array", [None, "not-an-array", {"request_id": "ignored"}]
+)
+def test_dashboard_session_reader_retains_all_chunk_ids_and_legacy_lineage(
+    tmp_path, invalid_array
+):
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    records = [
+        {"role": "User", "content": "question", "host": "codex"},
+        {
+            "published_up_to": 1,
+            "request_id": "chunk-2",
+            "request_ids": ["chunk-1", "chunk-2", "chunk-1", 3, None, "", "  ", {}, []],
+        },
+        {"published_up_to": 1, "request_id": "legacy-id"},
+        {"published_up_to": 1, "request_ids": invalid_array},
+        {"published_up_to": 1, "request_id": "  "},
+    ]
+    (sessions / "session.jsonl").write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n"
+    )
+    out = _run_config_module(
+        tmp_path,
+        "process.stdout.write(JSON.stringify(await m.listSessions()));",
+        {"CLAUDE_SMART_STATE_DIR": str(sessions)},
+        module_name="session-reader",
+    )
+    summaries = json.loads(out)
+    assert len(summaries) == 1
+    assert summaries[0]["host"] == "codex"
+    assert summaries[0]["request_ids"] == ["chunk-1", "chunk-2", "legacy-id"]

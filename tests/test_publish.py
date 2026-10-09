@@ -586,8 +586,7 @@ def _stored_request_response(payload):
                 user_id=payload["user_id"],
                 request_id=payload["request_id"],
                 interaction_id=i + 1,
-                created_at=100,
-                **item,
+                **({"created_at": 100} | item),
             )
         )
         for i, item in enumerate(payload["interaction_data_list"])
@@ -807,3 +806,84 @@ def test_large_fresh_publish_succeeds_despite_read_outage_and_replay_fails_close
     assert publish.publish_unpublished(**kwargs) == ("failed", 1001)
     assert state.published_record_offset(state.read_all("unreadable")) == 0
     assert client.sent[0] == client.sent[-1]
+
+
+@pytest.mark.parametrize(
+    "timestamps,mismatch",
+    [
+        (True, None),
+        (False, None),
+        (True, "timestamp"),
+        (False, (True, 1)),
+        (False, (False, 0)),
+        (False, (1, True)),
+        (False, (0, False)),
+    ],
+)
+def test_lost_ack_confirmation_preserves_ingestion_order_timestamps_and_json_types(
+    timestamps, mismatch
+):
+    class Client:
+        def __init__(self):
+            self.saved = None
+            self.sent = []
+            self.read_unavailable = True
+
+        def _make_request(self, method, path, **kwargs):
+            payload = kwargs["json"]
+            if path == "/api/get_requests":
+                if self.read_unavailable:
+                    self.read_unavailable = False
+                    raise TimeoutError("confirmation unavailable")
+                assert self.saved is not None
+                response = _stored_request_response(self.saved)
+                items = response["sessions"][0]["requests"][0]["interactions"]
+                if mismatch == "timestamp":
+                    items[0]["created_at"] = 201
+                elif isinstance(mismatch, tuple):
+                    items[0]["tools_used"][0]["tool_data"]["input"]["nested"][0][
+                        "value"
+                    ] = mismatch[1]
+                # Read ordering is not relied upon: ingestion IDs establish wire order.
+                items.reverse()
+                return response
+            self.sent.append(payload)
+            if self.saved is not None:
+                return {"success": False, "message": "Request already exists"}
+            self.saved = payload
+            raise TimeoutError("committed acknowledgement lost")
+
+    value = mismatch[0] if isinstance(mismatch, tuple) else True
+    interactions: list[dict[str, Any]] = [
+        {
+            "role": "Assistant",
+            "content": "first",
+            "tools_used": [
+                {
+                    "tool_name": "Bash",
+                    "tool_data": {"input": {"nested": [{"value": value}]}},
+                }
+            ],
+        },
+        {"role": "Assistant", "content": "second"},
+    ]
+    if timestamps:
+        interactions[0]["created_at"] = 200
+        interactions[1]["created_at"] = 100
+    client = Client()
+    adapter = Adapter(url="https://example.com")
+    adapter._client = client
+    kwargs: dict[str, Any] = dict(
+        session_id="ordered",
+        project_id="project",
+        request_id="stable",
+        interactions=interactions,
+    )
+    assert not adapter.publish(**kwargs)
+    result = adapter.publish(**kwargs)
+    assert bool(result) is (mismatch is None)
+    assert client.sent[0] == client.sent[1]
+    if mismatch is None:
+        assert result.request_id == "stable"
+    else:
+        assert result.error_type == "ServerRejected"

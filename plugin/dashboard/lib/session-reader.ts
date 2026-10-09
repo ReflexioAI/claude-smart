@@ -57,6 +57,7 @@ type RawRecord = {
   user_id?: string;
   host?: string;
   request_id?: string;
+  request_ids?: unknown[];
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   tool_output?: string;
@@ -314,7 +315,14 @@ function foldTurns(records: RawRecord[]): {
     if (host === null && rec.host !== undefined) {
       host = parseRecordedHost(rec.host);
     }
-    if (typeof rec.request_id === "string" && rec.request_id) {
+    if (Array.isArray(rec.request_ids)) {
+      for (const requestId of rec.request_ids) {
+        if (typeof requestId === "string" && requestId.trim()) {
+          requestIds.add(requestId);
+        }
+      }
+    }
+    if (typeof rec.request_id === "string" && rec.request_id.trim()) {
       requestIds.add(rec.request_id);
     }
     if (typeof rec.published_up_to === "number") {
