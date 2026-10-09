@@ -887,3 +887,115 @@ def test_lost_ack_confirmation_preserves_ingestion_order_timestamps_and_json_typ
         assert result.request_id == "stable"
     else:
         assert result.error_type == "ServerRejected"
+
+
+@pytest.mark.parametrize(
+    "view,include_refs",
+    [
+        ("legacy", False),
+        ("legacy", True),
+        ("modern", False),
+        ("modern", True),
+        ("modern-mismatch", False),
+        ("modern-mismatch", True),
+        ("modern-ref-mismatch", True),
+    ],
+)
+@pytest.mark.parametrize(
+    "statuses",
+    [
+        ("success", "error"),
+        (None, 23),
+        (True, {"reason": "failure"}),
+        ("x" * 120, ""),
+    ],
+)
+def test_captured_tool_status_recovers_with_older_sdk_and_legacy_or_modern_view(
+    session_dir, view, include_refs, statuses
+):
+    class Client:
+        def __init__(self):
+            self.saved = None
+            self.sent = []
+            self.read_unavailable = True
+
+        def _make_request(self, method, path, **kwargs):
+            payload = kwargs["json"]
+            if path == "/api/get_requests":
+                if self.read_unavailable:
+                    self.read_unavailable = False
+                    raise TimeoutError("confirmation unavailable")
+                assert self.saved is not None
+                response = _stored_request_response(self.saved)
+                stored_items = response["sessions"][0]["requests"][0]["interactions"]
+                for stored, original in zip(
+                    stored_items, self.saved["interaction_data_list"], strict=True
+                ):
+                    if view == "legacy":
+                        stored.pop("retrieved_learnings", None)
+                    else:
+                        stored["retrieved_learnings"] = [
+                            dict(ref) for ref in original.get("retrieved_learnings", [])
+                        ]
+                    for tool, original_tool in zip(
+                        stored.get("tools_used", []),
+                        original.get("tools_used", []),
+                        strict=True,
+                    ):
+                        if view == "legacy":
+                            tool.pop("status", None)
+                        else:
+                            value = original_tool.get("status")
+                            # Modern backend View coercion, independent of local SDK.
+                            tool["status"] = "" if value is None else str(value)[:100]
+                if view == "modern-mismatch":
+                    stored_items[-1]["tools_used"][0]["status"] = "different"
+                elif view == "modern-ref-mismatch":
+                    stored_items[-1]["retrieved_learnings"][0]["learning_id"] = (
+                        "different-profile"
+                    )
+                return response
+            self.sent.append(payload)
+            if self.saved is not None:
+                return {"success": False, "message": "Request already exists"}
+            self.saved = payload
+            raise TimeoutError("committed acknowledgement lost")
+
+    state.append("captured-tools", {"role": "User", "content": "question"})
+    if include_refs:
+        _inject_profile("captured-tools", "profile-id", 1)
+    for index, status in enumerate(statuses):
+        state.append(
+            "captured-tools",
+            {
+                "role": "Assistant_tool",
+                "tool_name": "Bash",
+                "tool_input": {"command": f"echo {index}", "nested": [{"ok": True}]},
+                "tool_output": f"result-{index}",
+                "status": status,
+            },
+        )
+    state.append("captured-tools", {"role": "Assistant", "content": "done"})
+    watermark_end = len(state.read_all("captured-tools"))
+    client = Client()
+    adapter = Adapter(url="https://example.com")
+    adapter._client = client
+    kwargs: dict[str, Any] = dict(
+        session_id="captured-tools",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=adapter,
+    )
+    assert publish.publish_unpublished(**kwargs) == ("failed", 2)
+    fails = view in {"modern-mismatch", "modern-ref-mismatch"} or (
+        view == "legacy" and include_refs
+    )
+    expected_status = "failed" if fails else "recovered"
+    assert publish.publish_unpublished(**kwargs) == (expected_status, 2)
+    assert client.sent[0] == client.sent[1]
+    tools = client.sent[0]["interaction_data_list"][-1]["tools_used"]
+    assert [tool["status"] for tool in tools] == list(statuses)
+    assert state.published_record_offset(state.read_all("captured-tools")) == (
+        0 if fails else watermark_end
+    )

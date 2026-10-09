@@ -720,15 +720,15 @@ def _stored_publish_matches(raw_request: Any, payload: dict[str, Any]) -> bool:
     from reflexio.models.api_schema.domain.entities import InteractionData
 
     omitted = {"citations", "image_encoding"}
-    visible = set(InteractionData.model_fields) - omitted
+    visible = (set(InteractionData.model_fields) | {"retrieved_learnings"}) - omitted
     expected = payload["interaction_data_list"]
     for item in expected:
         if any(item.get(key) for key in ("citations", "image_encoding")) or set(
             item
-        ) - set(InteractionData.model_fields):
+        ) - (set(InteractionData.model_fields) | {"retrieved_learnings"}):
             raise ValueError("Stored publish contains fields that cannot be verified")
         if any(
-            set(tool) - set(ToolUsed.model_fields)
+            set(tool) - (set(ToolUsed.model_fields) | {"status"})
             for tool in item.get("tools_used", [])
         ):
             raise ValueError(
@@ -758,6 +758,43 @@ def _stored_publish_matches(raw_request: Any, payload: dict[str, Any]) -> bool:
         normalized = InteractionData(**original).model_dump(
             mode="json", exclude=excluded
         )
+        # Retrieved identities may also predate the installed SDK. Compare
+        # these known wire pairs directly; missing nonempty links never confirm.
+        for target, source in ((observed, item), (normalized, original)):
+            refs = source.get("retrieved_learnings", [])
+            if not isinstance(refs, list) or len(refs) > 1000:
+                raise ValueError("Stored publish learning links have invalid shape")
+            for ref in refs:
+                if (
+                    not isinstance(ref, dict)
+                    or set(ref) != {"kind", "learning_id"}
+                    or ref["kind"] not in {"profile", "user_playbook", "agent_playbook"}
+                    or not isinstance(ref["learning_id"], str)
+                    or not ref["learning_id"]
+                    or len(ref["learning_id"]) > 1000
+                ):
+                    raise ValueError(
+                        "Stored publish learning link does not match the wire contract"
+                    )
+            target["retrieved_learnings"] = refs
+        # Some installed SDKs predate ToolUsed.status even when the backend
+        # exposes it. Compare raw View status using the pinned backend's coercion;
+        # a legacy View that omits status cannot verify that unsupported field.
+        for index, (stored_tool, original_tool) in enumerate(
+            zip(item.get("tools_used", []), original.get("tools_used", []), strict=True)
+        ):
+            observed_tool = observed["tools_used"][index]
+            expected_tool = normalized["tools_used"][index]
+            if "status" in stored_tool:
+                for target, source in (
+                    (observed_tool, stored_tool),
+                    (expected_tool, original_tool),
+                ):
+                    status = source.get("status")
+                    target["status"] = "" if status is None else str(status)[:100]
+            else:
+                observed_tool.pop("status", None)
+                expected_tool.pop("status", None)
         # JSON equality must distinguish booleans from integer tool values.
         if json.dumps(observed, sort_keys=True, separators=(",", ":")) != json.dumps(
             normalized, sort_keys=True, separators=(",", ":")

@@ -78,19 +78,22 @@ queries that exact request and verifies its stored content, tools, and learning
 links; matching accepted requests are skipped. Single requests also use this
 confirmation after a rejected or lost acknowledgement. Verified recovery confirms
 storage only: the read API cannot prove or rerun forced extraction, stall override,
-or aggregation options. `/learn` reports this limitation instead of claiming
-forced extraction succeeded; a fresh acknowledgement reports the extraction
+or aggregation options. `/learn` reports this limitation and exits nonzero;
+storage recovery still advances the local watermark. A new real interaction or
+note can request extraction again. A fresh acknowledgement reports the extraction
 request was accepted. Preflight read failures
 allow the original write to proceed; rejected or lost acknowledgements still
 require verified storage before advancing. Failed verification, mismatched data,
 or nonempty fields absent from the read API (citations and image encoding) leave
 the batch retryable. Recovery requires a backend/read
-contract that exposes the submitted fields; older local models that cannot
-confirm learning links also fail safely. Stable raw retries keep the original
-payload and learning links unchanged; an unconfirmed failure waits for the next
+contract that exposes the submitted fields; read APIs that omit nonempty learning
+links cannot confirm their storage. Known tool status and learning-link fields
+are verified from the raw response when the installed SDK predates them. Legacy
+responses that omit status retain their original compatibility behavior. Stable
+raw retries keep the original payload and learning links unchanged; an unconfirmed failure waits for the next
 retry instead of sending a stripped payload. All accepted request IDs are retained
 in the local watermark. The dashboard uses every accepted request ID for host
-attribution, including earlier chunks. Null escaping also covers nested mapping keys and tuple
-values; a key collision fails before sending instead of losing data.
+attribution, including earlier chunks. Null escaping also covers nested mapping
+keys and tuple values; a key collision fails before sending instead of losing data.
 Empty placeholders are filtered before splitting; an empty-only batch advances
 the local watermark without sending a request. Original local records are retained.
