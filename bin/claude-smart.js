@@ -456,8 +456,30 @@ function migrateLegacyManagedEnv() {
 }
 
 function migrateLegacyManagedEnvOnce() {
-  if ((readEnvFile(CLAUDE_SMART_ENV_PATH).get("REFLEXIO_API_KEY") || "").trim()) return;
+  const runtime = readEnvFile(CLAUDE_SMART_ENV_PATH);
   const legacy = readEnvFile(LEGACY_REFLEXIO_ENV_PATH);
+  // Local pre-split installs also stored runtime flags here. Keep user choices
+  // (especially read-only) without importing another server's connection keys.
+  const runtimeLines = new Map();
+  if (existsSync(LEGACY_REFLEXIO_ENV_PATH)) {
+    for (const line of readFileSync(LEGACY_REFLEXIO_ENV_PATH, "utf8").split(/\r?\n/)) {
+      const parsed = parseEnvLine(line);
+      if (parsed && /^CLAUDE_SMART_[A-Z0-9_]+$/.test(parsed.key) && !runtime.has(parsed.key)) {
+        runtimeLines.set(parsed.key, line);
+      }
+    }
+  }
+  if (runtimeLines.size) {
+    const existing = existsSync(CLAUDE_SMART_ENV_PATH)
+      ? readFileSync(CLAUDE_SMART_ENV_PATH, "utf8") : "";
+    // Keep the original quoting: the readers do not decode doubled backslashes,
+    // so re-escaping a Windows path would change its value.
+    const separator = existing && !existing.endsWith("\n") ? "\n" : "";
+    mkdirSync(dirname(CLAUDE_SMART_ENV_PATH), { recursive: true });
+    writePrivateFile(CLAUDE_SMART_ENV_PATH,
+      `${existing}${separator}${[...runtimeLines.values()].join("\n")}\n`);
+  }
+  if ((runtime.get("REFLEXIO_API_KEY") || "").trim()) return;
   const apiKey = (legacy.get("REFLEXIO_API_KEY") || "").trim();
   // A key with no URL meant the managed service to older installers (and to
   // the Reflexio client, whose default URL it is), so it migrates as such.
@@ -465,7 +487,7 @@ function migrateLegacyManagedEnvOnce() {
   if (!apiKey || isLoopbackUrl(url)) return;
   const values = {};
   for (const key of ["REFLEXIO_API_KEY", REFLEXIO_USER_ID_ENV, CLAUDE_SMART_READ_ONLY_ENV]) {
-    if (legacy.has(key)) values[key] = legacy.get(key);
+    if (legacy.has(key) && !runtime.has(key)) values[key] = legacy.get(key);
   }
   values.REFLEXIO_URL = url;
   setEnvVars(CLAUDE_SMART_ENV_PATH, values);
@@ -1753,11 +1775,10 @@ async function startAndReportServices(pluginRoot, host, setup) {
   } else if (autostartDisabled("CLAUDE_SMART_BACKEND_AUTOSTART")) {
     process.stdout.write("Backend autostart is disabled (CLAUDE_SMART_BACKEND_AUTOSTART=0).\n");
   } else {
-    if (setup.hostChanged) {
-      // backend-service.sh start keeps any compatible running backend, which
-      // would keep the previous host's extraction bridge.
-      runPluginService(pluginRoot, "backend-service.sh", "stop");
-    }
+    // A same-root backend can be healthy but still use the previous payload's
+    // bind address or extraction bridge. Preparation succeeded before this
+    // point; restart only owned services to apply the installed configuration.
+    runPluginService(pluginRoot, "backend-service.sh", "stop");
     startBackendService(pluginRoot, host);
     const url = localBackendUrl();
     if (await waitForHttp(`${url}health`, 5, ({ status }) => status === 200)) {
@@ -2873,6 +2894,13 @@ async function runUninstall(args) {
 }
 
 async function runSetup(args) {
+  if (args.some((arg) => ["--help", "-h", "help"].includes(arg))) {
+    printHelp();
+    return;
+  }
+  if (args.length) {
+    throw new Error(`unknown setup argument '${args[0]}'. Try 'claude-smart setup --help'.`);
+  }
   const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
   if (!bash) {
     process.stderr.write("error: bash is required to run claude-smart setup.\n");

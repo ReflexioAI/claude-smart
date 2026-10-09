@@ -685,3 +685,26 @@ sqlite3 ~/.reflexio/data/reflexio.db "UPDATE stall_state SET stalled=0, reason=N
 ### 3. Real billing stall
 
 Reproducible only against an exhausted Agent SDK credit pool. Capture the stream-json output as a fixture under `reflexio/tests/server/llm/fixtures/` so the integration test stays current as Anthropic's error format evolves.
+
+### Local backend binding
+
+The bundled backend starts with `--backend-host 127.0.0.1`. Set
+`CLAUDE_SMART_BACKEND_HOST=0.0.0.0` only when deliberately exposing it to other
+machines; the default local installation has no API authentication. The value
+can be exported or stored in `~/.claude-smart/.env`; an empty value uses the
+loopback default. Managed Reflexio connections do not start this backend.
+
+### Dashboard sources in packaged installs
+
+`npm run build` first runs `scripts/prepare-tailwind-sources.cjs`. It prepends
+`!**` to the dashboard's own `.gitignore` so ancestor dotfiles repositories do
+not hide its source files from Tailwind, and retains local exclusions. npm omits
+`.gitignore` from package payloads, so this step also creates one for installs.
+The CSS regression test compiles the actual app inside an ignored home repo.
+
+### Legacy runtime configuration
+
+On the first migration check, the npm installer copies missing `CLAUDE_SMART_*`
+keys from `~/.reflexio/.env` to `~/.claude-smart/.env`, including local read-only
+settings. Existing runtime values win. The legacy file is unchanged, and another
+local server's URL and API key are not imported.

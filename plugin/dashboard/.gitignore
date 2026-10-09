@@ -1,3 +1,5 @@
+# Keep dashboard sources visible to Tailwind inside a home Git repo.
+!**
 /node_modules
 /.pnp
 .pnp.*

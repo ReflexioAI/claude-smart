@@ -124,6 +124,30 @@ append_env_raw() {
 }
 
 ensure_local_env_defaults() {
+  # Migrate only after the user has answered every required prompt. Doing this
+  # before prompting would make EOF/help inspection change configuration.
+  if [ ! -e "$LEGACY_MIGRATION_MARKER" ] && [ -f "$LEGACY_REFLEXIO_ENV" ]; then
+    local key line
+    while IFS= read -r line || [ -n "$line" ]; do
+      key="${line%%=*}"
+      [ "$key" != "$line" ] || continue
+      key="${key#"${key%%[![:space:]]*}"}"
+      key="${key#export }"
+      key="${key%"${key##*[![:space:]]}"}"
+      if [[ "$key" =~ ^CLAUDE_SMART_[A-Z0-9_]+$ ]] && ! get_env_value "$key" >/dev/null 2>&1; then
+        # Preserve the encoded value; re-quoting doubles Windows backslashes.
+        append_env_raw "$key" "${line#*=}"
+      fi
+    done < <(awk '
+      /=/ {
+        key=$0; sub(/=.*/, "", key)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+        sub(/^export[[:space:]]+/, "", key)
+        if (key ~ /^CLAUDE_SMART_[A-Z0-9_]+$/) lines[key]=$0
+      }
+      END { for (key in lines) print lines[key] }
+    ' "$LEGACY_REFLEXIO_ENV")
+  fi
   mkdir -p "$(dirname "$REFLEXIO_ENV")"
   touch "$REFLEXIO_ENV"
   chmod 600 "$REFLEXIO_ENV"
@@ -163,7 +187,10 @@ prompt() {
   else
     printf '%s: ' "$message" >&2
   fi
-  IFS= read -r answer
+  if ! IFS= read -r answer; then
+    log "Input ended; setup cancelled before changing configuration."
+    return 1
+  fi
   if [ -z "$answer" ]; then
     answer="$default"
   fi
@@ -181,10 +208,17 @@ prompt_api_key() {
       printf 'Reflexio API key: ' >&2
     fi
     if [ -t 0 ]; then
-      IFS= read -rs answer
+      if ! IFS= read -rs answer; then
+        printf '\n' >&2
+        log "Input ended; setup cancelled before changing configuration."
+        return 1
+      fi
       printf '\n' >&2
     else
-      IFS= read -r answer
+      if ! IFS= read -r answer; then
+        log "Input ended; setup cancelled before changing configuration."
+        return 1
+      fi
     fi
     if [ -z "$answer" ] && [ -n "$existing" ]; then
       answer="$existing"
@@ -258,7 +292,7 @@ prompt_normalized() {
   default="$2"
   normalizer="$3"
   while :; do
-    answer="$(prompt "$label" "$default")"
+    answer="$(prompt "$label" "$default")" || return 1
     if normalized="$("$normalizer" "$answer")"; then
       printf '%s\n' "$normalized"
       return 0
@@ -302,6 +336,17 @@ main() {
   local default_mode default_read_only default_scope host mode api_key read_only scope
   local runtime_has_key keyed_local_url mode_label
   local managed_url managed_user_id
+
+  case "${1:-}" in
+    --help|-h|help)
+      printf 'Usage: claude-smart setup\n\nInteractive setup for local or managed Reflexio. EOF cancels setup.\n'
+      return 0
+      ;;
+  esac
+  if [ "$#" -gt 0 ]; then
+    log "Unknown setup argument: $1. Run claude-smart setup --help for usage."
+    return 2
+  fi
 
   existing_api_key="$(get_env_value REFLEXIO_API_KEY || true)"
   existing_url="$(get_env_value REFLEXIO_URL || true)"

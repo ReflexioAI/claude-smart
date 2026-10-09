@@ -103,3 +103,17 @@ attribution, including earlier chunks. Null escaping also covers nested mapping
 keys and tuple values; a key collision fails before sending instead of losing data.
 Empty placeholders are filtered before splitting; an empty-only batch advances
 the local watermark without sending a request. Original local records are retained.
+
+**Dashboard loads without layout or styling.**
+
+A Git repository in your home directory with an ignore-all `.gitignore` can hide
+installed dashboard sources from Tailwind. Dashboard builds now create a local
+ignore override while preserving existing dashboard exclusions and your home
+ignore file. Run `npx claude-smart update` to install the fix and rebuild.
+
+**Inspecting setup safely.**
+
+`npx claude-smart setup --help` prints usage without installing or changing
+configuration. Unknown setup arguments fail before prompting. If input ends
+before all required answers, setup exits without changing configuration; scripts
+may provide all answers explicitly through stdin.
