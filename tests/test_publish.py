@@ -378,6 +378,8 @@ class _HostileWarningsClient:
     ``getattr(obj, "warnings", None)`` absorbs only ``AttributeError``.
     """
 
+    success = True
+
     @property
     def warnings(self) -> list[str]:
         raise RuntimeError("warnings unavailable")
@@ -999,3 +1001,41 @@ def test_captured_tool_status_recovers_with_older_sdk_and_legacy_or_modern_view(
     assert state.published_record_offset(state.read_all("captured-tools")) == (
         0 if fails else watermark_end
     )
+
+
+@pytest.mark.parametrize(
+    "ack", [None, {}, {"success": None}, {"success": 1}, {"success": "true"}]
+)
+@pytest.mark.parametrize("committed", [False, True])
+def test_malformed_ack_advances_watermark_only_after_exact_storage_confirmation(
+    session_dir, ack, committed
+):
+    class Client:
+        def __init__(self):
+            self.saved = None
+
+        def _make_request(self, method, path, **kwargs):
+            if path == "/api/get_requests":
+                return (
+                    _stored_request_response(self.saved)
+                    if self.saved is not None
+                    else {"success": True, "sessions": []}
+                )
+            if committed:
+                self.saved = kwargs["json"]
+            return ack
+
+    _append_user("malformed-ack", 1, "question")
+    adapter = Adapter(url="https://example.com")
+    adapter._client = Client()
+    assert publish.publish_unpublished(
+        session_id="malformed-ack",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=adapter,
+    ) == ("recovered" if committed else "failed", 1)
+    records = state.read_all("malformed-ack")
+    assert state.published_record_offset(records) == (1 if committed else 0)
+    if not committed:
+        assert state.pending_publish_end(records, 0) is not None

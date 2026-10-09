@@ -35,11 +35,13 @@ class _FakeClient:
         self.published_kwargs = kwargs
         if not self._publish_ok:
             raise RuntimeError("reflexio unreachable")
+        return SimpleNamespace(success=True)
 
     def _make_request(self, method, path, **kwargs) -> Any:
         self.raw_request = {"method": method, "path": path, **kwargs}
         if not self._publish_ok:
             raise RuntimeError("reflexio unreachable")
+        return {"success": True}
 
     def get_user_playbooks(self, **_kw):
         return self._user_playbook_resp
@@ -278,6 +280,7 @@ def test_publish_confirmation_is_scoped_to_each_shared_adapter_call() -> None:
 
         def _make_request(self, method, path, **_kwargs):
             self.barrier.wait(timeout=5)
+            return {"success": True}
 
     adapter = _adapter_with(ConcurrentRawClient())
     results = {}
@@ -310,7 +313,7 @@ def test_publish_confirmation_is_scoped_to_each_shared_adapter_call() -> None:
 def test_public_publish_records_server_generated_request_id() -> None:
     class PublicOnlyClient:
         def publish_interaction(self, **_kwargs):
-            return SimpleNamespace(request_id="server-request")
+            return SimpleNamespace(success=True, request_id="server-request")
 
     adapter = _adapter_with(PublicOnlyClient())
 
@@ -364,6 +367,7 @@ def test_unconfirmed_raw_failure_retries_original_with_same_request_id() -> None
             self.raw_requests.append(kwargs["json"])
             if len(self.raw_requests) == 1:
                 raise TimeoutError("response was lost after send")
+            return {"success": True}
 
         def publish_interaction(self, **kwargs):
             raise AssertionError("fallback must preserve the stable request ID")
@@ -1039,6 +1043,8 @@ class _WarningClient(_FakeClient):
 class _WarningsPropertyRaises:
     """``getattr(obj, "warnings", None)`` absorbs only ``AttributeError``."""
 
+    success = True
+
     @property
     def warnings(self) -> list[str]:
         raise RuntimeError("warnings unavailable")
@@ -1073,6 +1079,7 @@ class TestPublishWarnings:
     def test_client_path_logs_server_warnings(self, caplog) -> None:
         client = _WarningClient(
             response=SimpleNamespace(
+                success=True,
                 warnings=[
                     "interaction_data_list[0]: ignored unrecognised field(s) Content"
                 ],
@@ -1090,7 +1097,9 @@ class TestPublishWarnings:
 
     def test_raw_request_path_logs_server_warnings(self, caplog) -> None:
         """The pinned-request_id path returns parsed JSON, not a model."""
-        client = _WarningClient(raw_response={"warnings": ["dropped foo"]})
+        client = _WarningClient(
+            raw_response={"success": True, "warnings": ["dropped foo"]}
+        )
         with caplog.at_level(logging.WARNING, logger=_ADAPTER_LOGGER):
             result = _adapter_with(client).publish(
                 session_id="s1",
@@ -1103,7 +1112,7 @@ class TestPublishWarnings:
         assert "dropped foo" in caplog.text
 
     def test_quiet_when_there_is_nothing_to_report(self, caplog) -> None:
-        client = _WarningClient(response=SimpleNamespace(warnings=[]))
+        client = _WarningClient(response=SimpleNamespace(success=True, warnings=[]))
         with caplog.at_level(logging.WARNING, logger=_ADAPTER_LOGGER):
             result = _adapter_with(client).publish(
                 session_id="s1",
@@ -1116,13 +1125,12 @@ class TestPublishWarnings:
     @pytest.mark.parametrize(
         "response",
         [
-            None,
-            SimpleNamespace(),
-            {"warnings": None},
-            {"warnings": 5},
+            SimpleNamespace(success=True),
+            {"success": True, "warnings": None},
+            {"success": True, "warnings": 5},
             _WarningsPropertyRaises(),
-            _MappingGetRaises(),
-            {"warnings": [_Unprintable()]},
+            _MappingGetRaises(success=True),
+            {"success": True, "warnings": [_Unprintable()]},
         ],
     )
     def test_hostile_response_shapes_still_report_success(self, response) -> None:
@@ -1643,3 +1651,65 @@ def test_publish_diagnostics_identify_storage_recovery(tmp_path, monkeypatch):
         2,
     )
     assert json.loads(path.read_text())["publish_status"] == "recovered"
+
+
+@pytest.mark.parametrize("raw", [False, True])
+@pytest.mark.parametrize(
+    "ack",
+    [None, {}, {"success": None}, {"success": 0}, {"success": 1}, {"success": "true"}],
+)
+def test_publish_requires_explicit_true_acknowledgement(raw, ack):
+    class Client:
+        def _make_request(self, method, path, **kwargs):
+            if path == "/api/get_requests":
+                return {"success": True, "sessions": []}
+            return ack
+
+        def publish_interaction(self, **kwargs):
+            return SimpleNamespace(**ack) if isinstance(ack, dict) else ack
+
+    result = _adapter_with(Client()).publish(
+        session_id="session",
+        project_id="project",
+        request_id="stable" if raw else None,
+        interactions=[{"content": "hello"}],
+    )
+    assert not result
+    assert result.error_type == "InvalidPublishAcknowledgement"
+
+
+@pytest.mark.parametrize(
+    "later", ["success", "rejection", "exception", "hostile-warning"]
+)
+def test_earlier_chunk_warnings_survive_later_outcomes(caplog, later):
+    class Client:
+        def __init__(self):
+            self.sent = 0
+
+        def _make_request(self, method, path, **kwargs):
+            if path == "/api/get_requests":
+                return {"success": True, "sessions": []}
+            self.sent += 1
+            if self.sent == 1:
+                return {
+                    "success": True,
+                    "warnings": ["ignored unrecognised field(s) unused"],
+                    "message": "secret-response-body",
+                }
+            if later == "exception":
+                raise TimeoutError("second chunk unconfirmed")
+            if later == "hostile-warning":
+                return _WarningsPropertyRaises()
+            return {"success": later == "success", "warnings": []}
+
+    with caplog.at_level(logging.WARNING, logger=_ADAPTER_LOGGER):
+        result = _adapter_with(Client()).publish(
+            session_id="session",
+            project_id="project",
+            request_id="stable",
+            interactions=[{"content": "secret-payload"} for _ in range(1001)],
+        )
+    assert bool(result) is (later in {"success", "hostile-warning"})
+    assert caplog.text.count("ignored unrecognised field(s) unused") == 1
+    assert "secret-payload" not in caplog.text
+    assert "secret-response-body" not in caplog.text

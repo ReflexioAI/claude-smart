@@ -133,7 +133,7 @@ class Adapter:
             result = PublishResult(False, error_type="ClientUnavailable")
             self._log_publish(result, session_id, project_id, len(interactions))
             return result
-        result, response = self._attempt_publish(
+        result, _response = self._attempt_publish(
             client,
             session_id=session_id,
             project_id=project_id,
@@ -146,18 +146,6 @@ class Adapter:
         self._log_publish(
             result, session_id, project_id, 0 if result.no_op else len(interactions)
         )
-        if result.ok:
-            # Deliberately outside `_attempt_publish` and every try inside it.
-            # The publish has already been accepted, and `publish_unpublished`
-            # advances the buffer watermark only on a truthy result — so a raise
-            # while reading diagnostics would report a *successful* publish as
-            # failed and re-send the same batch on every later hook. The nested
-            # guard covers the logging handler too, not just the extraction.
-            try:
-                for warning in _publish_warnings(response):
-                    _LOGGER.warning("reflexio dropped part of the payload: %s", warning)
-            except Exception as exc:  # noqa: BLE001 — diagnostics must never fail a publish.
-                _LOGGER.debug("could not read publish warnings: %s", exc)
         return result
 
     def _log_publish(
@@ -236,8 +224,7 @@ class Adapter:
     ) -> tuple[PublishResult, Any]:
         """Run the publish and return ``(result, raw response)``.
 
-        Split out of ``publish`` so the warning read has somewhere to live that
-        is outside this method's ``except`` — see the caller.
+        Warning diagnostics use a guarded helper and cannot change the outcome.
         """
         try:
             interaction_list = _storage_safe_interactions(interactions)
@@ -303,6 +290,7 @@ class Adapter:
                             confirmed_ids.append(chunk_id)
                             continue
                         raise
+                    _log_publish_warnings(raw_response)
                     result = _confirmed_publish(raw_response, chunk_id)
                     if not result:
                         try:
@@ -339,6 +327,7 @@ class Adapter:
                 "override_learning_stall": override_learning_stall,
             }
             response = client.publish_interaction(**kwargs)
+            _log_publish_warnings(response)
             response_request_id = getattr(response, "request_id", None)
             if isinstance(response_request_id, str) and response_request_id:
                 return _confirmed_publish(response, response_request_id), response
@@ -650,6 +639,15 @@ class Adapter:
         _LOGGER.debug("%s failed: %s", operation, exc)
 
 
+def _log_publish_warnings(response: Any) -> None:
+    """Keep every chunk's field-drop diagnostics without affecting acceptance."""
+    try:
+        for warning in _publish_warnings(response):
+            _LOGGER.warning("reflexio dropped part of the payload: %s", warning)
+    except Exception:  # noqa: BLE001 — response properties and handlers may raise.
+        return
+
+
 def _publish_warnings(response: Any) -> list[str]:
     """Pull ``warnings`` off a publish response, tolerating any shape.
 
@@ -885,9 +883,14 @@ def _confirmed_publish(response: Any, request_id: str | None = None) -> PublishR
         if isinstance(response, dict)
         else getattr(response, "success", None)
     )
-    if success is False:
+    if success is not True:
         return PublishResult(
-            False, request_id, error_type="ServerRejected", http_status=200
+            False,
+            request_id,
+            error_type="ServerRejected"
+            if success is False
+            else "InvalidPublishAcknowledgement",
+            http_status=200,
         )
     return PublishResult(True, request_id)
 

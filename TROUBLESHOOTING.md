@@ -67,9 +67,11 @@ Compare the recorded destination with `~/.claude-smart/.env` when a manual comma
 works but automatic publishing fails; an older host plugin may still read the legacy
 `~/.reflexio/.env`. Update that host's installation and start a fresh session.
 
-Publication also checks the response's `success` field: an HTTP 200 rejection
-leaves the buffer retryable. Null characters in captured text are represented as
-literal `\u0000` escapes for PostgreSQL storage. Messages with more than 1,000 tool
+Publication requires an explicit `success: true` acknowledgement. HTTP 200
+rejections, empty responses, or malformed success fields leave the buffer
+retryable unless exact stored data can be verified. Field-drop warnings from
+every chunk remain observable even if a later chunk fails. Null characters in
+captured text are represented as literal `\u0000` escapes for PostgreSQL storage. Messages with more than 1,000 tool
 entries use labelled continuation messages so all tools remain visible to learning.
 Requests contain at most 1,000 messages; larger batches use stable per-request IDs
 and advance the local watermark only after every request is accepted. Failed batches
