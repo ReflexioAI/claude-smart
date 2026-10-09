@@ -6,7 +6,6 @@ import argparse
 from typing import Any
 
 import pytest
-
 from claude_smart import cli, state
 
 
@@ -49,7 +48,7 @@ def test_cmd_learn_publishes_with_force_extraction(
         }
     ]
     out = capsys.readouterr().out
-    assert "Forced extraction on session `s1`" in out
+    assert "Requested forced extraction on session `s1`" in out
 
 
 def test_cmd_learn_does_not_append_synthetic_turn(session_dir, fake_publish) -> None:
@@ -122,7 +121,7 @@ def test_cmd_learn_with_note_appends_user_turn(
     assert calls and calls[0]["force_extraction"] is True
     assert calls and calls[0]["override_learning_stall"] is True
     out = capsys.readouterr().out
-    assert "Forced extraction on session `s1`" in out
+    assert "Requested forced extraction on session `s1`" in out
     assert "including your note" in out
 
 
@@ -134,3 +133,147 @@ def test_cmd_learn_blank_note_is_ignored(session_dir, fake_publish) -> None:
 
     assert rc == 0
     assert len(state.read_all("s1")) == 2
+
+
+@pytest.mark.parametrize(
+    "mode,note",
+    [
+        ("recovery", None),
+        ("recovery", "remember the pending note"),
+        ("fresh", None),
+        ("empty", None),
+    ],
+)
+def test_real_learn_distinguishes_storage_recovery_from_extraction_request(
+    session_dir, monkeypatch, capsys, mode, note
+):
+    from claude_smart.reflexio_adapter import Adapter
+    from reflexio.models.api_schema.domain.entities import Interaction, Request
+    from reflexio.models.api_schema.retriever_schema import GetRequestsViewResponse
+    from reflexio.models.api_schema.ui.converters import to_interaction_view
+
+    class Client:
+        def __init__(self):
+            self.saved = None
+            self.sent = []
+            self.query_unavailable = True
+
+        def _make_request(self, method, path, **kwargs):
+            payload = kwargs["json"]
+            if path == "/api/get_requests":
+                if self.query_unavailable:
+                    self.query_unavailable = False
+                    raise TimeoutError("temporary read outage")
+                assert self.saved is not None
+                stored = self.saved
+                request = Request(
+                    **{
+                        key: stored[key]
+                        for key in (
+                            "request_id",
+                            "user_id",
+                            "session_id",
+                            "source",
+                            "agent_version",
+                            "evaluation_only",
+                        )
+                    }
+                )
+                interactions = [
+                    to_interaction_view(
+                        Interaction(
+                            user_id=stored["user_id"],
+                            request_id=stored["request_id"],
+                            interaction_id=i + 1,
+                            **item,
+                        )
+                    )
+                    for i, item in enumerate(stored["interaction_data_list"])
+                ]
+                return GetRequestsViewResponse.model_validate(
+                    {
+                        "success": True,
+                        "sessions": [
+                            {
+                                "session_id": stored["session_id"],
+                                "requests": [
+                                    {"request": request, "interactions": interactions}
+                                ],
+                            }
+                        ],
+                    }
+                ).model_dump(mode="json", exclude_none=True)
+            self.sent.append(payload)
+            if (
+                self.saved is not None
+                and payload["request_id"] == self.saved["request_id"]
+            ):
+                return {"success": False, "message": "Request already exists"}
+            self.saved = payload
+            if mode == "recovery" and len(self.sent) == 1:
+                raise TimeoutError("committed response lost")
+            return {"success": True}
+
+    if mode == "empty":
+        state.append("s1", {"role": "Assistant", "content": "  "})
+    else:
+        state.append("s1", {"role": "User", "content": "question"})
+        state.append("s1", {"role": "Assistant", "content": "answer"})
+    client = Client()
+    adapter = Adapter(url="https://example.com")
+    adapter._client = client
+    monkeypatch.setattr(cli.publish, "Adapter", lambda: adapter)
+    if mode == "recovery":
+        # Same options as Stop, before the explicit /learn retry changes them.
+        assert cli.publish.publish_unpublished(
+            session_id="s1",
+            project_id="test-project",
+            force_extraction=False,
+            override_learning_stall=False,
+            skip_aggregation=False,
+        ) == ("failed", 2)
+    assert cli.cmd_learn(_make_args(session="s1", note=note)) == (
+        1 if mode == "recovery" else 0
+    )
+    out = capsys.readouterr().out
+    if mode == "recovery":
+        assert "Recovered stored publication" in out
+        assert "storage only" in out and "not verified or rerun" in out
+        assert "Requested forced extraction" not in out
+        assert client.saved is not None
+        assert client.saved["force_extraction"] is False
+        assert client.saved["override_learning_stall"] is False
+        assert len(client.sent) == 2
+        assert client.sent[0]["request_id"] == client.sent[1]["request_id"]
+        assert (
+            client.sent[0]["interaction_data_list"]
+            == client.sent[1]["interaction_data_list"]
+        )
+        assert client.sent[1]["force_extraction"] is True
+        assert client.sent[1]["override_learning_stall"] is True
+        assert len([r for r in state.read_all("s1") if r.get("role")]) == (
+            3 if note else 2
+        )
+        assert "Run learn again without --note" in out
+        assert "Run learn with a new note" not in out
+        if note:
+            _, pending = state.unpublished_slice(state.read_all("s1"))
+            assert [item["content"] for item in pending] == [note]
+            assert cli.cmd_learn(_make_args(session="s1")) == 0
+            assert "Requested forced extraction" in capsys.readouterr().out
+            assert client.sent[-1]["request_id"] != client.sent[0]["request_id"]
+            assert [
+                item["content"] for item in client.sent[-1]["interaction_data_list"]
+            ] == [note]
+            assert (
+                len([r for r in state.read_all("s1") if r.get("content") == note]) == 1
+            )
+            assert state.unpublished_slice(state.read_all("s1"))[1] == []
+    elif mode == "fresh":
+        assert "Requested forced extraction" in out
+        assert len(client.sent) == 1
+        assert client.sent[0]["force_extraction"] is True
+    else:
+        assert "No unpublished interactions" in out
+        assert not client.sent
+    assert state.published_record_offset(state.read_all("s1")) > 0

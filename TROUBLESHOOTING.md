@@ -55,3 +55,51 @@ Reflexio's provider priority is `claude-code > local > anthropic > gemini > ... 
 rm -rf ~/.claude-smart/sessions/
 rm -rf ~/.reflexio/data/           # reflexio SQLite store
 ```
+
+### Diagnose automatic publishing failures
+
+`~/.claude-smart/hook.log` includes `publish-result` records with the plugin version,
+backend scheme/hostname/port, publish count, exception class, and HTTP status when
+available. Missing or malformed version metadata uses `unknown`; unavailable
+URL metadata uses null fields. These records omit credentials, URL paths/query parameters, response
+bodies, and interaction content. A logging failure never changes publication success.
+Compare the recorded destination with `~/.claude-smart/.env` when a manual command
+works but automatic publishing fails; an older host plugin may still read the legacy
+`~/.reflexio/.env`. Update that host's installation and start a fresh session.
+
+Publication requires an explicit `success: true` acknowledgement. HTTP 200
+rejections, empty responses, or malformed success fields leave the buffer
+retryable unless exact stored data can be verified. Legacy "Interaction queued
+for processing" responses also require stored-request confirmation because their
+background task may not have saved anything yet. Publishing stays asynchronous
+and does not wait for extraction or poll for storage. Field-drop warnings from
+every chunk remain observable even if a later chunk fails. Null characters in
+captured text are represented as literal `\u0000` escapes for PostgreSQL storage. Messages with more than 1,000 tool
+entries use labelled continuation messages so all tools remain visible to learning.
+Requests contain at most 1,000 messages; larger batches use stable per-request IDs
+and advance the local watermark only after every request is accepted. Failed batches
+retry with the same IDs. Before replaying a request in a large batch, the plugin
+queries that exact request and verifies its stored content, tools, and learning
+links; matching accepted requests are skipped. Single requests also use this
+confirmation after a rejected or lost acknowledgement. Verified recovery confirms
+storage only: the read API cannot prove or rerun forced extraction, stall override,
+or aggregation options. `/learn` reports this limitation and exits nonzero;
+storage recovery still advances the local watermark. Run `/learn` again without
+adding another note to publish any remaining buffered interactions or an existing
+pending note. If none remain, a new real interaction or note can request extraction.
+A fresh acknowledgement reports the extraction request was accepted. Preflight read failures
+allow the original write to proceed; rejected or lost acknowledgements still
+require verified storage before advancing. Failed verification, mismatched data,
+or nonempty fields absent from the read API (citations and image encoding) leave
+the batch retryable. Recovery requires a backend/read
+contract that exposes the submitted fields; read APIs that omit nonempty learning
+links cannot confirm their storage. Known tool status and learning-link fields
+are verified from the raw response when the installed SDK predates them. Legacy
+responses that omit status retain their original compatibility behavior. Stable
+raw retries keep the original payload and learning links unchanged; an unconfirmed failure waits for the next
+retry instead of sending a stripped payload. All accepted request IDs are retained
+in the local watermark. The dashboard uses every accepted request ID for host
+attribution, including earlier chunks. Null escaping also covers nested mapping
+keys and tuple values; a key collision fails before sending instead of losing data.
+Empty placeholders are filtered before splitting; an empty-only batch advances
+the local watermark without sending a request. Original local records are retained.

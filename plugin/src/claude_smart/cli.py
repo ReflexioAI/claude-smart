@@ -21,10 +21,6 @@ Exposes the following subcommands:
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
-from hashlib import sha256
 import json
 import os
 import re
@@ -33,11 +29,23 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from claude_smart import context_format, cs_cite, env_config, ids, publish, runtime, state
+from claude_smart import (
+    context_format,
+    cs_cite,
+    env_config,
+    ids,
+    publish,
+    runtime,
+    state,
+)
 from claude_smart.reflexio_adapter import Adapter
 
 _HOST_CLAUDE_CODE = runtime.HOST_CLAUDE_CODE
@@ -341,7 +349,9 @@ def _repoint_or_remove_plugin_root() -> None:
     if _CODEX_PLUGIN_CACHE_DIR.is_dir():
         # Newest version first (0.2.10 before 0.2.9), as elsewhere.
         candidates += sorted(
-            _CODEX_PLUGIN_CACHE_DIR.iterdir(), key=_installed_plugin_sort_key, reverse=True
+            _CODEX_PLUGIN_CACHE_DIR.iterdir(),
+            key=_installed_plugin_sort_key,
+            reverse=True,
         )
     for root in candidates:
         if (root / "scripts" / "backend-service.sh").is_file():
@@ -540,7 +550,8 @@ def _run_codex(args: list[str]) -> subprocess.CompletedProcess[str]:
             command,
             124,
             "",
-            f"Codex CLI timed out after {_CODEX_CLI_TIMEOUT_SECONDS}s: {' '.join(command)}",
+            f"Codex CLI timed out after {_CODEX_CLI_TIMEOUT_SECONDS}s: "
+            f"{' '.join(command)}",
         )
 
 
@@ -1039,7 +1050,9 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
     # Policy: only a key saved in the file makes install managed. A key that
     # is only exported in this shell is gone in later sessions, and install
     # never copies a secret from the environment into a file.
-    shell_only_key = bool(api_key) and env_config.REFLEXIO_API_KEY_ENV not in file_values
+    shell_only_key = (
+        bool(api_key) and env_config.REFLEXIO_API_KEY_ENV not in file_values
+    )
     reflexio_url = resolved(env_config.REFLEXIO_URL_ENV)
     updates: dict[str, str] = {}
     if (
@@ -1080,11 +1093,14 @@ def _configure_reflexio_setup(host: str = _HOST_CLAUDE_CODE) -> bool:
         os.environ.pop("CLAUDE_SMART_MANAGED_SETUP", None)
         added = env_config.ensure_local_env_defaults(_CLAUDE_SMART_ENV_PATH, host=host)
         if added:
-            sys.stdout.write(f"Seeded {_CLAUDE_SMART_ENV_PATH} with {', '.join(added)}.\n")
+            sys.stdout.write(
+                f"Seeded {_CLAUDE_SMART_ENV_PATH} with {', '.join(added)}.\n"
+            )
         if shell_only_key:
             sys.stderr.write(
                 "warning: REFLEXIO_API_KEY is only exported in this shell, so install "
-                "uses local mode and saves no key. Run `npx claude-smart setup` to save "
+                "uses local mode and saves no key. Run `npx claude-smart setup` to "
+                "save "
                 "managed settings.\n"
             )
         if exported_url and not _is_bundled_backend_url(exported_url):
@@ -1224,7 +1240,9 @@ def _opencode_global_config_dir() -> Path:
     return base / "opencode"
 
 
-def _opencode_config_path(*, global_config: bool = False, cwd: Path | None = None) -> Path:
+def _opencode_config_path(
+    *, global_config: bool = False, cwd: Path | None = None
+) -> Path:
     if global_config:
         config_dir = _opencode_global_config_dir()
         for name in _OPENCODE_CONFIG_NAMES:
@@ -1261,9 +1279,9 @@ def _is_default_opencode_package_path(package_path: Path) -> bool:
     if _same_real_path(package_path, _OPENCODE_LOCAL_PACKAGE_DIR):
         return True
     try:
-        return package_path.resolve(strict=False) == _OPENCODE_LOCAL_PACKAGE_DIR.resolve(
+        return package_path.resolve(
             strict=False
-        )
+        ) == _OPENCODE_LOCAL_PACKAGE_DIR.resolve(strict=False)
     except OSError:
         return False
 
@@ -1345,7 +1363,9 @@ def _has_extraction_provider() -> bool:
         resolved = Path(cli_path).expanduser()
         if resolved.is_file() and os.access(resolved, os.X_OK):
             return True
-    return bool(shutil.which("claude") or shutil.which("codex") or _resolve_opencode_path())
+    return bool(
+        shutil.which("claude") or shutil.which("codex") or _resolve_opencode_path()
+    )
 
 
 def _extraction_provider_error() -> str:
@@ -1374,7 +1394,9 @@ def _persist_opencode_path() -> list[str]:
     if not resolved:
         return []
     os.environ[_OPENCODE_PATH_ENV] = resolved
-    return env_config.set_env_vars(_CLAUDE_SMART_ENV_PATH, {_OPENCODE_PATH_ENV: resolved})
+    return env_config.set_env_vars(
+        _CLAUDE_SMART_ENV_PATH, {_OPENCODE_PATH_ENV: resolved}
+    )
 
 
 def _opencode_prerequisite_error() -> str | None:
@@ -1386,7 +1408,8 @@ def _opencode_prerequisite_error() -> str | None:
     if os.name == "nt" and not _resolve_bash():
         return (
             "error: Git Bash is required for claude-smart OpenCode support on Windows. "
-            "Install Git for Windows and ensure bash.exe is on PATH, or run OpenCode from WSL.\n"
+            "Install Git for Windows and ensure bash.exe is on PATH, or run OpenCode "
+            "from WSL.\n"
         )
     return None
 
@@ -1414,7 +1437,8 @@ def _verify_opencode_plugin_package(package_root: Path) -> None:
             raise OSError(f"OpenCode local plugin package is missing {path}")
     if _file_sha256(source_script) != _file_sha256(copied_script):
         raise OSError(
-            "OpenCode local plugin package does not match the installed claude-smart package"
+            "OpenCode local plugin package does not match the installed claude-smart "
+            "package"
         )
 
 
@@ -1511,7 +1535,9 @@ def _bootstrap_opencode_install(read_only: bool) -> tuple[bool, str]:
     if not bash:
         return False, "bash is required to bootstrap claude-smart dependencies"
     scripts_dir = plugin_root / "scripts"
-    result = subprocess.run([bash, str(scripts_dir / "smart-install.sh")], cwd=plugin_root)
+    result = subprocess.run(
+        [bash, str(scripts_dir / "smart-install.sh")], cwd=plugin_root
+    )
     if result.returncode != 0:
         return False, f"smart-install.sh failed in {plugin_root}"
     if _INSTALL_FAILURE_MARKER.is_file():
@@ -1543,7 +1569,8 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
     bootstrapped, package_root_text = _bootstrap_opencode_install(read_only)
     if not bootstrapped:
         sys.stderr.write(
-            f"error: claude-smart OpenCode setup failed during dependency bootstrap: {package_root_text}\n"
+            f"error: claude-smart OpenCode setup failed during dependency bootstrap: "
+            f"{package_root_text}\n"
         )
         return 1
     package_root = Path(package_root_text)
@@ -1630,7 +1657,8 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
             sys.stdout.write(f"{install_msg}.\n")
             if read_only:
                 sys.stdout.write(
-                    "Installed read-only hook manifest; publish interactions hooks are disabled.\n"
+                    "Installed read-only hook manifest; publish interactions hooks are "
+                    "disabled.\n"
                 )
             trusted, trust_msg = _trust_codex_plugin_hooks(Path.cwd())
             if not trusted:
@@ -1649,29 +1677,39 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
     if registered and installed and trusted:
         sys.stdout.write(
             "\nclaude-smart Codex support is installed.\n"
-            "Restart Codex so the installed plugin and trusted hooks reload. /plugins should "
-            f"show claude-smart as installed from the {_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace. "
-            "Uninstall removes the plugin cache and marketplace registration but leaves "
+            "Restart Codex so the installed plugin and trusted hooks reload. /plugins "
+            "should "
+            f"show claude-smart as installed from the "
+            f"{_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace. "
+            "Uninstall removes the plugin cache and marketplace registration but "
+            "leaves "
             "shared claude-smart data and Codex's global hook feature flags intact.\n"
         )
     elif registered and installed:
         sys.stdout.write(
-            "\nclaude-smart Codex support is installed, but hook trust could not be completed.\n"
-            "Fully quit and reopen Codex in this repo, run /hooks, trust the claude-smart hooks, "
+            "\nclaude-smart Codex support is installed, but hook trust could not be "
+            "completed.\n"
+            "Fully quit and reopen Codex in this repo, run /hooks, trust the "
+            "claude-smart hooks, "
             "and restart Codex so hooks reload.\n"
         )
     elif registered:
         sys.stdout.write(
-            "\nclaude-smart Codex marketplace is prepared, but automatic plugin install failed.\n"
-            "Fully quit and reopen Codex in this repo, run /plugins, install claude-smart from "
-            f"the {_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, and restart Codex so hooks reload.\n"
+            "\nclaude-smart Codex marketplace is prepared, but automatic plugin "
+            "install failed.\n"
+            "Fully quit and reopen Codex in this repo, run /plugins, install "
+            "claude-smart from "
+            f"the {_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, and restart Codex so "
+            f"hooks reload.\n"
         )
     else:
         sys.stdout.write(
             "\nCodex hooks enabled; marketplace registration failed.\n"
             f"Install manually with `codex plugin marketplace add {marketplace_root}`, "
-            "then fully quit and reopen Codex, run /plugins, install claude-smart from the "
-            f"{_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, and restart Codex so hooks reload.\n"
+            "then fully quit and reopen Codex, run /plugins, install claude-smart from "
+            "the "
+            f"{_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, and restart Codex so "
+            f"hooks reload.\n"
         )
     return 0 if hooks_ok and registered and installed and trusted else 1
 
@@ -1731,16 +1769,19 @@ def cmd_install(args: argparse.Namespace) -> int:
     bootstrapped, message = _bootstrap_claude_code_install(_PLUGIN_ROOT)
     if not bootstrapped:
         sys.stderr.write(
-            f"error: claude-smart installed, but dependency bootstrap failed: {message}\n"
+            f"error: claude-smart installed, but dependency bootstrap failed: "
+            f"{message}\n"
         )
         sys.stderr.write(
-            "Fix the issue above, then run /claude-smart:restart or restart Claude Code to retry.\n"
+            "Fix the issue above, then run /claude-smart:restart or restart Claude "
+            "Code to retry.\n"
         )
         return 1
     _restore_publish_hooks_from_source(Path(message))
     if read_only and _prune_publish_hooks_for_read_only(Path(message)):
         sys.stdout.write(
-            "Installed read-only hook manifest; publish interactions hooks are disabled.\n"
+            "Installed read-only hook manifest; publish interactions hooks are "
+            "disabled.\n"
         )
     sys.stdout.write(f"Prepared claude-smart runtime at {message}.\n")
 
@@ -1876,7 +1917,8 @@ def cmd_uninstall_codex(_args: argparse.Namespace) -> int:
     if not _cleanup_codex_install_state():
         sys.stderr.write(f"warning: could not update {_CODEX_CONFIG_PATH}\n")
     sys.stdout.write(
-        "claude-smart Codex plugin and marketplace state removed. Restart Codex to apply. "
+        "claude-smart Codex plugin and marketplace state removed. Restart Codex to "
+        "apply. "
         "Codex's global hook feature flags were left in place.\n"
         f"{_LOCAL_DATA_NOTICE}"
     )
@@ -1908,13 +1950,12 @@ def cmd_uninstall_opencode(args: argparse.Namespace) -> int:
     except OSError:
         pass
     if changed:
-        sys.stdout.write(f"Removed claude-smart OpenCode plugin entries from {config_path}.\n")
+        sys.stdout.write(
+            f"Removed claude-smart OpenCode plugin entries from {config_path}.\n"
+        )
     else:
         sys.stdout.write("OpenCode config did not include claude-smart.\n")
-    sys.stdout.write(
-        "Restart OpenCode to apply. "
-        f"{_LOCAL_DATA_NOTICE}"
-    )
+    sys.stdout.write(f"Restart OpenCode to apply. {_LOCAL_DATA_NOTICE}")
     return 0
 
 
@@ -1979,8 +2020,9 @@ def cmd_learn(args: argparse.Namespace) -> int:
 
     Publishes unpublished interactions with ``force_extraction=True`` and
     ``override_learning_stall=True`` as an explicit retry request rather than
-    waiting for the next batch interval. The publish call itself remains
-    non-blocking: ``Adapter.publish`` sends ``wait_for_response=False``.
+    waiting for the next batch interval. The HTTP round trip waits for acceptance;
+    extraction runs asynchronously via ``wait_for_response=False``. Recovery
+    confirms storage only and cannot verify or rerun the extraction options.
     When ``args.note`` is provided, the note is appended to the session
     buffer as a neutral User turn before publishing — letting the user
     capture an explicit insight, preference, or workflow note alongside
@@ -1994,7 +2036,8 @@ def cmd_learn(args: argparse.Namespace) -> int:
 
     Returns:
         int: 0 on success or no-op (no active session, or nothing to
-            publish), 1 if reflexio is unreachable.
+            publish), 1 if reflexio is unreachable or recovery could not confirm
+            the requested extraction options.
     """
     if env_config.env_truthy(env_config.CLAUDE_SMART_READ_ONLY_ENV):
         sys.stdout.write(
@@ -2030,9 +2073,21 @@ def cmd_learn(args: argparse.Namespace) -> int:
     if status == "ok":
         suffix = " (including your note)" if note else ""
         sys.stdout.write(
-            f"Forced extraction on session `{session_id}` over {count} interactions{suffix}.\n"
+            f"Requested forced extraction on session `{session_id}` over {count} "
+            f"interactions{suffix}.\n"
         )
         return 0
+    if status == "recovered":
+        sys.stdout.write(
+            f"Recovered stored publication for session `{session_id}` over {count} "
+            f"interactions.\n"
+            "Recovery confirms storage only; forced extraction, stall override, "
+            "and aggregation options were not verified or rerun.\n"
+            "Run learn again without --note to publish any remaining buffered "
+            "interactions.\n"
+            "If none remain, a new interaction or note can request extraction.\n"
+        )
+        return 1
     if status == "nothing":
         sys.stdout.write(f"No unpublished interactions on session `{session_id}`.\n")
         return 0

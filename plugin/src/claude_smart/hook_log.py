@@ -84,8 +84,8 @@ def log_event(
             when no handler is registered, or ``"raised:<ExcClass>: <msg>"``
             when the handler raised — formatted by ``hook.main``.
         publish_status (str | None): Status returned by
-            ``publish.publish_unpublished`` (``"ok"`` / ``"failed"`` /
-            ``"nothing"``). Only emitted by Stop + SessionEnd.
+            ``publish.publish_unpublished`` (``"ok"`` / ``"recovered"`` /
+            ``"failed"`` / ``"nothing"``). Only emitted by Stop + SessionEnd.
         publish_count (int | None): Interaction count from the same
             tuple. ``None`` when the handler doesn't publish.
         extra (dict[str, Any] | None): Free-form fields preserved as-is.
