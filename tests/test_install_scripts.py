@@ -8407,3 +8407,37 @@ def test_legacy_windows_cli_path_keeps_original_backslashes(
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == windows_path
+
+
+@pytest.mark.parametrize("installer", ["node", "bash"])
+@pytest.mark.parametrize("last_value", ["0", "1"])
+def test_legacy_read_only_migration_keeps_last_assignment(
+    tmp_path: Path,
+    installer: str,
+    last_value: str,
+) -> None:
+    legacy = tmp_path / ".reflexio" / ".env"
+    legacy.parent.mkdir()
+    first = "0" if last_value == "1" else "1"
+    legacy.write_text(
+        f'CLAUDE_SMART_READ_ONLY="{first}"\nCLAUDE_SMART_READ_ONLY="{last_value}"\n'
+    )
+    if installer == "bash":
+        result = _run_setup_script(tmp_path, "claude-code\nlocal\n")
+    else:
+        result = subprocess.run(
+            [
+                "node",
+                "-e",
+                f"require({json.dumps(str(NODE_INSTALLER))}).configureReflexioSetup('claude-code')",
+            ],
+            env=_isolated_env(tmp_path),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    assert result.returncode == 0, result.stderr
+    runtime = (tmp_path / ".claude-smart" / ".env").read_text()
+    assert runtime.count("CLAUDE_SMART_READ_ONLY=") == 1
+    assert f'CLAUDE_SMART_READ_ONLY="{last_value}"' in runtime

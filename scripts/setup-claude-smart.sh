@@ -138,7 +138,15 @@ ensure_local_env_defaults() {
         # Preserve the encoded value; re-quoting doubles Windows backslashes.
         append_env_raw "$key" "${line#*=}"
       fi
-    done < "$LEGACY_REFLEXIO_ENV"
+    done < <(awk '
+      /=/ {
+        key=$0; sub(/=.*/, "", key)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+        sub(/^export[[:space:]]+/, "", key)
+        if (key ~ /^CLAUDE_SMART_[A-Z0-9_]+$/) lines[key]=$0
+      }
+      END { for (key in lines) print lines[key] }
+    ' "$LEGACY_REFLEXIO_ENV")
   fi
   mkdir -p "$(dirname "$REFLEXIO_ENV")"
   touch "$REFLEXIO_ENV"
