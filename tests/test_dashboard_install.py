@@ -85,14 +85,29 @@ def test_dashboard_build_starts_the_dashboard_when_a_fresh_build_completes(
     assert log.read_text().splitlines() == [f"start {project.resolve()}"]
 
 
+@pytest.fixture(scope="module")
+def dashboard_modules() -> Path:
+    modules = DASHBOARD_ROOT / "node_modules"
+    if not (modules / "@tailwindcss" / "postcss").is_dir():
+        # The standard CI job installs root Node dependencies only. Install the
+        # locked dashboard dependencies here so this regression cannot skip CI.
+        subprocess.run(
+            ["npm", "ci", "--ignore-scripts", "--no-fund", "--no-audit"],
+            cwd=DASHBOARD_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    return modules
+
+
 @pytest.mark.parametrize("ignore_rule", ["*", ".claude-smart/"])
 def test_packaged_dashboard_generates_utilities_inside_ignored_home_repo(
     tmp_path: Path,
     ignore_rule: str,
+    dashboard_modules: Path,
 ) -> None:
-    modules = DASHBOARD_ROOT / "node_modules"
-    if not (modules / "@tailwindcss" / "postcss").is_dir():
-        pytest.skip("run npm ci in plugin/dashboard to verify real Tailwind output")
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / ".gitignore").write_text(ignore_rule + "\n")
     dashboard = tmp_path / ".claude-smart" / "dashboard"
@@ -104,7 +119,7 @@ def test_packaged_dashboard_generates_utilities_inside_ignored_home_repo(
         else:
             shutil.copy2(source, dashboard / name)
     # npm drops .gitignore from its payload. Start without one, as users do.
-    (dashboard / "node_modules").symlink_to(modules, target_is_directory=True)
+    (dashboard / "node_modules").symlink_to(dashboard_modules, target_is_directory=True)
     script = r"""
 const fs = require('node:fs');
 const postcss = require('postcss');
