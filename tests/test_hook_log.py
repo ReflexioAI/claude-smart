@@ -536,3 +536,47 @@ def test_log_event_lock_serialises_rotation_and_append(
         "appender's record was dropped by rotation — the lock did not "
         f"serialise the rotation/append. File has: {sorted(session_ids)}"
     )
+
+
+def test_hook_identity_comes_from_executing_runtime(
+    hook_log_path, tmp_path, monkeypatch
+) -> None:
+    import runpy
+    import shutil
+
+    from claude_smart import runtime
+
+    executing = tmp_path / "old-runtime"
+    installed = tmp_path / "new-runtime"
+    for root, version in [(executing, "1.0.0"), (installed, "2.0.0")]:
+        (root / ".codex-plugin").mkdir(parents=True)
+        (root / ".codex-plugin" / "plugin.json").write_text(
+            json.dumps({"version": version})
+        )
+    source = executing / "src" / "claude_smart" / "runtime.py"
+    source.parent.mkdir(parents=True)
+    shutil.copy2(runtime.__file__, source)
+    monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(installed))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "account"))
+    loaded = runpy.run_path(str(source))
+    monkeypatch.setattr(runtime, "plugin_metadata", loaded["plugin_metadata"])
+    # The loaded runtime stays at v1 even if its files are replaced mid-hook.
+    (executing / ".codex-plugin" / "plugin.json").write_text('{"version":"3.0.0"}')
+    hook_log.log_event(event="stop", host="codex", session_id="existing")
+    record = _read_lines(hook_log_path)[0]
+    assert record["plugin_version"] == "1.0.0"
+    assert record["plugin_root"] == str(executing)
+    assert record["codex_home"] == str(tmp_path / "account")
+    (executing / ".codex-plugin" / "plugin.json").write_text("invalid json")
+    loaded = runpy.run_path(str(source))
+    monkeypatch.setattr(runtime, "plugin_metadata", loaded["plugin_metadata"])
+    hook_log.log_event(event="stop", host="codex", session_id="existing")
+    assert _read_lines(hook_log_path)[-1]["plugin_version"] == "unknown"
+
+
+def test_rotation_retains_latest_record_larger_than_cap(hook_log_path, monkeypatch):
+    monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 64)
+    hook_log.log_event(event="stop", host="claude-code", session_id="older")
+    hook_log.log_event(event="stop", host="claude-code", session_id="newest")
+    assert [row["session_id"] for row in _read_lines(hook_log_path)] == ["newest"]

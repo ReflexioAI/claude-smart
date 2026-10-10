@@ -153,8 +153,6 @@ class Adapter:
     ) -> None:
         """Record useful transport diagnostics without credentials or payloads."""
         try:
-            import json
-            from pathlib import Path
             from urllib.parse import urlsplit
 
             from claude_smart import hook_log
@@ -167,17 +165,6 @@ class Adapter:
                 scheme = url.scheme
                 hostname = url.hostname
             except ValueError:
-                pass
-            manifest = (
-                Path(__file__).resolve().parents[2] / ".codex-plugin" / "plugin.json"
-            )
-            version = "unknown"
-            try:
-                metadata = json.loads(manifest.read_text())
-                candidate = metadata.get("version")
-                if isinstance(candidate, str) and candidate:
-                    version = candidate
-            except (OSError, ValueError, AttributeError):
                 pass
             try:
                 port = url.port if url is not None else None
@@ -199,7 +186,6 @@ class Adapter:
                 else "failed",
                 publish_count=count,
                 extra={
-                    "plugin_version": version,
                     "backend_scheme": scheme,
                     "backend_host": hostname,
                     "backend_port": port,

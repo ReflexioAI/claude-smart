@@ -7,6 +7,7 @@ agent version remains shared so every host sees the same learned rules.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -20,21 +21,47 @@ HOST_CODEX = "codex"
 HOST_CURSOR = "cursor"
 HOST_OPENCODE = "opencode"
 HOST_UNKNOWN = "unknown"
-VALID_HOSTS = frozenset(
-    {HOST_CLAUDE_CODE, HOST_CODEX, HOST_CURSOR, HOST_OPENCODE}
-)
+VALID_HOSTS = frozenset({HOST_CLAUDE_CODE, HOST_CODEX, HOST_CURSOR, HOST_OPENCODE})
 
 _SHARED_AGENT_VERSION = "claude-code"
 _current_host: str | None = None
+
+
+def _load_plugin_identity() -> dict[str, str]:
+    root = Path(__file__).resolve().parents[2]
+    version = "unknown"
+    try:
+        manifest = json.loads((root / ".codex-plugin" / "plugin.json").read_text())
+        candidate = manifest.get("version")
+        if isinstance(candidate, str) and candidate:
+            version = candidate
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {"plugin_version": version, "plugin_root": str(root)}
+
+
+# Keep the loaded module's identity even if an update replaces its manifest
+# while a hook is in flight. Do not read the newest installation per event.
+_PLUGIN_IDENTITY = _load_plugin_identity()
+
+
+def plugin_metadata() -> dict[str, str]:
+    """Identify this loaded runtime, rather than the newest installation."""
+    metadata = dict(_PLUGIN_IDENTITY)
+    if host() == HOST_CODEX:
+        metadata["codex_home"] = str(
+            Path(
+                os.environ.get("CODEX_HOME", "").strip() or Path.home() / ".codex"
+            ).resolve()
+        )
+    return metadata
 
 
 def _resolve_host(value: str | None, fallback: str) -> str:
     return value if value in VALID_HOSTS else fallback
 
 
-def resolve_hook_host(
-    declared_host: str, payload: Mapping[str, Any]
-) -> str:
+def resolve_hook_host(declared_host: str, payload: Mapping[str, Any]) -> str:
     """Resolve the actual host behind a normalized hook invocation.
 
     Cursor loads the Claude Code plugin directly, so its hook command declares

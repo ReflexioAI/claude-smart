@@ -19,6 +19,10 @@ const { execSync, spawn, spawnSync } = require("child_process");
 const crypto = require("crypto");
 const {
   chmodSync,
+  closeSync,
+  fstatSync,
+  openSync,
+  readSync,
   constants,
   cpSync,
   existsSync,
@@ -80,7 +84,11 @@ const CLAUDE_CODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "claude-code"
 const CLAUDE_SMART_VENVS_DIR = join(CLAUDE_SMART_STATE_DIR, "venvs");
 const OPENCODE_PACKAGE_LOCK_TIMEOUT_MS = 120_000;
 const OPENCODE_PACKAGE_LOCK_STALE_MS = 10 * 60_000;
-const CODEX_CONFIG_PATH = join(homedir(), ".codex", "config.toml");
+const CODEX_HOME = (() => {
+  const configured = resolve((process.env.CODEX_HOME || "").trim() || join(homedir(), ".codex"));
+  try { return realpathSync(configured); } catch { return configured; }
+})();
+const CODEX_CONFIG_PATH = join(CODEX_HOME, "config.toml");
 const PACKAGE_ROOT = dirname(dirname(__filename));
 const CODEX_MARKETPLACE_DIR = join(
   homedir(),
@@ -91,8 +99,7 @@ const CODEX_MARKETPLACE_DIR = join(
 );
 const CODEX_MARKETPLACE_PLUGIN_PATH = "plugin";
 const CODEX_PLUGIN_CACHE_DIR = join(
-  homedir(),
-  ".codex",
+  CODEX_HOME,
   "plugins",
   "cache",
   CODEX_MARKETPLACE_NAME,
@@ -1227,6 +1234,11 @@ function rollbackLocalPluginPackages() {
         }
         continue;
       }
+      // Older envs can still be referenced by cached hooks. Only the failed
+      // install's env is disposable during rollback.
+      if (packageRoot === CLAUDE_CODE_LOCAL_PACKAGE_DIR) {
+        removeClaudeCodeVenv(join(packageRoot, "plugin", ".venv"));
+      }
       rmSync(packageRoot, { recursive: true, force: true });
       if (backupPackage) {
         renameSync(backupPackage, packageRoot);
@@ -1239,7 +1251,6 @@ function rollbackLocalPluginPackages() {
         );
         repairPluginRoot();
       }
-      if (packageRoot === CLAUDE_CODE_LOCAL_PACKAGE_DIR) pruneInactiveClaudeCodeVenvs(packageRoot);
     } catch (err) {
       process.stderr.write(
         `warning: could not restore the previous claude-smart package from ${backupPackage}: ` +
@@ -1310,10 +1321,8 @@ function commitLocalPluginPackage(packageRoot) {
         `${err && err.message ? err.message : err}\n`,
     );
   }
-  // Still under the package lock: once released, a concurrent install may
-  // replace the package and link a new env, and pruning against that
-  // uncommitted env would delete the one its rollback restores.
-  if (packageRoot === CLAUDE_CODE_LOCAL_PACKAGE_DIR) pruneInactiveClaudeCodeVenvs(packageRoot);
+  // Keep older Python envs until explicit uninstall: cached plugin paths or
+  // hooks already in flight may still reference them after this update.
   try {
     releasePackageInstallLock(packageRoot);
   } catch {
@@ -1323,24 +1332,21 @@ function commitLocalPluginPackage(packageRoot) {
   commitInstallState();
 }
 
-// smart-install.sh keeps the Claude Code copy's Python env in
-// ~/.claude-smart/venvs/claude-code-<id> (linked from plugin/.venv) so Claude
-// Code's per-version plugin cache copy does not duplicate it. Each install gets
-// its own env so the package kept aside for rollback keeps a working one; once
-// the install commits, every env but the active one is unreferenced. Also run
-// after a rollback (the failed install's env is discarded) and an uninstall
-// (no package left, so every env goes). Prunes nothing when the package's
-// .venv exists but cannot be resolved.
-function pruneInactiveClaudeCodeVenvs(packageRoot) {
-  const link = join(packageRoot, "plugin", ".venv");
-  let active = null;
-  if (pathEntryExists(link)) {
-    try {
-      active = realpathSync(link);
-    } catch {
-      return;
-    }
+// Claude Code caches can reference an external Python env after an update.
+// Successful installs retain old envs; rollback removes only its new env.
+// Explicit uninstall removes every claude-code env, preserving other hosts.
+function removeClaudeCodeVenv(link) {
+  try {
+    const target = realpathSync(link);
+    if (dirname(target) !== realpathSync(CLAUDE_SMART_VENVS_DIR)) return;
+    if (!target.split(sep).pop().startsWith("claude-code-")) return;
+    rmSync(target, { recursive: true, force: true });
+  } catch {
+    // An install may fail before creating its env.
   }
+}
+
+function removeClaudeCodeVenvs() {
   let entries;
   try {
     entries = readdirSync(CLAUDE_SMART_VENVS_DIR);
@@ -1351,7 +1357,6 @@ function pruneInactiveClaudeCodeVenvs(packageRoot) {
     if (!name.startsWith("claude-code-")) continue;
     const candidate = join(CLAUDE_SMART_VENVS_DIR, name);
     try {
-      if (active !== null && realpathSync(candidate) === active) continue;
       rmSync(candidate, { recursive: true, force: true });
     } catch (err) {
       process.stderr.write(
@@ -2352,6 +2357,7 @@ function printHelp() {
       "  npx claude-smart install --host codex          Register the plugin marketplace for Codex",
       "  npx claude-smart install --host opencode       Add claude-smart to OpenCode config",
       "  npx claude-smart setup                         Configure managed/read-only/global setup",
+      "  npx claude-smart status [--host codex]        Show installed and recently observed runtime versions",
       "  npx claude-smart uninstall --host codex        Remove the Codex marketplace registration",
       "  npx claude-smart uninstall --host opencode     Remove claude-smart from OpenCode config",
       "  npx claude-smart --help                        Show this help",
@@ -2367,8 +2373,8 @@ function printHelp() {
       "  3. codex features enable hooks && codex features enable plugin_hooks",
       "  4. Installs private Node/npm, uv, Python deps, and dashboard deps as needed",
       "  5. Installs claude-smart into Codex's plugin cache and enables it",
-      "  6. Trusts and enables claude-smart hook entries in ~/.codex/config.toml",
-      "  7. Restart Codex.",
+      "  6. Trusts and enables claude-smart hook entries in CODEX_HOME/config.toml (default ~/.codex)",
+      "  7. Start a new Codex session to load the plugin.",
       "",
       "OpenCode install:",
       `  1. Copies this package to ${OPENCODE_LOCAL_PACKAGE_DIR}`,
@@ -2880,13 +2886,13 @@ async function runUninstall(args) {
     );
   }
   rmSync(CLAUDE_CODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
-  pruneInactiveClaudeCodeVenvs(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
+  removeClaudeCodeVenvs();
   repairPluginRoot(HOST_CLAUDE_CODE);
 
   process.stdout.write(
     [
       "",
-      "claude-smart uninstalled. Restart Claude Code to apply.",
+      "claude-smart uninstalled. Run /reload-plugins in Claude Code, or apply next session.",
       ...LOCAL_DATA_NOTICE,
       "",
     ].join("\n"),
@@ -3032,7 +3038,9 @@ async function runInstall(args, options = {}) {
   process.stdout.write(
     [
       "",
-      "claude-smart installed and dependencies are prepared. Restart Claude Code in your project.",
+      "claude-smart installed and dependencies are prepared.",
+      "Run /reload-plugins in your existing Claude Code session, or activate the update next session.",
+      "Background services are refreshed separately; plugin activation does not require restarting Claude Code.",
       // Only claim a local backend where one will actually run.
       setup.managed || (setup.url && !isBundledBackendUrl(setup.url))
         ? "The dashboard auto-starts on session start; no bundled backend runs in this setup."
@@ -3108,7 +3116,7 @@ async function runInstallCodex(args) {
       `error: automatic Codex plugin install failed: ${err && err.message ? err.message : err}\n`,
     );
     process.stderr.write(
-      `Open Codex, run /plugins, install claude-smart from the ${CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, and restart Codex.\n`,
+      `In Codex, run /plugins, install claude-smart from the ${CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, review /hooks, then start a new session.\n`,
     );
     process.exit(1);
   }
@@ -3128,7 +3136,7 @@ async function runInstallCodex(args) {
       `warning: ${trustError && trustError.message ? trustError.message : trustError}\n`,
     );
     process.stderr.write(
-      `Fully quit and reopen Codex in this repo, run /hooks, trust the claude-smart hooks, and restart Codex.\n`,
+      `Run /hooks in Codex to review and trust the claude-smart hooks, then start a new session.\n`,
     );
     process.exit(1);
   } else {
@@ -3139,7 +3147,9 @@ async function runInstallCodex(args) {
     [
       "",
       "claude-smart Codex support is installed.",
-      `Restart Codex so the installed plugin and trusted hooks reload. /plugins should show claude-smart as installed from the ${CODEX_MARKETPLACE_DISPLAY_NAME} marketplace.`,
+      `Start a new Codex session to load the installed plugin. You can finish your current session first.`,
+      `/plugins should show claude-smart as installed from the ${CODEX_MARKETPLACE_DISPLAY_NAME} marketplace.`,
+      "Run npx claude-smart status --host codex to inspect versions observed in recent session hooks.",
       "Local data is shared with Claude Code under ~/.reflexio/ and ~/.claude-smart/.",
       "",
     ].join("\n"),
@@ -3230,7 +3240,7 @@ async function runUninstallCodex() {
   process.stdout.write(
     [
       "",
-      "claude-smart Codex plugin and marketplace state removed. Restart Codex to apply.",
+      "claude-smart Codex plugin and marketplace state removed. Start a new Codex session to apply.",
       "Codex's global hook feature flags were left in place.",
       ...LOCAL_DATA_NOTICE,
       "",
@@ -3271,12 +3281,93 @@ async function runUninstallOpenCode(args) {
   );
 }
 
+function runStatus(args) {
+  const host = parseHost(args);
+  let installed = null;
+  let inventoryAvailable = false;
+  if (host === HOST_OPENCODE) {
+    const version = codexPluginVersion(join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"));
+    if (version) installed = { version };
+    inventoryAvailable = true;
+  } else {
+    const cli = host === HOST_CODEX ? "codex" : "claude";
+    const command = ["plugin", "list", "--json"];
+    if (host === HOST_CODEX) command.push("--marketplace", CODEX_MARKETPLACE_NAME);
+    const result = spawnSync(cli, command, {
+      encoding: "utf8", timeout: CODEX_CLI_TIMEOUT_MS, windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (result.status === 0) {
+      try {
+        const data = JSON.parse(result.stdout);
+        const plugins = host === HOST_CODEX ? data.installed : data;
+        if (Array.isArray(plugins)) {
+          installed = plugins.find((plugin) => (plugin.pluginId || plugin.id) === PLUGIN_SPEC);
+          inventoryAvailable = true;
+        }
+      } catch {
+        // Unknown host inventory formats must not be mistaken for an uninstall.
+      }
+    }
+  }
+  process.stdout.write(`Host: ${host}\n`);
+  if (host === HOST_CODEX) process.stdout.write(`Codex home: ${CODEX_HOME}\n`);
+  const versionLabel = host === HOST_OPENCODE ? "Prepared runtime version" : "Installed version";
+  const version = installed ? (installed.version || "unknown (host reported no version)")
+    : (inventoryAvailable ? "not installed" : "unknown (host inventory unavailable)");
+  process.stdout.write(`${versionLabel}: ${version}\n`);
+  if (installed?.enabled === false) process.stdout.write("Plugin is disabled in the host.\n");
+
+  // Match only this host and account. The shared log is bounded by hook_log;
+  // read its last 5 MiB even if an older writer left a larger file behind.
+  const logOverride = (process.env.CLAUDE_SMART_HOOK_LOG || "").trim();
+  const logPath = logOverride && !["1", "true", "yes", "on"].includes(logOverride.toLowerCase())
+    ? logOverride : join(CLAUDE_SMART_STATE_DIR, "hook.log");
+  const sessions = new Map();
+  try {
+    const fd = openSync(logPath, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const length = Math.min(size, 5 * 1024 * 1024);
+      const buffer = Buffer.alloc(length);
+      const count = readSync(fd, buffer, 0, length, size - length);
+      const lines = buffer.subarray(0, count).toString("utf8").split(/\r?\n/);
+      if (size > length) lines.shift();
+      for (let i = lines.length - 1; i >= 0 && sessions.size < 5; i--) {
+        let entry;
+        try { entry = JSON.parse(lines[i]); } catch { continue; }
+        if (!entry || entry.host !== host || entry.internal_skipped || !entry.session_id) continue;
+        if (host === HOST_CODEX && entry.codex_home !== CODEX_HOME) continue;
+        if (entry.event === "publish-result") continue;
+        if (!sessions.has(entry.session_id)) sessions.set(entry.session_id, entry);
+      }
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // Missing history is normal on first install.
+  }
+  process.stdout.write("Recent session hook observations (sessions may have ended):\n");
+  if (!sessions.size) process.stdout.write("  None recorded for this host/account; active version is unknown.\n");
+  for (const [session, entry] of sessions) {
+    process.stdout.write(`  ${session}: ${entry.plugin_version || "unknown"} (${entry.event}, ts=${entry.ts})\n`);
+  }
+  if (host === HOST_CLAUDE_CODE) process.stdout.write("Activate updates with /reload-plugins in Claude Code, or next session.\n");
+  if (host === HOST_CODEX) process.stdout.write("Activate updates in a new Codex session; review changed hooks in /hooks.\n");
+  if (host === HOST_OPENCODE) process.stdout.write("Restart OpenCode to activate updates.\n");
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const cmd = args[0] || "install";
 
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     printHelp();
+    return;
+  }
+
+  if (cmd === "status") {
+    runStatus(args.slice(1));
     return;
   }
 

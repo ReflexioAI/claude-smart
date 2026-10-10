@@ -538,7 +538,8 @@ cd "$PLUGIN_ROOT"
 # outside the plugin directory and link it from .venv: Claude Code skips the
 # symlink when copying, and every "$PLUGIN_ROOT/.venv/bin/python" path still
 # resolves. One directory per install, so the package an update keeps aside for
-# rollback still owns its own env; the installer prunes inactive ones on commit.
+# rollback still owns its own env. Successful updates keep older envs for
+# sessions using cached hooks; explicit uninstall removes them.
 # Windows keeps the in-place .venv (symlinks need Developer Mode there).
 CLAUDE_SMART_VENVS_DIR="$HOME/.claude-smart/venvs"
 plugin_root_is_managed_claude_code_copy() {

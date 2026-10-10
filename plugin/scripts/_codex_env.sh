@@ -13,7 +13,7 @@ if [ -z "${_R:-}" ]; then
 fi
 if [ -z "$_R" ]; then
   _R=$(ls -dt "$HOME/plugins/claude-smart" \
-    "$HOME/.codex/plugins/cache/reflexioai/claude-smart"/*/ \
+    "${CODEX_HOME:-$HOME/.codex}/plugins/cache/reflexioai/claude-smart"/*/ \
     2>/dev/null | head -n 1)
 fi
 if [ -z "$_R" ]; then

@@ -140,7 +140,7 @@ if [ "$FOLLOW" = "1" ]; then
 fi
 
 # Cache-tracking: if the link currently resolves to a path under the
-# managed plugin cache (~/.claude/plugins/cache/ or ~/.codex/plugins/cache/),
+# managed plugin cache (Claude or the selected Codex account),
 # always retarget it to $TARGET. Plugin updates leave old version
 # directories behind, so a valid pyproject.toml at the stale target is
 # not proof the link is fresh.
@@ -157,7 +157,7 @@ elif claude_smart_is_windows && [ -e "$LINK" ]; then
 fi
 if [ -n "$CURRENT" ]; then
     case "$CURRENT" in
-        "$HOME/.claude/plugins/cache/"*|"$HOME/.codex/plugins/cache/"*)
+        "$HOME/.claude/plugins/cache/"*|"${CODEX_HOME:-$HOME/.codex}/plugins/cache/"*)
             CURRENT_NORM="${CURRENT%/}"
             TARGET_NORM="${TARGET%/}"
             if [ "$CURRENT_NORM" != "$TARGET_NORM" ]; then

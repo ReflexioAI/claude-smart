@@ -1555,7 +1555,10 @@ def test_publish_diagnostics_survive_missing_or_malformed_manifest(
         interactions=[{"content": "secret-content"}],
     )
     record = json.loads(path.read_text())
-    assert record["plugin_version"] == "unknown"
+    assert (
+        record["plugin_version"]
+        == reflexio_adapter.runtime.plugin_metadata()["plugin_version"]
+    )
     assert record["backend_host"] == "example.com"
     assert record["event"] == "publish-result"
     assert all(

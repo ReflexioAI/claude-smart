@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const HOME = os.homedir();
+const CODEX_HOME = path.resolve((process.env.CODEX_HOME || "").trim() || path.join(HOME, ".codex"));
 const STATE_DIR = path.join(HOME, ".claude-smart");
 const REFLEXIO_DIR = path.join(HOME, ".reflexio");
 const SERVICE_SCRIPT_TIMEOUT_MS = parsePositiveInteger(
@@ -134,11 +135,11 @@ function stablePluginRootForStrayCopy(root) {
   const candidates = [
     path.join(REFLEXIO_DIR, "plugin-root"),
     path.join(HOME, ".claude", "plugins", "marketplaces", "reflexioai", "plugin"),
-    path.join(HOME, ".codex", "plugins", "cache", "reflexioai", "claude-smart", "current"),
+    path.join(CODEX_HOME, "plugins", "cache", "reflexioai", "claude-smart", "current"),
   ];
   for (const cacheRoot of [
     path.join(HOME, ".claude", "plugins", "cache", "reflexioai", "claude-smart"),
-    path.join(HOME, ".codex", "plugins", "cache", "reflexioai", "claude-smart"),
+    path.join(CODEX_HOME, "plugins", "cache", "reflexioai", "claude-smart"),
   ]) {
     try {
       const versions = fs
@@ -178,7 +179,7 @@ function pluginRoot() {
   }
   const fromScript = path.resolve(__dirname, "..");
   if (fs.existsSync(path.join(fromScript, "pyproject.toml"))) return stablePluginRoot(fromScript);
-  const cacheRoot = path.join(HOME, ".codex", "plugins", "cache", "reflexioai", "claude-smart");
+  const cacheRoot = path.join(CODEX_HOME, "plugins", "cache", "reflexioai", "claude-smart");
   try {
     const versions = fs
       .readdirSync(cacheRoot, { withFileTypes: true })
