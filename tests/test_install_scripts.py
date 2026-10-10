@@ -8647,7 +8647,10 @@ def test_codex_fallback_discovery_stays_in_selected_account(tmp_path: Path) -> N
     assert (tmp_path / ".reflexio" / "plugin-root").resolve() == selected
 
 
-def test_shell_recovery_and_tracking_use_codex_account(tmp_path: Path) -> None:
+@pytest.mark.parametrize("account_form", ["direct", "symlink", "trailing-slash"])
+def test_shell_recovery_and_tracking_use_codex_account(
+    tmp_path: Path, account_form: str
+) -> None:
     account = tmp_path / "account home"
     cache = account / "plugins" / "cache" / "reflexioai" / "claude-smart"
     old, new = cache / "1.0.0", cache / "2.0.0"
@@ -8656,7 +8659,13 @@ def test_shell_recovery_and_tracking_use_codex_account(tmp_path: Path) -> None:
         (root / "scripts").mkdir(parents=True)
         (root / "pyproject.toml").write_text("[project]\nname='runtime'\n")
     env = _isolated_env(tmp_path)
-    env["CODEX_HOME"] = str(account)
+    selected_home = account
+    if account_form == "symlink":
+        selected_home = tmp_path / "account alias with spaces"
+        selected_home.symlink_to(account, target_is_directory=True)
+    env["CODEX_HOME"] = str(selected_home) + (
+        "/" if account_form == "trailing-slash" else ""
+    )
     # A recovery fallback must search this account rather than ~/.codex.
     result = subprocess.run(
         [
@@ -8681,7 +8690,14 @@ def test_shell_recovery_and_tracking_use_codex_account(tmp_path: Path) -> None:
         [
             "/bin/bash",
             str(REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh"),
-            str(new),
+            str(
+                selected_home
+                / "plugins"
+                / "cache"
+                / "reflexioai"
+                / "claude-smart"
+                / "2.0.0"
+            ),
         ],
         env=env,
         capture_output=True,
@@ -8690,3 +8706,100 @@ def test_shell_recovery_and_tracking_use_codex_account(tmp_path: Path) -> None:
     )
     assert link.resolve() == new
     assert "cache-tracking" in result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="FIFO logs are POSIX-only")
+def test_status_ignores_fifo_log_without_blocking(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "claude", "#!/bin/sh\nprintf '[]\\n'\n")
+    log = tmp_path / "hook.fifo"
+    os.mkfifo(log)
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_HOOK_LOG"] = str(log)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "status"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Installed version: not installed" in result.stdout
+    assert (
+        "None recorded for this host/account; active version is unknown."
+        in result.stdout
+    )
+
+
+@pytest.mark.parametrize("foreign_only", [False, True])
+def test_status_attributes_each_claude_registration_to_its_scope(
+    tmp_path: Path, foreign_only: bool
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required")
+    foreign = tmp_path / "other project"
+    current = tmp_path / "current project"
+    current.mkdir()
+    inventory = [
+        {
+            "id": "claude-smart@reflexioai",
+            "version": "1.0.0",
+            "scope": "project",
+            "projectPath": str(foreign),
+            "enabled": False,
+        }
+    ]
+    if not foreign_only:
+        inventory.extend(
+            [
+                {
+                    "id": "claude-smart@reflexioai",
+                    "version": "2.0.0",
+                    "scope": "project",
+                    "projectPath": str(current),
+                    "enabled": True,
+                },
+                {
+                    "id": "claude-smart@reflexioai",
+                    "version": "3.0.0",
+                    "scope": "user",
+                    "enabled": True,
+                },
+            ]
+        )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "claude",
+        "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(inventory) + "\nJSON\n",
+    )
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "status"],
+        cwd=current,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "session activation is unknown" in result.stdout
+    assert (
+        f"Installed version: 1.0.0 (scope: project, project: {foreign}, enabled: false)"
+        in result.stdout
+    )
+    assert result.stdout.count("Installed version:") == len(inventory)
+    assert "Plugin is disabled in the host." not in result.stdout
+    if not foreign_only:
+        assert (
+            f"Installed version: 2.0.0 (scope: project, project: {current}, enabled: true)"
+            in result.stdout
+        )
+        assert "Installed version: 3.0.0 (scope: user, enabled: true)" in result.stdout

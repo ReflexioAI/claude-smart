@@ -3284,6 +3284,7 @@ async function runUninstallOpenCode(args) {
 function runStatus(args) {
   const host = parseHost(args);
   let installed = null;
+  let claudeInstallations = [];
   let inventoryAvailable = false;
   if (host === HOST_OPENCODE) {
     const version = codexPluginVersion(join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"));
@@ -3302,7 +3303,9 @@ function runStatus(args) {
         const data = JSON.parse(result.stdout);
         const plugins = host === HOST_CODEX ? data.installed : data;
         if (Array.isArray(plugins)) {
-          installed = plugins.find((plugin) => (plugin.pluginId || plugin.id) === PLUGIN_SPEC);
+          const matches = plugins.filter((plugin) => (plugin.pluginId || plugin.id) === PLUGIN_SPEC);
+          if (host === HOST_CLAUDE_CODE) claudeInstallations = matches;
+          else installed = matches[0];
           inventoryAvailable = true;
         }
       } catch {
@@ -3315,8 +3318,21 @@ function runStatus(args) {
   const versionLabel = host === HOST_OPENCODE ? "Prepared runtime version" : "Installed version";
   const version = installed ? (installed.version || "unknown (host reported no version)")
     : (inventoryAvailable ? "not installed" : "unknown (host inventory unavailable)");
-  process.stdout.write(`${versionLabel}: ${version}\n`);
-  if (installed?.enabled === false) process.stdout.write("Plugin is disabled in the host.\n");
+  if (claudeInstallations.length) {
+    process.stdout.write("Claude Code registrations (session activation is unknown):\n");
+    for (const plugin of claudeInstallations) {
+      const scope = plugin.scope || "unknown";
+      const project = plugin.projectPath ? `, project: ${plugin.projectPath}` : "";
+      const enabled = typeof plugin.enabled === "boolean" ? String(plugin.enabled) : "unknown";
+      const projectEnabled = typeof plugin.projectEnabled === "boolean"
+        ? `, project enabled: ${plugin.projectEnabled}` : "";
+      process.stdout.write(`  Installed version: ${plugin.version || "unknown (host reported no version)"} ` +
+        `(scope: ${scope}${project}, enabled: ${enabled}${projectEnabled})\n`);
+    }
+  } else {
+    process.stdout.write(`${versionLabel}: ${version}\n`);
+    if (installed?.enabled === false) process.stdout.write("Plugin is disabled in the host.\n");
+  }
 
   // Match only this host and account. The shared log is bounded by hook_log;
   // read its last 5 MiB even if an older writer left a larger file behind.
@@ -3325,9 +3341,11 @@ function runStatus(args) {
     ? logOverride : join(CLAUDE_SMART_STATE_DIR, "hook.log");
   const sessions = new Map();
   try {
-    const fd = openSync(logPath, "r");
+    const fd = openSync(logPath, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
-      const size = fstatSync(fd).size;
+      const stat = fstatSync(fd);
+      if (!stat.isFile()) throw new Error("Hook history is not a regular file");
+      const size = stat.size;
       const length = Math.min(size, 5 * 1024 * 1024);
       const buffer = Buffer.alloc(length);
       const count = readSync(fd, buffer, 0, length, size - length);

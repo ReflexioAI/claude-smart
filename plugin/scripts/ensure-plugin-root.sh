@@ -156,8 +156,16 @@ elif claude_smart_is_windows && [ -e "$LINK" ]; then
     echo "[claude-smart] ensure-plugin-root: $LINK is not a symlink and plugin-root.txt is missing; cannot determine whether the Windows plugin-root tracks the active plugin. Run ensure-plugin-root.sh with --force or delete the occupied path to recreate it." >&2
 fi
 if [ -n "$CURRENT" ]; then
+    # Targets written above are physical paths. Match the physical account
+    # home too, so a CODEX_HOME alias does not leave a valid old cache pinned.
+    CODEX_CACHE_HOME="${CODEX_HOME:-$HOME/.codex}"
+    if command -v claude_smart_canonical_dir >/dev/null 2>&1; then
+        CODEX_CACHE_HOME="$(claude_smart_canonical_dir "$CODEX_CACHE_HOME" 2>/dev/null || printf '%s\n' "$CODEX_CACHE_HOME")"
+    else
+        CODEX_CACHE_HOME="$(cd "$CODEX_CACHE_HOME" 2>/dev/null && pwd -P || printf '%s\n' "$CODEX_CACHE_HOME")"
+    fi
     case "$CURRENT" in
-        "$HOME/.claude/plugins/cache/"*|"${CODEX_HOME:-$HOME/.codex}/plugins/cache/"*)
+        "$HOME/.claude/plugins/cache/"*|"$CODEX_CACHE_HOME/plugins/cache/"*)
             CURRENT_NORM="${CURRENT%/}"
             TARGET_NORM="${TARGET%/}"
             if [ "$CURRENT_NORM" != "$TARGET_NORM" ]; then

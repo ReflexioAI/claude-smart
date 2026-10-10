@@ -49,11 +49,16 @@ def plugin_metadata() -> dict[str, str]:
     """Identify this loaded runtime, rather than the newest installation."""
     metadata = dict(_PLUGIN_IDENTITY)
     if host() == HOST_CODEX:
-        metadata["codex_home"] = str(
-            Path(
-                os.environ.get("CODEX_HOME", "").strip() or Path.home() / ".codex"
-            ).resolve()
-        )
+        try:
+            metadata["codex_home"] = str(
+                Path(
+                    os.environ.get("CODEX_HOME", "").strip() or Path.home() / ".codex"
+                ).resolve()
+            )
+        except (OSError, RuntimeError):
+            # An unreadable account path must not abort best-effort hook logging.
+            # Omit attribution so status cannot associate it with another account.
+            pass
     return metadata
 
 

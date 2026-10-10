@@ -82,7 +82,7 @@ state:
 
 | Dependency | Installed/managed by | Location |
 | --- | --- | --- |
-| Python 3.12 env and Python packages | `uv sync --locked --python 3.12` | plugin `.venv`; for the Claude Code install (macOS/Linux) a symlink to `~/.claude-smart/venvs/claude-code-<id>`, so Claude Code's per-version plugin cache copy skips it. Inactive envs are pruned when an install commits. |
+| Python 3.12 env and Python packages | `uv sync --locked --python 3.12` | plugin `.venv`; for the Claude Code install (macOS/Linux) a symlink to `~/.claude-smart/venvs/claude-code-<id>`, so Claude Code's per-version plugin cache copy skips it. Successful updates retain prior Claude environments until explicit uninstall because cached hook roots may still reference them. |
 | Runtime uv | installer if missing | `~/.local/bin` or `~/.cargo/bin` |
 | Runtime Node.js/npm | installer if missing | `~/.claude-smart/node/current` |
 | Dashboard packages/build | installer or first dashboard start | `plugin/dashboard/node_modules`, `plugin/dashboard/.next` |
@@ -622,7 +622,7 @@ For Reflexio backend changes, edit `open_source/reflexio/` and either:
 
 What's picked up after each reinstall + host activation:
 
-- `plugin/src/claude_smart/`, `plugin/commands/*.md`, `plugin/hooks/`, `plugin/dashboard/` — all from the freshly installed tarball. There is no editable code path; the running plugin is always whatever the latest installed tarball contains.
+- `plugin/src/claude_smart/`, `plugin/commands/*.md`, `plugin/hooks/`, `plugin/dashboard/` — loaded from the freshly installed tarball after host activation. There is no editable code path; existing sessions may still use previous cached runtime roots until they reload the plugin or a new session starts.
 
 ### Sanity check
 
@@ -719,6 +719,8 @@ npx claude-smart status --host codex
 ```
 
 Status reads the host plugin inventory and recent hook observations. Each hook records the version and root of the runtime actually executing it. Codex observations are scoped to `CODEX_HOME`; older records without account attribution are skipped. These are historical observations, not proof that a session is still running or has activated an update. Missing inventory or history is reported as unknown. `CLAUDE_SMART_HOOK_LOG` redirects both logging and status to the same file.
+
+Claude Code can register different plugin versions in user and project scopes. Status lists every matching registration with its scope, project path when provided, and enabled state. It does not infer which registration an existing session has loaded.
 
 Use the host's activation mechanism: [Claude Code `/reload-plugins`](https://code.claude.com/docs/en/plugins/loading) refreshes the plugin in an existing session; [Codex plugins](https://learn.chatgpt.com/docs/plugins) load in a new session. Changed Codex hook definitions require the host's current trust hash; the installer registers its own hooks and reports any failure with `/hooks` review instructions. There is no custom background switch of hooks or prompts inside a conversation.
 
