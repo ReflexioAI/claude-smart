@@ -212,7 +212,7 @@ claude_smart_dashboard_unavailable_marker() {
 claude_smart_node_recovery_hint() {
   printf '%s\n' \
     "Recovery:" \
-    "  1. Restart Claude Code to let claude-smart retry its private Node.js install." \
+    "  1. Rerun npx claude-smart install (add --host codex or --host opencode for those hosts) to retry private Node.js setup." \
     "  2. If the retry is blocked by your network or OS policy, install Node.js 20.9+ manually:"
   if claude_smart_is_windows; then
     printf '%s\n' \

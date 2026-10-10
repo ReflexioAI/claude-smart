@@ -77,8 +77,8 @@ The script prompts for:
   `global` to share skills across projects.
 
 After collecting those values, setup rewrites the claude-smart entries in
-`~/.claude-smart/.env` and then installs or updates the selected host. Restart
-Claude Code or fully quit and reopen Codex so the installed hooks reload.
+`~/.claude-smart/.env` and then installs or updates the selected host. Run
+`/reload-plugins` in Claude Code, or start a new Codex session, to load the update.
 
 Do not pass managed options to `npx claude-smart install`; install reads the
 env file written by setup.
@@ -317,7 +317,8 @@ If managed learning does not appear:
 - Confirm `REFLEXIO_API_KEY` is present in `~/.claude-smart/.env`.
 - Confirm `REFLEXIO_URL` points at `https://www.reflexio.ai/`.
 - Run the `curl` command above and check for HTTP 200.
-- Restart Claude Code or Codex after changing `.env`.
+- Rerun `npx claude-smart setup` to apply configuration changes and refresh services.
+  If setup updates the plugin, run `/reload-plugins` in Claude Code or start a new Codex session.
 - Check `~/.claude-smart/backend.log` for hook startup messages.
 
 If the local backend starts unexpectedly, rerun:
@@ -327,5 +328,6 @@ npx claude-smart setup
 ```
 
 Choose managed mode and confirm the API key. If you recently updated setup, also
-make sure the active plugin was updated and the host app was restarted; changing
+make sure the plugin was updated and activated with `/reload-plugins` in Claude
+Code or a new Codex session; changing
 `.env` alone cannot activate managed behavior in a stale plugin copy.

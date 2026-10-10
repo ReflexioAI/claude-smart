@@ -27,6 +27,7 @@ shell commands there.
 2. For `learn`, preserve any user-provided note exactly as the note text.
 3. For `clear-all`, require explicit confirmation before running it because it
    deletes all reflexio interactions, preferences, and skills.
-4. If `~/.reflexio/plugin-root` is missing or broken, tell the user to restart
-   Codex after installing claude-smart, then rerun the command.
+4. If `~/.reflexio/plugin-root` is missing or broken, rerun
+   `npx claude-smart install --host codex` to repair installation, then tell the
+   user to start a new Codex session and rerun the command.
 5. After running a command, summarize the important output concisely.

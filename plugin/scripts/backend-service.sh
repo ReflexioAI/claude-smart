@@ -171,7 +171,10 @@ if reason == vendor_preflight_failure:
     # only ships in the npm artifact, so the cache has to be replaced.
     message += (
         ">\n> The bundled Reflexio runtime is missing or unusable. Repair it "
-        "with `npx claude-smart update`, then restart Claude Code."
+        "with `npx claude-smart update` for Claude Code or "
+        "`npx claude-smart update --host codex` for Codex "
+        "(`--host opencode` for OpenCode). Then run `/reload-plugins` in "
+        "Claude Code, start a new Codex session, or restart OpenCode."
     )
 else:
     message += (

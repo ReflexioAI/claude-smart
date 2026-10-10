@@ -5776,6 +5776,7 @@ def test_backend_start_missing_vendor_does_not_stop_or_spawn(
         plugin_root,
         "#!/bin/sh\n"
         'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
+        f'if [ "$1" = "-" ]; then exec "{sys.executable}" "$@"; fi\n'
         'case "$1" in *backend-python-runner.py) printf "spawned backend\\n" >> "$HOME/python.log" ;; esac\n'
         "exit 0\n",
     )
@@ -5799,6 +5800,12 @@ def test_backend_start_missing_vendor_does_not_stop_or_spawn(
     # The remedy must be the one that can actually repair a missing bundle;
     # /claude-smart:restart cannot, since it preflights the same bundle.
     assert "npx claude-smart update" in result.stdout
+    message = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "npx claude-smart update --host codex" in message
+    assert "run `/reload-plugins` in Claude Code" in message
+    assert "start a new Codex session" in message
+    assert "restart OpenCode" in message
+    assert "restart Claude Code" not in message
     python_log = tmp_path / "python.log"
     assert "spawned backend" not in (
         python_log.read_text() if python_log.exists() else ""

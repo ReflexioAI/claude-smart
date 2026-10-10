@@ -29,7 +29,7 @@ if [ -f "$FAILURE_MARKER" ]; then
   msg="$(head -n 1 "$FAILURE_MARKER" 2>/dev/null || echo "")"
   [ -n "$msg" ] || msg="unknown error"
   echo "claude-smart is not installed correctly: $msg" >&2
-  echo "Re-run the plugin's Setup (restart Claude Code) or fix the underlying issue and delete $FAILURE_MARKER to retry." >&2
+  echo "Fix the underlying issue, then rerun npx claude-smart install (add --host codex or --host opencode for those hosts) to retry dependency setup." >&2
   exit 1
 fi
 
@@ -82,7 +82,7 @@ if ! claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.cli; then
       msg="$(head -n 1 "$FAILURE_MARKER" 2>/dev/null || echo "")"
       [ -n "$msg" ] || msg="unknown error"
       echo "claude-smart is not installed correctly: $msg" >&2
-      echo "Re-run the plugin's Setup (restart Claude Code) or fix the underlying issue and delete $FAILURE_MARKER to retry." >&2
+      echo "Fix the underlying issue, then rerun npx claude-smart install (add --host codex or --host opencode for those hosts) to retry dependency setup." >&2
     else
       echo "claude-smart: claude_smart package is not importable in $PLUGIN_ROOT/.venv." >&2
       echo "Run $PLUGIN_ROOT/scripts/smart-install.sh manually to diagnose." >&2
