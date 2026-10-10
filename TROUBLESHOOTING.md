@@ -13,7 +13,7 @@ Check `~/.claude-smart/sessions/`. If your current session's JSONL has no `User`
 Each hook is capped at 10–60s (see `plugin/hooks/hooks.json`). If you see long pauses, check `uv` is on PATH — hooks shell out to `uv run`.
 
 **Dashboard says npm or Node is missing.**
-The Setup hook should install a private Node.js/npm runtime under `~/.claude-smart/node/current` when no suitable global Node.js is available. If private Node setup or dashboard build fails, claude-smart writes the non-fatal marker `~/.claude-smart/dashboard-unavailable`; `/claude-smart:dashboard` prints that file before log tails. Restart Claude Code to retry Setup, or install Node.js 20.9+ manually and run `/claude-smart:restart`.
+The Setup hook should install a private Node.js/npm runtime under `~/.claude-smart/node/current` when no suitable global Node.js is available. If private Node setup or dashboard build fails, claude-smart writes the non-fatal marker `~/.claude-smart/dashboard-unavailable`; `/claude-smart:dashboard` prints that file before log tails. Rerun `npx claude-smart install` to retry dependency setup, or install Node.js 20.9+ manually and run `/claude-smart:restart`. Plugin reload alone does not retry dependency setup.
 
 **OpenCode on Windows injects nothing or never learns.**
 `claude-smart install --host opencode` fails early if OpenCode, Git Bash, or the Windows local embedding runtime is missing. Fix the message in `~/.claude-smart/install-failed`, rerun install, then check `~/.claude-smart/backend.log` for bridge errors from `opencode-claude-compat.cmd` if learning still does not run.
@@ -22,7 +22,7 @@ The Setup hook should install a private Node.js/npm runtime under `~/.claude-sma
 The default local semantic search uses `onnxruntime`, which loads Microsoft native runtime DLLs on Windows. Install the x64 Microsoft Visual C++ Redistributable from `https://aka.ms/vs/17/release/vc_redist.x64.exe`, then rerun `claude-smart install`.
 
 **Install reports `install-failed`.**
-`~/.claude-smart/install-failed` is reserved for core setup failures such as `uv` installation or `uv sync --locked --python 3.12`. Fix the reported issue, delete the marker, then restart Claude Code so Setup can retry. Dashboard-only issues should appear in `~/.claude-smart/dashboard-unavailable` instead.
+`~/.claude-smart/install-failed` is reserved for core setup failures such as `uv` installation or `uv sync --locked --python 3.12`. Fix the reported issue, then rerun `npx claude-smart install` (`--host codex` or `--host opencode` for those hosts) to retry dependency setup. Dashboard-only issues should appear in `~/.claude-smart/dashboard-unavailable` instead.
 
 **Backend log repeats `bundled Reflexio import preflight failed`.**
 This means claude-smart was installed from the GitHub marketplace, whose
@@ -37,7 +37,7 @@ npx claude-smart update
 ```
 
 The installer replaces an incomplete cache for the version it is installing.
-Restart Claude Code afterward. Do not use `claude plugin marketplace add
+Run `/reload-plugins` in Claude Code afterward, or start a new session. Do not use `claude plugin marketplace add
 ReflexioAI/claude-smart`; use the npm command for installation and updates.
 
 `/claude-smart:restart` cannot repair this — it preflights the same missing

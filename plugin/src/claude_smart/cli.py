@@ -58,18 +58,16 @@ _PLUGIN_SPEC = "claude-smart@reflexioai"
 _CODEX_MARKETPLACE_NAME = "reflexioai"
 _CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI"
 _CODEX_PLUGIN_ID = f"claude-smart@{_CODEX_MARKETPLACE_NAME}"
-_CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
+_CODEX_HOME = Path(
+    os.environ.get("CODEX_HOME", "").strip() or Path.home() / ".codex"
+).resolve()
+_CODEX_CONFIG_PATH = _CODEX_HOME / "config.toml"
 _CODEX_LOCAL_MARKETPLACE_ROOT = (
     Path.home() / ".claude" / "plugins" / "marketplaces" / _CODEX_MARKETPLACE_NAME
 )
 _CODEX_LOCAL_PLUGIN_PATH = Path("plugins") / "claude-smart"
 _CODEX_PLUGIN_CACHE_DIR = (
-    Path.home()
-    / ".codex"
-    / "plugins"
-    / "cache"
-    / _CODEX_MARKETPLACE_NAME
-    / "claude-smart"
+    _CODEX_HOME / "plugins" / "cache" / _CODEX_MARKETPLACE_NAME / "claude-smart"
 )
 _CODEX_CLI_TIMEOUT_SECONDS = 30
 _OPENCODE_BARE_PLUGIN_SPEC = "claude-smart"
@@ -1677,7 +1675,8 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
     if registered and installed and trusted:
         sys.stdout.write(
             "\nclaude-smart Codex support is installed.\n"
-            "Restart Codex so the installed plugin and trusted hooks reload. /plugins "
+            "Start a new Codex session to load the installed plugin. "
+            "You can finish your current session first. /plugins "
             "should "
             f"show claude-smart as installed from the "
             f"{_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace. "
@@ -1689,27 +1688,26 @@ def cmd_install_codex(args: argparse.Namespace) -> int:
         sys.stdout.write(
             "\nclaude-smart Codex support is installed, but hook trust could not be "
             "completed.\n"
-            "Fully quit and reopen Codex in this repo, run /hooks, trust the "
-            "claude-smart hooks, "
-            "and restart Codex so hooks reload.\n"
+            "Run /hooks in Codex to review and trust the claude-smart hooks, "
+            "then start a new session.\n"
         )
     elif registered:
         sys.stdout.write(
             "\nclaude-smart Codex marketplace is prepared, but automatic plugin "
             "install failed.\n"
-            "Fully quit and reopen Codex in this repo, run /plugins, install "
+            "In Codex, run /plugins, install "
             "claude-smart from "
-            f"the {_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, and restart Codex so "
-            f"hooks reload.\n"
+            f"the {_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, review /hooks, "
+            "then start a new session.\n"
         )
     else:
         sys.stdout.write(
             "\nCodex hooks enabled; marketplace registration failed.\n"
             f"Install manually with `codex plugin marketplace add {marketplace_root}`, "
-            "then fully quit and reopen Codex, run /plugins, install claude-smart from "
+            "then run /plugins in Codex, install claude-smart from "
             "the "
-            f"{_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, and restart Codex so "
-            f"hooks reload.\n"
+            f"{_CODEX_MARKETPLACE_DISPLAY_NAME} marketplace, review /hooks, "
+            "then start a new session.\n"
         )
     return 0 if hooks_ok and registered and installed and trusted else 1
 
@@ -1787,7 +1785,8 @@ def cmd_install(args: argparse.Namespace) -> int:
 
     sys.stdout.write(
         "\nclaude-smart installed and dependencies are prepared. "
-        "Restart Claude Code in your project.\n"
+        "Run /reload-plugins in your existing Claude Code session, "
+        "or activate the update next session.\n"
     )
     return 0
 
@@ -1880,7 +1879,7 @@ def cmd_uninstall(_args: argparse.Namespace) -> int:
     _repair_plugin_root(_HOST_CLAUDE_CODE)
 
     sys.stdout.write(
-        "\nclaude-smart uninstalled. Restart Claude Code to apply.\n"
+        "\nclaude-smart uninstalled. Run /reload-plugins in Claude Code to apply.\n"
         f"{_LOCAL_DATA_NOTICE}"
     )
     return 0
@@ -1917,7 +1916,8 @@ def cmd_uninstall_codex(_args: argparse.Namespace) -> int:
     if not _cleanup_codex_install_state():
         sys.stderr.write(f"warning: could not update {_CODEX_CONFIG_PATH}\n")
     sys.stdout.write(
-        "claude-smart Codex plugin and marketplace state removed. Restart Codex to "
+        "claude-smart Codex plugin and marketplace state removed. "
+        "Start a new Codex session to "
         "apply. "
         "Codex's global hook feature flags were left in place.\n"
         f"{_LOCAL_DATA_NOTICE}"

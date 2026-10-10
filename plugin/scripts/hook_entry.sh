@@ -75,9 +75,9 @@ print(json.dumps({
         "hookEventName": "SessionStart",
         "additionalContext": (
             f"> **claude-smart is not installed correctly:** {msg}\n"
-            "> Re-run the plugin's Setup (restart your coding assistant) "
-            "or fix the underlying issue and delete "
-            "`~/.claude-smart/install-failed` to retry."
+            "> Fix the underlying issue, then rerun `npx claude-smart install` "
+            "(`--host codex` or `--host opencode` for those hosts) "
+            "to retry dependency setup."
         ),
     }
 }))

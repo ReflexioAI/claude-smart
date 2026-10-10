@@ -82,7 +82,7 @@ state:
 
 | Dependency | Installed/managed by | Location |
 | --- | --- | --- |
-| Python 3.12 env and Python packages | `uv sync --locked --python 3.12` | plugin `.venv`; for the Claude Code install (macOS/Linux) a symlink to `~/.claude-smart/venvs/claude-code-<id>`, so Claude Code's per-version plugin cache copy skips it. Inactive envs are pruned when an install commits. |
+| Python 3.12 env and Python packages | `uv sync --locked --python 3.12` | plugin `.venv`; for the Claude Code install (macOS/Linux) a symlink to `~/.claude-smart/venvs/claude-code-<id>`, so Claude Code's per-version plugin cache copy skips it. Successful updates retain prior Claude environments until explicit uninstall because cached hook roots may still reference them. |
 | Runtime uv | installer if missing | `~/.local/bin` or `~/.cargo/bin` |
 | Runtime Node.js/npm | installer if missing | `~/.claude-smart/node/current` |
 | Dashboard packages/build | installer or first dashboard start | `plugin/dashboard/node_modules`, `plugin/dashboard/.next` |
@@ -143,6 +143,8 @@ existing `reflexioai` entry at the packaged copy, which carries the vendor bundl
 and `~/.claude-smart/` is preserved.
 
 ### Codex
+
+Installers and hook discovery use `CODEX_HOME` when set, falling back to `~/.codex`. Configuration, plugin caches, and hook trust remain in that account home. Run the installer with the same `CODEX_HOME` as the Codex session you want to update.
 
 `npx claude-smart uninstall --host codex` stops local claude-smart services and removes plugin/cache/config state; learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved and shared with the other hosts.
 
@@ -414,9 +416,9 @@ npx claude-smart update
 
 The command re-registers the bundled npm package, repairs an incomplete Claude
 cache for that version when necessary, and reinstalls the plugin. Users
-restart Claude Code to apply. Codex users rerun
-`npx claude-smart install --host codex`, then restart Codex after `/plugins` has
-upgraded the installed plugin.
+run `/reload-plugins` in Claude Code to apply. Codex users run
+`npx claude-smart update --host codex`, review `/hooks` if trust needs attention,
+then start a new session after `/plugins` shows the installed update.
 
 ### Desktop app (claude.ai) — manual plugin upload
 
@@ -589,9 +591,9 @@ claude-smart install --host opencode   # OpenCode
 
 npm decides the source from the *shape* of the argument: a filesystem path (absolute, or relative with a `./` prefix) is installed as a local tarball, while a bare `claude-smart-<version>.tgz` is treated as a registry package name and fails. Always pass a path.
 
-Restart the host. `claude-smart install` (Claude Code) registers the bundled package root as a local marketplace and runs `claude plugin install claude-smart@reflexioai`; the Codex variant copies the bundled plugin into Codex's marketplace cache; the OpenCode variant copies the active npm package to `~/.claude-smart/opencode/claude-smart` and registers that package with a `file://` plugin entry. In all three hosts, your local plugin changes are what gets loaded after rerunning the host installer.
+Activate with `/reload-plugins` in Claude Code, a new Codex session, or an OpenCode restart. `claude-smart install` (Claude Code) registers the bundled package root as a local marketplace and runs `claude plugin install claude-smart@reflexioai`; the Codex variant copies the bundled plugin into Codex's marketplace cache; the OpenCode variant copies the active npm package to `~/.claude-smart/opencode/claude-smart` and registers that package with a `file://` plugin entry. In all three hosts, your local plugin changes are what gets loaded after rerunning the host installer.
 
-To iterate: edit plugin code, rerun `make package`, reinstall the tarball, rerun `claude-smart install`, restart the host.
+To iterate: edit plugin code, rerun `make package`, reinstall the tarball, rerun `claude-smart install`, activate through `/reload-plugins` in Claude Code, a new Codex session, or an OpenCode restart.
 
 ### Reinstalling a rebuilt tarball (same name/version)
 
@@ -603,7 +605,7 @@ npm install -g --force /abs/path/claude-smart-<version>.tgz   # force overwrite
 npm uninstall -g claude-smart && npm install -g /abs/path/claude-smart-<version>.tgz
 ```
 
-Reinstalling the npm package only refreshes the `claude-smart` CLI wrapper — the plugin payload the host loads is whatever `claude-smart install` last copied in, so always re-run `claude-smart install` and restart the host afterward. If a same-version change still doesn't take effect (the host may dedupe the plugin by version), force a clean re-ingest:
+Reinstalling the npm package only refreshes the `claude-smart` CLI wrapper — the plugin payload the host loads is whatever `claude-smart install` last copied in, so always re-run `claude-smart install` and activate through `/reload-plugins` in Claude Code, a new Codex session, or an OpenCode restart afterward. If a same-version change still doesn't take effect (the host may dedupe the plugin by version), force a clean re-ingest:
 
 ```bash
 claude plugin uninstall claude-smart@reflexioai   # Claude Code
@@ -618,9 +620,9 @@ For Reflexio backend changes, edit `open_source/reflexio/` and either:
 - Publish `reflexio-ai` to PyPI and use [Path B](#path-b-release-claude-smart-with-a-published-reflexio-update), or
 - Use [vendor mode](#vendor-mode-unpublished-reflexio-update) — `make package` bundles the local Reflexio working tree into `plugin/vendor/reflexio` so the tarball install picks it up (uncommitted edits included).
 
-What's picked up after each reinstall + host restart:
+What's picked up after each reinstall + host activation:
 
-- `plugin/src/claude_smart/`, `plugin/commands/*.md`, `plugin/hooks/`, `plugin/dashboard/` — all from the freshly installed tarball. There is no editable code path; the running plugin is always whatever the latest installed tarball contains.
+- `plugin/src/claude_smart/`, `plugin/commands/*.md`, `plugin/hooks/`, `plugin/dashboard/` — loaded from the freshly installed tarball after host activation. There is no editable code path; existing sessions may still use previous cached runtime roots until they reload the plugin or a new session starts.
 
 ### Sanity check
 
@@ -708,3 +710,18 @@ On the first migration check, the npm installer copies missing `CLAUDE_SMART_*`
 keys from `~/.reflexio/.env` to `~/.claude-smart/.env`, including local read-only
 settings. Existing runtime values win. The legacy file is unchanged, and another
 local server's URL and API key are not imported.
+
+### Update activation and diagnostics
+
+```bash
+npx claude-smart status
+npx claude-smart status --host codex
+```
+
+Status reads the host plugin inventory and recent hook observations. Each hook records the version and root of the runtime actually executing it. Codex observations are scoped to `CODEX_HOME`; older records without account attribution are skipped. These are historical observations, not proof that a session is still running or has activated an update. Missing inventory or history is reported as unknown. `CLAUDE_SMART_HOOK_LOG` redirects both logging and status to the same file.
+
+Claude Code can register different plugin versions in user and project scopes. Status lists every matching registration with its scope, project path when provided, and enabled state. It does not infer which registration an existing session has loaded.
+
+Use the host's activation mechanism: [Claude Code `/reload-plugins`](https://code.claude.com/docs/en/plugins/loading) refreshes the plugin in an existing session; [Codex plugins](https://learn.chatgpt.com/docs/plugins) load in a new session. Changed Codex hook definitions require the host's current trust hash; the installer registers its own hooks and reports any failure with `/hooks` review instructions. There is no custom background switch of hooks or prompts inside a conversation.
+
+Backend and dashboard services refresh separately from host plugin activation. Successful Claude Code updates retain older external Python environments because cached hook roots may still reference them. A failed update removes only its new environment and restores the previous package; explicit uninstall removes retained Claude environments. Repeated updates can therefore consume additional disk space until uninstall.

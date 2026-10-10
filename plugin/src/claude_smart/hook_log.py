@@ -29,6 +29,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import IO, Any
 
+from claude_smart import runtime
+
 # ``fcntl`` is POSIX-only. On Windows we skip the cross-process lock and
 # accept the unlikely rotation race (claude-smart is primarily a POSIX
 # tool for Claude Code's plugin runtime).
@@ -119,6 +121,8 @@ def log_event(
             if key in record:
                 continue
             record[key] = _truncate(value)
+    for key, value in runtime.plugin_metadata().items():
+        record.setdefault(key, value)
 
     try:
         line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
@@ -153,8 +157,7 @@ def log_event(
 
         # Rotate AFTER the append so the just-written record always survives,
         # even on the call that crosses the cap. A single oversized record
-        # still gets through and is dropped by the *next* rotation when the
-        # file is read back.
+        # stays intact until a newer record arrives, even above the cap.
         _maybe_rotate(path)
 
 
@@ -286,10 +289,14 @@ def _maybe_rotate(path: Path) -> None:
 
     midpoint = len(data) // 2
     cut = data.find(b"\n", midpoint)
-    # ``find`` returns -1 when the second half has no newline at all,
-    # meaning the file is one giant record with no framing left to
-    # preserve. Drop the lot rather than split a record mid-byte.
-    tail = b"" if cut == -1 else data[cut + 1 :]
+    if cut == len(data) - 1:
+        # Keep the newest complete record even when it spans the midpoint.
+        cut = data.rfind(b"\n", 0, cut)
+        tail = data[cut + 1 :]
+    else:
+        tail = b"" if cut == -1 else data[cut + 1 :]
+    # Unframed data has no complete JSONL record to preserve. A complete
+    # newest record is retained above, even when it exceeds the cap.
 
     # Atomic replace: write to a sibling temp file then rename. This
     # avoids the truncation window where a concurrent reader would see

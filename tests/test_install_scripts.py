@@ -2803,6 +2803,7 @@ def test_node_failed_install_discards_its_env_and_keeps_the_restored_one(
 ) -> None:
     venvs = tmp_path / ".claude-smart" / "venvs"
     (venvs / "claude-code-old").mkdir(parents=True)
+    (venvs / "claude-code-older").mkdir()
     stable = tmp_path / ".claude-smart" / "claude-code" / "claude-smart"
     (stable / "plugin").mkdir(parents=True)
     (stable / "plugin" / ".venv").symlink_to(venvs / "claude-code-old")
@@ -2818,7 +2819,10 @@ def test_node_failed_install_discards_its_env_and_keeps_the_restored_one(
 
     assert result.returncode != 0
     assert "restored the previous claude-smart package" in result.stderr
-    assert sorted(p.name for p in venvs.iterdir()) == ["claude-code-old"]
+    assert sorted(p.name for p in venvs.iterdir()) == [
+        "claude-code-old",
+        "claude-code-older",
+    ]
     assert (stable / "plugin" / ".venv").resolve() == (
         venvs / "claude-code-old"
     ).resolve()
@@ -4207,11 +4211,18 @@ def test_smart_install_clears_a_corrupt_linked_venv_in_place(tmp_path: Path) -> 
     assert sorted(p.name for p in target.parent.iterdir()) == ["claude-code-corrupt"]
 
 
-def test_node_install_prunes_inactive_claude_code_venvs_on_commit(
+def test_node_install_keeps_cached_claude_code_venvs_on_commit(
     tmp_path: Path,
 ) -> None:
     venvs = tmp_path / ".claude-smart" / "venvs"
-    (venvs / "claude-code-old").mkdir(parents=True)
+    (venvs / "claude-code-old" / "bin").mkdir(parents=True)
+    _write_executable(
+        venvs / "claude-code-old" / "bin" / "python",
+        "#!/bin/sh\nprintf 'old-runtime-ok\\n'\n",
+    )
+    cached = tmp_path / "cached-plugin"
+    cached.mkdir()
+    (cached / ".venv").symlink_to(venvs / "claude-code-old")
     (venvs / "unrelated").mkdir()
     package_root = _fake_claude_code_package(
         tmp_path,
@@ -4223,7 +4234,19 @@ def test_node_install_prunes_inactive_claude_code_venvs_on_commit(
     result = _run_fake_claude_code_install(tmp_path, package_root, {})
 
     assert result.returncode == 0, result.stderr
-    assert sorted(p.name for p in venvs.iterdir()) == ["claude-code-new", "unrelated"]
+    assert sorted(p.name for p in venvs.iterdir()) == [
+        "claude-code-new",
+        "claude-code-old",
+        "unrelated",
+    ]
+
+    old_hook = subprocess.run(
+        [str(cached / ".venv" / "bin" / "python")],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert old_hook.stdout == "old-runtime-ok\n"
 
 
 def _prepare_smart_install_sync_fixture(
@@ -5753,6 +5776,7 @@ def test_backend_start_missing_vendor_does_not_stop_or_spawn(
         plugin_root,
         "#!/bin/sh\n"
         'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
+        f'if [ "$1" = "-" ]; then exec "{sys.executable}" "$@"; fi\n'
         'case "$1" in *backend-python-runner.py) printf "spawned backend\\n" >> "$HOME/python.log" ;; esac\n'
         "exit 0\n",
     )
@@ -5776,6 +5800,12 @@ def test_backend_start_missing_vendor_does_not_stop_or_spawn(
     # The remedy must be the one that can actually repair a missing bundle;
     # /claude-smart:restart cannot, since it preflights the same bundle.
     assert "npx claude-smart update" in result.stdout
+    message = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "npx claude-smart update --host codex" in message
+    assert "run `/reload-plugins` in Claude Code" in message
+    assert "start a new Codex session" in message
+    assert "restart OpenCode" in message
+    assert "restart Claude Code" not in message
     python_log = tmp_path / "python.log"
     assert "spawned backend" not in (
         python_log.read_text() if python_log.exists() else ""
@@ -6699,6 +6729,7 @@ def _assert_installed_host_learning_e2e(
     host: str,
     home: Path,
     tmp_path: Path,
+    codex_home: Path | None = None,
 ) -> None:
     script = tmp_path / f"{host}-installed-learning-e2e.py"
     script.write_text(
@@ -6729,6 +6760,8 @@ def _assert_installed_host_learning_e2e(
             "CLAUDE_SMART_DASHBOARD_AUTOSTART": "0",
         }
     )
+    if codex_home is not None:
+        env["CODEX_HOME"] = str(codex_home)
     for key in ["REFLEXIO_URL", "REFLEXIO_API_KEY", "REFLEXIO_USER_ID"]:
         env.pop(key, None)
     venv_python = host_plugin_root / ".venv" / "bin" / "python"
@@ -6830,8 +6863,10 @@ def test_claude_code_fresh_tarball_install_prepares_stable_copy(
     assert "claude plugin install claude-smart@reflexioai" in claude_log
 
 
+@pytest.mark.parametrize("custom_home", [False, True])
 def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
     tmp_path: Path,
+    custom_home: bool,
 ) -> None:
     if os.name == "nt":
         pytest.skip("tarball smoke uses POSIX npm bin paths")
@@ -6870,6 +6905,9 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
             "CLAUDE_SMART_TEST_ARCH": "x64",
         }
     )
+    codex_home = tmp_path / "account home" if custom_home else home / ".codex"
+    if custom_home:
+        env["CODEX_HOME"] = str(codex_home)
     _npm_install_global_tarball(tarball, prefix=prefix, env=env)
 
     env["PATH"] = test_path
@@ -6895,7 +6933,7 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
         home / ".claude" / "plugins" / "marketplaces" / "reflexioai" / "plugin"
     )
     cache_plugin = (
-        home / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / version
+        codex_home / "plugins" / "cache" / "reflexioai" / "claude-smart" / version
     )
     for root in [marketplace_plugin, cache_plugin]:
         assert (root / "pyproject.toml").exists()
@@ -6909,9 +6947,22 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
         host="codex",
         home=home,
         tmp_path=tmp_path,
+        codex_home=codex_home,
     )
 
-    codex_config = (home / ".codex" / "config.toml").read_text()
+    observations = [
+        json.loads(line)
+        for line in (home / ".claude-smart" / "codex-hook.log").read_text().splitlines()
+    ]
+    assert any(
+        row.get("codex_home") == str(codex_home.resolve())
+        and row.get("event") == "stop"
+        for row in observations
+    )
+    codex_config = (codex_home / "config.toml").read_text()
+    if custom_home:
+        assert not (home / ".codex").exists()
+    assert "Start a new Codex session" in result.stdout
     assert "hooks = true" in codex_config
     assert "plugin_hooks = true" in codex_config
     assert '[plugins."claude-smart@reflexioai"]' in codex_config
@@ -8441,3 +8492,321 @@ def test_legacy_read_only_migration_keeps_last_assignment(
     runtime = (tmp_path / ".claude-smart" / ".env").read_text()
     assert runtime.count("CLAUDE_SMART_READ_ONLY=") == 1
     assert f'CLAUDE_SMART_READ_ONLY="{last_value}"' in runtime
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex"])
+def test_status_distinguishes_install_from_account_scoped_observations(
+    tmp_path: Path, host: str
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    inventory = [{"id": "claude-smart@reflexioai", "version": "9.0.0", "enabled": True}]
+    if host == "codex":
+        inventory = {"installed": inventory}
+    cli = fake_bin / ("codex" if host == "codex" else "claude")
+    _write_executable(
+        cli, "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(inventory) + "\nJSON\n"
+    )
+    account = tmp_path / "account home"
+    log = tmp_path / "custom-hook.log"
+    base = {"host": host, "event": "stop", "ts": 123, "codex_home": str(account)}
+    records = [
+        {**base, "session_id": "existing-session", "plugin_version": "8.0.0"},
+        {
+            **base,
+            "host": "opencode",
+            "session_id": "other-host",
+            "plugin_version": "7.0.0",
+        },
+        {**base, "session_id": "internal-session", "internal_skipped": True},
+        {
+            **base,
+            "session_id": "existing-session",
+            "event": "publish-result",
+            "plugin_version": "bogus",
+        },
+    ]
+    if host == "codex":
+        records.append(
+            {
+                **base,
+                "session_id": "other-account",
+                "codex_home": str(tmp_path / "other"),
+            }
+        )
+        records.append({"host": host, "session_id": "legacy-unattributed"})
+    log.write_text("\n".join(json.dumps(row) for row in records) + "\npartial-json")
+    env = _isolated_env(tmp_path)
+    env.update(CODEX_HOME=str(account), CLAUDE_SMART_HOOK_LOG=str(log))
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "status", "--host", host],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=40,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Installed version: 9.0.0" in result.stdout
+    assert "existing-session: 8.0.0" in result.stdout
+    assert "sessions may have ended" in result.stdout
+    for excluded in [
+        "other-host",
+        "internal-session",
+        "other-account",
+        "legacy-unattributed",
+        "bogus",
+    ]:
+        assert excluded not in result.stdout
+    assert not (tmp_path / ".codex").exists()
+    cli.write_text("#!/bin/sh\nexit 1\n")
+    log.unlink()
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "status", "--host", host],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=40,
+    )
+    assert result.returncode == 0
+    assert "unknown (host inventory unavailable)" in result.stdout
+    assert "active version is unknown" in result.stdout
+
+
+def test_python_installer_uses_codex_account_home(tmp_path: Path) -> None:
+    env = _isolated_env(tmp_path)
+    env["CODEX_HOME"] = str(tmp_path / "account home")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from claude_smart import cli; print(cli._CODEX_CONFIG_PATH); print(cli._CODEX_PLUGIN_CACHE_DIR)",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        str(tmp_path / "account home" / "config.toml"),
+        str(
+            tmp_path
+            / "account home"
+            / "plugins"
+            / "cache"
+            / "reflexioai"
+            / "claude-smart"
+        ),
+    ]
+
+
+def test_codex_fallback_discovery_stays_in_selected_account(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required")
+    account = tmp_path / "account home"
+    selected = account / "plugins" / "cache" / "reflexioai" / "claude-smart" / "1.0.0"
+    other = (
+        tmp_path
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "9.0.0"
+    )
+    for root in [selected, other]:
+        root.mkdir(parents=True)
+        (root / "pyproject.toml").write_text("[project]\nname='test-runtime'\n")
+    env = _isolated_env(tmp_path)
+    env["CODEX_HOME"] = str(account)
+    for key in ["CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT", "_R"]:
+        env.pop(key, None)
+    result = subprocess.run(
+        [
+            "/bin/sh",
+            "-c",
+            '. "$1"; printf "%s\\n" "$PLUGIN_ROOT"',
+            "sh",
+            str(REPO_ROOT / "plugin" / "scripts" / "_codex_env.sh"),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == str(selected)
+    wrapper = tmp_path / "detached-scripts" / "codex-hook.js"
+    wrapper.parent.mkdir()
+    shutil.copy2(CODEX_HOOK, wrapper)
+    result = subprocess.run(
+        [node, str(wrapper), "ensure-root"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(result.stdout) == {"continue": True}
+    assert (tmp_path / ".reflexio" / "plugin-root").resolve() == selected
+
+
+@pytest.mark.parametrize("account_form", ["direct", "symlink", "trailing-slash"])
+def test_shell_recovery_and_tracking_use_codex_account(
+    tmp_path: Path, account_form: str
+) -> None:
+    account = tmp_path / "account home"
+    cache = account / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    old, new = cache / "1.0.0", cache / "2.0.0"
+    stray = tmp_path / ".reflexio" / "stray" / "plugin"
+    for root in [old, new, stray]:
+        (root / "scripts").mkdir(parents=True)
+        (root / "pyproject.toml").write_text("[project]\nname='runtime'\n")
+    env = _isolated_env(tmp_path)
+    selected_home = account
+    if account_form == "symlink":
+        selected_home = tmp_path / "account alias with spaces"
+        selected_home.symlink_to(account, target_is_directory=True)
+    env["CODEX_HOME"] = str(selected_home) + (
+        "/" if account_form == "trailing-slash" else ""
+    )
+    # A recovery fallback must search this account rather than ~/.codex.
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            '. "$1"; claude_smart_stable_plugin_root_for_session_copy "$2"',
+            "bash",
+            str(LIB),
+            str(stray),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() in {str(old), str(new)}
+    link = tmp_path / ".reflexio" / "plugin-root"
+    link.symlink_to(old)
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            str(REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh"),
+            str(
+                selected_home
+                / "plugins"
+                / "cache"
+                / "reflexioai"
+                / "claude-smart"
+                / "2.0.0"
+            ),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert link.resolve() == new
+    assert "cache-tracking" in result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="FIFO logs are POSIX-only")
+def test_status_ignores_fifo_log_without_blocking(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "claude", "#!/bin/sh\nprintf '[]\\n'\n")
+    log = tmp_path / "hook.fifo"
+    os.mkfifo(log)
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_HOOK_LOG"] = str(log)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "status"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Installed version: not installed" in result.stdout
+    assert (
+        "None recorded for this host/account; active version is unknown."
+        in result.stdout
+    )
+
+
+@pytest.mark.parametrize("foreign_only", [False, True])
+def test_status_attributes_each_claude_registration_to_its_scope(
+    tmp_path: Path, foreign_only: bool
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required")
+    foreign = tmp_path / "other project"
+    current = tmp_path / "current project"
+    current.mkdir()
+    inventory = [
+        {
+            "id": "claude-smart@reflexioai",
+            "version": "1.0.0",
+            "scope": "project",
+            "projectPath": str(foreign),
+            "enabled": False,
+        }
+    ]
+    if not foreign_only:
+        inventory.extend(
+            [
+                {
+                    "id": "claude-smart@reflexioai",
+                    "version": "2.0.0",
+                    "scope": "project",
+                    "projectPath": str(current),
+                    "enabled": True,
+                },
+                {
+                    "id": "claude-smart@reflexioai",
+                    "version": "3.0.0",
+                    "scope": "user",
+                    "enabled": True,
+                },
+            ]
+        )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "claude",
+        "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(inventory) + "\nJSON\n",
+    )
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "status"],
+        cwd=current,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "session activation is unknown" in result.stdout
+    assert (
+        f"Installed version: 1.0.0 (scope: project, project: {foreign}, enabled: false)"
+        in result.stdout
+    )
+    assert result.stdout.count("Installed version:") == len(inventory)
+    assert "Plugin is disabled in the host." not in result.stdout
+    if not foreign_only:
+        assert (
+            f"Installed version: 2.0.0 (scope: project, project: {current}, enabled: true)"
+            in result.stdout
+        )
+        assert "Installed version: 3.0.0 (scope: user, enabled: true)" in result.stdout

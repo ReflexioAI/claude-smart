@@ -25,7 +25,7 @@ Supported vanilla native targets are Apple Silicon macOS 14+ and Windows x64.
 Intel Mac, macOS 13 or older, and Windows ARM fail early because the local
 embedding/ML dependency stack does not provide a complete native wheel set.
 
-Then restart Claude Code.
+Run `/reload-plugins` in your existing Claude Code session, or use the update in your next session.
 
 ### Codex
 
@@ -33,7 +33,7 @@ Then restart Claude Code.
 npx claude-smart install --host codex
 ```
 
-Then fully quit and reopen Codex so hooks reload. Codex installs reuse the same
+Start a new Codex session to load the update; you can finish your existing session first. If hook trust needs review, use `/hooks`. Codex installs reuse the same
 local Preferences, Project-specific skills, and Shared skills as Claude Code.
 
 ### OpenCode
@@ -68,7 +68,7 @@ npx claude-smart uninstall
 npx claude-smart uninstall --host codex
 ```
 
-Restart Codex after uninstalling. Local data under `~/.reflexio/` and
+Start a new Codex session after uninstalling. Local data under `~/.reflexio/` and
 `~/.claude-smart/` is left in place for both hosts — remove manually if desired.
 
 ### OpenCode

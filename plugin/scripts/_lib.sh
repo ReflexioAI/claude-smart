@@ -212,7 +212,7 @@ claude_smart_dashboard_unavailable_marker() {
 claude_smart_node_recovery_hint() {
   printf '%s\n' \
     "Recovery:" \
-    "  1. Restart Claude Code to let claude-smart retry its private Node.js install." \
+    "  1. Rerun npx claude-smart install (add --host codex or --host opencode for those hosts) to retry private Node.js setup." \
     "  2. If the retry is blocked by your network or OS policy, install Node.js 20.9+ manually:"
   if claude_smart_is_windows; then
     printf '%s\n' \
@@ -395,7 +395,7 @@ claude_smart_stable_plugin_root_for_session_copy() {
   for candidate in \
     "$HOME/.reflexio/plugin-root" \
     "$HOME/.claude/plugins/marketplaces/reflexioai/plugin" \
-    "$HOME/.codex/plugins/cache/reflexioai/claude-smart/current"
+    "${CODEX_HOME:-$HOME/.codex}/plugins/cache/reflexioai/claude-smart/current"
   do
     [ -f "$candidate/pyproject.toml" ] || continue
     candidate_real="$(claude_smart_canonical_dir "$candidate" 2>/dev/null || true)"
@@ -408,7 +408,7 @@ claude_smart_stable_plugin_root_for_session_copy() {
     return 0
   done
 
-  for glob in "$HOME/.claude/plugins/cache/reflexioai/claude-smart"/* "$HOME/.codex/plugins/cache/reflexioai/claude-smart"/*; do
+  for glob in "$HOME/.claude/plugins/cache/reflexioai/claude-smart"/* "${CODEX_HOME:-$HOME/.codex}/plugins/cache/reflexioai/claude-smart"/*; do
     [ -f "$glob/pyproject.toml" ] || continue
     candidate_real="$(claude_smart_canonical_dir "$glob" 2>/dev/null || true)"
     [ -n "$candidate_real" ] || continue
