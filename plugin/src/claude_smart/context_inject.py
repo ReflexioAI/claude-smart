@@ -62,6 +62,7 @@ def emit_context(
         # Scopes server-side dedup: rules already injected into this session
         # are not returned again; next-best matches backfill instead.
         session_id=session_id or None,
+        request_id=state.reserve_publish_request_id(session_id) if session_id else None,
     )
     renderer = (
         context_format.render_inline_compact_with_registry

@@ -270,7 +270,7 @@ class Adapter:
                         try:
                             stored = _stored_publish_matches(raw_request, payload)
                         except Exception:  # noqa: BLE001 — preserve the publish failure.
-                            raise exc
+                            raise exc from None
                         if stored:
                             recovered = True
                             confirmed_ids.append(chunk_id)
@@ -534,6 +534,7 @@ class Adapter:
         query: str,
         top_k: int = 5,
         session_id: str | None = None,
+        request_id: str | None = None,
     ) -> tuple[list[Any], list[Any], list[Any]]:
         """Unified hybrid search → ``(user_playbooks, agent_playbooks, preferences)``.
 
@@ -551,6 +552,8 @@ class Adapter:
                 server skips results it already returned to this session
                 and backfills next-best matches, so repeated hook searches
                 within one session stop re-injecting the same rules.
+            request_id (str | None): Durable identity reserved for the response
+                that will publish this retrieved context.
 
         Returns:
             tuple[list[Any], list[Any], list[Any]]: ``(user_playbooks,
@@ -572,6 +575,7 @@ class Adapter:
                 top_k=top_k,
                 search_mode=_SEARCH_MODE_HYBRID,
                 session_id=session_id,
+                request_id=request_id,
             )
         except Exception as exc:  # noqa: BLE001
             self._record_read_error("unified search", exc)
@@ -684,16 +688,16 @@ def _stored_publish_matches(raw_request: Any, payload: dict[str, Any]) -> bool:
         raise ValueError("Stored publish confirmation returned another request")
     stored = requests[0]
     request = stored.get("request", {})
-    for key in (
+    identity_fields = (
         "request_id",
         "user_id",
         "session_id",
         "source",
         "agent_version",
         "evaluation_only",
-    ):
-        if request.get(key) != payload[key]:
-            raise ValueError("Stored publish request identity does not match")
+    )
+    if any(request.get(key) != payload[key] for key in identity_fields):
+        raise ValueError("Stored publish request identity does not match")
     interactions = stored.get("interactions")
     if not isinstance(interactions, list) or len(interactions) != len(
         payload["interaction_data_list"]
@@ -707,24 +711,23 @@ def _stored_publish_matches(raw_request: Any, payload: dict[str, Any]) -> bool:
     visible = (set(InteractionData.model_fields) | {"retrieved_learnings"}) - omitted
     expected = payload["interaction_data_list"]
     for item in expected:
-        if any(item.get(key) for key in ("citations", "image_encoding")) or set(
-            item
-        ) - (set(InteractionData.model_fields) | {"retrieved_learnings"}):
+        unverifiable = (
+            any(item.get(key) for key in ("citations", "image_encoding"))
+            or bool(
+                set(item)
+                - (set(InteractionData.model_fields) | {"retrieved_learnings"})
+            )
+            or any(
+                set(tool) - (set(ToolUsed.model_fields) | {"status"})
+                for tool in item.get("tools_used", [])
+            )
+            or any(
+                set(ref) - {"kind", "learning_id"}
+                for ref in item.get("retrieved_learnings", [])
+            )
+        )
+        if unverifiable:
             raise ValueError("Stored publish contains fields that cannot be verified")
-        if any(
-            set(tool) - (set(ToolUsed.model_fields) | {"status"})
-            for tool in item.get("tools_used", [])
-        ):
-            raise ValueError(
-                "Stored publish contains tool fields that cannot be verified"
-            )
-        if any(
-            set(ref) - {"kind", "learning_id"}
-            for ref in item.get("retrieved_learnings", [])
-        ):
-            raise ValueError(
-                "Stored publish contains learning fields that cannot be verified"
-            )
     # Ingestion IDs preserve payload order even for backdated timestamps.
     ordered = sorted(interactions, key=lambda item: item["interaction_id"])
     for item, original in zip(ordered, expected, strict=True):
@@ -851,14 +854,14 @@ def _storage_safe_interactions(
             result.append(item)
             continue
         result.append({**item, "tools_used": tools[:1000]})
-        for start in range(1000, len(tools), 1000):
-            result.append(
-                {
-                    "role": item.get("role", "Assistant"),
-                    "content": "Tool activity continued.",
-                    "tools_used": tools[start : start + 1000],
-                }
-            )
+        result.extend(
+            {
+                "role": item.get("role", "Assistant"),
+                "content": "Tool activity continued.",
+                "tools_used": tools[start : start + 1000],
+            }
+            for start in range(1000, len(tools), 1000)
+        )
     return result
 
 

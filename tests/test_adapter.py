@@ -633,6 +633,16 @@ def test_search_all_session_id_defaults_to_none() -> None:
     assert client.search_kwargs["session_id"] is None
 
 
+def test_search_all_passes_reserved_publish_identity() -> None:
+    client = _RecordingClient(
+        unified_resp=SimpleNamespace(user_playbooks=[], agent_playbooks=[], profiles=[])
+    )
+    _adapter_with(client).search_all(
+        project_id="p", query="q", session_id="s", request_id="reserved-response"
+    )
+    assert client.search_kwargs["request_id"] == "reserved-response"
+
+
 def test_search_all_returns_three_empty_lists_on_error() -> None:
     class BrokenSearch:
         def search(self, **_kw):

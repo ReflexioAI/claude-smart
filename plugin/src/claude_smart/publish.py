@@ -37,11 +37,28 @@ def _prepare_publish_batch(
 
         publish_end = state.pending_publish_end(records, published)
         if publish_end is None:
-            publish_end = state.safe_publish_end(records, published)
+            next_starts = [
+                start
+                for start, _, _ in state.reserved_publish_requests(records)
+                if start > published
+            ]
+            # A closed response may have been cancelled. Retire its unattached
+            # refs with that response rather than handing them to the next one.
+            publish_end = (
+                min(next_starts)
+                if next_starts
+                else state.safe_publish_end(records, published)
+            )
             _, proposed = state.unpublished_slice(
                 records[:publish_end], published_override=published
             )
             if not proposed:
+                if next_starts:
+                    # A closed search-only range has no response to publish.
+                    # Keep its records locally without moving its references
+                    # onto a later prompt or inventing a server-side request.
+                    state.append(session_id, {"published_up_to": publish_end})
+                    continue
                 return None
             state.append(
                 session_id,
@@ -103,13 +120,54 @@ def publish_unpublished(
             was unreachable. On ``"failed"`` the watermark is not advanced,
             so the next hook retries the same batch.
     """
-    batch = _prepare_publish_batch(session_id)
-    if batch is None:
-        return ("nothing", 0)
+    total = 0
+    recovered = False
+    reserved_starts = {
+        start
+        for start, _, _ in state.reserved_publish_requests(state.read_all(session_id))
+    }
+    while (batch := _prepare_publish_batch(session_id)) is not None:
+        status, count = _publish_batch(
+            session_id,
+            project_id,
+            force_extraction,
+            skip_aggregation,
+            override_learning_stall,
+            adapter,
+            batch,
+        )
+        total += count
+        recovered = recovered or status == "recovered"
+        if status == "failed":
+            return status, total
+        # Drain only response reservations present when this call began. Hooks
+        # can append concurrently; legacy batches retain their one-call boundary.
+        watermark = state.published_record_offset(state.read_all(session_id))
+        if not any(start >= watermark for start in reserved_starts):
+            break
+    return ("recovered" if recovered else "ok" if total else "nothing", total)
+
+
+def _publish_batch(
+    session_id: str,
+    project_id: str,
+    force_extraction: bool,
+    skip_aggregation: bool,
+    override_learning_stall: bool,
+    adapter: Adapter | None,
+    batch: tuple[int, int, list[dict[str, Any]]],
+) -> tuple[PublishStatus, int]:
+    """Publish one immutable response range, including legacy retry identities."""
     published_record_offset, publish_end, interactions = batch
 
     client = adapter if adapter is not None else Adapter()
     request_id = _publish_request_id(session_id, published_record_offset, publish_end)
+    for start, reserved_id, _ in state.reserved_publish_requests(
+        state.read_all(session_id)
+    ):
+        if start == published_record_offset:
+            request_id = reserved_id
+            break
     result = client.publish(
         session_id=session_id,
         project_id=project_id,

@@ -989,9 +989,11 @@ def test_user_prompt_stamps_user_id_from_payload_cwd(session_dir, monkeypatch) -
     )
     user_prompt.handle({"session_id": "s1", "prompt": "hello", "cwd": "/some/repo"})
     records = state.read_all("s1")
-    assert records[-1]["role"] == "User"
-    assert records[-1]["content"] == "hello"
-    assert records[-1]["user_id"] == "proj::/some/repo"
+    turns = [record for record in records if "role" in record]
+    assert turns[-1]["role"] == "User"
+    assert turns[-1]["content"] == "hello"
+    assert turns[-1]["user_id"] == "proj::/some/repo"
+    assert records[-1]["publish_request"]["request_id"]
 
 
 def test_user_prompt_injects_context_when_hits_present(
@@ -1008,9 +1010,7 @@ def test_user_prompt_injects_context_when_hits_present(
                 "trigger": "pyproject.toml",
             }
         ],
-        profiles=[
-            {"profile_id": "profile-1", "content": "prefers anyio over asyncio"}
-        ],
+        profiles=[{"profile_id": "profile-1", "content": "prefers anyio over asyncio"}],
         calls=calls,
     )
     buf = io.StringIO()
@@ -1084,9 +1084,7 @@ def test_user_prompt_injects_compact_context_for_codex(
     assert "Run uv sync after pyproject edits: Run uv sync" not in markdown
     assert "prefers anyio over asyncio" in markdown
     assert "✨ claude-smart rule applied:" in markdown
-    assert (
-        "Include only memories that materially changed the response." in markdown
-    )
+    assert "Include only memories that materially changed the response." in markdown
     assert (
         "✨ claude-smart rule applied: "
         "[Run uv sync after pyproject edits](http://localhost:3001/rules/s1)"
@@ -1101,7 +1099,11 @@ def test_user_prompt_writes_nothing_when_search_empty(session_dir, monkeypatch) 
     monkeypatch.setattr(sys, "stdout", buf)
     user_prompt.handle({"session_id": "s1", "prompt": "anything", "cwd": "/r"})
     assert buf.getvalue() == ""
-    assert state.read_all("s1")[-1]["content"] == "anything"
+    records = state.read_all("s1")
+    assert [record for record in records if "role" in record][-1][
+        "content"
+    ] == "anything"
+    assert records[-1]["publish_request"]["request_id"]
 
 
 def test_user_prompt_buffers_even_when_search_raises(session_dir, monkeypatch) -> None:
@@ -1120,7 +1122,9 @@ def test_user_prompt_buffers_even_when_search_raises(session_dir, monkeypatch) -
     monkeypatch.setattr(sys, "stdout", buf)
     user_prompt.handle({"session_id": "s1", "prompt": "hello", "cwd": "/r"})
     assert buf.getvalue() == ""
-    assert state.read_all("s1")[-1]["content"] == "hello"
+    records = state.read_all("s1")
+    assert [record for record in records if "role" in record][-1]["content"] == "hello"
+    assert records[-1]["publish_request"]["request_id"]
 
 
 def test_user_prompt_noop_on_empty_prompt(session_dir, monkeypatch) -> None:

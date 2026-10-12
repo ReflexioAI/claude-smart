@@ -255,3 +255,11 @@ See the [LICENSE](LICENSE) file for details.
 ---
 
 **Powered by** [Reflexio](https://github.com/ReflexioAI/reflexio) · **Runs on** [Claude Code](https://claude.com/claude-code), Codex, and OpenCode · **Written in** Python 3.12+
+
+Search hooks reserve a durable request identity in the session buffer before
+retrieval. The corresponding response is published with that same identity;
+retries keep it, and searches after a frozen publish belong to a later response.
+Older buffered publishes keep their existing retry IDs. Cancelled turns do not
+attach their retrieved-playbook references to a later prompt's answer. Search
+alone does not supply a conversation or an outcome for offline tuning: the
+response still needs to be published.
