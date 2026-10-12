@@ -40,7 +40,13 @@ class FakeReflexioAdapter:
         return True
 
     def search_all(
-        self, *, project_id: str, query: str, top_k: int, session_id: str | None = None
+        self,
+        *,
+        project_id: str,
+        query: str,
+        top_k: int,
+        session_id: str | None = None,
+        request_id: str | None = None,
     ) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
         from claude_smart import runtime
 
@@ -50,6 +56,7 @@ class FakeReflexioAdapter:
                 "query": query,
                 "top_k": top_k,
                 "session_id": session_id,
+                "request_id": request_id,
                 "host": runtime.host(),
             }
         )
@@ -245,6 +252,7 @@ def run_host_learning_happy_path(
                 "top_k": 3,
                 "session_id": session_id,
                 "host": host,
+                "request_id": fake_reflexio.publish_calls[0]["request_id"],
             }
         ]
         assert len(fake_reflexio.publish_calls) == 1
@@ -285,6 +293,11 @@ def run_host_learning_happy_path(
             ("profile", f"profile-{host}"),
         }
 
+        assert fake_reflexio.search_calls[0]["request_id"]
+        assert (
+            fake_reflexio.publish_calls[0]["request_id"]
+            == fake_reflexio.search_calls[0]["request_id"]
+        )
         _, unpublished = state.unpublished_slice(state.read_all(session_id))
         assert unpublished == []
         assert state.session_path(session_id).exists()
