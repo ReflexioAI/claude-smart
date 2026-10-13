@@ -90,8 +90,13 @@ It defaults to the saved runtime mode. Its endpoint, overview totals, preference
 skills, and backend sessions follow the selected source; viewing another source
 does not change learning/storage settings. Overview metrics use backend summary
 counts for the last 30 days, rather than list limits. Connection failures are
-shown explicitly. A backend must be configured and reachable to view its data.
+shown explicitly. Older skill citations without a project/shared identity remain
+visible under Legacy skill usage; exact per-skill counts use identified citations.
+A backend must be configured and reachable to view its data.
 Previously configured connections are retained privately when changing modes.
+The dashboard currently trusts local OS users: other accounts on a shared machine
+can access its configured backend connections. Per-user dashboard authentication
+requires a separate change.
 
 **This device** lists local session buffers and hook activity separately. Those
 counts can differ between machines connected to the same managed account.

@@ -3,6 +3,7 @@
 import { use, useEffect, useMemo, useState } from "react";
 import Link from "@/components/common/source-link";
 import { useRouter } from "next/navigation";
+import { useSettings } from "@/hooks/use-settings";
 import {
   ArrowLeft,
   Save,
@@ -55,6 +56,7 @@ export default function ProjectSkillDetailPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
+  const { source } = useSettings();
   const userPlaybookId = Number(id);
   const invalidId =
     !Number.isSafeInteger(userPlaybookId) || userPlaybookId <= 0;
@@ -135,7 +137,7 @@ export default function ProjectSkillDetailPage({
     setDeleting(true);
     try {
       await reflexio.deleteUserPlaybook(playbook.user_playbook_id);
-      router.push("/skills");
+      router.push(`/skills?source=${source}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setDeleting(false);

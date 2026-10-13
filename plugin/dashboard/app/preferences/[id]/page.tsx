@@ -3,6 +3,7 @@
 import { use, useEffect, useMemo, useState } from "react";
 import Link from "@/components/common/source-link";
 import { useRouter } from "next/navigation";
+import { useSettings } from "@/hooks/use-settings";
 import {
   ArrowLeft,
   Save,
@@ -43,6 +44,7 @@ export default function PreferenceDetailPage({
   const { id: rawId } = use(params);
   const id = decodeURIComponent(rawId);
   const router = useRouter();
+  const { source } = useSettings();
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -106,7 +108,7 @@ export default function PreferenceDetailPage({
         user_id: profile.user_id,
         profile_id: profile.profile_id,
       });
-      router.push("/preferences");
+      router.push(`/preferences?source=${source}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setDeleting(false);

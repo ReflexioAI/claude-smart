@@ -5,9 +5,24 @@ import type { PlaybookApplicationStat } from "@/lib/types";
 
 export function LearningApplicationBadge({
   stat,
+  sourceUnknown = false,
 }: {
   stat: PlaybookApplicationStat | undefined;
+  sourceUnknown?: boolean;
 }) {
+  if (sourceUnknown) {
+    return (
+      <Badge
+        variant="outline"
+        className="h-5 text-[10px] text-muted-foreground"
+        title="Older citations with this numeric ID do not identify project vs shared skills. See Legacy skill usage for their reported counts."
+      >
+        {stat?.applied_count
+          ? `Applied at least ${stat.applied_count}×`
+          : "Usage source unknown"}
+      </Badge>
+    );
+  }
   if (!stat || stat.applied_count === 0) {
     return (
       <Badge

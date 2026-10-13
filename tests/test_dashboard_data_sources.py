@@ -271,15 +271,17 @@ def test_usage_counts_retain_kind_and_source_identity(compiled_dashboard, tmp_pa
       global.fetch = async () => Response.json({success:true,stats:[
         {kind:'profile',real_id:'p1',applied_count:3},
         {kind:'user_playbook',real_id:'7',applied_count:4},
-        {kind:'agent_playbook',real_id:'7',applied_count:5}
+        {kind:'agent_playbook',real_id:'7',applied_count:5},
+        {kind:'playbook',real_id:'7',applied_count:9}
       ]});
       (async () => console.log(JSON.stringify((await m.reflexio.getAppliedRules()).stats)))();
     """,
     )
-    assert [(s["kind"], s["source_kind"], s["applied_count"]) for s in result] == [
+    assert [(s["kind"], s.get("source_kind"), s["applied_count"]) for s in result] == [
         ("profile", "profile", 3),
         ("playbook", "user_playbook", 4),
         ("playbook", "agent_playbook", 5),
+        ("playbook", None, 9),
     ]
 
 

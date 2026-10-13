@@ -157,6 +157,14 @@ export default function SkillsPage() {
     };
   }, []);
 
+  const legacyUsage = useMemo(
+    () =>
+      (appStats ?? []).filter(
+        (stat) => stat.kind === "playbook" && !stat.source_kind,
+      ),
+    [appStats],
+  );
+
   const statsByRule = useMemo(() => {
     const map = new Map<string, PlaybookApplicationStat>();
     for (const s of appStats ?? []) {
@@ -307,7 +315,9 @@ export default function SkillsPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="newest">Newest</SelectItem>
-                <SelectItem value="applied">Most applied</SelectItem>
+                <SelectItem value="applied">
+                  Most applied · known sources
+                </SelectItem>
               </SelectContent>
             </Select>
             <Input
@@ -370,6 +380,28 @@ export default function SkillsPage() {
           </div>
         )}
 
+        {legacyUsage.length > 0 && (
+          <details className="mb-4 rounded-md border border-border p-3 text-sm">
+            <summary className="cursor-pointer font-medium">
+              Legacy skill usage · {legacyUsage.length} record
+              {legacyUsage.length === 1 ? "" : "s"}
+            </summary>
+            <p className="mt-2 text-xs text-muted-foreground">
+              These backend citations do not identify project vs shared skills.
+              Their counts are preserved below; per-skill totals and sorting use
+              only citations with a known source.
+            </p>
+            <ul className="mt-2 divide-y divide-border">
+              {legacyUsage.map((stat) => (
+                <li key={stat.real_id} className="py-2">
+                  {stat.title || `Skill ID ${stat.real_id}`} ·{" "}
+                  {stat.applied_count} citations · source unknown
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+
         {loading && !error ? (
           <div className="text-sm text-muted-foreground">Loading...</div>
         ) : filtered.length === 0 ? (
@@ -398,7 +430,12 @@ export default function SkillsPage() {
                 >
                   <header className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <LearningApplicationBadge stat={stat} />
+                      <LearningApplicationBadge
+                        stat={stat}
+                        sourceUnknown={legacyUsage.some(
+                          (usage) => usage.real_id === String(p.id),
+                        )}
+                      />
                       <StatusBadge kind={p.kind} status={p.status} />
                       <Badge variant="secondary" className="h-5 text-[10px]">
                         {p.kind === "project" ? "project-specific" : "shared"}

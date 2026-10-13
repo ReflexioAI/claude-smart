@@ -3,6 +3,7 @@
 import { use, useEffect, useMemo, useState } from "react";
 import Link from "@/components/common/source-link";
 import { useRouter } from "next/navigation";
+import { useSettings } from "@/hooks/use-settings";
 import {
   ArrowLeft,
   Save,
@@ -85,6 +86,7 @@ export default function SharedSkillDetailPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
+  const { source } = useSettings();
 
   const [playbook, setPlaybook] = useState<AgentPlaybook | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -197,7 +199,7 @@ export default function SharedSkillDetailPage({
     setDeleting(true);
     try {
       await reflexio.deleteAgentPlaybook(playbook.agent_playbook_id);
-      router.push("/skills");
+      router.push(`/skills?source=${source}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setDeleting(false);
