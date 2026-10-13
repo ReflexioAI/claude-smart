@@ -45,6 +45,7 @@ const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
 const { dirname, join, resolve, sep } = require("path");
 const { fileURLToPath, pathToFileURL } = require("url");
+const guide = require("./install-guide");
 
 const PLUGIN_SPEC = "claude-smart@reflexioai";
 const CODEX_MARKETPLACE_NAME = "reflexioai";
@@ -63,6 +64,7 @@ const CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY";
 const CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI";
 const CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING";
 const CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST";
+const LEARNING_PROVIDER_ENV = "CLAUDE_SMART_LEARNING_PROVIDER";
 const CLAUDE_SMART_OPENCODE_PATH_ENV = "CLAUDE_SMART_OPENCODE_PATH";
 const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const HOST_CLAUDE_CODE = "claude-code";
@@ -168,6 +170,9 @@ function shouldCopyPath(src) {
 }
 
 function runClaude(args, { spinnerLabel } = {}) {
+  if (process.env.CLAUDE_SMART_INSTALL_CHILD === "1" && spinnerLabel) {
+    process.stdout.write(`[phase] ${spinnerLabel}\n`);
+  }
   const useSpinner = Boolean(spinnerLabel) && process.stdout.isTTY && !process.env.CI;
   return new Promise((resolve) => {
     // While a package install is uncommitted, run the step in its own
@@ -556,7 +561,9 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
     delete process.env[REFLEXIO_USER_ID_ENV];
     delete process.env[MANAGED_SETUP_ENV];
     url = "";
-    const added = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, installHost);
+    const added = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, installHost, {
+      prune: !fileEnv.has(LEARNING_PROVIDER_ENV),
+    });
     if (added.length > 0) {
       process.stdout.write(`Seeded ${CLAUDE_SMART_ENV_PATH} with ${added.join(", ")}.\n`);
     }
@@ -592,6 +599,8 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
     }
   } else {
     process.stdout.write(`Using local Reflexio backend at ${url || localBackendUrl()}.\n`);
+    const provider = fileEnv.get(LEARNING_PROVIDER_ENV) || installHost;
+    process.stdout.write(`Background learning provider: ${guide.LABELS[provider] || provider} CLI.\n`);
   }
   const readOnly = ["1", "true", "yes", "on"].includes(
     String(fileEnv.get(CLAUDE_SMART_READ_ONLY_ENV) || "").trim().toLowerCase(),
@@ -1438,6 +1447,7 @@ function installOpenCodePluginPackage() {
 }
 
 async function bootstrapClaudeCodeInstall(pluginRoot) {
+  process.stdout.write("[phase] Preparing Python and runtime dependencies…\n");
   forcePluginRoot(pluginRoot);
   const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
   if (!bash) {
@@ -1461,6 +1471,7 @@ async function bootstrapClaudeCodeInstall(pluginRoot) {
 // dashboard's first build (detached, as smart-install does); the backend and
 // dashboard are then started and reported by startAndReportServices.
 function startDeferredDashboardBuild(pluginRoot) {
+  if (process.env.CLAUDE_SMART_DEFER_SHARED_SERVICES === "1") return;
   const dashboardDir = join(pluginRoot, "dashboard");
   const bash = resolveUsableBash();
   if (!bash || !existsSync(dashboardDir) || existsSync(join(dashboardDir, ".next"))) return;
@@ -1624,6 +1635,166 @@ function runSilentStatus(command, args, options = {}) {
   return typeof result.status === "number" ? result.status : 1;
 }
 
+// Use async children during service startup so elapsed progress remains visible.
+async function runServiceWithProgress(pluginRoot, scriptName, subcommand, envOverrides = {}) {
+  const script = join(pluginRoot, "scripts", scriptName);
+  const bash = resolveUsableBash();
+  if (!bash || !existsSync(script)) return false;
+  const started = Date.now();
+  const timer = setInterval(() => process.stdout.write(`  Still waiting for ${scriptName} ${subcommand}… ${Math.floor((Date.now() - started) / 1000)}s\n`), 5000);
+  try {
+    return await new Promise((resolve) => {
+      const child = spawn(bash, [script, subcommand], {
+        cwd: pluginRoot, env: { ...runtimeEnv(), ...envOverrides }, stdio: "ignore",
+        windowsHide: true, detached: !isWindows(),
+      });
+      trackChild(child, !isWindows());
+      const timeout = setTimeout(async () => {
+        process.stderr.write(`warning: ${scriptName} ${subcommand} timed out; inspect ~/.claude-smart service logs.\n`);
+        await terminateChildren([[child, !isWindows()]]);
+      }, PLUGIN_SERVICE_TIMEOUT_MS);
+      child.once("error", () => { clearTimeout(timeout); resolve(false); });
+      child.once("exit", (code) => { clearTimeout(timeout); if (!terminatingOnSignal) resolve(code === 0); });
+    });
+  } finally { clearInterval(timer); }
+}
+
+function installInventory(options = {}) {
+  const args = options.global ? ["--global"] : options.local ? ["--local"] : [];
+  let openCodeInstalled = false;
+  try {
+    const data = readJsoncObject(opencodeConfigPath(args));
+    openCodeInstalled = ["plugin", "plugins"].some((key) => Array.isArray(data[key]) && data[key].some((entry) => isOpenCodeClaudeSmartSpec(opencodePluginSpec(entry))));
+  } catch { /* A missing config is normal. Installation reports malformed configs. */ }
+  return [
+    { host: HOST_CLAUDE_CODE, available: hasClaudeCli(), installed: existsSync(join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin")) || hostRegistrationExists(HOST_CLAUDE_CODE) },
+    { host: HOST_CODEX, available: hasCli("codex"), installed: Boolean(findCodexPluginRoot()) },
+    { host: HOST_OPENCODE, available: hasOpenCodeCli(), installed: openCodeInstalled },
+  ];
+}
+
+function hostRegistrationExists(host) {
+  const cli = host === HOST_CODEX ? "codex" : "claude";
+  if (!hasCli(cli)) return false;
+  const result = spawnSync(cli, ["plugin", "list", "--json"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, windowsHide: true });
+  try {
+    const data = JSON.parse(result.stdout);
+    return Array.isArray(data) && data.some((plugin) => (plugin.id || plugin.pluginId) === PLUGIN_SPEC);
+  } catch { return false; }
+}
+
+function savedInstallConfiguration() {
+  // Read without migration/writes: cancelling the guide must leave files untouched.
+  const env = readEnvFile(CLAUDE_SMART_ENV_PATH);
+  const legacy = existsSync(LEGACY_ENV_MIGRATION_MARKER) ? new Map() : readEnvFile(LEGACY_REFLEXIO_ENV_PATH);
+  for (const [key, value] of legacy) {
+    if (key.startsWith("CLAUDE_SMART_") && !env.has(key)) env.set(key, value);
+  }
+  const legacyKey = legacy.get("REFLEXIO_API_KEY");
+  const legacyUrl = legacy.get("REFLEXIO_URL") || MANAGED_REFLEXIO_URL;
+  const legacyManaged = !env.has("REFLEXIO_API_KEY") && Boolean(legacyKey?.trim()) && !isLoopbackUrl(legacyUrl);
+  const url = env.get("REFLEXIO_URL") || (env.get("REFLEXIO_API_KEY")?.trim() ? process.env.REFLEXIO_URL || MANAGED_REFLEXIO_URL : legacyManaged ? legacyUrl : "");
+  const apiKey = env.get("REFLEXIO_API_KEY") ?? (legacyManaged ? legacyKey : "");
+  const userId = env.get(REFLEXIO_USER_ID_ENV) ?? (legacyManaged ? legacy.get(REFLEXIO_USER_ID_ENV) : "");
+  return {
+    backend: env.size ? isRemoteReflexioUrl(url) ? "managed" : "local" : legacyManaged ? "managed" : null,
+    url, apiKey,
+    provider: env.get(LEARNING_PROVIDER_ENV) || env.get(CLAUDE_SMART_HOST_ENV),
+    cliPath: env.get("CLAUDE_SMART_CLI_PATH") || "", useLocalCli: env.get(CLAUDE_SMART_USE_LOCAL_CLI_ENV),
+    readOnly: ["1", "true", "yes", "on"].includes((env.get(CLAUDE_SMART_READ_ONLY_ENV) || "").toLowerCase()),
+    sharing: userId ? "global" : "project", userId,
+  };
+}
+
+function saveInstallConfiguration(config) {
+  // Preserve legacy runtime flags after confirmation, before recording migration.
+  migrateLegacyManagedEnv();
+  const values = {
+    REFLEXIO_URL: config.url || localBackendUrl(), REFLEXIO_API_KEY: config.apiKey || "",
+    CLAUDE_SMART_READ_ONLY: config.readOnly ? "1" : "0",
+    REFLEXIO_USER_ID: config.sharing === "global" ? config.userId || "global_user" : "",
+  };
+  if (config.backend === "local") {
+    if (config.provider) values[LEARNING_PROVIDER_ENV] = config.provider;
+    // Make the explicit CLI choice effective even after a previous cloud setup.
+    values[CLAUDE_SMART_USE_LOCAL_CLI_ENV] = config.useLocalCli;
+    if ((readEnvFile(CLAUDE_SMART_ENV_PATH).get("CLAUDE_SMART_CLI_PATH") || "") !== config.cliPath) {
+      values.CLAUDE_SMART_CLI_PATH = config.cliPath;
+    }
+    if (config.provider === HOST_OPENCODE) persistOpenCodePath();
+  }
+  setEnvVars(CLAUDE_SMART_ENV_PATH, values);
+  // Hooks launched later read the saved values. This install must use them too,
+  // rather than inherited settings for another provider from the invoking shell.
+  for (const [key, value] of Object.entries(values)) process.env[key] = value;
+  if (config.backend === "local") process.env.CLAUDE_SMART_CLI_PATH = config.cliPath;
+  writePrivateFile(LEGACY_ENV_MIGRATION_MARKER, "checked\n");
+}
+
+async function runGuidedHost(command, host, options, label) {
+  mkdirSync(join(CLAUDE_SMART_STATE_DIR, "install-logs"), { recursive: true });
+  const log = join(CLAUDE_SMART_STATE_DIR, "install-logs", `${command}-${host}-${Date.now()}-${process.pid}.log`);
+  const fd = openSync(log, "wx", 0o600);
+  const args = [__filename, command === "setup" ? "install" : command, "--host", host];
+  if (options.global) args.push("--global");
+  if (options.local) args.push("--local");
+  process.stdout.write(`\n${label}…\n  Log: ${log}\n`);
+  const started = Date.now();
+  const timer = setInterval(() => process.stdout.write(`  ${label}… ${Math.floor((Date.now() - started) / 1000)}s\n`), 5000);
+  try {
+    const code = await new Promise((resolve) => {
+      const child = spawn(process.execPath, args, {
+        env: { ...runtimeEnv(), CLAUDE_SMART_INSTALL_CHILD: "1", CLAUDE_SMART_DEFER_SHARED_SERVICES: "1" },
+        stdio: ["ignore", "pipe", fd], detached: !isWindows(), windowsHide: true,
+      });
+      trackChild(child, !isWindows());
+      let pending = "";
+      child.stdout.on("data", (chunk) => {
+        require("fs").writeSync(fd, chunk);
+        pending += chunk.toString();
+        const lines = pending.split(/\r?\n/);
+        pending = lines.pop().slice(-4096);
+        for (const line of lines) if (line.startsWith("[phase] ")) process.stdout.write(`  ${line.slice(8)}\n`);
+      });
+      child.once("error", (err) => { process.stderr.write(`  ${label} failed: ${err.message}\n`); resolve(1); });
+      // close follows all stdout data; exit can precede the final pipe chunks.
+      child.once("close", (code) => { if (!terminatingOnSignal) resolve(typeof code === "number" ? code : 1); });
+    });
+    if (code !== 0) process.stderr.write(`  ${label} failed. Details: ${log}\n`);
+    return { code, log };
+  } finally { clearInterval(timer); closeSync(fd); }
+}
+
+async function runGuidedCommand(command, args) {
+  if (args.includes("--help") || args.includes("-h")) { printHelp(); return; }
+  ensureRollbackOnExit();
+  process.stdout.write(`claude-smart ${JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version} · ${command}\n`);
+  await guide.runGuide(command, args, {
+    inventory: installInventory, saved: savedInstallConfiguration, save: saveInstallConfiguration,
+    runHost: runGuidedHost,
+    finish: async (action, config, results) => {
+      const root = activePluginRoot();
+      if (!root || !existsSync(join(root, "scripts", "backend-service.sh"))) return;
+      if (action === "uninstall") {
+        const current = installInventory();
+        const global = installInventory({ global: true });
+        if (![...current, ...global].some((agent) => agent.installed)) {
+          stopClaudeSmartServices(root);
+          return ["Shared services stopped; no integrations remain in this project/account or global OpenCode config."];
+        }
+        // Removal stops only owned services. Repointing lets remaining integrations
+        // serve their hooks again without selecting a different learning provider.
+        process.stdout.write("\nRefreshing shared services for remaining integrations…\n");
+      } else if (!results.some((result) => result.code === 0)) return;
+      const host = readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) || DEFAULT_CLAUDE_SMART_HOST;
+      const saved = savedInstallConfiguration();
+      const setup = { managed: saved.backend === "managed", url: saved.url };
+      startDeferredDashboardBuild(root);
+      return await startAndReportServices(root, host, setup, { summaryOnly: true });
+    },
+  });
+}
+
 function runPluginService(pluginRoot, scriptName, subcommand, envOverrides = {}) {
   const script = join(pluginRoot, "scripts", scriptName);
   if (!existsSync(script)) return false;
@@ -1655,13 +1826,6 @@ function runPluginService(pluginRoot, scriptName, subcommand, envOverrides = {})
     return false;
   }
   return result.status === 0;
-}
-
-function refreshDashboardService(pluginRoot) {
-  // dashboard-service.sh is marker-gated: stop only reaps a listener that
-  // identifies as claude-smart, so foreign apps on 3001 are left alone.
-  runPluginService(pluginRoot, "dashboard-service.sh", "stop");
-  return runPluginService(pluginRoot, "dashboard-service.sh", "start");
 }
 
 function startBackendService(pluginRoot, host) {
@@ -1752,15 +1916,21 @@ function isBundledBackendUrl(url) {
   }
 }
 
-async function startAndReportServices(pluginRoot, host, setup) {
+async function startAndReportServices(pluginRoot, host, setup, { summaryOnly = false } = {}) {
+  if (process.env.CLAUDE_SMART_DEFER_SHARED_SERVICES === "1") return;
   const { managed, url: hooksUrl } = setup;
+  const summary = [];
+  const report = (message) => {
+    summary.push(message.trim());
+    if (!summaryOnly) process.stdout.write(message);
+  };
   if (managed || (hooksUrl && !isBundledBackendUrl(hooksUrl))) {
     // Hooks will not call the bundled backend, so stop one left running from
     // an earlier local setup (stop only reaps claude-smart's own listener).
     runPluginService(pluginRoot, "backend-service.sh", "stop");
   }
   if (managed) {
-    process.stdout.write("Managed mode: no local backend is started.\n");
+    report("Managed mode: no local backend is started.\n");
   } else if (hooksUrl && !isBundledBackendUrl(hooksUrl)) {
     // A kept loopback URL other than the bundled endpoint is the user's own
     // local Reflexio server: the hooks call it, not the bundled backend, so
@@ -1773,41 +1943,44 @@ async function startAndReportServices(pluginRoot, host, setup) {
       // Unparseable: the probe below simply fails.
     }
     const answering = await waitForHttp(`${base}health`, 3, ({ status }) => status === 200);
-    process.stdout.write(
+    report(
       `Hooks use the Reflexio server at ${hooksUrl}, which claude-smart does not start; ` +
         `it is ${answering ? "answering" : "not answering"} ${base}health.\n`,
     );
   } else if (autostartDisabled("CLAUDE_SMART_BACKEND_AUTOSTART")) {
-    process.stdout.write("Backend autostart is disabled (CLAUDE_SMART_BACKEND_AUTOSTART=0).\n");
+    report("Backend autostart is disabled (CLAUDE_SMART_BACKEND_AUTOSTART=0).\n");
   } else {
     // A same-root backend can be healthy but still use the previous payload's
     // bind address or extraction bridge. Preparation succeeded before this
     // point; restart only owned services to apply the installed configuration.
-    runPluginService(pluginRoot, "backend-service.sh", "stop");
-    startBackendService(pluginRoot, host);
+    process.stdout.write(`\nStarting local Reflexio at ${localBackendUrl()}…\n`);
+    await runServiceWithProgress(pluginRoot, "backend-service.sh", "stop");
+    await runServiceWithProgress(pluginRoot, "backend-service.sh", "start", { CLAUDE_SMART_HOST: host });
     const url = localBackendUrl();
     if (await waitForHttp(`${url}health`, 5, ({ status }) => status === 200)) {
       const status = backendServiceStatus(pluginRoot);
       if (status.startsWith("running on")) {
-        process.stdout.write(`Backend healthy at ${url}.\n`);
+        report(`Backend healthy at ${url}.\n`);
       } else {
-        process.stdout.write(
+        report(
           `Something answers ${url}health, but it is not a claude-smart backend this ` +
             `install can use (backend-service.sh status: ${status || "unknown"}).\n`,
         );
       }
     } else {
-      process.stdout.write(
+      report(
         `Backend is still starting (log: ${join(CLAUDE_SMART_STATE_DIR, "backend.log")}); ` +
           "it is started again at the next session start if needed.\n",
       );
     }
   }
   if (autostartDisabled("CLAUDE_SMART_DASHBOARD_AUTOSTART")) {
-    process.stdout.write("Dashboard autostart is disabled (CLAUDE_SMART_DASHBOARD_AUTOSTART=0).\n");
-    return;
+    report("Dashboard autostart is disabled (CLAUDE_SMART_DASHBOARD_AUTOSTART=0).\n");
+    return summary;
   }
-  refreshDashboardService(pluginRoot);
+  process.stdout.write("Starting local dashboard (first build may take 1–2 minutes)…\n");
+  await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "stop");
+  await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "start");
   const port = (process.env.DASHBOARD_PORT || "").trim() || "3001";
   const url = `http://localhost:${port}/`;
   // Same marker dashboard-service.sh trusts: a foreign app on the port answers
@@ -1815,17 +1988,18 @@ async function startAndReportServices(pluginRoot, host, setup) {
   const isDashboard = ({ status, headers }) =>
     status === 200 && headers["x-claude-smart-dashboard"] !== undefined;
   if (await waitForHttp(`${url}api/health`, 3, isDashboard)) {
-    process.stdout.write(`Dashboard running at ${url}.\n`);
+    report(`Dashboard running at ${url}.\n`);
   } else if ((await httpProbe(`${url}api/health`)).status !== null) {
-    process.stdout.write(
+    report(
       `Another app answers ${url} without the claude-smart dashboard marker; ` +
         "the dashboard is not running there. Set DASHBOARD_PORT to a free port.\n",
     );
   } else {
-    process.stdout.write(
+    report(
       `Dashboard is building in the background (first build takes 1-2 minutes); it will serve ${url}.\n`,
     );
   }
+  return summary;
 }
 
 function stopClaudeSmartServices(pluginRoot) {
@@ -2314,7 +2488,7 @@ async function syncPluginPythonEnv(pluginRoot, uv, env) {
 
 async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   assertSupportedRuntimePlatform();
-  process.stdout.write("Preparing claude-smart runtime for hooks...\n");
+  process.stdout.write("[phase] Preparing Python and runtime dependencies…\n");
   rmSync(INSTALL_FAILURE_MARKER, { force: true });
   const nodeRuntime = await ensurePrivateNode();
   if (options.patchCodexHooks !== false) {
@@ -2340,6 +2514,7 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
 
   const dashboardDir = join(pluginRoot, "dashboard");
   if (existsSync(dashboardDir)) {
+    process.stdout.write("[phase] Preparing dashboard dependencies and build…\n");
     let code = await runChecked(nodeRuntime.npm, ["ci"], { cwd: dashboardDir, env });
     if (code !== 0) throw new Error(`npm ci failed in ${dashboardDir}`);
     code = await runChecked(nodeRuntime.npm, ["run", "build"], { cwd: dashboardDir, env });
@@ -2353,10 +2528,18 @@ function printHelp() {
       "claude-smart — install helper for Claude Code, Codex, and OpenCode",
       "",
       "Usage:",
-      "  npx claude-smart install                       Install the plugin into Claude Code",
+      "  npx claude-smart install                       Guided installation for one or more agents",
+      "  npx claude-smart install --host claude-code,codex --backend local --provider codex",
+      "  npx claude-smart install --host codex --backend managed --api-key-env REFLEXIO_API_KEY",
+      "  --host <comma-separated agents>                claude-code, codex, opencode",
+      "  --backend local|managed                        Required for an unattended first install",
+      "  --provider claude-code|codex|opencode           Local background learning provider",
+      "  --url <endpoint> --api-key-env <variable>       Managed endpoint and secret source",
+      "  --read-only|--learn --sharing project|global   Memory access and sharing settings",
+      "  --yes                                          Use explicit/saved settings without prompts",
       "  npx claude-smart install --host codex          Register the plugin marketplace for Codex",
       "  npx claude-smart install --host opencode       Add claude-smart to OpenCode config",
-      "  npx claude-smart setup                         Configure managed/read-only/global setup",
+      "  npx claude-smart setup                         Guided configuration and installation",
       "  npx claude-smart status [--host codex]        Show installed and recently observed runtime versions",
       "  npx claude-smart uninstall --host codex        Remove the Codex marketplace registration",
       "  npx claude-smart uninstall --host opencode     Remove claude-smart from OpenCode config",
@@ -2389,7 +2572,8 @@ function printHelp() {
       "  npx claude-smart setup                         Configure managed/read-only/global setup",
       "",
       "Uninstall:",
-      "  npx claude-smart uninstall                     Remove the plugin from Claude Code",
+      "  npx claude-smart uninstall                     Choose integrations to remove",
+      "  npx claude-smart uninstall --host claude-code,codex  Remove selected integrations; keep data",
       "",
     ].join("\n"),
   );
@@ -3398,22 +3582,26 @@ async function main() {
   }
 
   if (cmd === "install") {
-    await runInstall(args.slice(1));
+    if (process.env.CLAUDE_SMART_INSTALL_CHILD === "1") await runInstall(args.slice(1));
+    else await runGuidedCommand(cmd, args.slice(1));
     return;
   }
 
   if (cmd === "update") {
-    await runUpdate(args.slice(1));
+    if (process.env.CLAUDE_SMART_INSTALL_CHILD === "1") await runUpdate(args.slice(1));
+    else await runGuidedCommand(cmd, args.slice(1));
     return;
   }
 
   if (cmd === "setup") {
-    await runSetup(args.slice(1));
+    if (process.env.CLAUDE_SMART_INSTALL_CHILD === "1") await runSetup(args.slice(1));
+    else await runGuidedCommand(cmd, args.slice(1));
     return;
   }
 
   if (cmd === "uninstall") {
-    await runUninstall(args.slice(1));
+    if (process.env.CLAUDE_SMART_INSTALL_CHILD === "1") await runUninstall(args.slice(1));
+    else await runGuidedCommand(cmd, args.slice(1));
     return;
   }
 

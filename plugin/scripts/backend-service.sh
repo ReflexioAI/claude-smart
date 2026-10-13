@@ -109,8 +109,11 @@ plugin_root_has_version_manifest() {
 
 PLUGIN_VERSION="$(plugin_version_from_root "$PLUGIN_ROOT_CANONICAL")"
 
+# Integration identity is per hook; the saved learning provider is shared.
+# Older installs without the new setting retain their existing host fallback.
+learning_provider="${CLAUDE_SMART_LEARNING_PROVIDER:-${CLAUDE_SMART_HOST:-claude-code}}"
 if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
-  if [ "${CLAUDE_SMART_HOST:-claude-code}" = "opencode" ]; then
+  if [ "$learning_provider" = "opencode" ]; then
     # Preserve Reflexio's Claude CLI provider contract while routing
     # generation through the user's authenticated OpenCode setup. The bridge
     # resolves opencode from CLAUDE_SMART_OPENCODE_PATH or PATH; don't require
@@ -118,7 +121,7 @@ if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
     claude_smart_prepend_node_bins
     CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"
     export CLAUDE_SMART_CLI_PATH
-  elif [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ]; then
+  elif [ "$learning_provider" = "codex" ]; then
     # Reflexio's provider still calls CLAUDE_SMART_CLI_PATH with Claude CLI
     # flags. Use a small compatibility executable that translates that narrow
     # contract to `codex exec`.

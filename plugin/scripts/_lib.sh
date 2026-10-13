@@ -115,7 +115,7 @@ claude_smart_source_reflexio_env() {
     case "$key" in
       # Managed Reflexio config: file always wins so a rotated key/url overrides
       # whatever a long-lived managed backend or dashboard process inherited.
-      REFLEXIO_URL|REFLEXIO_API_KEY|REFLEXIO_USER_ID|CLAUDE_SMART_READ_ONLY)
+      REFLEXIO_URL|REFLEXIO_API_KEY|REFLEXIO_USER_ID|CLAUDE_SMART_READ_ONLY|CLAUDE_SMART_LEARNING_PROVIDER)
         value="$(claude_smart_env_unquote "$value")"
         export "$key=$value"
         ;;

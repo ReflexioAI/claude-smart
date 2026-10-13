@@ -19,6 +19,10 @@ def clear_install_environment(monkeypatch, tmp_path):
     # Isolated HOME subprocesses must never inherit a live Orca/Codex account.
     monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_HOOK_LOG", raising=False)
+    # Existing per-agent install tests exercise worker diagnostics and rollback.
+    # Guided end-to-end tests remove this internal coordinator setting explicitly.
+    monkeypatch.setenv("CLAUDE_SMART_INSTALL_CHILD", "1")
+    monkeypatch.delenv("CLAUDE_SMART_DEFER_SHARED_SERVICES", raising=False)
     from claude_smart import hook_log
 
     monkeypatch.setattr(hook_log, "_LOG_PATH", tmp_path / "hook.log")

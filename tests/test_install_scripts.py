@@ -58,6 +58,10 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
     env["SHELL"] = "/bin/sh"
     env.pop("BASH_ENV", None)
     env.pop("ENV", None)
+    # These fixtures exercise the native per-agent workers and their rollback
+    # contracts. The guided coordinator is covered separately in test_install_guide.
+    env["CLAUDE_SMART_INSTALL_CHILD"] = "1"
+    env.pop("CLAUDE_SMART_DEFER_SHARED_SERVICES", None)
     return env
 
 
@@ -1644,6 +1648,10 @@ def _fake_claude_code_package(tmp_path: Path, smart_install: str) -> Path:
     (package_root / "bin").mkdir(parents=True)
     scripts.mkdir(parents=True)
     shutil.copy2(NODE_INSTALLER, package_root / "bin" / "claude-smart.js")
+    shutil.copy2(
+        REPO_ROOT / "bin" / "install-guide.js",
+        package_root / "bin" / "install-guide.js",
+    )
     (package_root / "package.json").write_text('{"name": "claude-smart"}\n')
     (package_root / "plugin" / "pyproject.toml").write_text(
         "[project]\nname='claude-smart'\n"
@@ -6214,7 +6222,12 @@ def test_hook_entry_failure_marker_uses_resolved_python_on_windows(
     ]:
         executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
 
+    # Fingerprinting invokes `uv python find`; the real uv can probe the
+    # python3 stub independently of the Windows interpreter resolver under test.
+    _write_executable(bin_dir / "uv", "#!/bin/sh\nprintf '/fixture/python-3.12\\n'\n")
     env = _isolated_env(tmp_path)
+    # Keep the simulated Windows uname/python ahead of this Mac's login PATH.
+    env["CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS"] = "0"
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     fingerprint = subprocess.run(
         [
@@ -6629,6 +6642,10 @@ def _sha256(path: Path) -> str:
 def _npm_install_global_tarball(
     tarball: Path, *, prefix: Path, env: dict[str, str]
 ) -> None:
+    # Existing tarball contracts target the native worker, including its detailed
+    # diagnostics. Guided tarball smoke tests explicitly remove this setting.
+    env["CLAUDE_SMART_INSTALL_CHILD"] = "1"
+    env.pop("CLAUDE_SMART_DEFER_SHARED_SERVICES", None)
     npm = shutil.which("npm")
     if not npm:
         pytest.skip("npm is required for package install smoke tests")

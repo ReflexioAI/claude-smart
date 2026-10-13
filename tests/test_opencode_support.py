@@ -762,7 +762,7 @@ def test_opencode_extraction_provider_accepts_explicit_opencode_path(
 def test_opencode_backend_service_uses_bridge_without_opencode_path_probe() -> None:
     service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
-    assert 'CLAUDE_SMART_HOST:-claude-code}" = "opencode"' in service
+    assert 'if [ "$learning_provider" = "opencode" ]' in service
     assert 'CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"' in service
     assert "command -v opencode" not in service
     assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"' in service
@@ -1070,6 +1070,7 @@ def _write_minimal_node_package_root(package_root: Path) -> None:
     bin_dir.mkdir(parents=True)
     scripts.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "bin" / "claude-smart.js", bin_dir / "claude-smart.js")
+    shutil.copy2(REPO_ROOT / "bin" / "install-guide.js", bin_dir / "install-guide.js")
     (package_root / "package.json").write_text(
         json.dumps({"name": "claude-smart", "version": "0.0.0"}) + "\n"
     )
@@ -1377,6 +1378,7 @@ def test_node_opencode_install_stable_root_bootstrap_failure_leaves_config_uncha
     bin_dir = package_root / "bin"
     bin_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "bin" / "claude-smart.js", bin_dir / "claude-smart.js")
+    shutil.copy2(REPO_ROOT / "bin" / "install-guide.js", bin_dir / "install-guide.js")
     (package_root / "package.json").write_text(
         json.dumps({"name": "claude-smart", "version": "0.0.0"}) + "\n"
     )

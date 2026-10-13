@@ -60,28 +60,59 @@
 
 Requires Node.js 20+ (for `npx`) and the host CLI you're installing into (`claude`, `codex`, or `opencode`) on `PATH`.
 
-### Claude Code
+### Guided installation
 
 ```bash
 npx claude-smart install
 ```
 
+Choose one or more detected coding agents with the arrow keys and Space, then
+press Enter. Single-choice settings use the arrow keys and Enter. Esc or Ctrl+C
+cancels before configuration is saved.
+
+The guide asks where to store and process your data:
+
+- **Local Reflexio:** starts a background backend on this machine. Choose which
+  available agent CLI powers background learning; it can analyze interactions
+  from every installed integration.
+- **Managed Reflexio:** enter an HTTPS endpoint and a hidden API key. No local
+  backend starts; the dashboard still runs locally.
+
+Review the configuration before installation starts. Saved settings and installed
+agents are preselected on subsequent runs. Preparation and service startup show
+phase and elapsed progress; detailed logs live in `~/.claude-smart/install-logs/`.
+If an integration fails, the others still install and the summary reports each result.
+Runtime environments remain separate so an agent's rollback cannot break another.
+
+### Explicit installation
+
+For an unattended first install, specify the backend. Multiple agents can be
+installed in one command:
+
+```bash
+npx claude-smart install --host claude-code,codex --backend local --provider codex
+npx claude-smart install --host opencode --backend local --provider opencode --global
+```
+
+For managed mode, supply the API key through a named environment variable rather
+than a command-line argument:
+
+```bash
+npx claude-smart install --host claude-code,codex --backend managed \
+  --url https://www.reflexio.ai/ --api-key-env REFLEXIO_API_KEY
+```
+
+Existing `--host codex` and `--host opencode` commands still work. Without a terminal,
+saved backend/provider settings are reused; a fresh install requires `--backend`.
+Use `--yes` to skip interactive questions when all required settings are supplied
+or saved. For multiple local agents, specify `--provider` unless one is already saved.
+Use `--read-only` to retrieve memories without publishing interactions, or `--learn`
+to resume learning. The interactive guide offers both modes for either backend.
+
+### Activate each integration
+
 Run `/reload-plugins` in your existing Claude Code session, or use the update in your next session.
-
-### Codex
-
-```bash
-npx claude-smart install --host codex
-```
-
 Start a new Codex session to load the update; you can finish your existing session first. If hook trust needs review, use `/hooks`.
-
-### OpenCode
-
-```bash
-npx claude-smart install --host opencode
-```
-
 Then restart OpenCode in your project so it loads the plugin from `opencode.json`. Add `--global` to install for all OpenCode projects on this machine instead.
 
 ### Check an update
@@ -96,12 +127,19 @@ Shows the installed version and the version each recent session last used in a h
 ### Uninstall
 
 ```bash
-npx claude-smart uninstall                    # Claude Code
+npx claude-smart uninstall                    # Choose integrations interactively
+npx claude-smart uninstall --host claude-code,codex  # Remove multiple integrations
+npx claude-smart uninstall --host claude-code  # Claude Code
 npx claude-smart uninstall --host codex       # Codex
 npx claude-smart uninstall --host opencode    # OpenCode
 ```
 
 Afterward, use `/reload-plugins` in Claude Code, start a new Codex session, or restart OpenCode. Learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved and shared across hosts, so you can uninstall or switch hosts without losing skills or preferences.
+
+Uninstall keeps saved configuration and the chosen background learning provider.
+Removing an integration does not uninstall its agent CLI. Remaining integrations
+can continue using the same learning provider. OpenCode removal applies to the
+current project config, or its global config with `--global`.
 
 For per-host details — what the installers and uninstallers touch, OpenCode config resolution and model/env overrides, and Windows notes — see [Host install notes](./DEVELOPER.md#host-install-notes) in DEVELOPER.md. Developing the plugin itself? See [Developing locally](./DEVELOPER.md#developing-locally).
 

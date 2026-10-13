@@ -11,6 +11,7 @@ Internal notes for maintainers of `claude-smart`. End-user install instructions 
 | `plugin/pyproject.toml` | Python manifest for the plugin (deps + console scripts for the plugin venv); npm-only, not published to PyPI |
 | `tests/` | Pytest suite for the Python package (run via `uv run --project plugin pytest tests/ -q` from repo root) |
 | `bin/claude-smart.js` | Node wrapper so `npx claude-smart install` works |
+| `bin/install-guide.js` | Dependency-free guided install/uninstall UI and configuration selection |
 | `package.json` | npm manifest — ships `bin/`, marketplace metadata, `plugin/`, `README.md`, and `LICENSE` |
 | `plugin/.claude-plugin/plugin.json` | Plugin metadata read by Claude Code |
 | `.claude-plugin/marketplace.template.json` | Source of the marketplace entry, minus the version |
@@ -46,6 +47,7 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CLAUDE_SMART_USE_LOCAL_CLI` | `0` (installer sets `1`) | Route generation through the active host CLI (`claude` for Claude Code, `codex` for Codex). Written to `~/.claude-smart/.env` by `claude-smart install`. |
+| `CLAUDE_SMART_LEARNING_PROVIDER` | unset (legacy host fallback) | Saved local background learning provider: `claude-code`, `codex`, or `opencode`. Independent of the agent collecting interactions. The guided installer saves the user's choice; session hooks and integration removal do not change it. An explicit `CLAUDE_SMART_CLI_PATH` still overrides the executable; the guide preserves it on unattended updates and clears it when choosing a provider interactively or with `--provider`. |
 | `CLAUDE_SMART_USE_LOCAL_EMBEDDING` | `0` (installer sets `1`) | Route embeddings to the shared local embedding daemon on `localhost:8072`. Written to `~/.claude-smart/.env` by `claude-smart install`. |
 | `REFLEXIO_EMBEDDING_PROVIDER` | `local_service` when local embedding is enabled | Embedding provider mode: `cloud`, `local_service`, `internal_service`, `inprocess`, or `off`. |
 | `REFLEXIO_EMBEDDING_SERVICE_URL` | `http://127.0.0.1:$EMBEDDING_PORT` | OpenAI-compatible embedding endpoint used by `local_service` and `internal_service`. |
@@ -73,6 +75,17 @@ Supported local models are `local/nomic-embed-v1.5`, `local/nomic-embed-text-v1.
 Hosted Reflexio deployments should use a managed embedding provider or a scalable `REFLEXIO_EMBEDDING_PROVIDER=internal_service` endpoint instead of a single-machine daemon. The local claude-smart install path assumes the shared local daemon.
 
 ## Install dependency policy
+
+`install`, `update`, `setup`, and `uninstall` use the guided coordinator. It invokes
+the existing per-agent workers sequentially, captures their output in private log
+files, and starts shared services once after successful installation. Each worker
+retains its runtime and rollback boundary; dependency downloads reuse caches.
+Terminal configuration is collected and confirmed before writes. Noninteractive
+first installs require an explicit backend; multi-agent local installs also need
+a saved or explicit learning provider. Secrets are accepted via hidden input or a
+named environment variable, persisted in the private `.env`, and never included
+in the configuration summary. Run `node --test tests/install-guide.test.js` for
+the guide's selection and partial-failure contracts.
 
 Vanilla install support means the user has installed the host (`claude`,
 `codex`, or `opencode`) and the installer runner (`npx`, which needs Node), but
