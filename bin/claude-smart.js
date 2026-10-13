@@ -1793,6 +1793,10 @@ async function runGuidedCommand(command, args) {
       startDeferredDashboardBuild(root);
       return await startAndReportServices(root, host, setup, { summaryOnly: true });
     },
+  }).finally(() => {
+    // Keypress listeners can keep the TTY alive after the last prompt. Release
+    // it only when the whole guide finishes; later prompts still need stdin.
+    if (process.stdin.isTTY) process.stdin.destroy();
   });
 }
 

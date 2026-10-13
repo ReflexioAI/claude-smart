@@ -126,8 +126,8 @@ async function configure(options, inventory, saved, ask = terminalQuestion, inte
   config.userId = config.sharing === "global" ? saved.userId || "global_user" : "";
   if (backend === "local") {
     const providers = inventory.filter((agent) => agent.available);
-    config.cliPath = !interactive && !options.provider ? saved.cliPath || "" : "";
-    config.useLocalCli = !interactive && !options.provider ? saved.useLocalCli || "1" : "1";
+    config.cliPath = !interactive && !options.provider ? process.env.CLAUDE_SMART_CLI_PATH || saved.cliPath || "" : "";
+    config.useLocalCli = !interactive && !options.provider ? process.env.CLAUDE_SMART_USE_LOCAL_CLI || saved.useLocalCli || "1" : "1";
     config.provider = options.provider || (interactive ? await ask("Which agent should power background learning?", providers.map((agent) => ({ value: agent.host, label: `${LABELS[agent.host]} CLI` })), { selected: [saved.provider || hosts[0]] }) : saved.provider || (hosts.length === 1 ? hosts[0] : null));
     if (!config.cliPath && config.useLocalCli !== "0") {
       if (!config.provider) throw new Error("Choose a background learning provider with --provider claude-code, codex, or opencode");

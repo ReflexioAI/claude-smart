@@ -56,6 +56,61 @@ def fake_guide(tmp_path: Path, *, delay: bool = False) -> tuple[Path, dict[str, 
     return package / "bin" / "claude-smart.js", env
 
 
+@pytest.mark.parametrize("saved", [False, True])
+@pytest.mark.parametrize("explicit_provider", [False, True])
+@pytest.mark.parametrize(
+    ("key", "value", "summary"),
+    [
+        (
+            "CLAUDE_SMART_CLI_PATH",
+            "/custom/router",
+            "custom executable (/custom/router)",
+        ),
+        ("CLAUDE_SMART_USE_LOCAL_CLI", "0", "configured cloud LLM"),
+    ],
+)
+def test_unattended_install_preserves_inherited_provider_overrides(
+    tmp_path: Path,
+    saved: bool,
+    explicit_provider: bool,
+    key: str,
+    value: str,
+    summary: str,
+) -> None:
+    installer, env = fake_guide(tmp_path)
+    config_path = tmp_path / ".claude-smart" / ".env"
+    if saved:
+        config_path.parent.mkdir()
+        config_path.write_text(
+            'REFLEXIO_URL="http://localhost:8071"\n'
+            'CLAUDE_SMART_LEARNING_PROVIDER="claude-code"\n'
+            'CLAUDE_SMART_CLI_PATH="/saved/router"\n'
+            'CLAUDE_SMART_USE_LOCAL_CLI="1"\n'
+        )
+    env[key] = value
+    args = [
+        node_bin(),
+        str(installer),
+        "install",
+        "--host",
+        "claude-code",
+        "--backend",
+        "local",
+    ]
+    if explicit_provider:
+        args += ["--provider", "claude-code"]
+    result = subprocess.run(args, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    settings = config_path.read_text()
+    if explicit_provider:
+        assert "Background learning: Claude Code CLI" in result.stdout
+        assert f'{key}="{value}"' not in settings
+        assert 'CLAUDE_SMART_USE_LOCAL_CLI="1"' in settings
+    else:
+        assert summary in result.stdout
+        assert f'{key}="{value}"' in settings
+
+
 def test_guided_coordinator_reports_partial_success_and_keeps_provider(
     tmp_path: Path,
 ) -> None:
@@ -290,8 +345,10 @@ def test_final_uninstall_does_not_restart_services_from_a_surviving_npx_root(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="PTY terminal fixtures require POSIX")
+@pytest.mark.parametrize("proceed", [False, True])
 def test_managed_key_is_hidden_and_final_cancel_does_not_save_it(
     tmp_path: Path,
+    proceed: bool,
 ) -> None:
     import pty
 
@@ -317,13 +374,13 @@ def test_managed_key_is_hidden_and_final_cancel_does_not_save_it(
         os.write(master, answer)
 
     try:
-        answer_after(b"Which coding agents", b"\r")
+        answer_after(b"Which coding agents", b"\x1b[B \r")
         answer_after(b"Where should", b"\x1b[B\r")
         answer_after(b"Managed Reflexio endpoint", b"\r")
         answer_after(b"API key (hidden)", b"secret-terminal-sentinel\r")
         answer_after(b"Allow claude-smart", b"\r")
         answer_after(b"Memory sharing scope", b"\r")
-        answer_after(b"Proceed with installation", b"\x1b[B\r")
+        answer_after(b"Proceed with installation", b"\r" if proceed else b"\x1b[B\r")
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             if not select.select([master], [], [], 0.1)[0]:
@@ -338,9 +395,18 @@ def test_managed_key_is_hidden_and_final_cancel_does_not_save_it(
                 break
             output += chunk
         assert proc.poll() is not None, output.decode(errors="replace")
+        assert proc.returncode == 0, output.decode(errors="replace")
         assert b"secret-terminal-sentinel" not in output
-        assert b"Cancelled; no changes made" in output
-        assert not (tmp_path / ".claude-smart").exists()
+        if proceed:
+            assert b"Installation complete" in output
+            assert b"Claude Code: installed" in output
+            assert (
+                'REFLEXIO_API_KEY="secret-terminal-sentinel"'
+                in (tmp_path / ".claude-smart" / ".env").read_text()
+            )
+        else:
+            assert b"Cancelled; no changes made" in output
+            assert not (tmp_path / ".claude-smart").exists()
     finally:
         if proc.poll() is None:
             proc.kill()
