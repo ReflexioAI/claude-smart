@@ -1702,6 +1702,18 @@ def node_bin() -> str:
     return node
 
 
+def _wait_for_file_text(path: Path, expected: str, timeout: float = 5) -> str:
+    """Await observable output from detached service workers, with a bounded failure."""
+    deadline = time.monotonic() + timeout
+    text = ""
+    while time.monotonic() < deadline:
+        text = path.read_text() if path.exists() else ""
+        if expected in text:
+            return text
+        time.sleep(0.05)
+    pytest.fail(f"Detached worker did not emit {expected!r} to {path}: {text}")
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -3601,7 +3613,14 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert "const bash = resolveUsableBash();" in node_installer
     assert "Git Bash is required for claude-smart services on Windows" in node_installer
     assert "bash is required but was not found on PATH" in node_installer
-    assert "function refreshDashboardService(pluginRoot)" in node_installer
+    assert (
+        'await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "stop")'
+        in node_installer
+    )
+    assert (
+        'await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "start")'
+        in node_installer
+    )
     assert "const PLUGIN_SERVICE_TIMEOUT_MS = 45_000" in node_installer
     assert "timeout: PLUGIN_SERVICE_TIMEOUT_MS" in node_installer
     assert 'killSignal: "SIGTERM"' in node_installer
@@ -3617,10 +3636,6 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert "startAndReportServices(cacheDir, HOST_CODEX, setup)" in node_installer
     assert (
         'runPluginService(pluginRoot, "dashboard-service.sh", "stop")' in node_installer
-    )
-    assert (
-        'runPluginService(pluginRoot, "dashboard-service.sh", "start")'
-        in node_installer
     )
     assert "function stopClaudeSmartServices(pluginRoot)" in node_installer
     # The service scripts always exit 0, so a start is only claimed after an
@@ -4922,7 +4937,7 @@ def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == '{"continue":true}'
         stale.wait(timeout=5)
-        assert "spawned backend" in (tmp_path / "python.log").read_text()
+        _wait_for_file_text(tmp_path / "python.log", "spawned backend")
         assert (
             f"--backend-host {bind_host or '127.0.0.1'}"
             in (tmp_path / "python.log").read_text()
@@ -5071,7 +5086,7 @@ def test_backend_start_reaps_older_markerless_peer_from_other_root(
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == '{"continue":true}'
         legacy.wait(timeout=5)
-        assert "spawned backend" in (tmp_path / "python.log").read_text()
+        _wait_for_file_text(tmp_path / "python.log", "spawned backend")
         assert (
             "older than plugin"
             in (tmp_path / ".claude-smart" / "backend.log").read_text()
