@@ -361,3 +361,41 @@ def test_saving_settings_does_not_bind_an_orphaned_key_to_localhost(
     )
     assert result["source"] == "local"
     assert result["apiKey"] == ""
+
+
+def test_server_configuration_reads_and_saves_keep_connection_identity(
+    compiled_dashboard, tmp_path
+):
+    result = run_module(
+        compiled_dashboard,
+        tmp_path,
+        """
+      const m = require('./reflexio-client');
+      const calls=[];
+      global.fetch=async (url,opts)=>{
+        calls.push({url,method:opts.method,source:opts.headers.get('x-claude-smart-source'),identity:opts.headers.get('x-claude-smart-connection'),body:opts.body ? JSON.parse(opts.body) : null});
+        return Response.json(url.endsWith('get_config') ? {window_size:30} : {success:true});
+      };
+      (async()=>{
+        for (const source of ['local','managed']) {
+          m.selectDataSource(source,source+'-identity');
+          const config=await m.reflexio.getServerConfiguration();
+          await m.reflexio.setServerConfiguration({...config,window_size:31});
+        }
+        console.log(JSON.stringify(calls));
+      })();
+    """,
+    )
+    assert [row["source"] for row in result] == ["local", "local", "managed", "managed"]
+    assert [row["identity"] for row in result] == [
+        "local-identity",
+        "local-identity",
+        "managed-identity",
+        "managed-identity",
+    ]
+    for read, write in (result[:2], result[2:]):
+        assert read["method"] == "GET"
+        assert read["url"].endswith("get_config")
+        assert write["method"] == "POST"
+        assert write["url"].endswith("set_config")
+        assert write["body"]["window_size"] == 31

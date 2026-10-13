@@ -156,6 +156,10 @@ export interface ReflexioRetrievalFloorConfig {
 }
 
 export interface ReflexioConfig {
+  llm_config?: {
+    generation_model_name?: string | null;
+    [key: string]: unknown;
+  } | null;
   agent_context_prompt?: string | null;
   window_size?: number;
   stride_size?: number;

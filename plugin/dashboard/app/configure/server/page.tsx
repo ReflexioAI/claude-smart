@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Save, CheckCircle2 } from "lucide-react";
+import { reflexio } from "@/lib/reflexio-client";
 import { PageHeader } from "@/components/common/page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,17 +39,7 @@ export default function ConfigureServerPage() {
   const [srvLoading, setSrvLoading] = useState(true);
 
   const fetchSrvConfig = useCallback(async (): Promise<ReflexioConfig> => {
-    const res = await fetch("/api/reflexio/api/get_config", {
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => null);
-      const detail = body?.error
-        ? `${body.error}${body.detail ? `: ${body.detail}` : ""}`
-        : `HTTP ${res.status}`;
-      throw new Error(detail);
-    }
-    return (await res.json()) as ReflexioConfig;
+    return reflexio.getServerConfiguration();
   }, []);
 
   useEffect(() => {
@@ -112,19 +103,7 @@ export default function ConfigureServerPage() {
     setSrvSaving(true);
     setSrvError(null);
     try {
-      const headers: HeadersInit = { "content-type": "application/json" };
-      const res = await fetch("/api/reflexio/api/set_config", {
-        method: "POST",
-        headers,
-        body: JSON.stringify(srvConfig),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        const detail = body?.error
-          ? `${body.error}${body.detail ? `: ${body.detail}` : ""}`
-          : `HTTP ${res.status}`;
-        throw new Error(detail);
-      }
+      await reflexio.setServerConfiguration(srvConfig);
       const fresh = await fetchSrvConfig();
       setSrvConfig(fresh);
       setSrvSaved(true);
@@ -139,9 +118,13 @@ export default function ConfigureServerPage() {
     <>
       <PageHeader
         title="Reflexio server"
-        description="Fetched live from the reflexio backend via /api/get_config. Requires reflexio to be running."
+        description="Configuration for the selected Reflexio backend."
         actions={
-          <Button onClick={saveSrv} disabled={!srvConfig || srvSaving} size="sm">
+          <Button
+            onClick={saveSrv}
+            disabled={!srvConfig || srvSaving}
+            size="sm"
+          >
             <Save className="h-3.5 w-3.5" />
             {srvSaving ? "Saving…" : "Save"}
           </Button>

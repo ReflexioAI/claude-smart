@@ -51,7 +51,7 @@ export default function DashboardPage() {
         if (!cancelled) setRecentError(String(e.message || e));
       });
     reflexio
-      .getModelConfiguration()
+      .getServerConfiguration()
       .then((config) => {
         if (!cancelled)
           setModel(

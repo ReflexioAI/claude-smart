@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { sourceHeaders } from "@/lib/reflexio-client";
 
 const POLL_INTERVAL_MS = 60_000;
 
@@ -31,6 +32,7 @@ export function useStallState(): StallState | null {
       try {
         const resp = await fetch("/api/reflexio/stall_state", {
           cache: "no-store",
+          headers: sourceHeaders(),
           signal: controller.signal,
         });
         if (!resp.ok) return;

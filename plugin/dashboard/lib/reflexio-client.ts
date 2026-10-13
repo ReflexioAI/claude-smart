@@ -12,6 +12,7 @@ import type {
   UserPlaybook,
   UserProfile,
   PlaybookApplicationStat,
+  ReflexioConfig,
 } from "./types";
 
 type Json = Record<string, unknown>;
@@ -152,10 +153,11 @@ export const reflexio = {
       };
     }>("get_dashboard_stats", { days_back: 30 });
   },
-  async getModelConfiguration() {
-    return get<{
-      llm_config?: { generation_model_name?: string | null } | null;
-    }>("get_config");
+  async getServerConfiguration(): Promise<ReflexioConfig> {
+    return get("get_config");
+  },
+  async setServerConfiguration(config: ReflexioConfig): Promise<Json> {
+    return post("set_config", config);
   },
   /** POST /api/get_user_playbooks — all filters are optional. */
   async getUserPlaybooks(opts: {
