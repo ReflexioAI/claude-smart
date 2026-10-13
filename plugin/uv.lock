@@ -523,6 +523,7 @@ version = "0.3.5"
 source = { editable = "." }
 dependencies = [
     { name = "einops" },
+    { name = "filelock" },
     { name = "litellm" },
     { name = "reflexio-ai" },
     { name = "sqlite-vec" },
@@ -536,6 +537,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "einops", specifier = ">=0.8.0" },
+    { name = "filelock", specifier = ">=3.20.3" },
     { name = "litellm", specifier = ">=1.103.1,<2" },
     { name = "reflexio-ai", specifier = ">=0.2.28" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },

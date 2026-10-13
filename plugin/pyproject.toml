@@ -34,6 +34,7 @@ dependencies = [
     # Python ranking without this, but installed claude-smart should include
     # the accelerator by default.
     "sqlite-vec>=0.1.6",
+    "filelock>=3.20.3",
 ]
 
 # claude-smart is distributed via npm only (see bin/claude-smart.js); it is not

@@ -262,4 +262,5 @@ retries keep it, and searches after a frozen publish belong to a later response.
 Older buffered publishes keep their existing retry IDs. Cancelled turns do not
 attach their retrieved-playbook references to a later prompt's answer. Search
 alone does not supply a conversation or an outcome for offline tuning: the
-response still needs to be published.
+response still needs to be published. Buffer writes and identity reservations
+share a cross-process file lock on Linux, macOS, and native Windows.

@@ -2,6 +2,8 @@
 """Search identity must survive buffering, retries and later cancelled turns."""
 
 from concurrent.futures import ThreadPoolExecutor
+import multiprocessing
+import time
 from typing import Any, cast
 
 import pytest
@@ -10,6 +12,53 @@ from claude_smart import publish, state
 from claude_smart.reflexio_adapter import Adapter, PublishResult
 
 pytestmark = pytest.mark.usefixtures("session_dir")
+
+
+def _reserve_in_process(ready: Any, go: Any, results: Any) -> None:
+    original = state.read_all
+
+    def delayed_read(session_id: str) -> list[dict[str, Any]]:
+        records = original(session_id)
+        if not state.reserved_publish_requests(records):
+            time.sleep(0.1)
+        return records
+
+    state.read_all = delayed_read
+    ready.put(True)
+    if not go.wait(10):
+        return
+    results.put(state.reserve_publish_request_id("s"))
+
+
+def test_concurrent_processes_search_with_the_published_identity() -> None:
+    turn("User")
+    context = multiprocessing.get_context("spawn")
+    ready, results = context.Queue(), context.Queue()
+    go = context.Event()
+    processes = [
+        context.Process(target=_reserve_in_process, args=(ready, go, results))
+        for _ in range(4)
+    ]
+    try:
+        for process in processes:
+            process.start()
+        for _ in processes:
+            assert ready.get(timeout=10)
+        go.set()
+        search_ids = [results.get(timeout=10) for _ in processes]
+        assert len(set(search_ids)) == 1
+        turn("Assistant")
+        recorder = Recorder()
+        assert drain(recorder) == ("ok", 2)
+        assert recorder.calls[0]["request_id"] == search_ids[0]
+    finally:
+        for process in processes:
+            process.join(timeout=5)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+        ready.close()
+        results.close()
 
 
 class Recorder:

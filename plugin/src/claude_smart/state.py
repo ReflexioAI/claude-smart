@@ -31,10 +31,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-try:
-    import fcntl  # POSIX only — Windows hooks fall back to append-without-lock.
-except ImportError:  # pragma: no cover — non-POSIX platforms
-    fcntl = None  # type: ignore[assignment]
+from filelock import FileLock
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -160,12 +157,10 @@ def append_injected(session_id: str, entries: Iterable[dict[str, Any]]) -> None:
 
     path = injected_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        if fcntl is not None:
-            try:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-            except OSError as exc:
-                _LOGGER.debug("flock failed on %s: %s", path, exc)
+    with (
+        FileLock(str(path) + ".lock", timeout=5),
+        path.open("a", encoding="utf-8") as fh,
+    ):
         for record in records:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -215,19 +210,17 @@ def read_injected(session_id: str) -> dict[str, dict[str, Any]]:
 def append(session_id: str, record: dict[str, Any]) -> None:
     """Append one JSON record to the session buffer. Creates the dir if needed.
 
-    Holds an exclusive ``flock`` on the buffer file across the write so
+    Holds an exclusive cross-platform file lock across the write so
     concurrent hooks (e.g. parallel ``PostToolUse`` fires) cannot interleave
     JSON lines when a payload exceeds the buffered-writer's flush size.
     """
     path = session_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(record, ensure_ascii=False) + "\n"
-    with path.open("a", encoding="utf-8") as fh:
-        if fcntl is not None:
-            try:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-            except OSError as exc:
-                _LOGGER.debug("flock failed on %s: %s", path, exc)
+    with (
+        FileLock(str(path) + ".lock", timeout=5),
+        path.open("a", encoding="utf-8") as fh,
+    ):
         fh.write(line)
 
 
@@ -269,9 +262,10 @@ def reserve_publish_request_id(session_id: str) -> str:
     """
     path = session_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        if fcntl is not None:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    with (
+        FileLock(str(path) + ".lock", timeout=5),
+        path.open("a", encoding="utf-8") as fh,
+    ):
         records = read_all(session_id)
         published = published_record_offset(records)
         frozen_end = pending_publish_end(records, published) or published

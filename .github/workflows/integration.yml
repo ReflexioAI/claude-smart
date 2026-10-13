@@ -111,6 +111,12 @@ jobs:
           npm ci
           npm run build
 
+      - name: Check cross-process search identity on the native host
+        shell: bash
+        env:
+          PYTHONPATH: plugin/src
+        run: uv run --no-project --with pytest --with 'filelock>=3.20.3' python -m pytest tests/test_search_publish_identity.py tests/test_host_integration_e2e.py -q -o addopts=
+
   integration:
     name: integration (${{ matrix.os }}, node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
