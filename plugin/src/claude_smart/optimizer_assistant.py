@@ -158,6 +158,14 @@ def _render_transcript(messages: list[dict[str, str]]) -> str:
 
 
 def _run_local_cli(*, prompt: str, system_prompt: str) -> str:
+    provider = os.environ.get("CLAUDE_SMART_LEARNING_PROVIDER")
+    if provider:
+        override = os.environ.get(_ENV_CLI_PATH)
+        if provider == "codex" and (
+            not override or _is_claude_smart_compat_bridge(override)
+        ):
+            return _run_codex(prompt=prompt, system_prompt=system_prompt)
+        return _run_claude(prompt=prompt, system_prompt=system_prompt)
     if runtime.is_codex():
         return _run_codex(prompt=prompt, system_prompt=system_prompt)
     return _run_claude(prompt=prompt, system_prompt=system_prompt)

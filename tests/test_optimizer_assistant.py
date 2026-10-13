@@ -26,6 +26,57 @@ def _run_main(monkeypatch, payload):
     return rc, stdout.getvalue(), stderr.getvalue()
 
 
+@pytest.mark.parametrize("host", [runtime.HOST_CLAUDE_CODE, runtime.HOST_CODEX])
+@pytest.mark.parametrize(
+    ("provider", "cli_path", "expected_prefix"),
+    [
+        ("claude-code", "/bin/claude", ["/bin/claude", "-p"]),
+        ("codex", "/plugin/codex-claude-compat", ["/bin/codex", "exec"]),
+        (
+            "opencode",
+            "/plugin/opencode-claude-compat",
+            ["/plugin/opencode-claude-compat", "-p"],
+        ),
+        ("codex", "/opt/custom-router", ["/opt/custom-router", "-p"]),
+    ],
+)
+def test_optimizer_uses_saved_provider_independently_of_hook_host(
+    monkeypatch, tmp_path, host, provider, cli_path, expected_prefix
+) -> None:
+    runtime.set_host(host)
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_PROVIDER", provider)
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", cli_path)
+    monkeypatch.setattr(
+        optimizer_assistant.shutil, "which", lambda name: f"/bin/{name}"
+    )
+    output_path = tmp_path / "last-message.txt"
+    monkeypatch.setattr(
+        optimizer_assistant, "_temporary_output_path", lambda: output_path
+    )
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        output_path.write_text("assistant reply")
+        return SimpleNamespace(
+            returncode=0, stdout=json.dumps({"result": "assistant reply"}), stderr=""
+        )
+
+    monkeypatch.setattr(optimizer_assistant.subprocess, "run", fake_run)
+    rc, stdout, stderr = _run_main(
+        monkeypatch,
+        {"messages": [{"role": "user", "content": "answer now"}], "playbooks": []},
+    )
+    assert rc == 0
+    assert stderr == ""
+    assert json.loads(stdout) == {"content": "assistant reply"}
+    cmd, kwargs = calls[0]
+    assert cmd[:2] == expected_prefix
+    expected_child_host = runtime.HOST_CODEX if cmd[1] == "exec" else host
+    assert kwargs["env"]["CLAUDE_SMART_HOST"] == expected_child_host
+    assert kwargs["env"]["CLAUDE_SMART_INTERNAL"] == "1"
+
+
 @pytest.mark.parametrize("key", ["result", "response"])
 def test_optimizer_assistant_invokes_claude_and_emits_content(monkeypatch, key) -> None:
     calls = []
@@ -92,7 +143,9 @@ def test_optimizer_assistant_invokes_codex_for_codex_host(
         output_path.write_text("codex reply")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(optimizer_assistant, "_temporary_output_path", lambda: output_path)
+    monkeypatch.setattr(
+        optimizer_assistant, "_temporary_output_path", lambda: output_path
+    )
     monkeypatch.setattr(
         "claude_smart.optimizer_assistant.shutil.which",
         lambda name: "/bin/codex" if name == "codex" else None,
@@ -247,9 +300,7 @@ def test_optimizer_assistant_prefers_claude_smart_cli_path(monkeypatch) -> None:
                 {"role": "assistant", "content": "seen"},
                 {"role": "user", "content": "answer now"},
             ],
-            "playbooks": [
-                {"id": 1, "content": "Be concise.", "trigger": "summaries"}
-            ],
+            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": "summaries"}],
         },
     )
 
@@ -274,8 +325,7 @@ def test_optimizer_assistant_opencode_bridge_accepts_optimizer_args(
     bridge = repo_root / "plugin" / "scripts" / "opencode-claude-compat"
     fake_opencode = tmp_path / "opencode"
     fake_opencode.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\\n' '{\"type\":\"result\",\"result\":\"bridge reply\"}'\n"
+        '#!/bin/sh\nprintf \'%s\\n\' \'{"type":"result","result":"bridge reply"}\'\n'
     )
     fake_opencode.chmod(0o755)
 
@@ -374,16 +424,10 @@ def test_optimizer_assistant_resolve_helpers(monkeypatch) -> None:
     )
 
     monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
-    assert (
-        optimizer_assistant._resolve_claude_cli_path() == "/usr/local/bin/claude"
-    )
+    assert optimizer_assistant._resolve_claude_cli_path() == "/usr/local/bin/claude"
 
     monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "")
-    assert (
-        optimizer_assistant._resolve_claude_cli_path() == "/usr/local/bin/claude"
-    )
+    assert optimizer_assistant._resolve_claude_cli_path() == "/usr/local/bin/claude"
 
     monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/bridge/claude")
-    assert (
-        optimizer_assistant._resolve_claude_cli_path() == "/bridge/claude"
-    )
+    assert optimizer_assistant._resolve_claude_cli_path() == "/bridge/claude"

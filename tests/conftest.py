@@ -45,6 +45,7 @@ def clear_reflexio_connection_env(monkeypatch, tmp_path):
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_OPENCODE_PATH", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_LEARNING_PROVIDER", raising=False)
 
 
 @pytest.fixture(autouse=True)
