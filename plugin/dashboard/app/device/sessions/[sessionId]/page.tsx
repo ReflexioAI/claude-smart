@@ -1,7 +1,8 @@
 "use client";
 
 import { type ReactNode, use, useEffect, useState } from "react";
-import Link from "next/link";
+import Link from "@/components/common/source-link";
+import { useSettings } from "@/hooks/use-settings";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -35,6 +36,7 @@ export default function InteractionDetailPage({
 }) {
   const { sessionId } = use(params);
   const router = useRouter();
+  const { source } = useSettings();
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -48,7 +50,7 @@ export default function InteractionDetailPage({
         { method: "DELETE" },
       );
       if (!res.ok) throw new Error(`delete failed: ${res.status}`);
-      router.push("/device/sessions");
+      router.push(`/device/sessions?source=${source}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setDeleting(false);
@@ -258,7 +260,7 @@ function MarkdownLinkedText({ text }: { text: string }) {
       parts.push(text.slice(cursor, matchIndex));
     }
     parts.push(
-      <a
+      <Link
         key={`${matchIndex}-${href}`}
         href={href}
         target={href.startsWith("/") ? undefined : "_blank"}
@@ -266,7 +268,7 @@ function MarkdownLinkedText({ text }: { text: string }) {
         className="font-medium text-primary underline decoration-primary/35 underline-offset-2 hover:decoration-primary"
       >
         {label}
-      </a>,
+      </Link>,
     );
     cursor = matchIndex + raw.length;
   }

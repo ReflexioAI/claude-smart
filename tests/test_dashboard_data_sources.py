@@ -304,3 +304,34 @@ def test_proxy_blocks_stale_or_unscoped_mutations_before_forwarding(
     """,
     )
     assert result == {"statuses": [409, 409], "forwarded": 0}
+
+
+@pytest.mark.parametrize(
+    "remembered,expected",
+    [
+        ("http://localhost:8071", "http://localhost:9012"),
+        ("http://localhost:8071/", "http://localhost:9012"),
+        ("http://127.0.0.1:8071", "http://localhost:9012"),
+        ("http://127.0.0.1:8071/", "http://localhost:9012"),
+        ("http://localhost:9090/", "http://localhost:9090"),
+    ],
+)
+def test_remembered_local_endpoint_follows_bundled_port_only_for_defaults(
+    compiled_dashboard, tmp_path, remembered, expected
+):
+    state = tmp_path / ".claude-smart"
+    state.mkdir()
+    (state / ".env").write_text(
+        f'REFLEXIO_URL="https://managed.example/"\nREFLEXIO_API_KEY="cloud-secret"\nCLAUDE_SMART_LOCAL_URL="{remembered}"\nCLAUDE_SMART_LOCAL_API_KEY="local-secret"\n'
+    )
+    result = run_module(
+        compiled_dashboard,
+        tmp_path,
+        """
+      process.env.BACKEND_PORT='9012';
+      const m = require('./data-source');
+      (async () => console.log(JSON.stringify(await m.selectedConnection(new Request('http://dashboard',{headers:{'x-claude-smart-source':'local'}})))))();
+    """,
+    )
+    assert result["url"] == expected
+    assert result["apiKey"] == "local-secret"

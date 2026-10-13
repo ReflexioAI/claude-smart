@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import Link from "@/components/common/source-link";
 import { MessageSquare, Search } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
@@ -13,7 +13,6 @@ import { dayBucket, formatRelative, truncateId } from "@/lib/format";
 import type { SessionSummary } from "@/lib/types";
 
 export default function SessionsPage() {
-  const router = useRouter();
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -118,23 +117,9 @@ export default function SessionsPage() {
                 </div>
                 <div className="rounded-lg border border-border divide-y divide-border bg-card/90 overflow-hidden shadow-sm">
                   {items.map((s) => (
-                    <div
+                    <Link
                       key={s.session_id}
-                      role="link"
-                      tabIndex={0}
-                      onClick={() =>
-                        router.push(
-                          `/device/sessions/${encodeURIComponent(s.session_id)}`,
-                        )
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          router.push(
-                            `/device/sessions/${encodeURIComponent(s.session_id)}`,
-                          );
-                        }
-                      }}
+                      href={`/device/sessions/${encodeURIComponent(s.session_id)}`}
                       className="flex cursor-pointer flex-col gap-2 px-4 py-3 transition-colors hover:bg-accent/45 focus:bg-accent/45 focus:outline-none sm:flex-row sm:items-center"
                     >
                       <div className="flex min-w-0 items-start gap-3">
@@ -179,7 +164,7 @@ export default function SessionsPage() {
                       <div className="self-end text-xs text-muted-foreground tabular-nums sm:shrink-0">
                         {formatRelative(s.last_activity)}
                       </div>
-                    </div>
+                    </Link>
                   ))}
                 </div>
               </section>

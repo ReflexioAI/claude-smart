@@ -125,7 +125,7 @@ export async function managedReflexioSettings(): Promise<{
  * on BACKEND_PORT. The hooks rewrite them the same way. (An empty URL stays
  * empty: the proxy then uses its own default and sends no key.)
  */
-function deriveFromBackendPort(url: string): string {
+export function deriveFromBackendPort(url: string): string {
   const defaults = new Set([
     "http://localhost:8071",
     "http://localhost:8071/",

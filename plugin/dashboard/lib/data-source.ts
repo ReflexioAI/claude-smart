@@ -6,6 +6,7 @@ import {
   managedReflexioSettings,
   isRemoteReflexioUrl,
   parseLine,
+  deriveFromBackendPort,
 } from "./config-file";
 
 export type DataSource = "local" | "managed";
@@ -48,9 +49,10 @@ export async function dataSources() {
     defaultSource === "local"
       ? active
       : {
-          url:
+          url: deriveFromBackendPort(
             saved.LOCAL_URL ||
-            `http://localhost:${process.env.BACKEND_PORT || "8071"}/`,
+              `http://localhost:${process.env.BACKEND_PORT || "8071"}/`,
+          ),
           apiKey: saved.LOCAL_API_KEY || "",
         };
   const managed =
