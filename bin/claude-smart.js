@@ -66,6 +66,7 @@ const CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI";
 const CLAUDE_SMART_USE_LOCAL_EMBEDDING_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING";
 const CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST";
 const LEARNING_PROVIDER_ENV = "CLAUDE_SMART_LEARNING_PROVIDER";
+const GUIDED_CONFIG_ENV = "CLAUDE_SMART_GUIDED_CONFIG";
 const CLAUDE_SMART_OPENCODE_PATH_ENV = "CLAUDE_SMART_OPENCODE_PATH";
 const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const HOST_CLAUDE_CODE = "claude-code";
@@ -563,7 +564,7 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
     delete process.env[MANAGED_SETUP_ENV];
     url = "";
     const added = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, installHost, {
-      prune: !fileEnv.has(LEARNING_PROVIDER_ENV),
+      prune: fileEnv.get(GUIDED_CONFIG_ENV) !== "1" && !fileEnv.has(LEARNING_PROVIDER_ENV),
     });
     if (added.length > 0) {
       process.stdout.write(`Seeded ${CLAUDE_SMART_ENV_PATH} with ${added.join(", ")}.\n`);
@@ -1711,6 +1712,7 @@ function saveInstallConfiguration(config) {
   // Preserve legacy runtime flags after confirmation, before recording migration.
   migrateLegacyManagedEnv();
   const values = {
+    [GUIDED_CONFIG_ENV]: "1",
     REFLEXIO_URL: config.url || localBackendUrl(), REFLEXIO_API_KEY: config.apiKey || "",
     CLAUDE_SMART_READ_ONLY: config.readOnly ? "1" : "0",
     REFLEXIO_USER_ID: config.sharing === "global" ? config.userId || "global_user" : "",

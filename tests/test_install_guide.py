@@ -474,8 +474,10 @@ def test_guided_update_keeps_claude_uninstall_and_retry_recovery(
     assert "plugin uninstall claude-smart@reflexioai" in calls
 
 
+@pytest.mark.parametrize("provider_mode", ["named", "custom", "cloud"])
 def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     tmp_path: Path,
+    provider_mode: str,
 ) -> None:
     if not (REPO_ROOT / "plugin" / "vendor" / "reflexio").is_dir():
         pytest.skip("Release bundle required; generate the pinned vendor payload first")
@@ -492,6 +494,20 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         codex.read_text().replace("#!/usr/bin/env node", f"#!{node_bin()}", 1)
     )
     env.pop("CLAUDE_SMART_INSTALL_CHILD", None)
+    config_path = home / ".claude-smart" / ".env"
+    config_path.unlink()
+    provider_args = ["--provider", "codex"]
+    if provider_mode == "custom":
+        env["CLAUDE_SMART_CLI_PATH"] = "/custom/router"
+        provider_args = []
+    elif provider_mode == "cloud":
+        env["CLAUDE_SMART_USE_LOCAL_CLI"] = "0"
+        provider_args = []
+    expected_learning = {
+        "named": "Codex CLI",
+        "custom": "custom executable (/custom/router)",
+        "cloud": "configured cloud LLM",
+    }[provider_mode]
     installer = prefix / "bin" / "claude-smart"
     result = subprocess.run(
         [
@@ -501,9 +517,12 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
             "claude-code,codex",
             "--backend",
             "local",
-            "--provider",
-            "codex",
-        ],
+            "--url",
+            "http://localhost:9090/",
+            "--sharing",
+            "global",
+        ]
+        + provider_args,
         cwd=project,
         env=env,
         text=True,
@@ -513,12 +532,18 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Claude Code: installed" in result.stdout
     assert "Codex: installed" in result.stdout
-    assert "Background learning: Codex CLI" in result.stdout
+    assert f"Background learning: {expected_learning}" in result.stdout
     assert '"continue"' not in result.stdout
-    assert (
-        'CLAUDE_SMART_LEARNING_PROVIDER="codex"'
-        in (home / ".claude-smart" / ".env").read_text()
-    )
+    settings = config_path.read_text()
+    assert 'CLAUDE_SMART_GUIDED_CONFIG="1"' in settings
+    assert 'REFLEXIO_URL="http://localhost:9090/"' in settings
+    assert 'REFLEXIO_USER_ID="global_user"' in settings
+    if provider_mode == "named":
+        assert 'CLAUDE_SMART_LEARNING_PROVIDER="codex"' in settings
+    else:
+        assert "CLAUDE_SMART_LEARNING_PROVIDER=" not in settings
+    env.pop("CLAUDE_SMART_CLI_PATH", None)
+    env.pop("CLAUDE_SMART_USE_LOCAL_CLI", None)
     version = json.loads((REPO_ROOT / "package.json").read_text())["version"]
     cache = (
         home / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / version
@@ -544,7 +569,10 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "Background learning: Codex CLI" in result.stdout
+    assert f"Background learning: {expected_learning}" in result.stdout
+    settings = config_path.read_text()
+    assert 'REFLEXIO_URL="http://localhost:9090/"' in settings
+    assert 'REFLEXIO_USER_ID="global_user"' in settings
 
 
 @pytest.mark.parametrize("provider", [None, "claude-code", "codex", "opencode"])
