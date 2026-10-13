@@ -6,6 +6,7 @@ Exists so hook handlers (a) don't import reflexio directly at module scope
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import uuid
@@ -692,6 +693,28 @@ def _publish_warnings(response: Any) -> list[str]:
     return [str(item) for item in value]
 
 
+def _canonical_learning_reference(ref: dict[str, Any]) -> dict[str, Any]:
+    """Compare submitted receipts with their server-derived stored digests."""
+    canonical = dict(ref)
+    receipt = canonical.pop("exposure_receipt", None)
+    if receipt is not None:
+        if not isinstance(receipt, str) or len(receipt) > 8_192:
+            raise ValueError("Stored publish receipt has invalid shape")
+        canonical["exposure_receipt_digest"] = hashlib.sha256(
+            receipt.encode()
+        ).hexdigest()
+    digest = canonical.get("exposure_receipt_digest")
+    if digest is None:
+        canonical.pop("exposure_receipt_digest", None)
+    elif (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+    ):
+        raise ValueError("Stored publish receipt digest has invalid shape")
+    return canonical
+
+
 def _stored_publish_matches(raw_request: Any, payload: dict[str, Any]) -> bool:
     """Confirm the exact stored request before recovering a lost acknowledgement.
 
@@ -755,7 +778,8 @@ def _stored_publish_matches(raw_request: Any, payload: dict[str, Any]) -> bool:
                 for tool in item.get("tools_used", [])
             )
             or any(
-                set(ref) - {"kind", "learning_id"}
+                set(ref)
+                - {"kind", "learning_id", "exposure_receipt", "exposure_receipt_digest"}
                 for ref in item.get("retrieved_learnings", [])
             )
         )
@@ -787,7 +811,14 @@ def _stored_publish_matches(raw_request: Any, payload: dict[str, Any]) -> bool:
             for ref in refs:
                 if (
                     not isinstance(ref, dict)
-                    or set(ref) != {"kind", "learning_id"}
+                    or not {"kind", "learning_id"}.issubset(ref)
+                    or set(ref)
+                    - {
+                        "kind",
+                        "learning_id",
+                        "exposure_receipt",
+                        "exposure_receipt_digest",
+                    }
                     or ref["kind"] not in {"profile", "user_playbook", "agent_playbook"}
                     or not isinstance(ref["learning_id"], str)
                     or not ref["learning_id"]
@@ -796,7 +827,9 @@ def _stored_publish_matches(raw_request: Any, payload: dict[str, Any]) -> bool:
                     raise ValueError(
                         "Stored publish learning link does not match the wire contract"
                     )
-            target["retrieved_learnings"] = refs
+            target["retrieved_learnings"] = [
+                _canonical_learning_reference(ref) for ref in refs
+            ]
         # Some installed SDKs predate ToolUsed.status even when the backend
         # exposes it. Compare raw View status using the pinned backend's coercion;
         # a legacy View that omits status cannot verify that unsupported field.

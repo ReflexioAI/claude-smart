@@ -13,7 +13,7 @@ _DASHBOARD_URL_ENV = "CLAUDE_SMART_DASHBOARD_URL"
 _CITATION_LINK_STYLE_ENV = "CLAUDE_SMART_CITATION_LINK_STYLE"
 _DEFAULT_DASHBOARD_URL = "http://localhost:3001"
 _REFLEXIO_URL_ENV = "REFLEXIO_URL"
-_LOCAL_REFLEXIO_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+_LOCAL_REFLEXIO_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}  # noqa: S104 -- Host allowlist; no socket is bound.
 
 
 def _first_nonempty(*values: Any) -> str:
@@ -401,6 +401,9 @@ def _append_playbook_bullet(
             "rule_url": rule_url,
         }
     )
+    receipt = _field(pb, "exposure_receipt")
+    if isinstance(receipt, str) and len(receipt) <= 8_192:
+        entries[-1]["exposure_receipt"] = receipt
     return rank
 
 

@@ -140,7 +140,11 @@ def _normalize_registry_ref(entry: dict[str, Any]) -> dict[str, str] | None:
         wire_kind = entry["source_kind"]
     else:
         return None
-    return {"kind": wire_kind, "learning_id": learning_id}
+    ref = {"kind": wire_kind, "learning_id": learning_id}
+    receipt = entry.get("exposure_receipt")
+    if isinstance(receipt, str) and len(receipt) <= 8_192:
+        ref["exposure_receipt"] = receipt
+    return ref
 
 
 def append_injected(session_id: str, entries: Iterable[dict[str, Any]]) -> None:
@@ -165,12 +169,12 @@ def append_injected(session_id: str, entries: Iterable[dict[str, Any]]) -> None:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     refs: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     for record in records:
         ref = _normalize_registry_ref(record)
         if ref is None:
             continue
-        key = (ref["kind"], ref["learning_id"])
+        key = (ref["kind"], ref["learning_id"], ref.get("exposure_receipt", ""))
         if key in seen:
             continue
         seen.add(key)
@@ -413,7 +417,11 @@ def _wire_retrieved_ref(value: Any) -> dict[str, str] | None:
         return None
     if not isinstance(learning_id, str) or not learning_id:
         return None
-    return {"kind": kind, "learning_id": learning_id}
+    ref = {"kind": str(kind), "learning_id": learning_id}
+    receipt = value.get("exposure_receipt")
+    if isinstance(receipt, str) and len(receipt) <= 8_192:
+        ref["exposure_receipt"] = receipt
+    return ref
 
 
 def safe_publish_end(records: list[dict[str, Any]], published: int) -> int:
@@ -524,9 +532,9 @@ def unpublished_slice(
                 pending_tools = []
 
             retrieved: list[dict[str, str]] = []
-            seen: set[tuple[str, str]] = set()
+            seen: set[tuple[str, str, str]] = set()
             for ref in pending_refs:
-                key = (ref["kind"], ref["learning_id"])
+                key = (ref["kind"], ref["learning_id"], ref.get("exposure_receipt", ""))
                 if key in seen:
                     continue
                 seen.add(key)

@@ -359,3 +359,14 @@ cloud server. An older server retains saved messages and logs that completion is
 unsupported; the plugin does not republish or force extraction. Idle fallback
 starts with new publications after backend upgrade; old saved sessions can be
 explicitly finalized on the updated backend.
+
+### Publish-time playbook evidence
+
+User-playbook search receipts travel with the injected learning references in the
+on-disk buffer and are sent unchanged on publish. Distinct receipts for one
+playbook are retained, so a later revision cannot overwrite an earlier injection.
+Reflexio stores exposure evidence with the interaction rather than writing it on
+search. ID-only references remain supported but have unverified served versions.
+Update the SDK/server together to receive this metadata; older search response
+models may omit receipts. The server stores only a receipt digest in the
+interaction, and client recovery uses it to compare the original submission.
