@@ -370,3 +370,6 @@ search. ID-only references remain supported but have unverified served versions.
 Update the SDK/server together to receive this metadata; older search response
 models may omit receipts. The server stores only a receipt digest in the
 interaction, and client recovery uses it to compare the original submission.
+Receipt preservation requires `reflexio-ai>=0.2.31`. This rollout must publish
+that SDK and update `plugin/uv.lock` before releasing this client; the existing
+0.2.28 lock does not support the receipt schema.

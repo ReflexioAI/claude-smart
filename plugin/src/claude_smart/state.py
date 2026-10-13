@@ -169,12 +169,12 @@ def append_injected(session_id: str, entries: Iterable[dict[str, Any]]) -> None:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     refs: list[dict[str, str]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str | None]] = set()
     for record in records:
         ref = _normalize_registry_ref(record)
         if ref is None:
             continue
-        key = (ref["kind"], ref["learning_id"], ref.get("exposure_receipt", ""))
+        key = (ref["kind"], ref["learning_id"], ref.get("exposure_receipt"))
         if key in seen:
             continue
         seen.add(key)
@@ -532,9 +532,9 @@ def unpublished_slice(
                 pending_tools = []
 
             retrieved: list[dict[str, str]] = []
-            seen: set[tuple[str, str, str]] = set()
+            seen: set[tuple[str, str, str | None]] = set()
             for ref in pending_refs:
-                key = (ref["kind"], ref["learning_id"], ref.get("exposure_receipt", ""))
+                key = (ref["kind"], ref["learning_id"], ref.get("exposure_receipt"))
                 if key in seen:
                     continue
                 seen.add(key)
