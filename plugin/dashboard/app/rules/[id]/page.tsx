@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/common/source-link";
 import { redirect } from "next/navigation";
 import { AlertTriangle, ArrowLeft } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
