@@ -693,7 +693,8 @@ claude_smart_ensure_local_env_defaults() {
   touch "$REFLEXIO_ENV"
   chmod 600 "$REFLEXIO_ENV"
   # A key next to a plain http loopback URL is local mode that keeps its URL;
-  # only a keyless setup has managed keys to prune.
+  # A guided setup also keeps its explicitly chosen local URL and sharing scope;
+  # only a keyless legacy setup has managed keys to prune.
   if [ -z "${REFLEXIO_API_KEY:-}" ] && [ -z "${CLAUDE_SMART_LEARNING_PROVIDER:-}" ]; then
     claude_smart_prune_managed_env_keys_for_local
     unset REFLEXIO_URL REFLEXIO_API_KEY REFLEXIO_USER_ID CLAUDE_SMART_MANAGED_SETUP

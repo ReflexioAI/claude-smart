@@ -8,8 +8,9 @@
  * own marketplace wrapper. Config lives in ~/.claude-smart/.env — the file the
  * hooks and backend read — seeded with local-provider defaults so reflexio can
  * route generation through local tools with no API key.
- * Managed/read-only/global setup is handled by `npx claude-smart setup`,
- * which writes ~/.claude-smart/.env before running this installer.
+ * Guided install/setup selects integrations and shared backend settings before
+ * invoking native per-agent workers. The saved learning provider is independent
+ * of integration identity; workers defer shared service startup to the guide.
  *
  * Keep this file dependency-free — it runs via `npx` with no install step.
  */
@@ -2566,10 +2567,10 @@ function printHelp() {
       "  4. Restart OpenCode.",
       "",
       "Update:",
-      "  npx claude-smart update                        Reinstall Claude Code support from this package",
+      "  npx claude-smart update                        Guided update for selected/saved integrations",
       "  npx claude-smart update --host codex           Reinstall Codex support from this package",
       "  npx claude-smart update --host opencode        Reinstall OpenCode support from this package",
-      "  npx claude-smart setup                         Configure managed/read-only/global setup",
+      "  npx claude-smart setup                         Guided configuration and installation",
       "",
       "Uninstall:",
       "  npx claude-smart uninstall                     Choose integrations to remove",
