@@ -181,7 +181,8 @@ export async function writeConfig(
     }
   };
   if (
-    origin(requestedUrl) !== origin(currentUrl) &&
+    (origin(requestedUrl) !== origin(currentUrl) ||
+      !current.get("REFLEXIO_URL")) &&
     !("REFLEXIO_API_KEY" in safeUpdate)
   ) {
     const prefix = isRemoteReflexioUrl(requestedUrl) ? "MANAGED" : "LOCAL";

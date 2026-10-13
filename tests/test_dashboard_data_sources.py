@@ -335,3 +335,27 @@ def test_remembered_local_endpoint_follows_bundled_port_only_for_defaults(
     )
     assert result["url"] == expected
     assert result["apiKey"] == "local-secret"
+
+
+def test_saving_settings_does_not_bind_an_orphaned_key_to_localhost(
+    compiled_dashboard, tmp_path
+):
+    state = tmp_path / ".claude-smart"
+    state.mkdir()
+    (state / ".env").write_text(
+        'REFLEXIO_URL=""\nREFLEXIO_API_KEY="orphaned-cloud-key"\n'
+    )
+    result = run_module(
+        compiled_dashboard,
+        tmp_path,
+        """
+      const config = require('./config-file');
+      const source = require('./data-source');
+      (async () => {
+        await config.writeConfig({REFLEXIO_URL:'http://localhost:8071/',CLAUDE_SMART_LEARNING_MODEL:'local-model'});
+        console.log(JSON.stringify(await source.selectedConnection(new Request('http://dashboard'))));
+      })();
+    """,
+    )
+    assert result["source"] == "local"
+    assert result["apiKey"] == ""
