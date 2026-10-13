@@ -94,6 +94,8 @@ function runCodex({ prompt, systemPrompt }) {
     outputPath,
     "-",
   ];
+  const selectedModel = (process.env.CLAUDE_SMART_LEARNING_MODEL || "").trim();
+  if (selectedModel) args.splice(1, 0, "--model", selectedModel);
   const env = {
     ...process.env,
     CLAUDE_SMART_HOST: "codex",

@@ -52,6 +52,13 @@ def fake_guide(tmp_path: Path, *, delay: bool = False) -> tuple[Path, dict[str, 
     _write_executable(fake_bin / "claude", _fake_claude_install_script())
     _write_executable(fake_bin / "codex", "#!/bin/sh\nexit 0\n")
     env = guide_env(tmp_path)
+    # Managed configuration discovery is read-only, but installer tests must
+    # not contact a real managed account or depend on network availability.
+    fetch_stub = tmp_path / "managed-fetch-stub.cjs"
+    fetch_stub.write_text(
+        "global.fetch = async () => ({ ok: true, json: async () => ({}) });\n"
+    )
+    env["NODE_OPTIONS"] = f'--require "{fetch_stub}"'
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     return package / "bin" / "claude-smart.js", env
 
@@ -433,7 +440,10 @@ def test_guided_update_preserves_managed_key_read_only_and_sharing(
     )
     assert result.returncode == 0, result.stderr
     assert "Managed Reflexio" in result.stdout
-    assert "no local backend" in result.stdout
+    assert (
+        "Memory storage and background learning run on Reflexio cloud" in result.stdout
+    )
+    assert "Cloud dashboard: https://www.reflexio.ai/dashboard" in result.stdout
     assert "read-only" in result.stdout
     assert "secret-managed-sentinel" not in result.stdout
     config = (tmp_path / ".claude-smart" / ".env").read_text()

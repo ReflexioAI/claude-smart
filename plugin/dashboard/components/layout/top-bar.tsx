@@ -9,11 +9,11 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Sidebar } from "./sidebar";
 
 export function TopBar() {
-  const { reflexioUrl } = useSettings();
+  const { reflexioUrl, source, sources, changeSource } = useSettings();
   const { theme, setTheme } = useTheme();
 
   return (
-    <header className="h-16 border-b border-border bg-card/92 backdrop-blur supports-[backdrop-filter]:bg-card/78 flex items-center px-4 gap-3 shrink-0 shadow-[0_1px_0_oklch(1_0_0/0.42)_inset] dark:shadow-none">
+    <header className="min-h-16 py-3 border-b border-border bg-card/92 backdrop-blur supports-[backdrop-filter]:bg-card/78 flex items-center px-4 gap-3 shrink-0 shadow-[0_1px_0_oklch(1_0_0/0.42)_inset] dark:shadow-none">
       <Sheet>
         <SheetTrigger
           render={<Button variant="ghost" size="icon" className="lg:hidden" />}
@@ -25,7 +25,7 @@ export function TopBar() {
         </SheetContent>
       </Sheet>
 
-      <div className="flex items-center gap-2 flex-1 min-w-0">
+      <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
           <Image
             src="/claude-smart-icon.png"
@@ -40,12 +40,25 @@ export function TopBar() {
           <div className="text-sm font-semibold leading-5">Claude-Smart</div>
         </div>
         <div className="mx-2 h-8 w-px bg-border hidden md:block" />
-        <div className="hidden items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1 text-xs text-muted-foreground md:flex">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_0_3px_oklch(0.72_0.14_148/0.16)]" />
-          Reflexio
-        </div>
+        <label className="flex max-w-full items-center gap-2 text-xs shrink-0">
+          <span className="hidden md:inline">Data source</span>
+          <select
+            aria-label="Data source"
+            className="h-9 min-w-0 max-w-full rounded-md border border-input bg-background px-2"
+            value={source || "local"}
+            onChange={(event) =>
+              changeSource(event.target.value as "local" | "managed")
+            }
+          >
+            <option value="managed">
+              Managed Reflexio
+              {sources?.managed.configured ? "" : " · not configured"}
+            </option>
+            <option value="local">Local Reflexio</option>
+          </select>
+        </label>
         <div
-          className="relative max-w-md flex-1 sm:flex-none sm:w-[22rem]"
+          className="relative min-w-0 max-w-md basis-full sm:basis-auto sm:flex-1 sm:w-[22rem]"
           suppressHydrationWarning
         >
           <Link2 className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />

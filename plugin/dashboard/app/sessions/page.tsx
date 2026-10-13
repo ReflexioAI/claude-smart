@@ -1,191 +1,89 @@
 "use client";
-
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { MessageSquare, Search } from "lucide-react";
+import { useEffect, useState } from "react";
+import Link from "@/components/common/source-link";
 import { PageHeader } from "@/components/common/page-header";
-import { EmptyState } from "@/components/common/empty-state";
-import { DeleteAllButton } from "@/components/common/delete-all-button";
-import { LearningsBadge } from "@/components/common/learnings-badge";
-import { HostBadge } from "@/components/common/host-badge";
-import { Input } from "@/components/ui/input";
-import { dayBucket, formatRelative, truncateId } from "@/lib/format";
-import type { SessionSummary } from "@/lib/types";
-
+import { Button } from "@/components/ui/button";
+import { reflexio, type RequestEntry } from "@/lib/reflexio-client";
+import { useSettings } from "@/hooks/use-settings";
 export default function SessionsPage() {
-  const router = useRouter();
-  const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
-  const [filter, setFilter] = useState("");
+  const { source } = useSettings();
+  const [items, setItems] = useState<RequestEntry[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/sessions", { cache: "no-store" })
-      .then((r) => r.json())
+    reflexio
+      .getRequests()
       .then((data) => {
-        if (!cancelled) setSessions(data.sessions ?? []);
+        if (!cancelled) {
+          setItems(data.items);
+          setCursor(data.next_cursor || null);
+        }
       })
       .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(String(e.message || e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, []);
-
-  const filtered = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return sessions ?? [];
-    return (sessions ?? []).filter((s) => {
-      const hay = `${s.session_id} ${s.preview ?? ""}`.toLowerCase();
-      return hay.includes(q);
-    });
-  }, [sessions, filter]);
-
-  const grouped = useMemo(() => {
-    const buckets = new Map<string, SessionSummary[]>();
-    for (const s of filtered) {
-      const key = dayBucket(s.last_activity);
-      const arr = buckets.get(key);
-      if (arr) arr.push(s);
-      else buckets.set(key, [s]);
+  const more = async () => {
+    if (!cursor) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await reflexio.getRequests(cursor);
+      setItems((current) => [...current, ...data.items]);
+      setCursor(data.next_cursor || null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
     }
-    return Array.from(buckets.entries());
-  }, [filtered]);
-
+  };
   return (
     <div className="flex-1 overflow-auto">
       <PageHeader
-        title="Sessions"
-        description="Sessions buffered locally under ~/.claude-smart/sessions/. Each row is one session; click to see its interactions."
-        actions={
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder="Search sessions…"
-                className="h-9 w-64 pl-8 text-xs bg-background/80"
-              />
-            </div>
-            <DeleteAllButton
-              label={`Delete all${sessions && sessions.length > 0 ? ` (${sessions.length})` : ""}`}
-              confirmMessage={`Delete ALL ${sessions?.length ?? 0} local session buffers? This cannot be undone.`}
-              disabled={!sessions || sessions.length === 0}
-              onConfirm={async () => {
-                const res = await fetch("/api/sessions", { method: "DELETE" });
-                if (!res.ok) throw new Error(`delete failed: ${res.status}`);
-                setSessions([]);
-              }}
-            />
-          </div>
-        }
+        title="Sessions · published requests"
+        description={`Requests stored in ${source === "managed" ? "managed" : "local"} Reflexio. Device session buffers are listed separately.`}
       />
-
-      <div className="p-6">
+      <div className="p-6 space-y-4">
         {error && (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm mb-4">
-            {error}
-          </div>
+          <p role="alert" className="text-destructive">
+            Unable to load requests: {error}
+          </p>
         )}
-
-        {sessions === null && !error ? (
-          <div className="text-sm text-muted-foreground">Loading…</div>
-        ) : sessions && sessions.length > 0 && filtered.length === 0 ? (
-          <EmptyState
-            icon={Search}
-            title="No matches"
-            description={`No session matches "${filter}".`}
-          />
-        ) : filtered.length === 0 ? (
-          <EmptyState
-            icon={MessageSquare}
-            title="No sessions found"
-            description="Start Claude Code with claude-smart enabled — JSONL buffers will appear in ~/.claude-smart/sessions/."
-          />
-        ) : (
-          <div className="space-y-6">
-            {grouped.map(([label, items]) => (
-              <section key={label}>
-                <div className="flex items-center gap-2 mb-2 px-1">
-                  <h2 className="text-[11px] uppercase font-semibold text-muted-foreground">
-                    {label}
-                  </h2>
-                  <span className="text-[11px] text-muted-foreground/70">
-                    · {items.length}
-                  </span>
-                </div>
-                <div className="rounded-lg border border-border divide-y divide-border bg-card/90 overflow-hidden shadow-sm">
-                  {items.map((s) => (
-                    <div
-                      key={s.session_id}
-                      role="link"
-                      tabIndex={0}
-                      onClick={() =>
-                        router.push(
-                          `/sessions/${encodeURIComponent(s.session_id)}`,
-                        )
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          router.push(
-                            `/sessions/${encodeURIComponent(s.session_id)}`,
-                          );
-                        }
-                      }}
-                      className="flex cursor-pointer flex-col gap-2 px-4 py-3 transition-colors hover:bg-accent/45 focus:bg-accent/45 focus:outline-none sm:flex-row sm:items-center"
-                    >
-                      <div className="flex min-w-0 items-start gap-3">
-                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                          <MessageSquare className="h-4 w-4" />
-                        </span>
-                        <div className="flex-1 min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-sm truncate">
-                            {s.preview ?? (
-                              <span className="text-muted-foreground italic">
-                                (no user turns yet)
-                              </span>
-                            )}
-                          </p>
-                          <LearningsBadge
-                            count={s.learning_interaction_count}
-                            size="sm"
-                          />
-                          <HostBadge host={s.host} size="sm" />
-                        </div>
-                        <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-0.5">
-                          <code className="font-mono">
-                            {truncateId(s.session_id, 10, 6)}
-                          </code>
-                          <span>·</span>
-                          <span className="tabular-nums">
-                            {s.turn_count} turn{s.turn_count === 1 ? "" : "s"}
-                          </span>
-                          {s.published_up_to > 0 &&
-                            s.published_up_to < s.turn_count && (
-                              <>
-                                <span>·</span>
-                                <span className="tabular-nums">
-                                  {s.published_up_to} published
-                                </span>
-                              </>
-                          )}
-                        </div>
-                        </div>
-                      </div>
-                      <div className="self-end text-xs text-muted-foreground tabular-nums sm:shrink-0">
-                        {formatRelative(s.last_activity)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
+        {items.map((item) => (
+          <Link
+            key={item.request.request_id}
+            href={`/sessions/${encodeURIComponent(item.request.request_id)}`}
+            className="block border-b border-border py-3"
+          >
+            <div className="text-sm font-medium">{item.request.request_id}</div>
+            <div className="text-sm text-muted-foreground truncate">
+              {item.preview}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {item.interaction_count} interactions
+            </div>
+          </Link>
+        ))}
+        {loading && <p role="status">Loading requests…</p>}
+        {!loading && !error && !items.length && (
+          <p>No published requests found.</p>
         )}
+        {cursor && (
+          <Button disabled={loading} onClick={more}>
+            Load more
+          </Button>
+        )}
+        <Link href="/device/sessions" className="block text-sm text-primary">
+          View this device’s session buffers
+        </Link>
       </div>
     </div>
   );

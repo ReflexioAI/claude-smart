@@ -16,6 +16,7 @@ const KNOWN_KEYS = [
   "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
   "CLAUDE_SMART_READ_ONLY",
   "CLAUDE_SMART_CLI_PATH",
+  "CLAUDE_SMART_LEARNING_MODEL",
   "CLAUDE_SMART_CLI_TIMEOUT",
   "CLAUDE_SMART_STATE_DIR",
 ] as const;
@@ -36,14 +37,17 @@ function envPath(): string {
   return path.join(os.homedir(), ".claude-smart", ".env");
 }
 
-function parseLine(line: string): { key: string; value: string } | null {
+export function parseLine(line: string): { key: string; value: string } | null {
   const trimmed = line.trim();
   if (!trimmed || trimmed.startsWith("#")) return null;
   const eq = trimmed.indexOf("=");
   if (eq < 0) return null;
   // `export KEY=value` is valid in this file; _lib.sh and env_config.py
   // strip the prefix too.
-  const key = trimmed.slice(0, eq).trim().replace(/^export\s+/, "");
+  const key = trimmed
+    .slice(0, eq)
+    .trim()
+    .replace(/^export\s+/, "");
   let value = trimmed.slice(eq + 1).trim();
   if (
     (value.startsWith('"') && value.endsWith('"')) ||
@@ -64,6 +68,7 @@ export async function readConfig(): Promise<ClaudeSmartConfig> {
     CLAUDE_SMART_USE_LOCAL_EMBEDDING: true,
     CLAUDE_SMART_READ_ONLY: false,
     CLAUDE_SMART_CLI_PATH: "",
+    CLAUDE_SMART_LEARNING_MODEL: "",
     CLAUDE_SMART_CLI_TIMEOUT: "120",
     CLAUDE_SMART_STATE_DIR: "",
   };
@@ -93,7 +98,10 @@ export async function readConfig(): Promise<ClaudeSmartConfig> {
  * read on every call, so a save on the Configure page takes effect without a
  * restart instead of losing to the values this process inherited at launch.
  */
-export async function managedReflexioSettings(): Promise<{ url: string; apiKey: string }> {
+export async function managedReflexioSettings(): Promise<{
+  url: string;
+  apiKey: string;
+}> {
   const values = new Map<string, string>();
   try {
     for (const line of (await fs.readFile(envPath(), "utf-8")).split("\n")) {
@@ -105,7 +113,10 @@ export async function managedReflexioSettings(): Promise<{ url: string; apiKey: 
   }
   const pick = (key: string): string =>
     values.has(key) ? (values.get(key) ?? "") : (process.env[key] ?? "");
-  return { url: deriveFromBackendPort(pick("REFLEXIO_URL")), apiKey: pick("REFLEXIO_API_KEY") };
+  return {
+    url: deriveFromBackendPort(pick("REFLEXIO_URL")),
+    apiKey: pick("REFLEXIO_API_KEY"),
+  };
 }
 
 /**
@@ -124,7 +135,16 @@ function deriveFromBackendPort(url: string): string {
   return defaults.has(url) ? defaultReflexioUrl() : url;
 }
 
-export async function writeConfig(update: Partial<ClaudeSmartConfig>): Promise<void> {
+export async function writeConfig(
+  update: Partial<ClaudeSmartConfig>,
+): Promise<void> {
+  const model = update.CLAUDE_SMART_LEARNING_MODEL;
+  if (
+    model &&
+    (typeof model !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(model))
+  )
+    throw new Error("Learning model must be a valid model ID");
   const file = envPath();
   await fs.mkdir(path.dirname(file), { recursive: true });
 
@@ -151,12 +171,61 @@ export async function writeConfig(update: Partial<ClaudeSmartConfig>): Promise<v
     const pair = parseLine(line);
     if (pair) current.set(pair.key, pair.value);
   }
+  const currentUrl = current.get("REFLEXIO_URL") || defaultReflexioUrl();
+  const requestedUrl = String(safeUpdate.REFLEXIO_URL || currentUrl);
+  const origin = (value: string) => {
+    try {
+      return new URL(value).origin;
+    } catch {
+      return "";
+    }
+  };
+  if (
+    origin(requestedUrl) !== origin(currentUrl) &&
+    !("REFLEXIO_API_KEY" in safeUpdate)
+  ) {
+    const prefix = isRemoteReflexioUrl(requestedUrl) ? "MANAGED" : "LOCAL";
+    const rememberedUrl = current.get(`CLAUDE_SMART_${prefix}_URL`) || "";
+    const rememberedKey =
+      origin(rememberedUrl) === origin(requestedUrl)
+        ? current.get(`CLAUDE_SMART_${prefix}_API_KEY`) || ""
+        : "";
+    if (prefix === "MANAGED" && !rememberedKey)
+      throw new Error(
+        "Changing managed endpoints requires an API key for that endpoint",
+      );
+    safeUpdate.REFLEXIO_API_KEY = rememberedKey;
+  }
   const finalValue = (key: string): string =>
-    key in safeUpdate ? String(safeUpdate[key] ?? "") : (current.get(key) ?? "");
+    key in safeUpdate
+      ? String(safeUpdate[key] ?? "")
+      : (current.get(key) ?? "");
   const dropUrl =
-    !finalValue("REFLEXIO_API_KEY").trim() && isRemoteReflexioUrl(finalValue("REFLEXIO_URL"));
+    !finalValue("REFLEXIO_API_KEY").trim() &&
+    isRemoteReflexioUrl(finalValue("REFLEXIO_URL"));
   if (dropUrl) {
     delete safeUpdate.REFLEXIO_URL;
+  }
+  const remember = (url: string, apiKey: string) => {
+    if (!url) return;
+    const prefix = isRemoteReflexioUrl(url) ? "MANAGED" : "LOCAL";
+    safeUpdate[`CLAUDE_SMART_${prefix}_URL`] = url;
+    safeUpdate[`CLAUDE_SMART_${prefix}_API_KEY`] = apiKey;
+  };
+  remember(
+    current.get("REFLEXIO_URL") || "",
+    current.get("REFLEXIO_API_KEY") || "",
+  );
+  remember(
+    dropUrl ? defaultReflexioUrl() : finalValue("REFLEXIO_URL"),
+    finalValue("REFLEXIO_API_KEY"),
+  );
+  if (
+    "REFLEXIO_API_KEY" in update &&
+    !String(update.REFLEXIO_API_KEY || "").trim() &&
+    isRemoteReflexioUrl(currentUrl)
+  ) {
+    safeUpdate.CLAUDE_SMART_MANAGED_API_KEY = "";
   }
 
   for (const line of lines) {
@@ -183,6 +252,11 @@ export async function writeConfig(update: Partial<ClaudeSmartConfig>): Promise<v
   }
 
   const content = outLines.join("\n");
+  try {
+    await fs.chmod(file, 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   await fs.writeFile(file, content.endsWith("\n") ? content : content + "\n", {
     encoding: "utf-8",
     mode: 0o600,
@@ -190,9 +264,11 @@ export async function writeConfig(update: Partial<ClaudeSmartConfig>): Promise<v
 }
 
 /** Mirror of claude_smart_reflexio_url_is_remote in plugin/scripts/_lib.sh. */
-function isRemoteReflexioUrl(url: string): boolean {
+export function isRemoteReflexioUrl(url: string): boolean {
   if (!url) return false;
-  return !/^http:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(\/?|:.*)$/.test(url);
+  return !/^http:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(\/?|:.*)$/.test(
+    url,
+  );
 }
 
 function formatValue(key: string, raw: unknown): string {

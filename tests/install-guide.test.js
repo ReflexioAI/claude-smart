@@ -133,3 +133,21 @@ test("local read-only configuration can resume learning interactively or explici
   const ask = async (title) => title.startsWith("Where") ? "local" : title.startsWith("Which agent") ? "codex" : title.startsWith("Allow") ? "learn" : "project";
   assert.equal((await configure(parseOptions(["--host", "codex"]), inventory, saved, ask, true)).readOnly, false);
 });
+
+test("interactive local setup offers an explicit model choice", async () => {
+  const prompts = [];
+  const ask = async (title, choices, options) => {
+    prompts.push({ title, choices, options });
+    if (title.startsWith("Which agent")) return "codex";
+    if (title.startsWith("Which model")) return "custom";
+    if (title.startsWith("Learning model ID")) return "test/codex-model";
+    if (title.startsWith("Allow")) return "learn";
+    return "project";
+  };
+  const config = await configure(parseOptions(["--host", "codex", "--backend", "local"]), inventory, {}, ask, true);
+  assert.equal(config.model, "test/codex-model");
+  const picker = prompts.find((prompt) => prompt.title.startsWith("Which model"));
+  assert.deepEqual(picker.choices.map((choice) => choice.value), ["default", "custom"]);
+  assert.equal(prompts.find((prompt) => prompt.title.startsWith("Learning model ID")).options.text, true);
+  assert.match(describe(config), /Learning model: test\/codex-model/);
+});

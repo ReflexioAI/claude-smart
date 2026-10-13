@@ -1,13 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import {
-  AlertTriangle,
-  BookOpen,
-  ChevronRight,
-  Layers3,
-} from "lucide-react";
+import Link from "@/components/common/source-link";
+import { AlertTriangle, BookOpen, ChevronRight, Layers3 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { HostBadge } from "@/components/common/host-badge";
 import { LearningApplicationBadge } from "@/components/common/learning-application-badge";
@@ -52,7 +47,8 @@ const SHARED_STATUS_META: Record<
 > = {
   PENDING: {
     label: "Auto generated",
-    description: "Auto-generated shared skill. It may be updated automatically.",
+    description:
+      "Auto-generated shared skill. It may be updated automatically.",
   },
   APPROVED: {
     label: "Persisted",
@@ -114,8 +110,12 @@ function skillStatKey(skill: SkillCard): string {
 }
 
 export default function SkillsPage() {
-  const [projectSkills, setProjectSkills] = useState<UserPlaybook[] | null>(null);
-  const [sharedSkills, setSharedSkills] = useState<AgentPlaybook[] | null>(null);
+  const [projectSkills, setProjectSkills] = useState<UserPlaybook[] | null>(
+    null,
+  );
+  const [sharedSkills, setSharedSkills] = useState<AgentPlaybook[] | null>(
+    null,
+  );
   const [appStats, setAppStats] = useState<PlaybookApplicationStat[] | null>(
     null,
   );
@@ -140,14 +140,7 @@ export default function SkillsPage() {
             limit: 500,
             statusFilter: ALL_LIFECYCLE_STATUSES,
           }),
-          fetch("/api/rules/applied?daysBack=30&limit=200", {
-            cache: "no-store",
-          })
-            .then((r) => r.json())
-            .catch(() => ({
-              success: false,
-              stats: [] as PlaybookApplicationStat[],
-            })),
+          reflexio.getAppliedRules(),
         ]);
         if (cancelled) return;
         setProjectSkills(projectRes.user_playbooks ?? []);
@@ -188,12 +181,12 @@ export default function SkillsPage() {
 
   const filtered = useMemo(() => {
     const matches = activeSkills.filter((p) => {
-      if (scope !== "__all__" && p.scopeId !== scope)
-        return false;
+      if (scope !== "__all__" && p.scopeId !== scope) return false;
       if (statusFilter !== "__all__" && p.status !== statusFilter) return false;
       if (search) {
         const s = search.toLowerCase();
-        const hay = `${p.scopeId} ${p.content} ${p.trigger ?? ""} ${p.rationale ?? ""}`.toLowerCase();
+        const hay =
+          `${p.scopeId} ${p.content} ${p.trigger ?? ""} ${p.rationale ?? ""}`.toLowerCase();
         if (!hay.includes(s)) return false;
       }
       return true;
@@ -232,14 +225,17 @@ export default function SkillsPage() {
     <div className="flex-1 overflow-auto">
       <PageHeader
         title="Skills"
-        description="Project-specific and shared skills learned from corrections."
+        description="Skills from the selected backend. Lists show up to 500 records per kind; usage covers the last 30 days. Host badges use session records from this device."
         actions={
           <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
             <Select
               value={scope}
               onValueChange={(v) => setScope(v ?? "__all__")}
             >
-              <SelectTrigger size="sm" className="w-40 text-xs bg-background/80">
+              <SelectTrigger
+                size="sm"
+                className="w-40 text-xs bg-background/80"
+              >
                 <SelectValue>
                   {scope === "__all__" ? allScopesLabel : scope}
                 </SelectValue>
@@ -257,7 +253,10 @@ export default function SkillsPage() {
               value={statusFilter}
               onValueChange={(v) => setStatusFilter(v ?? "__all__")}
             >
-              <SelectTrigger size="sm" className="w-36 text-xs bg-background/80">
+              <SelectTrigger
+                size="sm"
+                className="w-36 text-xs bg-background/80"
+              >
                 <SelectValue placeholder="Status">
                   {statusFilterLabel(activeKind, statusFilter)}
                 </SelectValue>
@@ -298,7 +297,10 @@ export default function SkillsPage() {
               value={sortBy}
               onValueChange={(v) => setSortBy((v as SkillSort) ?? "newest")}
             >
-              <SelectTrigger size="sm" className="w-36 text-xs bg-background/80">
+              <SelectTrigger
+                size="sm"
+                className="w-36 text-xs bg-background/80"
+              >
                 <SelectValue placeholder="Sort">
                   {sortBy === "applied" ? "Most applied" : "Newest"}
                 </SelectValue>
@@ -315,8 +317,8 @@ export default function SkillsPage() {
               className="h-9 w-48 text-xs bg-background/80"
             />
             <DeleteAllButton
-              label={`Delete ${activeKind === "project" ? "project" : "shared"}${activeCount > 0 ? ` (${activeCount})` : ""}`}
-              confirmMessage={`Delete ALL ${activeCount} ${activeKind === "project" ? "project-specific skills" : "shared skills"}? This cannot be undone.`}
+              label={`Delete all ${activeKind === "project" ? "project" : "shared"} skills`}
+              confirmMessage={`Delete ALL ${activeKind === "project" ? "project-specific skills" : "shared skills"} on the selected backend, including records beyond the loaded list? This cannot be undone.`}
               disabled={activeCount === 0}
               onConfirm={async () => {
                 if (activeKind === "project") {
@@ -341,7 +343,8 @@ export default function SkillsPage() {
               id: "project",
               label: "Project-specific skills",
               description: "Repo-local rules learned from direct corrections",
-              count: activeKind === "project" ? visibleActiveCount : projectCount,
+              count:
+                activeKind === "project" ? visibleActiveCount : projectCount,
               icon: BookOpen,
             },
             {
@@ -362,8 +365,8 @@ export default function SkillsPage() {
         {activeKind === "project" && attribution?.unavailable && !error && (
           <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
             <AlertTriangle className="h-4 w-4 shrink-0" />
-            Skill source details are temporarily unavailable. Skills remain
-            available.
+            Device host details are temporarily unavailable. Backend skills
+            remain available.
           </div>
         )}
 
@@ -429,12 +432,16 @@ export default function SkillsPage() {
                     {p.trigger || "Always applies"}
                   </p>
                   <p className="mt-2 max-w-5xl text-xs leading-relaxed text-muted-foreground line-clamp-2">
-                    <span className="font-medium text-foreground/80">Rule:</span>{" "}
+                    <span className="font-medium text-foreground/80">
+                      Rule:
+                    </span>{" "}
                     {p.content}
                   </p>
                   {p.rationale && (
                     <p className="mt-1 max-w-5xl text-xs leading-relaxed text-muted-foreground line-clamp-2">
-                      <span className="font-medium text-foreground/80">Why:</span>{" "}
+                      <span className="font-medium text-foreground/80">
+                        Why:
+                      </span>{" "}
                       {p.rationale}
                     </p>
                   )}

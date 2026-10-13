@@ -2,56 +2,101 @@
 
 import {
   createContext,
+  Fragment,
   useContext,
   useEffect,
   useState,
-  ReactNode,
+  type ReactNode,
 } from "react";
+import { selectDataSource, type DataSource } from "@/lib/reflexio-client";
 
+export const SETTINGS_CHANGED_EVENT = "claude-smart-settings-changed";
+interface Connection {
+  id: string;
+  url: string;
+  configured: boolean;
+  learningModel?: string;
+}
 interface Settings {
   reflexioUrl: string;
+  source: DataSource | null;
+  sources: { local: Connection; managed: Connection } | null;
+  error: string | null;
+  changeSource: (source: DataSource) => void;
 }
-
-type SettingsContextValue = Settings;
-
-const SettingsContext = createContext<SettingsContextValue | null>(null);
-
-const DEFAULT_URL = "http://localhost:8071";
-export const SETTINGS_CHANGED_EVENT = "claude-smart-settings-changed";
+const SettingsContext = createContext<Settings | null>(null);
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
-  const [settings, setSettings] = useState<Settings>({ reflexioUrl: DEFAULT_URL });
-
+  const [source, setSource] = useState<DataSource | null>(null);
+  const [sources, setSources] = useState<Settings["sources"]>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    async function loadSettings() {
+    async function load() {
       try {
-        const res = await fetch("/api/config", { cache: "no-store" });
-        if (!res.ok) return;
-        const config = (await res.json()) as { REFLEXIO_URL?: string };
-        if (!cancelled) {
-          setSettings({ reflexioUrl: config.REFLEXIO_URL || DEFAULT_URL });
-        }
-      } catch {
-        // Keep the dashboard on its local default when config cannot be read.
+        const response = await fetch("/api/data-sources", {
+          cache: "no-store",
+        });
+        if (!response.ok)
+          throw new Error("Unable to load dashboard connections");
+        const data = await response.json();
+        if (cancelled) return;
+        setSources({ local: data.local, managed: data.managed });
+        const requested = new URLSearchParams(window.location.search).get(
+          "source",
+        );
+        const selected =
+          requested === "local" || requested === "managed"
+            ? requested
+            : data.defaultSource;
+        selectDataSource(selected, data[selected].id);
+        setSource(selected);
+        setError(null);
+      } catch (e) {
+        if (!cancelled)
+          setError(
+            e instanceof Error ? e.message : "Unable to load connections",
+          );
       }
     }
-    void loadSettings();
-    const onSettingsChanged = () => {
-      void loadSettings();
-    };
-    window.addEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+    void load();
+    const reload = () => window.location.reload();
+    window.addEventListener(SETTINGS_CHANGED_EVENT, reload);
     return () => {
       cancelled = true;
-      window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+      window.removeEventListener(SETTINGS_CHANGED_EVENT, reload);
     };
   }, []);
-
-  return <SettingsContext.Provider value={settings}>{children}</SettingsContext.Provider>;
+  const changeSource = (next: DataSource) => {
+    // A new document prevents detail IDs, in-flight actions, or cached records
+    // from crossing backend boundaries. The runtime configuration is unchanged.
+    window.location.assign(`/dashboard?source=${next}`);
+  };
+  return (
+    <SettingsContext.Provider
+      value={{
+        source,
+        sources,
+        error,
+        changeSource,
+        reflexioUrl: source
+          ? sources?.[source].url || "Not configured"
+          : "Loading connection…",
+      }}
+    >
+      {source ? (
+        <Fragment key={source}>{children}</Fragment>
+      ) : (
+        <div role={error ? "alert" : "status"} className="p-6">
+          {error || "Loading dashboard connection…"}
+        </div>
+      )}
+    </SettingsContext.Provider>
+  );
 }
-
-export function useSettings(): SettingsContextValue {
-  const ctx = useContext(SettingsContext);
-  if (!ctx) throw new Error("useSettings must be used within SettingsProvider");
-  return ctx;
+export function useSettings(): Settings {
+  const value = useContext(SettingsContext);
+  if (!value)
+    throw new Error("useSettings must be used within SettingsProvider");
+  return value;
 }

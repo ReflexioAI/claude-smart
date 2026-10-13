@@ -70,13 +70,10 @@ def test_dashboard_proxy_forwards_bearer_auth_without_client_auth() -> None:
     ).read_text()
 
     assert 'headers.delete("authorization")' in route
-    assert "function defaultUrl()" in route
-    assert 'process.env.BACKEND_PORT || "8071"' in route
+    assert "selectedConnection(req)" in route
+    assert 'headers.delete("cookie")' in route
     assert 'headers.set("user-agent", "claude-smart")' in route
     assert 'headers.set("authorization", `Bearer ${apiKey}`)' in route
-    assert "managedReflexioSettings" in route
-    assert "configuredBase" in route
-    assert 'apiKey: configuredBase ? apiKey : ""' in route
     assert "fromHeader" not in route
     assert "x-reflexio-url" not in route
 
@@ -89,8 +86,9 @@ def test_dashboard_settings_read_configured_reflexio_url_only() -> None:
         REPO_ROOT / "plugin" / "dashboard" / "app" / "configure" / "env" / "page.tsx"
     ).read_text()
 
-    assert 'fetch("/api/config", { cache: "no-store" })' in settings
-    assert "REFLEXIO_URL?: string" in settings
+    assert 'fetch("/api/data-sources",' in settings
+    assert "data.defaultSource" in settings
+    assert "selectDataSource(selected, data[selected].id)" in settings
     assert "localStorage" not in settings
     assert "setReflexioUrl" not in settings
     assert "claude-smart-dashboard-settings" not in settings
@@ -258,3 +256,44 @@ def test_dashboard_session_reader_retains_all_chunk_ids_and_legacy_lineage(
     assert len(summaries) == 1
     assert summaries[0]["host"] == "codex"
     assert summaries[0]["request_ids"] == ["chunk-1", "chunk-2", "legacy-id"]
+
+
+def test_changing_runtime_mode_keeps_connections_but_never_reuses_cloud_key_locally(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / ".claude-smart" / ".env"
+    config.parent.mkdir()
+    config.write_text(
+        'REFLEXIO_URL="https://managed.example/"\nREFLEXIO_API_KEY="cloud-secret"\n'
+    )
+    _run_config_module(
+        tmp_path,
+        'await m.writeConfig({REFLEXIO_URL:"http://localhost:9090/"}); process.stdout.write(JSON.stringify(await m.managedReflexioSettings()));',
+        {},
+    )
+    text = config.read_text()
+    assert "CLAUDE_SMART_MANAGED_API_KEY=cloud-secret" in text
+    assert "CLAUDE_SMART_LOCAL_API_KEY=cloud-secret" not in text
+    assert json.loads(
+        _run_config_module(
+            tmp_path,
+            "process.stdout.write(JSON.stringify(await m.managedReflexioSettings()));",
+            {},
+        )
+    ) == {"url": "http://localhost:9090/", "apiKey": ""}
+
+
+def test_explicitly_clearing_managed_key_also_forgets_saved_dashboard_key(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / ".claude-smart" / ".env"
+    config.parent.mkdir()
+    config.write_text(
+        'REFLEXIO_URL="https://managed.example/"\nREFLEXIO_API_KEY="cloud-secret"\nCLAUDE_SMART_MANAGED_URL="https://managed.example/"\nCLAUDE_SMART_MANAGED_API_KEY="cloud-secret"\n'
+    )
+    _run_config_module(
+        tmp_path,
+        'await m.writeConfig({REFLEXIO_API_KEY:""}); process.stdout.write("true");',
+        {},
+    )
+    assert "cloud-secret" not in config.read_text()

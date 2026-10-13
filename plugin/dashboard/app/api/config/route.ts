@@ -19,7 +19,16 @@ export async function GET() {
 
 export async function PUT(req: Request) {
   const body = await req.json();
-  await writeConfig(body);
+  try {
+    await writeConfig(body);
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error: error instanceof Error ? error.message : "Invalid configuration",
+      },
+      { status: 400 },
+    );
+  }
   const config = await readConfig();
   return NextResponse.json(publicConfig(config));
 }

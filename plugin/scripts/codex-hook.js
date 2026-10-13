@@ -254,6 +254,7 @@ function loadReflexioEnv() {
     "REFLEXIO_USER_ID",
     "CLAUDE_SMART_READ_ONLY",
     "CLAUDE_SMART_LEARNING_PROVIDER",
+    "CLAUDE_SMART_LEARNING_MODEL",
   ]);
   const localConfigKeys = new Set([
     "CLAUDE_SMART_USE_LOCAL_CLI",

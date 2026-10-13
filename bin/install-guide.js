@@ -12,7 +12,7 @@ const ACTIVATION = {
 
 function parseOptions(args) {
   const options = {};
-  const values = new Set(["--host", "--backend", "--provider", "--url", "--api-key-env", "--sharing"]);
+  const values = new Set(["--host", "--backend", "--provider", "--model", "--url", "--api-key-env", "--sharing"]);
   const flags = new Set(["--global", "--local", "--read-only", "--learn", "--yes"]);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -102,6 +102,10 @@ function validateManagedUrl(value) {
   return url.href;
 }
 
+function sameOrigin(first, second) {
+  try { return new URL(first).origin === new URL(second).origin; } catch { return false; }
+}
+
 async function configure(options, inventory, saved, ask = terminalQuestion, interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY)) {
   let hosts = options.hosts;
   if (!hosts) {
@@ -129,12 +133,23 @@ async function configure(options, inventory, saved, ask = terminalQuestion, inte
     config.cliPath = !interactive && !options.provider ? process.env.CLAUDE_SMART_CLI_PATH || saved.cliPath || "" : "";
     config.useLocalCli = !interactive && !options.provider ? process.env.CLAUDE_SMART_USE_LOCAL_CLI || saved.useLocalCli || "1" : "1";
     config.provider = options.provider || (interactive ? await ask("Which agent should power background learning?", providers.map((agent) => ({ value: agent.host, label: `${LABELS[agent.host]} CLI` })), { selected: [saved.provider || hosts[0]] }) : saved.provider || (hosts.length === 1 ? hosts[0] : null));
+    config.model = options.model || (!options.provider || options.provider === saved.provider ? process.env.CLAUDE_SMART_LEARNING_MODEL || saved.model : "") || "";
+    if (interactive && !options.model && !config.cliPath && config.useLocalCli !== "0") {
+      const mode = await ask("Which model should power background learning?", [
+        { value: "default", label: "Provider default model" },
+        { value: "custom", label: "Choose a model ID" },
+      ], { selected: [config.model ? "custom" : "default"] });
+      config.model = mode === "custom" ? await ask("Learning model ID supported by the selected agent", [], { text: true, initial: config.model }) : "";
+    }
+    if (config.model && (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(config.model))) throw new Error("Learning model must be a valid model ID");
+    if (options.model && config.useLocalCli === "0") throw new Error("--model selects a local agent model. Configure cloud-provider models in Reflexio settings instead.");
     if (!config.cliPath && config.useLocalCli !== "0") {
       if (!config.provider) throw new Error("Choose a background learning provider with --provider claude-code, codex, or opencode");
       if (!providers.some((agent) => agent.host === config.provider)) throw new Error(`Background learning provider ${LABELS[config.provider]} is not available`);
     }
     // Preserve explicitly configured custom local Reflexio endpoints and cloud providers.
-    config.url = options.url || (saved.backend === "local" ? saved.url : "") || "";
+    const savedLocalUrl = saved.backend === "local" ? saved.url : saved.localUrl;
+    config.url = options.url || savedLocalUrl || "";
     if (config.url) {
       let parsed;
       try { parsed = new URL(config.url); } catch { throw new Error("Local endpoint must be a valid URL"); }
@@ -142,10 +157,12 @@ async function configure(options, inventory, saved, ask = terminalQuestion, inte
         throw new Error("Local endpoint must use an HTTP loopback address without credentials, query parameters, or a fragment");
       }
     }
-    config.apiKey = config.url && saved.backend === "local" ? saved.apiKey || "" : "";
+    config.apiKey = config.url && sameOrigin(config.url, savedLocalUrl) ? (saved.backend === "local" ? saved.apiKey : saved.localApiKey) || "" : "";
   } else {
-    config.url = validateManagedUrl(options.url || (interactive ? await ask("Managed Reflexio endpoint", [], { text: true, initial: saved.backend === "managed" ? saved.url : "https://www.reflexio.ai/" }) : saved.backend === "managed" ? saved.url : "https://www.reflexio.ai/"));
-    config.apiKey = options["api-key-env"] ? process.env[options["api-key-env"]] : saved.backend === "managed" ? saved.apiKey : "";
+    if (options.model || options.provider) throw new Error("Managed Reflexio chooses its learning model on the server; --provider and --model apply to local mode");
+    const savedManagedUrl = saved.backend === "managed" ? saved.url : saved.managedUrl;
+    config.url = validateManagedUrl(options.url || (interactive ? await ask("Managed Reflexio endpoint", [], { text: true, initial: savedManagedUrl || "https://www.reflexio.ai/" }) : savedManagedUrl || "https://www.reflexio.ai/"));
+    config.apiKey = options["api-key-env"] ? process.env[options["api-key-env"]] : sameOrigin(savedManagedUrl, config.url) ? (saved.backend === "managed" ? saved.apiKey : saved.managedApiKey) : "";
     if (!config.apiKey && interactive) config.apiKey = await ask("Reflexio API key (hidden)", [], { text: true, secret: true });
     if (!config.apiKey?.trim()) throw new Error("Managed Reflexio requires a saved API key or --api-key-env VARIABLE");
     config.apiKey = config.apiKey.trim();
@@ -166,6 +183,7 @@ function describe(config) {
     `  Integrations: ${config.hosts.map((host) => LABELS[host]).join(", ")}`,
     `  Backend: ${config.backend === "managed" ? `Managed Reflexio · ${config.url}` : "Local Reflexio"}`,
     `  Background learning: ${config.backend === "managed" ? "Managed Reflexio" : config.useLocalCli === "0" ? "configured cloud LLM" : config.cliPath ? `custom executable (${config.cliPath})` : `${LABELS[config.provider]} CLI`}`,
+    `  Learning model: ${config.backend === "managed" ? config.reportedModel || "Managed service default (model not reported)" : config.useLocalCli === "0" ? "Configured cloud provider (model not reported)" : config.model || "Provider default (not explicitly selected)"}`,
     `  Mode: ${config.readOnly ? "read-only" : "learn and retrieve"} · sharing: ${config.sharing}`,
   ].join("\n");
 }
@@ -176,7 +194,7 @@ async function runGuide(command, args, api) {
   const inventory = api.inventory(options);
   let config;
   if (command === "uninstall") {
-    if (["backend", "provider", "url", "api-key-env", "sharing", "read-only"].some((key) => options[key] !== undefined)) throw new Error("Uninstall accepts --host, --global/--local, and --yes; backend settings are kept");
+    if (["backend", "provider", "model", "url", "api-key-env", "sharing", "read-only"].some((key) => options[key] !== undefined)) throw new Error("Uninstall accepts --host, --global/--local, and --yes; backend settings are kept");
     let hosts = options.hosts;
     if (!hosts) {
       const installed = inventory.filter((agent) => agent.installed);
@@ -188,6 +206,10 @@ async function runGuide(command, args, api) {
     process.stdout.write(`\nRemove integrations: ${hosts.map((host) => LABELS[host]).join(", ")}\nLearned data and saved configuration will be kept.\n`);
   } else {
     config = await configure(options, inventory, api.saved(), terminalQuestion, interactive);
+    if (config.backend === "managed" && api.learningModel) {
+      process.stdout.write("Checking managed learning configuration…\n");
+      config.reportedModel = await api.learningModel(config);
+    }
     process.stdout.write(`\nConfiguration\n${describe(config)}\n`);
   }
   if (interactive) {

@@ -76,7 +76,25 @@ The guide asks where to store and process your data:
   available agent CLI powers background learning; it can analyze interactions
   from every installed integration.
 - **Managed Reflexio:** enter an HTTPS endpoint and a hidden API key. No local
-  backend starts; the dashboard still runs locally.
+  backend starts; memory storage and background learning run in Reflexio cloud.
+  The local dashboard connects to that cloud backend by default.
+
+In local mode, choose the learning agent and either its provider-configured
+default or a specific supported model ID. For unattended installs, use
+`--model <model-id>` with `--provider`. The chosen model is applied to extraction
+and optimizer calls. Managed mode reports the server-configured model when
+available, otherwise explicitly reports that its default model is not exposed.
+
+The dashboard's **Data source** dropdown selects Local or Managed Reflexio.
+It defaults to the saved runtime mode. Its endpoint, overview totals, preferences,
+skills, and backend sessions follow the selected source; viewing another source
+does not change learning/storage settings. Overview metrics use backend summary
+counts for the last 30 days, rather than list limits. Connection failures are
+shown explicitly. A backend must be configured and reachable to view its data.
+Previously configured connections are retained privately when changing modes.
+
+**This device** lists local session buffers and hook activity separately. Those
+counts can differ between machines connected to the same managed account.
 
 Review the configuration before installation starts. Saved settings and installed
 agents are preselected on subsequent runs. Preparation and service startup show
@@ -186,7 +204,7 @@ https://github.com/user-attachments/assets/ed84d73a-d5b7-4a0d-ab2c-f2c060c3f276
 - ⚡ **Fully automatic learning** — Every user turn, tool call, and assistant response is captured via lifecycle hooks and extracted into rules without you running anything.
 - 📈 **Continuously self-tuning, not just append-on-conflict** — Existing rules are continuously refined, not just appended to. Wording gets clearer, *when-to-apply* triggers tighten or broaden as evidence accumulates, near-duplicates merge, stale rules are superseded, and dead ones are archived. The library gets sharper, not just bigger.
   > *e.g.* correct the same `npm test --run` gotcha twice → consolidated into one rule. New evidence shows it applies to `vitest` too → scope broadened. Switch policy to `pnpm test` → old rule archived, new one supersedes it.
-- 🔌 **No external API call** — semantic search runs on an in-process ONNX embedder (all-MiniLM-L6-v2), and all data (preferences, skills, interaction buffers) is stored locally on your machine (`~/.reflexio/` and `~/.claude-smart/`).
+- 🔌 **Local or managed storage** — in local mode, semantic search runs on an in-process ONNX embedder (all-MiniLM-L6-v2) and memories stay on this machine. Managed mode stores and processes memories on the configured cloud backend; device interaction buffers remain local.
 - 🔎 **Hybrid search** — Skills and preferences are indexed with vector + BM25 search for fast, robust retrieval.
 - 🧪 **Offline resilience** — If the reflexio backend is down, hooks buffer to disk; the next successful publish drains them.
 - 🧰 **Manual correction marker** — `/claude-smart:learn` in Claude Code, or `bash ~/.reflexio/plugin-root/scripts/cli.sh learn` in Codex, flags the last turn as a correction so the extractor weights it heavily.
@@ -195,7 +213,7 @@ https://github.com/user-attachments/assets/ed84d73a-d5b7-4a0d-ab2c-f2c060c3f276
 
 ## Dashboard
 
-A web UI for browsing session histories, inspecting preferences, and editing project-specific and shared skills. The local backend binds to `127.0.0.1:8071` by default. The dashboard auto-starts alongside the backend, so you can open **http://localhost:3001** directly. Or run `/claude-smart:dashboard` in Claude Code to open it in your browser. In Codex, run `bash ~/.reflexio/plugin-root/scripts/dashboard-open.sh`.
+A web UI for browsing session histories, inspecting preferences, and editing project-specific and shared skills. The local backend binds to `127.0.0.1:8071` by default. The dashboard auto-starts in both local and managed mode at **http://localhost:3001**. Its data-source selector defaults to your saved runtime mode; managed mode reads cloud totals without starting a local backend. Or run `/claude-smart:dashboard` in Claude Code to open it in your browser. In Codex, run `bash ~/.reflexio/plugin-root/scripts/dashboard-open.sh`.
 
 <p align="center">
   <img src="assets/preferences_dashboard.png" alt="Preferences dashboard" width="49%">

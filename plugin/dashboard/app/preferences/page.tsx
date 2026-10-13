@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import Link from "@/components/common/source-link";
 import { AlertTriangle, Users, ChevronRight } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { HostBadge } from "@/components/common/host-badge";
@@ -44,14 +44,7 @@ export default function PreferencesPage() {
       try {
         const [profileRes, statsRes] = await Promise.all([
           reflexio.getAllProfiles(),
-          fetch("/api/rules/applied?daysBack=30&limit=200", {
-            cache: "no-store",
-          })
-            .then((r) => r.json())
-            .catch(() => ({
-              success: false,
-              stats: [] as PlaybookApplicationStat[],
-            })),
+          reflexio.getAppliedRules(),
         ]);
         if (cancelled) return;
         setProfiles(profileRes.user_profiles ?? []);
@@ -103,14 +96,19 @@ export default function PreferencesPage() {
     <div className="flex-1 overflow-auto">
       <PageHeader
         title="Preferences"
-        description="Project-scoped preferences extracted from interactions."
+        description="Preferences from the selected backend. The list shows up to 200 records; usage covers the last 30 days. Host badges use session records from this device."
         actions={
           <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
             <Select
               value={sortBy}
-              onValueChange={(v) => setSortBy((v as PreferenceSort) ?? "newest")}
+              onValueChange={(v) =>
+                setSortBy((v as PreferenceSort) ?? "newest")
+              }
             >
-              <SelectTrigger size="sm" className="w-36 text-xs bg-background/80">
+              <SelectTrigger
+                size="sm"
+                className="w-36 text-xs bg-background/80"
+              >
                 <SelectValue placeholder="Sort">
                   {sortBy === "applied" ? "Most applied" : "Newest"}
                 </SelectValue>
@@ -127,8 +125,8 @@ export default function PreferencesPage() {
               className="h-9 w-56 text-xs bg-background/80"
             />
             <DeleteAllButton
-              label={`Delete all${profiles && profiles.length > 0 ? ` (${profiles.length})` : ""}`}
-              confirmMessage={`Delete ALL ${profiles?.length ?? 0} preferences? Preferences regenerate from fresh interactions, but this cannot be undone.`}
+              label="Delete all preferences"
+              confirmMessage="Delete ALL preferences on the selected backend, including records beyond the loaded list? This cannot be undone."
               disabled={!profiles || profiles.length === 0}
               onConfirm={async () => {
                 await reflexio.deleteAllProfiles();
@@ -148,7 +146,7 @@ export default function PreferencesPage() {
         {attribution?.unavailable && !error && (
           <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
             <AlertTriangle className="h-4 w-4 shrink-0" />
-            Preference source details are temporarily unavailable. Preferences
+            Device host details are temporarily unavailable. Backend preferences
             remain available.
           </div>
         )}
@@ -174,7 +172,10 @@ export default function PreferencesPage() {
                   <header className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <LearningApplicationBadge stat={stat} />
-                      <Badge variant="outline" className="h-5 font-mono text-[10px]">
+                      <Badge
+                        variant="outline"
+                        className="h-5 font-mono text-[10px]"
+                      >
                         {truncateId(p.user_id, 32, 8)}
                       </Badge>
                       {p.status && (

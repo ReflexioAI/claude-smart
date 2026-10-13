@@ -7,6 +7,7 @@ import path from "path";
 // workspace root and panic in `next build` ("Failed to write app endpoint
 // /page"). Pinning the root avoids that misdetection.
 const nextConfig: NextConfig = {
+  experimental: process.env.CI ? {} : { cpus: 4 },
   turbopack: {
     root: path.resolve(__dirname),
   },

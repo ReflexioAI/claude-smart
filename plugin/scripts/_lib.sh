@@ -115,7 +115,7 @@ claude_smart_source_reflexio_env() {
     case "$key" in
       # Shared connection and learning settings: file wins over values inherited
       # by a long-lived backend/dashboard or exported by a per-agent hook.
-      REFLEXIO_URL|REFLEXIO_API_KEY|REFLEXIO_USER_ID|CLAUDE_SMART_READ_ONLY|CLAUDE_SMART_LEARNING_PROVIDER|CLAUDE_SMART_GUIDED_CONFIG)
+      REFLEXIO_URL|REFLEXIO_API_KEY|REFLEXIO_USER_ID|CLAUDE_SMART_READ_ONLY|CLAUDE_SMART_LEARNING_PROVIDER|CLAUDE_SMART_LEARNING_MODEL|CLAUDE_SMART_GUIDED_CONFIG)
         value="$(claude_smart_env_unquote "$value")"
         export "$key=$value"
         ;;

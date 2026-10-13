@@ -1702,6 +1702,9 @@ function savedInstallConfiguration() {
     backend: env.size ? isRemoteReflexioUrl(url) ? "managed" : "local" : legacyManaged ? "managed" : null,
     url, apiKey,
     provider: env.get(LEARNING_PROVIDER_ENV) || env.get(CLAUDE_SMART_HOST_ENV),
+    model: env.get("CLAUDE_SMART_LEARNING_MODEL") || "",
+    managedUrl: env.get("CLAUDE_SMART_MANAGED_URL") || "", managedApiKey: env.get("CLAUDE_SMART_MANAGED_API_KEY") || "",
+    localUrl: env.get("CLAUDE_SMART_LOCAL_URL") || "", localApiKey: env.get("CLAUDE_SMART_LOCAL_API_KEY") || "",
     cliPath: env.get("CLAUDE_SMART_CLI_PATH") || "", useLocalCli: env.get(CLAUDE_SMART_USE_LOCAL_CLI_ENV),
     readOnly: ["1", "true", "yes", "on"].includes((env.get(CLAUDE_SMART_READ_ONLY_ENV) || "").toLowerCase()),
     sharing: userId ? "global" : "project", userId,
@@ -1717,10 +1720,22 @@ function saveInstallConfiguration(config) {
     CLAUDE_SMART_READ_ONLY: config.readOnly ? "1" : "0",
     REFLEXIO_USER_ID: config.sharing === "global" ? config.userId || "global_user" : "",
   };
+  // Keep both dashboard connections when the runtime switches modes. Viewing
+  // either source must not rewrite the active hook/learning configuration.
+  const previous = readEnvFile(CLAUDE_SMART_ENV_PATH);
+  const remember = (url, apiKey) => {
+    if (!url) return;
+    const prefix = isRemoteReflexioUrl(url) ? "MANAGED" : "LOCAL";
+    values[`CLAUDE_SMART_${prefix}_URL`] = url;
+    values[`CLAUDE_SMART_${prefix}_API_KEY`] = apiKey || "";
+  };
+  remember(previous.get("REFLEXIO_URL"), previous.get("REFLEXIO_API_KEY"));
+  remember(values.REFLEXIO_URL, values.REFLEXIO_API_KEY);
   if (config.backend === "local") {
     if (config.provider) values[LEARNING_PROVIDER_ENV] = config.provider;
     // Make the explicit CLI choice effective even after a previous cloud setup.
     values[CLAUDE_SMART_USE_LOCAL_CLI_ENV] = config.useLocalCli;
+    values.CLAUDE_SMART_LEARNING_MODEL = config.model || "";
     if ((readEnvFile(CLAUDE_SMART_ENV_PATH).get("CLAUDE_SMART_CLI_PATH") || "") !== config.cliPath) {
       values.CLAUDE_SMART_CLI_PATH = config.cliPath;
     }
@@ -1774,6 +1789,17 @@ async function runGuidedCommand(command, args) {
   process.stdout.write(`claude-smart ${JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version} · ${command}\n`);
   await guide.runGuide(command, args, {
     inventory: installInventory, saved: savedInstallConfiguration, save: saveInstallConfiguration,
+    learningModel: async (config) => {
+      try {
+        const response = await fetch(new URL("/api/get_config", config.url), {
+          headers: { authorization: `Bearer ${config.apiKey}` }, signal: AbortSignal.timeout(5000),
+        });
+        if (!response.ok) return;
+        const data = await response.json();
+        const model = data.llm_config?.generation_model_name;
+        return typeof model === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(model) ? `${model} (managed configuration)` : undefined;
+      } catch { return; }
+    },
     runHost: runGuidedHost,
     finish: async (action, config, results) => {
       const root = activePluginRoot();
@@ -1937,7 +1963,8 @@ async function startAndReportServices(pluginRoot, host, setup, { summaryOnly = f
     runPluginService(pluginRoot, "backend-service.sh", "stop");
   }
   if (managed) {
-    report("Managed mode: no local backend is started.\n");
+    report(`Memory storage and background learning run on Reflexio cloud at ${hooksUrl}.\n`);
+    report(`Cloud dashboard: ${new URL(hooksUrl).origin}/dashboard\n`);
   } else if (hooksUrl && !isBundledBackendUrl(hooksUrl)) {
     // A kept loopback URL other than the bundled endpoint is the user's own
     // local Reflexio server: the hooks call it, not the bundled backend, so
@@ -1995,7 +2022,7 @@ async function startAndReportServices(pluginRoot, host, setup, { summaryOnly = f
   const isDashboard = ({ status, headers }) =>
     status === 200 && headers["x-claude-smart-dashboard"] !== undefined;
   if (await waitForHttp(`${url}api/health`, 3, isDashboard)) {
-    report(`Dashboard running at ${url}.\n`);
+    report(`Local dashboard: ${url} · default data source: ${managed ? "Managed Reflexio" : "Local Reflexio"}.\n`);
   } else if ((await httpProbe(`${url}api/health`)).status !== null) {
     report(
       `Another app answers ${url} without the claude-smart dashboard marker; ` +
@@ -2541,6 +2568,7 @@ function printHelp() {
       "  --host <comma-separated agents>                claude-code, codex, opencode",
       "  --backend local|managed                        Required for an unattended first install",
       "  --provider claude-code|codex|opencode           Local background learning provider",
+      "  --model <model-id>                             Local learning model (default: provider default)",
       "  --url <endpoint> --api-key-env <variable>       Managed endpoint and secret source",
       "  --read-only|--learn --sharing project|global   Memory access and sharing settings",
       "  --yes                                          Use explicit/saved settings without prompts",

@@ -1797,7 +1797,9 @@ def test_node_install_bootstraps_stable_copy_in_managed_mode(tmp_path: Path) -> 
     assert (tmp_path / "bootstrap-ran").read_text().strip() == str(stable_plugin)
     assert (tmp_path / ".reflexio" / "plugin-root").resolve() == stable_plugin
     assert f"Prepared claude-smart runtime at {stable_plugin}." in result.stdout
-    assert "Managed mode: no local backend is started." in result.stdout
+    assert (
+        "Memory storage and background learning run on Reflexio cloud" in result.stdout
+    )
     # Managed mode only stops a leftover bundled backend; it never starts one.
     assert (tmp_path / "backend-service.log").read_text().splitlines() == ["stop"]
     assert 'CLAUDE_SMART_HOST="claude-code"' in runtime_env.read_text()
@@ -1905,7 +1907,10 @@ def test_node_install_reports_dashboard_only_when_marker_answers(
         server.shutdown()
 
     assert result.returncode == 0, result.stderr
-    running = f"Dashboard running at http://localhost:{port}/." in result.stdout
+    running = (
+        f"Local dashboard: http://localhost:{port}/ · default data source: Local Reflexio."
+        in result.stdout
+    )
     assert running is marker
     assert ("without the claude-smart dashboard marker" in result.stdout) is not marker
 

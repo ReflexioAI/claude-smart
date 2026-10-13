@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import Link from "@/components/common/source-link";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -84,13 +84,11 @@ export default function PreferenceDetailPage({
     setSaving(true);
     setError(null);
     try {
-      await reflexio.updateUserProfile(
-        {
-          user_id: profile.user_id,
-          profile_id: profile.profile_id,
-          content,
-        },
-      );
+      await reflexio.updateUserProfile({
+        user_id: profile.user_id,
+        profile_id: profile.profile_id,
+        content,
+      });
       setProfile({ ...profile, content });
       setEditing(false);
     } catch (e) {
@@ -104,9 +102,10 @@ export default function PreferenceDetailPage({
     if (!profile) return;
     setDeleting(true);
     try {
-      await reflexio.deleteUserProfile(
-        { user_id: profile.user_id, profile_id: profile.profile_id },
-      );
+      await reflexio.deleteUserProfile({
+        user_id: profile.user_id,
+        profile_id: profile.profile_id,
+      });
       router.push("/preferences");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -338,7 +337,11 @@ export default function PreferenceDetailPage({
                       icon={FileText}
                       label="Request"
                       value={profile.generated_from_request_id}
-                      display={truncateId(profile.generated_from_request_id, 8, 4)}
+                      display={truncateId(
+                        profile.generated_from_request_id,
+                        8,
+                        4,
+                      )}
                     />
                   )}
                   {attribution && profile.generated_from_request_id && (

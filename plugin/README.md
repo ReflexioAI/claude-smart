@@ -12,6 +12,15 @@ This directory is the Claude Code/Codex/OpenCode plugin payload shipped through 
 npx claude-smart install
 ```
 
+The guide can install multiple coding-agent integrations together. Choose Local
+or Managed Reflexio; local mode also asks for the learning agent and its model
+(provider default or a supported model ID). Managed storage and learning run on
+the configured cloud service, whose model is reported when available.
+
+The local dashboard defaults to that saved mode. Its Data source dropdown changes
+the viewed backend without changing the learning configuration. Overview totals
+come from the selected backend; session buffers stay separately under This device.
+
 The Setup hook bootstraps `uv`, Python 3.12, and a private Node.js/npm runtime
 under `~/.claude-smart/` when they are missing. If Node.js is already installed,
 the npm installer also supplies the generated Reflexio runtime bundle that is
@@ -34,7 +43,7 @@ npx claude-smart install --host codex
 ```
 
 Start a new Codex session to load the update; you can finish your existing session first. If hook trust needs review, use `/hooks`. Codex installs reuse the same
-local Preferences, Project-specific skills, and Shared skills as Claude Code.
+configured Reflexio backend and memories as Claude Code.
 
 ### OpenCode
 
@@ -45,8 +54,8 @@ npx claude-smart install --host opencode
 Then restart OpenCode in your project so it loads the plugin from `opencode.json`
 or your existing `.opencode/opencode.json*` config. The installer copies the
 active npm package to `~/.claude-smart/opencode/claude-smart` and registers that
-stable local package with `file://`. OpenCode installs reuse the same local
-Preferences, Project-specific skills, and Shared skills as Claude Code and Codex.
+stable local package with `file://`. OpenCode installs reuse the same configured
+Reflexio backend and memories as Claude Code and Codex.
 
 ## Uninstall
 

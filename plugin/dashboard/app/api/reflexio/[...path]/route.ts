@@ -1,23 +1,7 @@
 import { NextResponse } from "next/server";
-import { originOnly } from "@/lib/reflexio-url";
-import { managedReflexioSettings } from "@/lib/config-file";
+import { selectedConnection } from "@/lib/data-source";
 
 export const dynamic = "force-dynamic";
-
-function defaultUrl(): string {
-  return `http://localhost:${process.env.BACKEND_PORT || "8071"}`;
-}
-
-async function reflexioConfig(): Promise<{ base: string; apiKey: string }> {
-  // File wins over the environment this process inherited at launch, the
-  // same precedence as the hooks.
-  const { url, apiKey } = await managedReflexioSettings();
-  const configuredBase = originOnly(url);
-  return {
-    base: configuredBase ?? defaultUrl(),
-    apiKey: configuredBase ? apiKey : "",
-  };
-}
 
 async function proxy(
   req: Request,
@@ -26,13 +10,40 @@ async function proxy(
   const { path } = await context.params;
   const targetPath = path.join("/");
   const url = new URL(req.url);
-  const { base, apiKey } = await reflexioConfig();
+  let base: string;
+  let apiKey: string;
+  try {
+    const connection = await selectedConnection(req);
+    base = connection.url;
+    apiKey = connection.apiKey;
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Invalid data source" },
+      { status: 409 },
+    );
+  }
   const target = `${base}/${targetPath}${url.search}`;
+  const endpoint = new URL(target).pathname.split("/").at(-1) || "";
+  const reads =
+    req.method === "GET" ||
+    req.method === "HEAD" ||
+    (req.method === "POST" &&
+      (endpoint.startsWith("get_") ||
+        ["page", "summary", "transcript"].includes(endpoint)));
+  if (!reads && !req.headers.get("x-claude-smart-connection")) {
+    return NextResponse.json(
+      { error: "Reload the dashboard before modifying this backend" },
+      { status: 409 },
+    );
+  }
 
   const headers = new Headers(req.headers);
   headers.delete("host");
   headers.delete("connection");
   headers.delete("authorization");
+  headers.delete("cookie");
+  headers.delete("x-claude-smart-source");
+  headers.delete("x-claude-smart-connection");
   headers.set("user-agent", "claude-smart");
   if (apiKey) headers.set("authorization", `Bearer ${apiKey}`);
 
@@ -40,6 +51,7 @@ async function proxy(
     method: req.method,
     headers,
     cache: "no-store",
+    signal: AbortSignal.timeout(20000),
   };
 
   if (req.method !== "GET" && req.method !== "HEAD") {

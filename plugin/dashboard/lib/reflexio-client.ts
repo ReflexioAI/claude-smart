@@ -11,16 +11,47 @@ import type {
   Interaction,
   UserPlaybook,
   UserProfile,
+  PlaybookApplicationStat,
 } from "./types";
 
 type Json = Record<string, unknown>;
+export type DataSource = "local" | "managed";
+let selectedSource: DataSource | undefined;
+let selectedIdentity: string | undefined;
+export function selectDataSource(source: DataSource, identity?: string) {
+  selectedSource = source;
+  selectedIdentity = identity;
+}
+export function sourceHeaders(): Record<string, string> {
+  return selectedSource
+    ? {
+        "x-claude-smart-source": selectedSource,
+        ...(selectedIdentity
+          ? { "x-claude-smart-connection": selectedIdentity }
+          : {}),
+      }
+    : {};
+}
+export interface BackendRequest {
+  request_id: string;
+  session_id?: string;
+  created_at?: number;
+}
+export interface RequestEntry {
+  request: BackendRequest;
+  interaction_count: number;
+  preview: string;
+}
+interface StoredSession {
+  session_id: string;
+  requests: { request: BackendRequest; interactions: Interaction[] }[];
+}
 
-async function request<T>(
-  path: string,
-  init: RequestInit,
-): Promise<T> {
+async function request<T>(path: string, init: RequestInit): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json");
+  for (const [key, value] of Object.entries(sourceHeaders()))
+    headers.set(key, value);
 
   const res = await fetch(`/api/reflexio/api/${path.replace(/^\/+/, "")}`, {
     ...init,
@@ -31,7 +62,10 @@ async function request<T>(
     const body = await res.text().catch(() => "");
     throw new Error(`reflexio ${res.status}: ${body.slice(0, 300)}`);
   }
-  return res.json() as Promise<T>;
+  const data = await res.json();
+  if (data.success === false)
+    throw new Error(data.msg || "Reflexio request failed");
+  return data as T;
 }
 
 function post<T>(path: string, body: Json): Promise<T> {
@@ -43,17 +77,95 @@ function get<T>(path: string): Promise<T> {
 }
 
 export const reflexio = {
+  async getAppliedRules() {
+    const data = await post<{ stats: PlaybookApplicationStat[] }>(
+      "get_playbook_application_stats",
+      { days_back: 30 },
+    );
+    return {
+      stats: data.stats.map((stat) => ({
+        ...stat,
+        kind:
+          stat.kind === "user_playbook" || stat.kind === "agent_playbook"
+            ? ("playbook" as const)
+            : stat.kind,
+        source_kind:
+          stat.kind === "user_playbook" || stat.kind === "agent_playbook"
+            ? stat.kind
+            : stat.kind === "profile"
+              ? "profile"
+              : stat.source_kind,
+      })),
+    };
+  },
+  async getRequests(
+    cursor?: string,
+  ): Promise<{ items: RequestEntry[]; next_cursor?: string | null }> {
+    if (selectedSource === "managed") {
+      return post("dashboard/requests/page", { limit: 30, cursor });
+    }
+    const offset = cursor ? Number(cursor) : 0;
+    const data = await post<{ sessions: StoredSession[]; has_more: boolean }>(
+      "get_requests",
+      { top_k: 30, offset },
+    );
+    return {
+      items: data.sessions.flatMap((session) =>
+        session.requests.map((item) => ({
+          request: item.request,
+          interaction_count: item.interactions.length,
+          preview: item.interactions[0]?.content || "",
+        })),
+      ),
+      next_cursor: data.has_more ? String(offset + 30) : null,
+    };
+  },
+  async getTranscript(
+    requestId: string,
+    cursor?: string,
+  ): Promise<{ items: Interaction[]; next_cursor?: string | null }> {
+    if (selectedSource === "managed")
+      return post("dashboard/requests/transcript", {
+        request_id: requestId,
+        limit: 100,
+        cursor,
+      });
+    const data = await post<{ sessions: StoredSession[] }>("get_requests", {
+      request_id: requestId,
+      top_k: 1,
+    });
+    return {
+      items: data.sessions.flatMap((session) =>
+        session.requests.flatMap((item) => item.interactions),
+      ),
+    };
+  },
+  async getDashboardStats() {
+    return post<{
+      stats: {
+        current_period: {
+          total_interactions: number;
+          total_profiles: number;
+          total_playbooks: number;
+          success_rate: number;
+        };
+      };
+    }>("get_dashboard_stats", { days_back: 30 });
+  },
+  async getModelConfiguration() {
+    return get<{
+      llm_config?: { generation_model_name?: string | null } | null;
+    }>("get_config");
+  },
   /** POST /api/get_user_playbooks — all filters are optional. */
-  async getUserPlaybooks(
-    opts: {
-      userPlaybookId?: number;
-      userId?: string;
-      agentVersion?: string;
-      playbookName?: string;
-      statusFilter?: (string | null)[];
-      limit?: number;
-    },
-  ): Promise<{ user_playbooks: UserPlaybook[] }> {
+  async getUserPlaybooks(opts: {
+    userPlaybookId?: number;
+    userId?: string;
+    agentVersion?: string;
+    playbookName?: string;
+    statusFilter?: (string | null)[];
+    limit?: number;
+  }): Promise<{ user_playbooks: UserPlaybook[] }> {
     const body: Json = { limit: opts.limit ?? 100 };
     if (opts.userPlaybookId !== undefined)
       body.user_playbook_id = opts.userPlaybookId;
@@ -65,15 +177,13 @@ export const reflexio = {
   },
 
   /** POST /api/get_agent_playbooks — all filters are optional. */
-  async getAgentPlaybooks(
-    opts: {
-      agentVersion?: string;
-      playbookName?: string;
-      statusFilter?: (string | null)[];
-      playbookStatusFilter?: AgentPlaybookStatus;
-      limit?: number;
-    },
-  ): Promise<{ agent_playbooks: AgentPlaybook[] }> {
+  async getAgentPlaybooks(opts: {
+    agentVersion?: string;
+    playbookName?: string;
+    statusFilter?: (string | null)[];
+    playbookStatusFilter?: AgentPlaybookStatus;
+    limit?: number;
+  }): Promise<{ agent_playbooks: AgentPlaybook[] }> {
     const body: Json = { limit: opts.limit ?? 100 };
     if (opts.agentVersion) body.agent_version = opts.agentVersion;
     if (opts.playbookName) body.playbook_name = opts.playbookName;
@@ -122,90 +232,76 @@ export const reflexio = {
   },
 
   /** PUT /api/update_user_playbook — partial update of one project-specific skill. */
-  async updateUserPlaybook(
-    update: {
-      user_playbook_id: number;
-      playbook_name?: string | null;
-      content?: string | null;
-      trigger?: string | null;
-      rationale?: string | null;
-    },
-  ): Promise<Json> {
-    return request(
-      "update_user_playbook",
-      { method: "PUT", body: JSON.stringify(update) },
-    );
+  async updateUserPlaybook(update: {
+    user_playbook_id: number;
+    playbook_name?: string | null;
+    content?: string | null;
+    trigger?: string | null;
+    rationale?: string | null;
+  }): Promise<Json> {
+    return request("update_user_playbook", {
+      method: "PUT",
+      body: JSON.stringify(update),
+    });
   },
 
   /** PUT /api/update_agent_playbook — partial update of one shared skill. */
-  async updateAgentPlaybook(
-    update: {
-      agent_playbook_id: number;
-      playbook_name?: string | null;
-      content?: string | null;
-      trigger?: string | null;
-      rationale?: string | null;
-      playbook_status?: AgentPlaybookStatus | null;
-    },
-  ): Promise<Json> {
-    return request(
-      "update_agent_playbook",
-      { method: "PUT", body: JSON.stringify(update) },
-    );
+  async updateAgentPlaybook(update: {
+    agent_playbook_id: number;
+    playbook_name?: string | null;
+    content?: string | null;
+    trigger?: string | null;
+    rationale?: string | null;
+    playbook_status?: AgentPlaybookStatus | null;
+  }): Promise<Json> {
+    return request("update_agent_playbook", {
+      method: "PUT",
+      body: JSON.stringify(update),
+    });
   },
 
   /** DELETE /api/delete_user_playbook — body carries the id. */
   async deleteUserPlaybook(userPlaybookId: number): Promise<Json> {
-    return request(
-      "delete_user_playbook",
-      {
-        method: "DELETE",
-        body: JSON.stringify({ user_playbook_id: userPlaybookId }),
-      },
-    );
+    return request("delete_user_playbook", {
+      method: "DELETE",
+      body: JSON.stringify({ user_playbook_id: userPlaybookId }),
+    });
   },
 
   /** DELETE /api/delete_agent_playbook — body carries the id. */
   async deleteAgentPlaybook(agentPlaybookId: number): Promise<Json> {
-    return request(
-      "delete_agent_playbook",
-      {
-        method: "DELETE",
-        body: JSON.stringify({ agent_playbook_id: agentPlaybookId }),
-      },
-    );
+    return request("delete_agent_playbook", {
+      method: "DELETE",
+      body: JSON.stringify({ agent_playbook_id: agentPlaybookId }),
+    });
   },
 
   /** PUT /api/update_user_profile — partial update; content is the common field. */
-  async updateUserProfile(
-    update: {
-      user_id: string;
-      profile_id: string;
-      content?: string | null;
-    },
-  ): Promise<Json> {
-    return request(
-      "update_user_profile",
-      { method: "PUT", body: JSON.stringify(update) },
-    );
+  async updateUserProfile(update: {
+    user_id: string;
+    profile_id: string;
+    content?: string | null;
+  }): Promise<Json> {
+    return request("update_user_profile", {
+      method: "PUT",
+      body: JSON.stringify(update),
+    });
   },
 
   /** DELETE /api/delete_profile — needs both user_id and profile_id. */
-  async deleteUserProfile(
-    params: { user_id: string; profile_id: string },
-  ): Promise<Json> {
-    return request(
-      "delete_profile",
-      { method: "DELETE", body: JSON.stringify(params) },
-    );
+  async deleteUserProfile(params: {
+    user_id: string;
+    profile_id: string;
+  }): Promise<Json> {
+    return request("delete_profile", {
+      method: "DELETE",
+      body: JSON.stringify(params),
+    });
   },
 
   /** DELETE /api/delete_all_interactions — org-wide purge. */
   async deleteAllInteractions(): Promise<Json> {
-    return request(
-      "delete_all_interactions",
-      { method: "DELETE" },
-    );
+    return request("delete_all_interactions", { method: "DELETE" });
   },
 
   /** DELETE /api/delete_all_profiles — org-wide purge. */
@@ -215,18 +311,11 @@ export const reflexio = {
 
   /** DELETE /api/delete_all_user_playbooks — org-wide purge. */
   async deleteAllUserPlaybooks(): Promise<Json> {
-    return request(
-      "delete_all_user_playbooks",
-      { method: "DELETE" },
-    );
+    return request("delete_all_user_playbooks", { method: "DELETE" });
   },
 
   /** DELETE /api/delete_all_agent_playbooks — org-wide shared skill purge. */
   async deleteAllAgentPlaybooks(): Promise<Json> {
-    return request(
-      "delete_all_agent_playbooks",
-      { method: "DELETE" },
-    );
+    return request("delete_all_agent_playbooks", { method: "DELETE" });
   },
-
 };

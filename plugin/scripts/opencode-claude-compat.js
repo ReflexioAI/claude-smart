@@ -167,7 +167,7 @@ function runOpenCode({ prompt, model, workDir }) {
 }
 
 function opencodeModel(modelFromArgs) {
-  const explicit = (process.env.CLAUDE_SMART_OPENCODE_MODEL || "").trim();
+  const explicit = (process.env.CLAUDE_SMART_LEARNING_MODEL || process.env.CLAUDE_SMART_OPENCODE_MODEL || "").trim();
   if (explicit) return explicit;
   const candidate = (modelFromArgs || "").trim();
   return candidate.includes("/") ? candidate : "";

@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import Link from "@/components/common/source-link";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -56,7 +56,8 @@ export default function ProjectSkillDetailPage({
   const { id } = use(params);
   const router = useRouter();
   const userPlaybookId = Number(id);
-  const invalidId = !Number.isSafeInteger(userPlaybookId) || userPlaybookId <= 0;
+  const invalidId =
+    !Number.isSafeInteger(userPlaybookId) || userPlaybookId <= 0;
 
   const [playbook, setPlaybook] = useState<UserPlaybook | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -109,14 +110,12 @@ export default function ProjectSkillDetailPage({
     setSaving(true);
     setError(null);
     try {
-      await reflexio.updateUserPlaybook(
-        {
-          user_playbook_id: playbook.user_playbook_id,
-          content: form.content,
-          trigger: form.trigger || null,
-          rationale: form.rationale || null,
-        },
-      );
+      await reflexio.updateUserPlaybook({
+        user_playbook_id: playbook.user_playbook_id,
+        content: form.content,
+        trigger: form.trigger || null,
+        rationale: form.rationale || null,
+      });
       setPlaybook({
         ...playbook,
         content: form.content,
@@ -206,11 +205,7 @@ export default function ProjectSkillDetailPage({
                   <X className="h-3.5 w-3.5" />
                   Cancel
                 </Button>
-                <Button
-                  size="sm"
-                  onClick={save}
-                  disabled={saving || !dirty}
-                >
+                <Button size="sm" onClick={save} disabled={saving || !dirty}>
                   <Save className="h-3.5 w-3.5" />
                   {saving ? "Saving…" : "Save"}
                 </Button>
@@ -259,7 +254,10 @@ export default function ProjectSkillDetailPage({
                   placeholder="e.g. When writing or running async Python tests."
                 />
               ) : (
-                <Prose text={playbook?.trigger ?? ""} muted={!playbook?.trigger} />
+                <Prose
+                  text={playbook?.trigger ?? ""}
+                  muted={!playbook?.trigger}
+                />
               )}
             </Section>
 
@@ -419,9 +417,7 @@ function Section({
           <Icon className="h-3.5 w-3.5 text-muted-foreground" />
           {title}
         </Label>
-        {hint && (
-          <span className="text-xs text-muted-foreground">{hint}</span>
-        )}
+        {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
       </div>
       {children}
     </section>
@@ -472,11 +468,7 @@ function AutoTextarea({
   );
 }
 
-function StatusBadge({
-  status,
-}: {
-  status: StatusLabel;
-}) {
+function StatusBadge({ status }: { status: StatusLabel }) {
   const variant =
     status === "CURRENT"
       ? "secondary"

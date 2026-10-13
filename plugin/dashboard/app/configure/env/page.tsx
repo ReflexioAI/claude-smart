@@ -24,7 +24,9 @@ import type {
 
 export default function ConfigureEnvPage() {
   const [config, setConfig] = useState<ClaudeSmartConfig | null>(null);
-  const [hookConfig, setHookConfig] = useState<ClaudeCodeHookConfig | null>(null);
+  const [hookConfig, setHookConfig] = useState<ClaudeCodeHookConfig | null>(
+    null,
+  );
   const [hookDirty, setHookDirty] = useState(false);
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,7 +99,8 @@ export default function ConfigureEnvPage() {
           ),
         }),
       ]);
-      if (!envRes.ok) throw new Error(`environment save failed: ${envRes.status}`);
+      if (!envRes.ok)
+        throw new Error(`environment save failed: ${envRes.status}`);
       if (!hookRes.ok)
         throw new Error(`Claude Code settings save failed: ${hookRes.status}`);
       const updated: ClaudeSmartConfig = await envRes.json();
@@ -119,9 +122,13 @@ export default function ConfigureEnvPage() {
     <>
       <PageHeader
         title="Environment"
-        description="Dashboard settings, Reflexio backend environment, and Claude Code hook environment."
+        description="Configure the active learning runtime. The dashboard data-source selector only changes what you view."
         actions={
-          <Button onClick={save} disabled={!config || !hookConfig || saving} size="sm">
+          <Button
+            onClick={save}
+            disabled={!config || !hookConfig || saving}
+            size="sm"
+          >
             <Save className="h-3.5 w-3.5" />
             {saving ? "Saving…" : "Save"}
           </Button>
@@ -145,8 +152,9 @@ export default function ConfigureEnvPage() {
           <div>
             <h2 className="text-sm font-semibold">claude-smart environment</h2>
             <p className="text-xs text-muted-foreground">
-              Writes to <code className="font-mono">~/.claude-smart/.env</code>. Unknown
-              keys are preserved. These values are read by the Reflexio backend.
+              Writes to <code className="font-mono">~/.claude-smart/.env</code>.
+              Unknown keys are preserved. These values are read by the Reflexio
+              backend.
             </p>
           </div>
 
@@ -185,7 +193,9 @@ export default function ConfigureEnvPage() {
 
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <Label htmlFor="use-local-cli">CLAUDE_SMART_USE_LOCAL_CLI</Label>
+                  <Label htmlFor="use-local-cli">
+                    CLAUDE_SMART_USE_LOCAL_CLI
+                  </Label>
                   <p className="text-xs text-muted-foreground mt-0.5">
                     Route generation through the local <code>claude</code> CLI.
                   </p>
@@ -236,10 +246,29 @@ export default function ConfigureEnvPage() {
                 <Label>CLAUDE_SMART_CLI_PATH</Label>
                 <Input
                   value={String(config.CLAUDE_SMART_CLI_PATH ?? "")}
-                  onChange={(e) => update("CLAUDE_SMART_CLI_PATH", e.target.value)}
+                  onChange={(e) =>
+                    update("CLAUDE_SMART_CLI_PATH", e.target.value)
+                  }
                   className="font-mono text-xs bg-background/80"
                   placeholder="(empty — auto-detect via $PATH)"
                 />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="learning-model">Local learning model</Label>
+                <Input
+                  id="learning-model"
+                  value={String(config.CLAUDE_SMART_LEARNING_MODEL ?? "")}
+                  onChange={(event) =>
+                    update("CLAUDE_SMART_LEARNING_MODEL", event.target.value)
+                  }
+                  placeholder="Provider default"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Model ID supported by your local learning agent. Apply changes
+                  with claude-smart update, which refreshes the backend. Managed
+                  Reflexio uses its server configuration.
+                </p>
               </div>
 
               <div className="space-y-2">
@@ -273,7 +302,9 @@ export default function ConfigureEnvPage() {
 
         <section className="space-y-4 rounded-lg border border-border bg-card/92 p-5 shadow-sm">
           <div>
-            <h2 className="text-sm font-semibold">Claude Code hook environment</h2>
+            <h2 className="text-sm font-semibold">
+              Claude Code hook environment
+            </h2>
             <p className="text-xs text-muted-foreground">
               Writes to{" "}
               <code className="font-mono">.claude/settings.local.json</code>.
