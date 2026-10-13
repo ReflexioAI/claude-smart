@@ -454,7 +454,9 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         in (home / ".claude-smart" / ".env").read_text()
     )
     version = json.loads((REPO_ROOT / "package.json").read_text())["version"]
-    cache = home / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / version
+    cache = (
+        home / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / version
+    )
     assert (cache / ".venv" / "bin" / "python").is_file()
     assert (
         home
@@ -477,3 +479,65 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Background learning: Codex CLI" in result.stdout
+
+
+@pytest.mark.parametrize("provider", [None, "claude-code", "codex", "opencode"])
+@pytest.mark.parametrize("override", [False, True])
+@pytest.mark.parametrize("action", ["backend", "hook"])
+def test_actual_codex_node_hook_uses_selected_learning_provider(
+    tmp_path: Path, provider: str | None, override: bool, action: str
+) -> None:
+    from tests.test_install_scripts import CODEX_HOOK
+
+    root = tmp_path / "plugin"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    (root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    state = tmp_path / ".claude-smart"
+    state.mkdir()
+    (state / ".env").write_text(
+        f'CLAUDE_SMART_LEARNING_PROVIDER="{provider}"\n' if provider else ""
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "claude", "#!/bin/sh\nexit 0\n")
+    source = (REPO_ROOT / "plugin/scripts/backend-service.sh").read_text()
+    selection = source[
+        source.index("learning_provider=") : source.index("\nSTATE_DIR=")
+    ]
+    # Run the real Node entrypoint and the actual shell selection block through
+    # both child routes; keep service/model startup entirely inside the fixture.
+    recorder = (
+        "#!/bin/bash\n"
+        f'. "{LIB}"\nclaude_smart_source_reflexio_env\n'
+        f'PLUGIN_ROOT="{root}"\n{selection}\n'
+        'printf "%s\\n" "$CLAUDE_SMART_CLI_PATH" > "$HOME/selected-cli"\n'
+        'printf "%s\\n" "$CLAUDE_SMART_HOST" > "$HOME/hook-identity"\n'
+        "printf '{\"continue\":true}\\n'\n"
+    )
+    _write_executable(scripts / "backend-service.sh", recorder)
+    _write_executable(fake_bin / "uv", recorder)
+    env = guide_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["CLAUDE_PLUGIN_ROOT"] = str(root)
+    env["CLAUDE_SMART_LEARNING_PROVIDER"] = "codex" if provider else ""
+    if override:
+        env["CLAUDE_SMART_CLI_PATH"] = "/explicit/learning-cli"
+    args = [node_bin(), str(CODEX_HOOK), action]
+    if action == "hook":
+        args.append("post-tool")
+    result = subprocess.run(
+        args, input="{}", env=env, text=True, capture_output=True, timeout=10
+    )
+    assert result.returncode == 0, result.stderr
+    expected = (
+        "/explicit/learning-cli"
+        if override
+        else str(fake_bin / "claude")
+        if provider == "claude-code"
+        else str(scripts / "opencode-claude-compat")
+        if provider == "opencode"
+        else str(scripts / "codex-claude-compat")
+    )
+    assert (tmp_path / "selected-cli").read_text().strip() == expected
+    assert (tmp_path / "hook-identity").read_text().strip() == "codex"

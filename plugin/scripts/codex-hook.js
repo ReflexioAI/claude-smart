@@ -253,6 +253,7 @@ function loadReflexioEnv() {
     "REFLEXIO_API_KEY",
     "REFLEXIO_USER_ID",
     "CLAUDE_SMART_READ_ONLY",
+    "CLAUDE_SMART_LEARNING_PROVIDER",
   ]);
   const localConfigKeys = new Set([
     "CLAUDE_SMART_USE_LOCAL_CLI",
@@ -260,6 +261,7 @@ function loadReflexioEnv() {
     "CLAUDE_SMART_BACKEND_AUTOSTART",
     "CLAUDE_SMART_DASHBOARD_AUTOSTART",
     "CLAUDE_SMART_CLI_PATH",
+    "CLAUDE_SMART_OPENCODE_PATH",
     "CLAUDE_SMART_CLI_TIMEOUT",
     "CLAUDE_SMART_STATE_DIR",
     "CLAUDE_SMART_ENABLE_OPTIMIZER",
@@ -284,6 +286,18 @@ function codexCompatPath(root) {
     ? "codex-claude-compat.cmd"
     : "codex-claude-compat";
   return path.join(root, "scripts", filename);
+}
+
+function learningCliPath(root) {
+  if (process.env.CLAUDE_SMART_CLI_PATH) return process.env.CLAUDE_SMART_CLI_PATH;
+  const provider = process.env.CLAUDE_SMART_LEARNING_PROVIDER || "codex";
+  // Let the shell resolve Claude Code from its login PATH. Without a saved
+  // provider, retain the legacy Codex bridge; Windows needs its .cmd wrapper.
+  if (provider === "claude-code") return "";
+  if (provider === "opencode") {
+    return path.join(root, "scripts", `opencode-claude-compat${process.platform === "win32" ? ".cmd" : ""}`);
+  }
+  return codexCompatPath(root);
 }
 
 // Same rewrite as claude_smart_derive_reflexio_url_from_backend_port in
@@ -350,7 +364,7 @@ function runServiceScript(root, scriptName, action, logName) {
       PLUGIN_ROOT: root,
       CLAUDE_PLUGIN_ROOT: root,
       CLAUDE_SMART_HOST: "codex",
-      CLAUDE_SMART_CLI_PATH: process.env.CLAUDE_SMART_CLI_PATH || codexCompatPath(root),
+      CLAUDE_SMART_CLI_PATH: learningCliPath(root),
       BACKEND_PORT: String(DEFAULT_BACKEND_PORT),
       EMBEDDING_PORT: String(DEFAULT_EMBEDDING_PORT),
       DASHBOARD_PORT: String(DASHBOARD_PORT),
@@ -436,7 +450,7 @@ function runHook(root, event) {
         ...process.env,
         REFLEXIO_URL: readBackendUrl(),
         CLAUDE_SMART_HOST: "codex",
-        CLAUDE_SMART_CLI_PATH: process.env.CLAUDE_SMART_CLI_PATH || codexCompatPath(root),
+        CLAUDE_SMART_CLI_PATH: learningCliPath(root),
         CLAUDE_SMART_CITATION_LINK_STYLE: process.env.CLAUDE_SMART_CITATION_LINK_STYLE || "markdown",
       },
       input,
