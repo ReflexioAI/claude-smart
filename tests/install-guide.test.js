@@ -151,3 +151,18 @@ test("interactive local setup offers an explicit model choice", async () => {
   assert.equal(prompts.find((prompt) => prompt.title.startsWith("Learning model ID")).options.text, true);
   assert.match(describe(config), /Learning model: test\/codex-model/);
 });
+
+test("interactive provider changes reset the previous agent's model", async () => {
+  const ask = async (title, choices, options) => {
+    if (title.startsWith("Which agent")) return "claude-code";
+    if (title.startsWith("Which model")) {
+      assert.deepEqual(options.selected, ["default"]);
+      return "default";
+    }
+    if (title.startsWith("Allow")) return "learn";
+    return "project";
+  };
+  const config = await configure(parseOptions(["--host", "codex", "--backend", "local"]), inventory, {backend:"local", provider:"codex", model:"old-codex-model"}, ask, true);
+  assert.equal(config.provider, "claude-code");
+  assert.equal(config.model, "");
+});

@@ -133,7 +133,7 @@ async function configure(options, inventory, saved, ask = terminalQuestion, inte
     config.cliPath = !interactive && !options.provider ? process.env.CLAUDE_SMART_CLI_PATH || saved.cliPath || "" : "";
     config.useLocalCli = !interactive && !options.provider ? process.env.CLAUDE_SMART_USE_LOCAL_CLI || saved.useLocalCli || "1" : "1";
     config.provider = options.provider || (interactive ? await ask("Which agent should power background learning?", providers.map((agent) => ({ value: agent.host, label: `${LABELS[agent.host]} CLI` })), { selected: [saved.provider || hosts[0]] }) : saved.provider || (hosts.length === 1 ? hosts[0] : null));
-    config.model = options.model || (!options.provider || options.provider === saved.provider ? process.env.CLAUDE_SMART_LEARNING_MODEL || saved.model : "") || "";
+    config.model = options.model || (!saved.provider || config.provider === saved.provider ? process.env.CLAUDE_SMART_LEARNING_MODEL || saved.model : "") || "";
     if (interactive && !options.model && !config.cliPath && config.useLocalCli !== "0") {
       const mode = await ask("Which model should power background learning?", [
         { value: "default", label: "Provider default model" },
