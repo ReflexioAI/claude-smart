@@ -88,7 +88,9 @@ available, otherwise explicitly reports that its default model is not exposed.
 The dashboard's **Data source** dropdown selects Local or Managed Reflexio.
 It defaults to the saved runtime mode. Its endpoint, overview totals, preferences,
 skills, and backend sessions follow the selected source; viewing another source
-does not change learning/storage settings. Overview metrics use backend summary
+does not change learning/storage settings. The header shows the selected endpoint
+as a read-only connection label, with an **Open cloud dashboard** link in Managed
+mode. Change connection settings in **Configure**. Overview metrics use backend summary
 counts for the last 30 days, rather than list limits. Connection failures are
 shown explicitly. Older skill citations without a project/shared identity remain
 visible under Legacy skill usage; exact per-skill counts use identified citations.

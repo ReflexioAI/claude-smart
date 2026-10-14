@@ -2,7 +2,7 @@
 
 import { useTheme } from "next-themes";
 import Image from "next/image";
-import { Link2, Menu, Moon, Sun } from "lucide-react";
+import { ExternalLink, Menu, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useSettings } from "@/hooks/use-settings";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -11,6 +11,13 @@ import { Sidebar } from "./sidebar";
 export function TopBar() {
   const { reflexioUrl, source, sources, changeSource } = useSettings();
   const { theme, setTheme } = useTheme();
+  let endpoint: URL | null = null;
+  try {
+    const parsed = new URL(reflexioUrl);
+    if (["http:", "https:"].includes(parsed.protocol)) endpoint = parsed;
+  } catch {
+    // Connection metadata may still be loading or not configured.
+  }
 
   return (
     <header className="min-h-16 py-3 border-b border-border bg-card/92 backdrop-blur supports-[backdrop-filter]:bg-card/78 flex items-center px-4 gap-3 shrink-0 shadow-[0_1px_0_oklch(1_0_0/0.42)_inset] dark:shadow-none">
@@ -26,7 +33,7 @@ export function TopBar() {
       </Sheet>
 
       <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center">
           <Image
             src="/claude-smart-icon.png"
             alt="claude-smart"
@@ -57,19 +64,27 @@ export function TopBar() {
             <option value="local">Local Reflexio</option>
           </select>
         </label>
-        <div
-          className="relative min-w-0 max-w-md basis-full sm:basis-auto sm:flex-1 sm:w-[22rem]"
-          suppressHydrationWarning
-        >
-          <Link2 className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <div
+        <div className="flex min-w-0 basis-full flex-wrap items-center gap-x-4 gap-y-2 text-xs sm:basis-auto">
+          <span
             id="reflexio-url"
-            className="flex h-9 items-center rounded-md border border-input bg-background/80 pl-8 pr-3 text-xs font-mono text-muted-foreground"
-            aria-label="Reflexio endpoint URL"
+            className="min-w-0 truncate text-muted-foreground"
             title={reflexioUrl}
           >
-            <span className="truncate">{reflexioUrl}</span>
-          </div>
+            {endpoint
+              ? `Connected to ${endpoint.host.replace(/^www\./, "")}`
+              : "Connection not configured"}
+          </span>
+          {source === "managed" && sources?.managed.configured && endpoint && (
+            <a
+              href={new URL("/dashboard", endpoint).href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline focus-visible:underline"
+            >
+              Open cloud dashboard
+              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+            </a>
+          )}
         </div>
       </div>
 
