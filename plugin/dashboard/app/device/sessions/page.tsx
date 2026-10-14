@@ -1,5 +1,7 @@
 "use client";
 
+import { PageFrame } from "@/components/common/page-frame";
+
 import { useEffect, useMemo, useState } from "react";
 import Link from "@/components/common/source-link";
 import { MessageSquare, Search } from "lucide-react";
@@ -82,7 +84,7 @@ export default function SessionsPage() {
         }
       />
 
-      <div className="p-6">
+      <PageFrame>
         {error && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm mb-4">
             {error}
@@ -115,7 +117,7 @@ export default function SessionsPage() {
                     · {items.length}
                   </span>
                 </div>
-                <div className="rounded-lg border border-border divide-y divide-border bg-card/90 overflow-hidden shadow-sm">
+                <div className="rounded-lg border border-border divide-y divide-border bg-card overflow-hidden">
                   {items.map((s) => (
                     <Link
                       key={s.session_id}
@@ -171,7 +173,7 @@ export default function SessionsPage() {
             ))}
           </div>
         )}
-      </div>
+      </PageFrame>
     </div>
   );
 }

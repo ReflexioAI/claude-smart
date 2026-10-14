@@ -47,77 +47,70 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* Matched to the managed Reflexio product shell, not its marketing theme. */
 :root {
   --dashboard-font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
   --dashboard-font-mono: "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono",
     Menlo, monospace;
-  --background: oklch(0.982 0.006 197);
-  --foreground: oklch(0.19 0.018 236);
-  --card: oklch(0.997 0.003 197);
-  --card-foreground: oklch(0.19 0.018 236);
-  --popover: oklch(0.997 0.003 197);
-  --popover-foreground: oklch(0.19 0.018 236);
-  --primary: oklch(0.48 0.142 202);
-  --primary-foreground: oklch(0.99 0.006 197);
-  --secondary: oklch(0.939 0.025 202);
-  --secondary-foreground: oklch(0.245 0.038 218);
-  --muted: oklch(0.949 0.011 218);
-  --muted-foreground: oklch(0.486 0.024 230);
-  --accent: oklch(0.928 0.054 185);
-  --accent-foreground: oklch(0.235 0.052 205);
-  --destructive: oklch(0.58 0.216 27);
-  --border: oklch(0.882 0.018 218);
-  --input: oklch(0.892 0.018 218);
-  --ring: oklch(0.65 0.104 192);
-  --chart-1: oklch(0.68 0.13 188);
-  --chart-2: oklch(0.62 0.15 154);
-  --chart-3: oklch(0.72 0.16 82);
-  --chart-4: oklch(0.64 0.16 24);
-  --chart-5: oklch(0.54 0.13 258);
-  --radius: 0.5rem;
-  --sidebar: oklch(0.964 0.013 213);
-  --sidebar-foreground: oklch(0.22 0.026 236);
-  --sidebar-primary: oklch(0.48 0.142 202);
-  --sidebar-primary-foreground: oklch(0.99 0.006 197);
-  --sidebar-accent: oklch(0.918 0.043 190);
-  --sidebar-accent-foreground: oklch(0.24 0.054 206);
-  --sidebar-border: oklch(0.862 0.02 218);
-  --sidebar-ring: oklch(0.65 0.104 192);
+  --background: hsl(60 11% 96%);
+  --foreground: hsl(0 0% 12%);
+  --card: hsl(0 0% 100%);
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --primary: hsl(151 42% 28%);
+  --primary-foreground: hsl(0 0% 100%);
+  --secondary: hsl(50 8% 91%);
+  --secondary-foreground: hsl(0 0% 14%);
+  --muted: hsl(50 8% 92%);
+  --muted-foreground: hsl(0 0% 39%);
+  --accent: hsl(50 8% 90%);
+  --accent-foreground: var(--foreground);
+  --destructive: hsl(0 72% 43%);
+  --border: hsl(45 7% 82%);
+  --input: hsl(45 7% 76%);
+  --ring: var(--primary);
+  --chart-1: hsl(222 65% 48%);
+  --chart-2: hsl(40 51% 45%);
+  --chart-3: hsl(35 80% 42%);
+  --chart-4: hsl(168 55% 40%);
+  --chart-5: hsl(220 25% 60%);
+  --radius: 0.375rem;
+  --sidebar: hsl(50 8% 93%);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: hsl(50 8% 88%);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
 }
 
 .dark {
-  --background: oklch(0.154 0.022 236);
-  --foreground: oklch(0.938 0.012 202);
-  --card: oklch(0.205 0.027 236);
-  --card-foreground: oklch(0.938 0.012 202);
-  --popover: oklch(0.205 0.027 236);
-  --popover-foreground: oklch(0.938 0.012 202);
-  --primary: oklch(0.72 0.119 188);
-  --primary-foreground: oklch(0.154 0.022 236);
-  --secondary: oklch(0.265 0.029 235);
-  --secondary-foreground: oklch(0.914 0.014 202);
-  --muted: oklch(0.258 0.027 235);
-  --muted-foreground: oklch(0.69 0.026 219);
-  --accent: oklch(0.306 0.054 202);
-  --accent-foreground: oklch(0.9 0.05 183);
-  --destructive: oklch(0.66 0.21 24);
-  --border: oklch(0.332 0.031 236);
-  --input: oklch(0.354 0.034 236);
-  --ring: oklch(0.72 0.119 188);
-  --chart-1: oklch(0.72 0.119 188);
-  --chart-2: oklch(0.72 0.14 148);
-  --chart-3: oklch(0.78 0.15 82);
-  --chart-4: oklch(0.68 0.17 24);
-  --chart-5: oklch(0.69 0.12 258);
-  --sidebar: oklch(0.184 0.027 236);
-  --sidebar-foreground: oklch(0.916 0.014 202);
-  --sidebar-primary: oklch(0.72 0.119 188);
-  --sidebar-primary-foreground: oklch(0.154 0.022 236);
-  --sidebar-accent: oklch(0.29 0.051 202);
-  --sidebar-accent-foreground: oklch(0.9 0.05 183);
-  --sidebar-border: oklch(0.332 0.031 236);
-  --sidebar-ring: oklch(0.72 0.119 188);
+  color-scheme: dark;
+  --background: hsl(0 0% 9.8%);
+  --foreground: hsl(36 12% 92%);
+  --card: hsl(0 0% 12%);
+  --popover: hsl(0 0% 13%);
+  --primary: hsl(150.6 24.1% 60.2%);
+  --primary-foreground: hsl(220 25% 8%);
+  --secondary: hsl(0 0% 16%);
+  --secondary-foreground: hsl(36 10% 90%);
+  --muted: hsl(0 0% 15%);
+  --muted-foreground: hsl(30 5% 62%);
+  --accent: hsl(0 0% 17%);
+  --accent-foreground: hsl(36 10% 93%);
+  --destructive: hsl(0 72% 68%);
+  --border: hsl(0 0% 21%);
+  --input: hsl(0 0% 26%);
+  --chart-1: hsl(222 75% 65%);
+  --chart-2: hsl(40 56% 63%);
+  --chart-3: hsl(35 82% 63%);
+  --chart-4: hsl(168 55% 60%);
+  --chart-5: hsl(220 25% 72%);
+  --sidebar: hsl(0 0% 11%);
+  --sidebar-accent: hsl(0 0% 17%);
 }
 
 @layer base {
@@ -126,18 +119,40 @@
   }
   body {
     @apply bg-background text-foreground;
-    background-image:
-      linear-gradient(to right, oklch(0.88 0.018 218 / 0.45) 1px, transparent 1px),
-      linear-gradient(to bottom, oklch(0.88 0.018 218 / 0.45) 1px, transparent 1px);
-    background-size: 32px 32px;
-    background-position: -1px -1px;
   }
   html {
     @apply font-sans;
   }
-  .dark body {
-    background-image:
-      linear-gradient(to right, oklch(0.38 0.032 236 / 0.28) 1px, transparent 1px),
-      linear-gradient(to bottom, oklch(0.38 0.032 236 / 0.28) 1px, transparent 1px);
-  }
+}
+
+.page-frame {
+  width: 100%;
+  max-width: 1440px;
+  margin-inline: auto;
+  padding-inline: 1rem;
+}
+
+@media (min-width: 640px) {
+  .page-frame { padding-inline: 1.5rem; }
+}
+
+@media (min-width: 1024px) {
+  .page-frame { padding-inline: 2rem; }
+}
+
+/* A single metric band, with dividers that follow its responsive columns. */
+.metric-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  border-block: 1px solid var(--border);
+}
+.metric-strip > * + * { border-top: 1px solid var(--border); }
+@media (min-width: 640px) {
+  .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metric-strip > :nth-child(2) { border-top: 0; }
+  .metric-strip > :nth-child(even) { border-left: 1px solid var(--border); }
+}
+@media (min-width: 1280px) {
+  .metric-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .metric-strip > * + * { border-top: 0; border-left: 1px solid var(--border); }
 }

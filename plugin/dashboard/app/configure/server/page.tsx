@@ -1,5 +1,7 @@
 "use client";
 
+import { PageFrame } from "@/components/common/page-frame";
+
 import { useCallback, useEffect, useState } from "react";
 import { Save, CheckCircle2 } from "lucide-react";
 import { reflexio } from "@/lib/reflexio-client";
@@ -131,7 +133,7 @@ export default function ConfigureServerPage() {
         }
       />
 
-      <div className="p-6 max-w-3xl mx-auto space-y-5">
+      <PageFrame className="space-y-5">
         {srvError && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm">
             {srvError}
@@ -147,7 +149,7 @@ export default function ConfigureServerPage() {
         {srvLoading ? (
           <div className="text-sm text-muted-foreground">Loading…</div>
         ) : srvConfig ? (
-          <section className="space-y-5 rounded-lg border border-border bg-card/92 p-5 shadow-sm">
+          <section className="space-y-5 border-t border-border py-5">
             <div className="space-y-2">
               <Label>Additional agent description</Label>
               <p className="text-xs text-muted-foreground">
@@ -280,7 +282,7 @@ export default function ConfigureServerPage() {
             </div>
           </section>
         ) : null}
-      </div>
+      </PageFrame>
     </>
   );
 }

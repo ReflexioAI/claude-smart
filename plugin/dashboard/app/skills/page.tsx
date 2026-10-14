@@ -1,5 +1,7 @@
 "use client";
 
+import { PageFrame } from "@/components/common/page-frame";
+
 import { useEffect, useMemo, useState } from "react";
 import Link from "@/components/common/source-link";
 import { AlertTriangle, BookOpen, ChevronRight, Layers3 } from "lucide-react";
@@ -344,7 +346,7 @@ export default function SkillsPage() {
         }
       />
 
-      <div className="p-6 space-y-4">
+      <PageFrame className="space-y-4">
         <PageTabs
           activeId={activeKind}
           onSelect={(id) => switchKind(id as SkillKind)}
@@ -419,7 +421,7 @@ export default function SkillsPage() {
             }
           />
         ) : (
-          <div className="overflow-hidden rounded-lg border border-border bg-card/92 shadow-sm">
+          <div className="overflow-hidden rounded-lg border border-border bg-card">
             {filtered.map((p) => {
               const stat = statsByRule.get(skillStatKey(p));
               return (
@@ -494,7 +496,7 @@ export default function SkillsPage() {
             })}
           </div>
         )}
-      </div>
+      </PageFrame>
     </div>
   );
 }

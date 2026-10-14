@@ -1,3 +1,4 @@
+import { PageFrame } from "@/components/common/page-frame";
 import Link from "@/components/common/source-link";
 import { redirect } from "next/navigation";
 import { AlertTriangle, ArrowLeft } from "lucide-react";
@@ -37,7 +38,7 @@ export default async function RuleResolverPage({
         title="Rule link not found"
         description="This short claude-smart link could not be resolved from the local session registry."
       />
-      <div className="p-6 max-w-2xl mx-auto">
+      <PageFrame>
         <EmptyState
           icon={AlertTriangle}
           title="Rule link not found"
@@ -51,7 +52,7 @@ export default async function RuleResolverPage({
             </Link>
           }
         />
-      </div>
+      </PageFrame>
     </div>
   );
 }

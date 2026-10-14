@@ -1,5 +1,7 @@
 "use client";
 
+import { PageFrame } from "@/components/common/page-frame";
+
 import { useEffect, useMemo, useState } from "react";
 import Link from "@/components/common/source-link";
 import { AlertTriangle, Users, ChevronRight } from "lucide-react";
@@ -137,7 +139,7 @@ export default function PreferencesPage() {
         }
       />
 
-      <div className="p-6">
+      <PageFrame>
         {error && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm mb-4">
             {error}. Is reflexio running on the configured backend URL?
@@ -160,7 +162,7 @@ export default function PreferencesPage() {
             description="Keep using Claude with claude-smart enabled — preferences will appear here automatically as the extractor learns patterns from your interactions."
           />
         ) : (
-          <div className="overflow-hidden rounded-lg border border-border bg-card/92 shadow-sm">
+          <div className="overflow-hidden rounded-lg border border-border bg-card">
             {filtered.map((p) => {
               const stat = statsByProfile.get(profileStatKey(p));
               return (
@@ -218,7 +220,7 @@ export default function PreferencesPage() {
             })}
           </div>
         )}
-      </div>
+      </PageFrame>
     </div>
   );
 }

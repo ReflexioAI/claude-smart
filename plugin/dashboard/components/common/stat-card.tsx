@@ -17,15 +17,15 @@ export function StatCard({
   return (
     <div
       className={cn(
-        "rounded-lg border border-border bg-card/92 px-5 py-4 flex items-start justify-between gap-4 shadow-sm",
+        "min-w-0 px-5 py-5 flex items-start justify-between gap-3",
         className,
       )}
     >
       <div className="min-w-0">
-        <div className="text-xs uppercase text-muted-foreground font-semibold">
+        <div className="text-sm text-muted-foreground">
           {label}
         </div>
-        <div className="mt-2 text-3xl font-semibold tabular-nums text-foreground">
+        <div className="mt-2 text-[1.75rem] leading-tight tracking-tight font-semibold tabular-nums text-foreground">
           {value}
         </div>
         {hint && (
@@ -33,9 +33,7 @@ export function StatCard({
         )}
       </div>
       {Icon && (
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-primary/15 bg-primary/10 text-primary">
-          <Icon className="h-4 w-4" />
-        </div>
+        <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
       )}
     </div>
   );

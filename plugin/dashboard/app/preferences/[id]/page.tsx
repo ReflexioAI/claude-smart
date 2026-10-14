@@ -1,5 +1,7 @@
 "use client";
 
+import { PageFrame } from "@/components/common/page-frame";
+
 import { use, useEffect, useMemo, useState } from "react";
 import Link from "@/components/common/source-link";
 import { useRouter } from "next/navigation";
@@ -124,7 +126,7 @@ export default function PreferenceDetailPage({
     return (
       <div className="flex-1 overflow-auto">
         <PageHeader title="Preference not found" />
-        <div className="p-6 max-w-2xl mx-auto">
+        <PageFrame>
           <EmptyState
             icon={AlertTriangle}
             title="Preference not found"
@@ -138,7 +140,7 @@ export default function PreferenceDetailPage({
               </Link>
             }
           />
-        </div>
+        </PageFrame>
       </div>
     );
   }
@@ -192,8 +194,8 @@ export default function PreferenceDetailPage({
         }
       />
 
-      <div className="p-6">
-        <div className="mx-auto max-w-5xl grid gap-6 lg:grid-cols-[1fr_280px]">
+      <PageFrame>
+        <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
           <div className="space-y-6 min-w-0">
             {error && (
               <div className="rounded-lg border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm flex items-start gap-2">
@@ -365,7 +367,7 @@ export default function PreferenceDetailPage({
             </aside>
           )}
         </div>
-      </div>
+      </PageFrame>
     </div>
   );
 }

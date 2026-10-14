@@ -95,6 +95,9 @@ counts for the last 30 days, rather than list limits. Connection failures are
 shown explicitly. Older skill citations without a project/shared identity remain
 visible under Legacy skill usage; exact per-skill counts use identified citations.
 A backend must be configured and reachable to view its data.
+The dashboard follows the managed Reflexio workspace style: neutral light/dark
+surfaces, green accents, flat metric bands, and consistent page spacing. The
+theme switch applies across dashboard, sessions, preferences, skills, and settings.
 Previously configured connections are retained privately when changing modes.
 The dashboard currently trusts local OS users: other accounts on a shared machine
 can access its configured backend connections. Per-user dashboard authentication

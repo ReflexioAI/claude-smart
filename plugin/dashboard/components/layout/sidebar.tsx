@@ -11,20 +11,12 @@ export function Sidebar() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="px-3 py-5">
-        <div className="mb-6 rounded-lg border border-sidebar-border bg-background/55 p-3">
-          <div className="flex items-center gap-2">
-            <div className="h-2.5 w-2.5 rounded-full bg-primary" />
-            <div className="font-semibold text-sm text-sidebar-foreground">
-              Claude-Smart
-            </div>
-          </div>
-          <div className="mt-1 text-[11px] text-muted-foreground">
-            Sessions, preferences, skills, and runtime controls.
-          </div>
+      <div className="px-2 py-5">
+        <div className="px-3 pb-3 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          Workspace
         </div>
 
-        <nav className="space-y-1">
+        <nav className="space-y-0.5" aria-label="Main navigation">
           {navItems.map((item) => {
             const active =
               pathname === item.href || pathname.startsWith(`${item.href}/`);
@@ -33,20 +25,18 @@ export function Sidebar() {
               <Link
                 key={item.href}
                 href={item.href}
+                aria-current={active ? "page" : undefined}
                 className={cn(
-                  "group relative flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors",
+                  "group flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
                   active
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium shadow-sm"
-                    : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+                    : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
                 )}
               >
-                {active && (
-                  <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-primary" />
-                )}
                 <Icon
                   className={cn(
                     "h-4 w-4 shrink-0",
-                    active ? "text-primary" : "text-muted-foreground",
+                    active ? "text-sidebar-accent-foreground" : "text-muted-foreground",
                   )}
                 />
                 <span className="truncate">{item.label}</span>

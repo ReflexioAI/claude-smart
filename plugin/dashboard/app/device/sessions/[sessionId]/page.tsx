@@ -1,5 +1,7 @@
 "use client";
 
+import { PageFrame } from "@/components/common/page-frame";
+
 import { type ReactNode, use, useEffect, useState } from "react";
 import Link from "@/components/common/source-link";
 import { useSettings } from "@/hooks/use-settings";
@@ -116,7 +118,7 @@ export default function InteractionDetailPage({
         }
       />
 
-      <div className="p-6 max-w-3xl mx-auto">
+      <PageFrame>
         {error && (
           <EmptyState
             icon={AlertTriangle}
@@ -244,7 +246,7 @@ export default function InteractionDetailPage({
             </div>
           </div>
         )}
-      </div>
+      </PageFrame>
     </div>
   );
 }

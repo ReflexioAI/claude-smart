@@ -1,5 +1,7 @@
 "use client";
 
+import { PageFrame } from "@/components/common/page-frame";
+
 import { useEffect, useState } from "react";
 import { Save, CheckCircle2 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
@@ -14,7 +16,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Separator } from "@/components/ui/separator";
 import { SETTINGS_CHANGED_EVENT } from "@/hooks/use-settings";
 import type {
   ClaudeCodeHookConfig,
@@ -135,7 +136,7 @@ export default function ConfigureEnvPage() {
         }
       />
 
-      <div className="p-6 max-w-3xl mx-auto space-y-5">
+      <PageFrame className="space-y-5">
         {error && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 text-destructive px-4 py-3 text-sm">
             {error}
@@ -148,7 +149,7 @@ export default function ConfigureEnvPage() {
           </div>
         )}
 
-        <section className="space-y-4 rounded-lg border border-border bg-card/92 p-5 shadow-sm">
+        <section className="space-y-4 border-t border-border py-5">
           <div>
             <h2 className="text-sm font-semibold">claude-smart environment</h2>
             <p className="text-xs text-muted-foreground">
@@ -298,9 +299,7 @@ export default function ConfigureEnvPage() {
           ) : null}
         </section>
 
-        <Separator />
-
-        <section className="space-y-4 rounded-lg border border-border bg-card/92 p-5 shadow-sm">
+        <section className="space-y-4 border-t border-border py-5">
           <div>
             <h2 className="text-sm font-semibold">
               Claude Code hook environment
@@ -383,7 +382,7 @@ export default function ConfigureEnvPage() {
             </div>
           ) : null}
         </section>
-      </div>
+      </PageFrame>
     </>
   );
 }

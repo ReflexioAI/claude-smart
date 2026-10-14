@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import { Server, SlidersHorizontal } from "lucide-react";
 import { PageTabs } from "@/components/common/page-tabs";
+import { PageFrame } from "@/components/common/page-frame";
 
 const tabs = [
   {
@@ -30,16 +31,18 @@ export default function ConfigureLayout({
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="border-b border-border bg-background/72 px-6 py-4 backdrop-blur">
-        <PageTabs
-          items={tabs}
-          activeId={
-            tabs.find(
-              (tab) =>
-                pathname === tab.href || pathname.startsWith(`${tab.href}/`),
-            )?.id ?? "env"
-          }
-        />
+      <div className="border-b border-border bg-background">
+        <PageFrame className="py-3">
+          <PageTabs
+            items={tabs}
+            activeId={
+              tabs.find(
+                (tab) =>
+                  pathname === tab.href || pathname.startsWith(`${tab.href}/`),
+              )?.id ?? "env"
+            }
+          />
+        </PageFrame>
       </div>
       <div className="flex-1 overflow-auto">{children}</div>
     </div>

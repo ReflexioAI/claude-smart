@@ -5,7 +5,7 @@ import Image from "next/image";
 import { ExternalLink, Menu, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useSettings } from "@/hooks/use-settings";
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Sidebar } from "./sidebar";
 
 export function TopBar() {
@@ -20,14 +20,15 @@ export function TopBar() {
   }
 
   return (
-    <header className="min-h-16 py-3 border-b border-border bg-card/92 backdrop-blur supports-[backdrop-filter]:bg-card/78 flex items-center px-4 gap-3 shrink-0 shadow-[0_1px_0_oklch(1_0_0/0.42)_inset] dark:shadow-none">
+    <header className="min-h-14 py-2 border-b border-border bg-background flex items-center px-4 gap-3 shrink-0">
       <Sheet>
         <SheetTrigger
-          render={<Button variant="ghost" size="icon" className="lg:hidden" />}
+          render={<Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation" />}
         >
           <Menu className="h-4 w-4" />
         </SheetTrigger>
         <SheetContent side="left" className="w-72 p-0">
+          <SheetTitle className="sr-only">Navigation</SheetTitle>
           <Sidebar />
         </SheetContent>
       </Sheet>
@@ -51,7 +52,7 @@ export function TopBar() {
           <span className="hidden md:inline">Data source</span>
           <select
             aria-label="Data source"
-            className="h-9 min-w-0 max-w-full rounded-md border border-input bg-background px-2"
+            className="h-8 min-w-0 max-w-full rounded-md border border-input bg-background px-2"
             value={source || "local"}
             onChange={(event) =>
               changeSource(event.target.value as "local" | "managed")

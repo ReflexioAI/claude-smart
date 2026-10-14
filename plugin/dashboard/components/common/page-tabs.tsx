@@ -29,7 +29,7 @@ export function PageTabs({
   return (
     <div
       className={cn(
-        "grid gap-2 sm:grid-cols-[repeat(auto-fit,minmax(220px,1fr))]",
+        "flex flex-wrap gap-x-6 gap-y-2",
         className,
       )}
       role="tablist"
@@ -75,11 +75,11 @@ export function PageTabs({
         );
 
         const className = cn(
-          "relative rounded-lg border px-4 py-3 text-left transition-colors",
-          "hover:border-primary/35 hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+          "relative border-b-2 px-0 py-3 text-left transition-colors",
+          "hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
           active
-            ? "border-primary/35 bg-card text-foreground shadow-sm before:absolute before:inset-x-4 before:top-0 before:h-0.5 before:rounded-full before:bg-primary"
-            : "border-border bg-background/70 text-muted-foreground",
+            ? "border-primary text-foreground"
+            : "border-transparent text-muted-foreground",
         );
 
         if (item.href) {

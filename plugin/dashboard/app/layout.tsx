@@ -29,14 +29,14 @@ export default function RootLayout({
           <StallBanner />
           <TopBar />
           <div className="flex flex-1 min-h-0">
-            <aside className="hidden lg:block w-64 border-r border-sidebar-border bg-sidebar/95 shrink-0">
+            <aside className="hidden lg:block w-56 border-r border-sidebar-border bg-sidebar shrink-0">
               <Sidebar />
             </aside>
-            <main className="flex-1 min-w-0 flex flex-col bg-background/88">
+            <main className="flex-1 min-w-0 flex flex-col bg-background">
               {children}
             </main>
           </div>
-          <footer className="shrink-0 border-t border-border bg-card/60 px-4 py-2 text-xs text-muted-foreground flex items-center justify-center gap-1.5">
+          <footer className="shrink-0 border-t border-border bg-background px-4 py-2 text-xs text-muted-foreground flex items-center justify-center gap-1.5">
             <span>Powered by</span>
             <a
               href="https://github.com/ReflexioAI/reflexio"

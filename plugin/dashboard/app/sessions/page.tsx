@@ -1,4 +1,6 @@
 "use client";
+
+import { PageFrame } from "@/components/common/page-frame";
 import { useEffect, useState } from "react";
 import Link from "@/components/common/source-link";
 import { PageHeader } from "@/components/common/page-header";
@@ -51,7 +53,7 @@ export default function SessionsPage() {
         title="Sessions · published requests"
         description={`Requests stored in ${source === "managed" ? "managed" : "local"} Reflexio. Device session buffers are listed separately.`}
       />
-      <div className="p-6 space-y-4">
+      <PageFrame className="space-y-4">
         {error && (
           <p role="alert" className="text-destructive">
             Unable to load requests: {error}
@@ -84,7 +86,7 @@ export default function SessionsPage() {
         <Link href="/device/sessions" className="block text-sm text-primary">
           View this device’s session buffers
         </Link>
-      </div>
+      </PageFrame>
     </div>
   );
 }

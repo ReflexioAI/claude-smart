@@ -1,4 +1,6 @@
 "use client";
+
+import { PageFrame } from "@/components/common/page-frame";
 import { use, useEffect, useState } from "react";
 import Link from "@/components/common/source-link";
 import { PageHeader } from "@/components/common/page-header";
@@ -56,7 +58,7 @@ export default function TranscriptPage({
         description={sessionId}
         actions={<Link href="/sessions">Back to requests</Link>}
       />
-      <div className="p-6 space-y-4">
+      <PageFrame className="space-y-4">
         {error && (
           <p role="alert" className="text-destructive">
             {error}
@@ -80,7 +82,7 @@ export default function TranscriptPage({
             Load more interactions
           </Button>
         )}
-      </div>
+      </PageFrame>
     </div>
   );
 }

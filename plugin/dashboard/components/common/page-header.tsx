@@ -12,14 +12,14 @@ export function PageHeader({
   className?: string;
 }) {
   return (
-    <div
+    <header
       className={cn(
-        "border-b border-border bg-background/72 px-6 py-6 flex flex-wrap items-start justify-between gap-4 backdrop-blur",
+        "page-frame pt-7 pb-5 lg:pt-9 flex flex-wrap items-start justify-between gap-4",
         className,
       )}
     >
       <div className="min-w-[min(18rem,100%)] flex-1">
-        <h1 className="text-2xl font-semibold">{title}</h1>
+        <h1 className="text-[1.65rem] leading-tight tracking-[-0.02em] font-semibold">{title}</h1>
         {description && (
           <div className="text-sm text-muted-foreground mt-1 max-w-3xl">
             {description}
@@ -31,6 +31,6 @@ export function PageHeader({
           {actions}
         </div>
       )}
-    </div>
+    </header>
   );
 }
