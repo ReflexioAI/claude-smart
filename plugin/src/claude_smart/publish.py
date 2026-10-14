@@ -95,8 +95,9 @@ def publish_unpublished(
             project name. ``agent_version`` is hardcoded to ``"claude-code"``
             in the adapter so skills roll up globally per agent rather than
             per project.
-        force_extraction (bool): Whether to ask reflexio to run extraction
-            synchronously instead of queuing for the next sweep.
+        force_extraction (bool): Whether an explicit manual operation may
+            bypass extraction size and usefulness gates. Publication remains
+            asynchronous; automatic hooks leave this False.
         override_learning_stall (bool): Whether to bypass a recorded
             provider auth/billing stall. Automatic hooks must leave this
             False; explicit manual retries set it True.

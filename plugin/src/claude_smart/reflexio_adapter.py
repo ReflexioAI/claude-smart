@@ -114,6 +114,39 @@ class Adapter:
     # Writes
     # -----------------------------------------------------------------
 
+    def finalize_session(self, *, session_id: str, project_id: str) -> bool:
+        """Accept a judged completion hint, including an already-published tail.
+
+        Older backends may lack the endpoint. Never republish saved messages or
+        substitute force extraction; the hook must remain safe and nonblocking.
+        """
+        client = self._get_client()
+        if client is None:
+            return False
+        try:
+            response = client._make_request(
+                "POST",
+                "/api/finalize_session",
+                json={"user_id": project_id, "session_id": session_id},
+            )
+            if isinstance(response, dict) and response.get("success") is True:
+                return True
+            _LOGGER.warning(
+                "Session completion hint was not accepted; saved messages remain stored."
+            )
+        except Exception as exc:  # noqa: BLE001 — hooks must survive older/unavailable servers.
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in {404, 405, 501}:
+                _LOGGER.warning(
+                    "Backend does not support session finalization; update Reflexio to enable judged short-session learning. Saved messages remain stored."
+                )
+            else:
+                _LOGGER.warning(
+                    "Session completion hint failed (%s); saved messages remain stored.",
+                    type(exc).__name__,
+                )
+        return False
+
     def publish(
         self,
         *,

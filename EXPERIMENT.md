@@ -97,7 +97,7 @@ Each scenario has:
 
 Nested `claude -p` does **not** fire plugin hooks, so a CLI-replay approach gives both systems zero visibility. The harness pivots to each plugin's real programmatic ingestion:
 
-- **claude-smart** → its production publish path with `force_extraction=True`. This is the *same* call path the `Stop` hook uses in production — non-blocking, force-extract the current interactions.
+- **claude-smart** → its production publish path with `force_extraction=True`. This uses the production publish transport, with a benchmark-specific force override. Automatic Stop and SessionEnd publication retain the normal usefulness judge.
 - **claude-mem** → its `worker-service.cjs hook claude-code session-init` followed by `hook claude-code observation` subcommands. These are the CLI entry points its real hooks call. A synthetic JSONL transcript is written first so the worker's extractor sees last-user / last-assistant context.
 
 Both sides trigger their *real* LLM extraction pipeline on identical inputs.

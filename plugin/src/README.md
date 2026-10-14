@@ -22,7 +22,7 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 | `pre_tool.py` | PreToolUse (Edit/Write/Bash/NotebookEdit) | Inject project-specific context before tool execution. |
 | `post_tool.py` | PostToolUse | Buffer the tool invocation (name, input, response, duration) into session state. |
 | `stop.py` | Stop | Publish unpublished interactions (force extraction if configured). |
-| `session_end.py` | SessionEnd | Final publish + aggregation; optional backend/dashboard shutdown. |
+| `session_end.py` | SessionEnd | Publish unsaved turns, then finalize the saved prefix through the judge; optional backend/dashboard shutdown. |
 
 ## Supporting Modules
 

@@ -12,6 +12,16 @@ from claude_smart import state
 from claude_smart.events import post_tool, session_start, stop, user_prompt
 
 
+@pytest.fixture(autouse=True)
+def no_live_finalization(monkeypatch):
+    from claude_smart.reflexio_adapter import Adapter
+    from unittest.mock import Mock
+
+    finalize = Mock(return_value=True)
+    monkeypatch.setattr(Adapter, "finalize_session", finalize)
+    return finalize
+
+
 @pytest.fixture
 def isolated_runtime_host(monkeypatch):
     """Keep host attribution mutations local to tests that exercise them."""
@@ -1939,17 +1949,13 @@ def test_session_end_synthesises_anchor_when_buffer_ends_with_orphan_tools(
     assert synth[0]["role"] == "Assistant"
     assert synth[0]["content"] == "final assistant text"
     assert published_kwargs["session_id"] == "s_orphan"
-    # SessionEnd publishes synchronously so the snapshot read after the
-    # hook returns sees any just-extracted rows.
-    assert published_kwargs["force_extraction"] is True
+    # SessionEnd preserves the usefulness judge; completion is asynchronous.
+    assert published_kwargs["force_extraction"] is False
     assert published_kwargs.get("override_learning_stall") is None
 
 
-def test_session_end_uses_force_extraction_for_final_flush(
-    session_dir, monkeypatch
-) -> None:
-    """Every SessionEnd publish must set force_extraction=True so the
-    extractor finishes before snapshot_playbooks() reads."""
+def test_session_end_retains_judge_for_final_flush(session_dir, monkeypatch) -> None:
+    """Automatic completion must not bypass the usefulness judge."""
     from claude_smart import state
     from claude_smart.events import session_end
 
@@ -1961,7 +1967,7 @@ def test_session_end_uses_force_extraction_for_final_flush(
         lambda **kwargs: published_kwargs.update(kwargs) or ("ok", 1),
     )
     session_end.handle({"session_id": "s_force", "cwd": "/tmp/p"})
-    assert published_kwargs["force_extraction"] is True
+    assert published_kwargs["force_extraction"] is False
     assert published_kwargs.get("override_learning_stall") is None
     # And skip_aggregation stays False — the rollup still happens.
     assert published_kwargs["skip_aggregation"] is False
@@ -2147,3 +2153,29 @@ def test_session_end_synthetic_anchor_stamps_host(
     ]
     assert len(synth) == 1
     assert synth[0]["host"] == runtime.HOST_CODEX
+
+
+@pytest.mark.parametrize("status", ["nothing", "ok", "recovered", "failed"])
+def test_session_end_finalizes_already_saved_messages(
+    session_dir, monkeypatch, no_live_finalization, status
+):
+    from claude_smart.events import session_end
+
+    monkeypatch.setattr(
+        "claude_smart.publish.publish_unpublished", lambda **_: (status, 0)
+    )
+    assert session_end.handle({"session_id": "saved", "cwd": "/tmp/project"}) == (
+        status,
+        0,
+    )
+    assert no_live_finalization.call_count == (0 if status == "failed" else 1)
+
+
+def test_read_only_session_end_does_not_finalize(
+    session_dir, monkeypatch, no_live_finalization
+):
+    from claude_smart.events import session_end
+
+    monkeypatch.setenv("CLAUDE_SMART_READ_ONLY", "1")
+    session_end.handle({"session_id": "saved", "cwd": "/tmp/project"})
+    no_live_finalization.assert_not_called()

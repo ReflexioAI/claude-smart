@@ -1759,3 +1759,39 @@ def test_legacy_sdk_queued_publish_without_stable_read_path_fails_closed():
     )
     assert not result
     assert result.error_type == "StorageNotConfirmed"
+
+
+@pytest.mark.parametrize("status", [404, 405, 501, 503])
+def test_finalize_old_or_unavailable_backend_never_republishes(
+    monkeypatch, caplog, status
+):
+    from unittest.mock import Mock
+    import requests
+    from claude_smart.reflexio_adapter import Adapter
+
+    response = requests.Response()
+    response.status_code = status
+    client = Mock()
+    client._make_request.side_effect = requests.HTTPError(response=response)
+    adapter = Adapter()
+    monkeypatch.setattr(adapter, "_get_client", lambda: client)
+    assert not adapter.finalize_session(session_id="s", project_id="u")
+    client._make_request.assert_called_once_with(
+        "POST", "/api/finalize_session", json={"user_id": "u", "session_id": "s"}
+    )
+    assert (
+        "Saved messages remain stored" in caplog.text
+        or "saved messages remain stored" in caplog.text
+    )
+
+
+def test_finalize_acceptance_does_not_publish(monkeypatch):
+    from unittest.mock import Mock
+    from claude_smart.reflexio_adapter import Adapter
+
+    client = Mock()
+    client._make_request.return_value = {"success": True, "accepted": False}
+    adapter = Adapter()
+    monkeypatch.setattr(adapter, "_get_client", lambda: client)
+    assert adapter.finalize_session(session_id="s", project_id="u")
+    client.publish_interaction.assert_not_called()
