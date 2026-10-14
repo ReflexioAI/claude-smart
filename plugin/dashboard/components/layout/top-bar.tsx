@@ -71,7 +71,7 @@ export function TopBar() {
             title={reflexioUrl}
           >
             {endpoint
-              ? `Connected to ${endpoint.host.replace(/^www\./, "")}`
+              ? `Backend: ${endpoint.host.replace(/^www\./, "")}`
               : "Connection not configured"}
           </span>
           {source === "managed" && sources?.managed.configured && endpoint && (
