@@ -73,7 +73,8 @@ test("a cloned Python environment runs from its new prefix", {skip:process.platf
   assert.equal(made.status, 0, made.stderr);
   reusePreparedRuntime(path.join(root, "old"), path.join(root, "new"));
   const target = path.join(root, "new", ".venv");
-  const checked = spawnSync(path.join(target,"bin","python"), ["-c", "import os,sys; print(os.path.realpath(sys.prefix))"], {encoding:"utf8"});
+  fs.rmSync(previous, {recursive:true, force:true});
+  const checked = spawnSync(path.join(target,"bin","python3"), ["-c", "import os,sys; print(os.path.realpath(sys.prefix))"], {encoding:"utf8"});
   assert.equal(checked.status, 0, checked.stderr);
   assert.equal(checked.stdout.trim(), fs.realpathSync(target));
 });
@@ -94,4 +95,17 @@ test("Next-generated root files do not prevent reuse from a packaged reinstall",
   cache.record(old);
   reusePreparedRuntime(path.join(root, "old"), path.join(root, "new"));
   assert.ok(cache.reusable(path.join(root, "new", "dashboard")));
+});
+
+test("relative executables survive removal of the rollback source", {skip:process.platform === "win32"}, t => {
+  const root = fixture(t), previous = path.join(root, "old");
+  fs.mkdirSync(path.join(previous, "dashboard", "node_modules", ".bin"));
+  fs.symlinkSync("../next/dist/bin/next", path.join(previous, "dashboard", "node_modules", ".bin", "next"));
+  fs.mkdirSync(path.join(previous, ".venv", "bin"), {recursive:true});
+  fs.writeFileSync(path.join(previous, ".venv", "bin", "python"), "interpreter");
+  fs.symlinkSync("python", path.join(previous, ".venv", "bin", "python3"));
+  reusePreparedRuntime(previous, path.join(root, "new"));
+  fs.rmSync(previous, {recursive:true, force:true});
+  assert.equal(fs.readFileSync(path.join(root, "new", "dashboard", "node_modules", ".bin", "next"), "utf8"), "next");
+  assert.equal(fs.readFileSync(path.join(root, "new", ".venv", "bin", "python3"), "utf8"), "interpreter");
 });

@@ -1417,6 +1417,7 @@ function reusePreparedRuntime(previous, current, externalVenv = false) {
   if (!previous || !existsSync(previous)) return;
   const clone = (from, to) => cpSync(from, to, {
     recursive: true, mode: constants.COPYFILE_FICLONE, preserveTimestamps: true,
+    verbatimSymlinks: true,
   });
   const previousVenv = join(previous, ".venv");
   if (!isWindows() && existsSync(previousVenv)) {
