@@ -750,7 +750,9 @@ revalidates them; console-script paths are relocated in the clone. The previous
 install is retained for rollback. Windows uses a fresh environment. Dashboard
 builds are reusable only when source files, lockfiles, platform/architecture, Node
 version and `NEXT_PUBLIC_*` build inputs match, and build/dependency artifacts
-exist. Compatible artifacts are copied independently rather than moved or shared
+exist. The content/runtime cache check runs before install-time file freshness
+checks, so extracting a fresh package does not force `npm ci` for unchanged
+sources. Compatible artifacts are copied independently rather than moved or shared
 writably with the rollback package. Cache markers contain hashes, not environment
 values. Runtime reuse tests run on native Windows and macOS CI.
 

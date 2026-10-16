@@ -141,8 +141,16 @@ cd "$DASHBOARD_DIR"
 # package.json and package-lock.json. Avoids re-downloading the dep tree
 # on every SessionStart while still picking up version bumps when the
 # plugin updates.
+# A matching content/runtime key is stronger than mtimes, which change when
+# a fresh package is extracted beside cloned dependencies.
+cache_valid=0
+if [ -f "$HERE/dashboard-cache.js" ] && command -v node >/dev/null 2>&1; then
+  if node "$HERE/dashboard-cache.js" check "$DASHBOARD_DIR"; then cache_valid=1; fi
+fi
 needs_install=1
-if [ -d node_modules ] && [ node_modules -nt package.json ]; then
+if [ "$cache_valid" = "1" ]; then
+  needs_install=0
+elif [ -d node_modules ] && [ node_modules -nt package.json ]; then
   if [ ! -f package-lock.json ] || [ node_modules -nt package-lock.json ]; then
     needs_install=0
   fi
@@ -176,7 +184,9 @@ if [ "$needs_install" = "1" ]; then
 fi
 
 needs_build=1
-if [ -f "$HERE/dashboard-cache.js" ] && command -v node >/dev/null 2>&1; then
+if [ "$cache_valid" = "1" ]; then
+  needs_build=0
+elif [ -f "$HERE/dashboard-cache.js" ] && command -v node >/dev/null 2>&1; then
   if node "$HERE/dashboard-cache.js" check "$DASHBOARD_DIR"; then needs_build=0; fi
 elif [ -d .next ] && [ .next -nt package.json ]; then
   needs_build=0

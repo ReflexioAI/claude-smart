@@ -151,3 +151,55 @@ async function compile() {
     )
     assert result.returncode == 0, result.stderr
     assert (tmp_path / ".gitignore").read_text() == ignore_rule + "\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX dashboard build entrypoint")
+@pytest.mark.parametrize("changed_source", [False, True])
+def test_dashboard_content_cache_precedes_fresh_package_mtimes(
+    tmp_path: Path, changed_source: bool
+) -> None:
+    scripts = tmp_path / "plugin" / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("dashboard-build.sh", "_lib.sh", "dashboard-cache.js"):
+        shutil.copy2(REPO_ROOT / "plugin" / "scripts" / name, scripts / name)
+    dashboard = tmp_path / "plugin" / "dashboard"
+    next_bin = dashboard / "node_modules" / "next" / "dist" / "bin" / "next"
+    next_bin.parent.mkdir(parents=True)
+    next_bin.write_text("next")
+    (dashboard / ".next").mkdir()
+    for name in ("BUILD_ID", "required-server-files.json"):
+        (dashboard / ".next" / name).write_text("{}")
+    package = dashboard / "package.json"
+    package.write_text("{}")
+    (dashboard / "package-lock.json").write_text("{}")
+    subprocess.run(
+        ["node", str(scripts / "dashboard-cache.js"), "record", str(dashboard)],
+        check=True,
+    )
+    # Package extraction is newer than the cloned dependency directory.
+    os.utime(dashboard / "node_modules", (1, 1))
+    if changed_source:
+        (dashboard / "page.tsx").write_text("changed")
+    npm_dir = tmp_path / ".claude-smart" / "node" / "current" / "bin"
+    npm_dir.mkdir(parents=True)
+    npm = npm_dir / "npm"
+    npm.write_text(
+        '#!/bin/sh\n[ "$1" = --version ] && { echo 10; exit 0; }\n'
+        'echo "$*" >> "$HOME/npm-calls"\nexit 0\n'
+    )
+    npm.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_SMART_")}
+    env.update({"HOME": str(tmp_path), "SHELL": "/bin/sh"})
+    subprocess.run(
+        ["/bin/bash", str(scripts / "dashboard-build.sh")],
+        env=env,
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    calls = tmp_path / "npm-calls"
+    if changed_source:
+        assert "ci --ignore-scripts" in calls.read_text()
+        assert "run build" in calls.read_text()
+    else:
+        assert not calls.exists()
