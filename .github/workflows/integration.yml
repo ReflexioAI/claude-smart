@@ -92,7 +92,13 @@ jobs:
       - uses: astral-sh/setup-uv@v3
 
       - name: Check guided model reporting
-        run: node --test tests/install-guide.test.js
+        run: node --test tests/install-guide.test.js tests/runtime-reuse.test.js
+
+      - name: Check native executable fallbacks
+        shell: bash
+        env:
+          PYTHONPATH: plugin/src
+        run: uv run --no-project --with pytest --with 'filelock>=3.20.3' python -m pytest tests/test_cli_restart.py -k 'resolve_bash or resolve_npm or windows' -q -o addopts=
 
       - name: Check Python dependency lock
         shell: bash

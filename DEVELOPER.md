@@ -742,3 +742,19 @@ Claude Code can register different plugin versions in user and project scopes. S
 Use the host's activation mechanism: [Claude Code `/reload-plugins`](https://code.claude.com/docs/en/plugins/loading) refreshes the plugin in an existing session; [Codex plugins](https://learn.chatgpt.com/docs/plugins) load in a new session. Changed Codex hook definitions require the host's current trust hash; the installer registers its own hooks and reports any failure with `/hooks` review instructions. There is no custom background switch of hooks or prompts inside a conversation.
 
 Backend and dashboard services refresh separately from host plugin activation. Successful Claude Code updates retain older external Python environments because cached hook roots may still reference them. A failed update removes only its new environment and restores the previous package; explicit uninstall removes retained Claude environments. Repeated updates can therefore consume additional disk space until uninstall.
+
+### Reinstall artifact reuse
+
+Stable-package reinstalls clone prepared POSIX virtualenvs before `uv sync`
+revalidates them; console-script paths are relocated in the clone. The previous
+install is retained for rollback. Windows uses a fresh environment. Dashboard
+builds are reusable only when source files, lockfiles, platform/architecture, Node
+version and `NEXT_PUBLIC_*` build inputs match, and build/dependency artifacts
+exist. Compatible artifacts are copied independently rather than moved or shared
+writably with the rollback package. Cache markers contain hashes, not environment
+values. Runtime reuse tests run on native Windows and macOS CI.
+
+Retry tests replace the Stop handler's local time reference, not the global
+`time.sleep` function. Persistence/file-lock sleeps must not be counted as
+transcript retries. Native executable fallback tests run on the Windows and
+macOS dependency-platform jobs.

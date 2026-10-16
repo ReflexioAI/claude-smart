@@ -176,7 +176,9 @@ if [ "$needs_install" = "1" ]; then
 fi
 
 needs_build=1
-if [ -d .next ] && [ .next -nt package.json ]; then
+if [ -f "$HERE/dashboard-cache.js" ] && command -v node >/dev/null 2>&1; then
+  if node "$HERE/dashboard-cache.js" check "$DASHBOARD_DIR"; then needs_build=0; fi
+elif [ -d .next ] && [ .next -nt package.json ]; then
   needs_build=0
 fi
 if [ "$needs_build" = "1" ]; then
@@ -187,6 +189,9 @@ if [ "$needs_build" = "1" ]; then
     log "dashboard build: $reason"
     claude_smart_write_dashboard_unavailable "$reason"
     exit 1
+  fi
+  if [ -f "$HERE/dashboard-cache.js" ] && [ -f .next/BUILD_ID ] && command -v node >/dev/null 2>&1; then
+    node "$HERE/dashboard-cache.js" record "$DASHBOARD_DIR" || true
   fi
   claude_smart_clear_dashboard_unavailable
   log "dashboard build: complete"

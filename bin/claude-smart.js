@@ -1411,6 +1411,54 @@ function replaceLocalPluginPackage(stagedPackage, packageRoot) {
   });
 }
 
+// Clone prepared artifacts rather than moving them: the old install and its
+// external Claude Code venv must remain usable if preparation rolls back.
+function reusePreparedRuntime(previous, current, externalVenv = false) {
+  if (!previous || !existsSync(previous)) return;
+  const clone = (from, to) => cpSync(from, to, {
+    recursive: true, mode: constants.COPYFILE_FICLONE, preserveTimestamps: true,
+  });
+  const previousVenv = join(previous, ".venv");
+  if (!isWindows() && existsSync(previousVenv)) {
+    let target = join(current, ".venv");
+    if (externalVenv) {
+      mkdirSync(CLAUDE_SMART_VENVS_DIR, { recursive: true });
+      target = join(CLAUDE_SMART_VENVS_DIR, `claude-code-${Date.now()}-${process.pid}`);
+    }
+    try {
+      const previousRoot = realpathSync(previousVenv);
+      clone(previousRoot, target);
+      // Console scripts and activation files contain the venv's absolute path.
+      // Rewrite only regular text files in the clone, never interpreter symlinks.
+      for (const name of readdirSync(join(target, "bin"))) {
+        const file = join(target, "bin", name);
+        if (!lstatSync(file).isFile()) continue;
+        const bytes = readFileSync(file);
+        if (!bytes.includes(0)) {
+          const text = bytes.toString("utf8");
+          const relocated = text.replaceAll(previousRoot, target).replaceAll(previousVenv, target);
+          if (relocated !== text) writeFileSync(file, relocated);
+        }
+      }
+      if (externalVenv) symlinkSync(target, join(current, ".venv"), isWindows() ? "junction" : "dir");
+    } catch {
+      rmSync(target, { recursive: true, force: true });
+    }
+  }
+  const oldDashboard = join(previous, "dashboard");
+  const dashboard = join(current, "dashboard");
+  const helper = join(PACKAGE_ROOT, "plugin", "scripts", "dashboard-cache.js");
+  if (!existsSync(helper)) return;
+  const cache = require(helper);
+  if (existsSync(dashboard) && cache.reusable(oldDashboard) && cache.buildKey(oldDashboard) === cache.buildKey(dashboard)) {
+    try {
+      for (const name of ["node_modules", ".next"]) clone(join(oldDashboard, name), join(dashboard, name));
+    } catch {
+      for (const name of ["node_modules", ".next"]) rmSync(join(dashboard, name), { recursive: true, force: true });
+    }
+  }
+}
+
 // Copy this npm package to a stable per-host dir. The npx cache this runs from
 // may be pruned by npm between invocations, so no host may load from it.
 function installLocalPluginPackage(packageRoot, label) {
@@ -1433,6 +1481,9 @@ function installLocalPluginPackage(packageRoot, label) {
     verifyLocalPluginPackage(stagedPackage, label);
     replaceLocalPluginPackage(stagedPackage, packageRoot);
     replaced = true;
+    const previous = pendingPreviousPackages.get(packageRoot)?.backupPackage;
+    reusePreparedRuntime(previous ? join(previous, "plugin") : null,
+      join(packageRoot, "plugin"), packageRoot === CLAUDE_CODE_LOCAL_PACKAGE_DIR);
     verifyLocalPluginPackage(packageRoot, label);
     return packageRoot;
   } catch (err) {
@@ -2572,10 +2623,18 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   const dashboardDir = join(pluginRoot, "dashboard");
   if (existsSync(dashboardDir)) {
     process.stdout.write("[phase] Preparing dashboard dependencies and build…\n");
+    const helper = join(PACKAGE_ROOT, "plugin", "scripts", "dashboard-cache.js");
+    const cache = existsSync(helper) ? require(helper) : null;
+    const nodeVersion = spawnSync(nodeRuntime.node, ["--version"], { encoding: "utf8" }).stdout?.trim();
+    if (nodeVersion && cache?.reusable(dashboardDir, nodeVersion)) {
+      process.stdout.write("Dashboard build inputs unchanged; reusing prepared build.\n");
+      return;
+    }
     let code = await runChecked(nodeRuntime.npm, ["ci"], { cwd: dashboardDir, env });
     if (code !== 0) throw new Error(`npm ci failed in ${dashboardDir}`);
     code = await runChecked(nodeRuntime.npm, ["run", "build"], { cwd: dashboardDir, env });
     if (code !== 0) throw new Error(`npm run build failed in ${dashboardDir}`);
+    if (cache && nodeVersion && existsSync(join(dashboardDir, ".next", "BUILD_ID"))) cache.record(dashboardDir, nodeVersion);
   }
 }
 
@@ -3022,15 +3081,22 @@ function installCodexPluginCache(pluginRoot) {
     throw new Error(`missing version in ${join(pluginRoot, ".codex-plugin", "plugin.json")}`);
   }
   const cacheDir = join(CODEX_PLUGIN_CACHE_DIR, version);
-  rmSync(cacheDir, { recursive: true, force: true });
-  mkdirSync(dirname(cacheDir), { recursive: true });
-  cpSync(pluginRoot, cacheDir, {
-    recursive: true,
-    force: true,
-    verbatimSymlinks: false,
-  });
-  setCodexPluginEnabled();
-  return cacheDir;
+  holdPackageInstallLock(cacheDir, "Codex");
+  const staged = uniquePackagePath(cacheDir, ".claude-smart-copy");
+  try {
+    cpSync(pluginRoot, staged, {
+      recursive: true, force: true, verbatimSymlinks: false, filter: shouldCopyPath,
+    });
+    replaceLocalPluginPackage(staged, cacheDir);
+    reusePreparedRuntime(pendingPreviousPackages.get(cacheDir)?.backupPackage, cacheDir);
+    setCodexPluginEnabled();
+    return cacheDir;
+  } catch (err) {
+    if (!pendingPreviousPackages.has(cacheDir)) releasePackageInstallLock(cacheDir);
+    throw err;
+  } finally {
+    rmSync(staged, { recursive: true, force: true });
+  }
 }
 
 function findCodexPluginRoot() {
@@ -3350,8 +3416,8 @@ async function runInstallCodex(args) {
     if (readOnly) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
-    // The Codex runtime is installed: its host and marker state stand.
-    commitInstallState();
+    // Preparation succeeded; discard the rollback cache only now.
+    commitLocalPluginPackage(cacheDir);
     await startAndReportServices(cacheDir, HOST_CODEX, setup);
   } catch (err) {
     process.stderr.write(
@@ -3677,6 +3743,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  reusePreparedRuntime,
   learningProviderVersion,
   assertSupportedRuntimePlatform,
   bootstrapPluginRuntime,
