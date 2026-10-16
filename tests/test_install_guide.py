@@ -645,3 +645,82 @@ def test_actual_codex_node_hook_uses_selected_learning_provider(
     )
     assert (tmp_path / "selected-cli").read_text().strip() == expected
     assert (tmp_path / "hook-identity").read_text().strip() == "codex"
+
+
+@pytest.mark.parametrize("command", ["install", "update", "setup"])
+def test_learning_summary_and_sonnet_default_on_actual_guide(
+    tmp_path: Path, command: str
+) -> None:
+    installer, env = fake_guide(tmp_path)
+    claude = tmp_path / "fake-bin" / "claude"
+    original = claude.read_text()
+    claude.write_text(
+        original.replace(
+            "#!/bin/sh\n",
+            '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "2.0.0 (Claude Code)"; exit 0; fi\n',
+            1,
+        )
+    )
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            command,
+            "--host",
+            "claude-code",
+            "--backend",
+            "local",
+            "--provider",
+            "claude-code",
+            "--yes",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    summary = result.stdout.split("Installation complete", 1)[1]
+    assert "Claude-smart version: 0.3.6" in summary
+    assert "Background learning: Claude Code CLI" in summary
+    assert "Provider CLI version: 2.0.0 (Claude Code)" in summary
+    assert "Learning model: sonnet (Claude Code resolves the Sonnet alias)" in summary
+    assert "Model version: not reported" in summary
+    assert "npx claude-smart setup" in summary
+    assert (
+        'CLAUDE_SMART_LEARNING_MODEL="sonnet"'
+        in (tmp_path / ".claude-smart/.env").read_text()
+    )
+
+
+@pytest.mark.parametrize(
+    "provider,explicit,expected",
+    [
+        ("claude-code", "", "sonnet"),
+        ("claude-code", "chosen-model", "chosen-model"),
+        ("codex", "", ""),
+        ("opencode", "", ""),
+    ],
+)
+def test_backend_learning_model_selection(
+    tmp_path: Path, provider: str, explicit: str, expected: str
+) -> None:
+    source = (REPO_ROOT / "plugin/scripts/backend-service.sh").read_text()
+    block = source[source.index("learning_provider=") : source.index("\nSTATE_DIR=")]
+    env = guide_env(tmp_path)
+    env["CLAUDE_SMART_LEARNING_PROVIDER"] = provider
+    env["CLAUDE_SMART_LEARNING_MODEL"] = explicit
+    env.pop("CLAUDE_SMART_CLI_MODEL", None)
+    env.pop("CLAUDE_SMART_CLI_PATH", None)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. "{LIB}"; PLUGIN_ROOT=/fixture; {block}\nprintf "%s" "${{CLAUDE_SMART_CLI_MODEL:-}}"',
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout == expected

@@ -1783,12 +1783,30 @@ async function runGuidedHost(command, host, options, label) {
   } finally { clearInterval(timer); closeSync(fd); }
 }
 
+function learningProviderVersion(config) {
+  // Custom executables need not implement --version. Do not run arbitrary probes.
+  if (config.cliPath) return undefined;
+  const command = config.provider === HOST_OPENCODE ? resolveOpenCodePath()
+    : config.provider === HOST_CODEX ? "codex" : config.provider === HOST_CLAUDE_CODE ? "claude" : null;
+  if (!command) return undefined;
+  const result = spawnSync(command, ["--version"], {
+    encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000,
+    maxBuffer: 4096, windowsHide: true,
+    shell: isWindows() && (command === "claude" || command === "codex" || /\.(?:cmd|bat)$/i.test(command)),
+  });
+  if (result.status !== 0 || result.error || result.signal) return undefined;
+  const version = (result.stdout || "").trim();
+  return /^[A-Za-z0-9][A-Za-z0-9 ._()+:/-]{0,159}$/.test(version) ? version : undefined;
+}
+
 async function runGuidedCommand(command, args) {
   if (args.includes("--help") || args.includes("-h")) { printHelp(); return; }
   ensureRollbackOnExit();
   process.stdout.write(`claude-smart ${JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version} · ${command}\n`);
   await guide.runGuide(command, args, {
     inventory: installInventory, saved: savedInstallConfiguration, save: saveInstallConfiguration,
+    version: JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version,
+    providerVersion: learningProviderVersion,
     learningModel: async (config) => {
       try {
         const response = await fetch(new URL("/api/get_config", config.url), {
@@ -3654,6 +3672,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  learningProviderVersion,
   assertSupportedRuntimePlatform,
   bootstrapPluginRuntime,
   codexMarketplacePluginRoot,

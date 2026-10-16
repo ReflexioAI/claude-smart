@@ -199,7 +199,10 @@ def _run_claude(*, prompt: str, system_prompt: str) -> str:
         "--output-format",
         "json",
     ]
-    if model := os.environ.get("CLAUDE_SMART_LEARNING_MODEL"):
+    model = os.environ.get("CLAUDE_SMART_LEARNING_MODEL")
+    if not model and not os.environ.get(_ENV_CLI_PATH):
+        model = "sonnet"
+    if model:
         cmd.extend(["--model", model])
     if not _is_claude_smart_compat_bridge(cli_path):
         # This is an evaluation rollout, not a real user session: allow local

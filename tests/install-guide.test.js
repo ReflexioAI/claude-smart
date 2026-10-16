@@ -164,5 +164,44 @@ test("interactive provider changes reset the previous agent's model", async () =
   };
   const config = await configure(parseOptions(["--host", "codex", "--backend", "local"]), inventory, {backend:"local", provider:"codex", model:"old-codex-model"}, ask, true);
   assert.equal(config.provider, "claude-code");
-  assert.equal(config.model, "");
+  assert.equal(config.model, "sonnet");
+});
+
+
+test("learning defaults are Sonnet for Claude Code and provider defaults otherwise", async () => {
+  for (const provider of ["claude-code", "codex", "opencode"]) {
+    const agents = inventory.map((agent) => ({...agent, available: true}));
+    const config = await configure(parseOptions(["--host", "codex", "--backend", "local", "--provider", provider]), agents, {}, neverAsk, false);
+    assert.equal(config.model, provider === "claude-code" ? "sonnet" : "");
+    assert.match(describe(config), provider === "claude-code" ? /Sonnet alias/ : /Provider-configured default/);
+    assert.match(describe(config), /Model version: not reported/);
+    const explicit = await configure(parseOptions(["--host", "codex", "--backend", "local", "--provider", provider, "--model", "specific-model"]), agents, {}, neverAsk, false);
+    assert.equal(explicit.model, "specific-model");
+  }
+});
+
+test("provider version probes are bounded and reject failed or unsafe output", () => {
+  const script = `
+    const cp = require('node:child_process');
+    let result = {status:0,stdout:'2.0.0 (Claude Code)'};
+    let calls = 0;
+    cp.spawnSync = (_cmd,args,options) => {
+      calls++;
+      require('node:assert/strict').deepEqual(args,['--version']);
+      require('node:assert/strict').equal(options.timeout,3000);
+      return result;
+    };
+    const {learningProviderVersion} = require('./bin/claude-smart');
+    const assert = require('node:assert/strict');
+    const config = {provider:'claude-code'};
+    assert.equal(learningProviderVersion(config),'2.0.0 (Claude Code)');
+    for (const bad of [{status:1,stdout:'2.0.0'}, {status:0,stdout:'version\\nsecret'}, {status:0,stdout:'\\x1b[31m2.0.0'}, {error:new Error('timeout')}]) {
+      result=bad; assert.equal(learningProviderVersion(config),undefined);
+    }
+    const before=calls;
+    assert.equal(learningProviderVersion({...config,cliPath:'/custom/router'}),undefined);
+    assert.equal(calls,before);
+  `;
+  const result = spawnSync(process.execPath,["-e",script],{encoding:"utf8"});
+  assert.equal(result.status,0,result.stderr);
 });

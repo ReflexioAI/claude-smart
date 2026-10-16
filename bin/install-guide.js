@@ -136,11 +136,12 @@ async function configure(options, inventory, saved, ask = terminalQuestion, inte
     config.model = options.model || (!saved.provider || config.provider === saved.provider ? process.env.CLAUDE_SMART_LEARNING_MODEL || saved.model : "") || "";
     if (interactive && !options.model && !config.cliPath && config.useLocalCli !== "0") {
       const mode = await ask("Which model should power background learning?", [
-        { value: "default", label: "Provider default model" },
+        { value: "default", label: config.provider === "claude-code" ? "Sonnet alias (recommended for learning)" : "Provider-configured default model" },
         { value: "custom", label: "Choose a model ID" },
-      ], { selected: [config.model ? "custom" : "default"] });
+      ], { selected: [config.model && !(config.provider === "claude-code" && config.model === "sonnet") ? "custom" : "default"] });
       config.model = mode === "custom" ? await ask("Learning model ID supported by the selected agent", [], { text: true, initial: config.model }) : "";
     }
+    if (!config.model && config.provider === "claude-code" && !config.cliPath && config.useLocalCli !== "0") config.model = "sonnet";
     if (config.model && (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(config.model))) throw new Error("Learning model must be a valid model ID");
     if (options.model && config.useLocalCli === "0") throw new Error("--model selects a local agent model. Configure cloud-provider models in Reflexio settings instead.");
     if (!config.cliPath && config.useLocalCli !== "0") {
@@ -179,11 +180,17 @@ async function configure(options, inventory, saved, ask = terminalQuestion, inte
 }
 
 function describe(config) {
+  let model = config.model || "Provider-configured default (exact model not reported)";
+  if (config.provider === "claude-code" && config.model === "sonnet") model = "sonnet (Claude Code resolves the Sonnet alias)";
+  if (config.useLocalCli === "0") model = "Configured cloud provider (model not reported)";
+  if (config.backend === "managed") model = config.reportedModel || "Managed service default (model not reported)";
   return [
     `  Integrations: ${config.hosts.map((host) => LABELS[host]).join(", ")}`,
     `  Backend: ${config.backend === "managed" ? `Managed Reflexio · ${config.url}` : "Local Reflexio"}`,
     `  Background learning: ${config.backend === "managed" ? "Managed Reflexio" : config.useLocalCli === "0" ? "configured cloud LLM" : config.cliPath ? `custom executable (${config.cliPath})` : `${LABELS[config.provider]} CLI`}`,
-    `  Learning model: ${config.backend === "managed" ? config.reportedModel || "Managed service default (model not reported)" : config.useLocalCli === "0" ? "Configured cloud provider (model not reported)" : config.model || "Provider default (not explicitly selected)"}`,
+    `  Learning model: ${model}`,
+    ...(config.backend === "local" && config.useLocalCli !== "0" ? [`  Provider CLI version: ${config.providerVersion || "not reported"}`] : []),
+    `  Model version: ${config.reportedModel || "not reported by provider"}`,
     `  Mode: ${config.readOnly ? "read-only" : "learn and retrieve"} · sharing: ${config.sharing}`,
   ].join("\n");
 }
@@ -210,6 +217,9 @@ async function runGuide(command, args, api) {
       process.stdout.write("Checking managed learning configuration…\n");
       config.reportedModel = await api.learningModel(config);
     }
+    if (config.backend === "local" && config.useLocalCli !== "0" && api.providerVersion) {
+      config.providerVersion = api.providerVersion(config);
+    }
     process.stdout.write(`\nConfiguration\n${describe(config)}\n`);
   }
   if (interactive) {
@@ -232,7 +242,11 @@ async function runGuide(command, args, api) {
     process.stdout.write(`  ${LABELS[result.host]}: ${result.code === 0 ? command === "uninstall" ? "removed" : "installed" : "failed"} · ${result.code === 0 ? ACTIVATION[result.host] : `see ${result.log}`}\n`);
   }
   if (command === "uninstall") process.stdout.write("  Learned data: kept in ~/.claude-smart/ and ~/.reflexio/\n");
-  else process.stdout.write(`${describe(config)}\n`);
+  else {
+    if (api.version) process.stdout.write(`  Claude-smart version: ${api.version}\n`);
+    process.stdout.write(`${describe(config)}\n`);
+    process.stdout.write("  Change learning settings: npx claude-smart setup\n");
+  }
   for (const line of serviceSummary) process.stdout.write(`  ${line}\n`);
   if (results.some((result) => result.code !== 0)) process.exitCode = 1;
 }

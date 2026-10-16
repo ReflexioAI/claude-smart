@@ -79,11 +79,18 @@ The guide asks where to store and process your data:
   backend starts; memory storage and background learning run in Reflexio cloud.
   The local dashboard connects to that cloud backend by default.
 
-In local mode, choose the learning agent and either its provider-configured
-default or a specific supported model ID. For unattended installs, use
+In local mode, Claude Code learning defaults to the `sonnet` alias, which Claude
+Code resolves independently of the coding model. Codex and OpenCode keep their
+provider-configured defaults. An explicit supported model ID overrides these
+choices. For unattended installs, use
 `--model <model-id>` with `--provider`. The chosen model is applied to extraction
 and optimizer calls. Managed mode reports the server-configured model when
 available, otherwise explicitly reports that its default model is not exposed.
+After install, update, or setup, the summary includes the Claude-smart version,
+learning provider, provider CLI version when available, and model selection.
+Configured aliases/defaults are distinguished from a reported model version;
+unknown versions are shown as “not reported.” Run `npx claude-smart setup` to
+change the learning settings.
 
 The dashboard's **Data source** dropdown selects Local or Managed Reflexio.
 It defaults to the saved runtime mode. Its endpoint, overview totals, preferences,

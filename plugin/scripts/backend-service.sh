@@ -114,6 +114,9 @@ PLUGIN_VERSION="$(plugin_version_from_root "$PLUGIN_ROOT_CANONICAL")"
 learning_provider="${CLAUDE_SMART_LEARNING_PROVIDER:-${CLAUDE_SMART_HOST:-claude-code}}"
 if [ -n "${CLAUDE_SMART_LEARNING_MODEL:-}" ]; then
   export CLAUDE_SMART_CLI_MODEL="$CLAUDE_SMART_LEARNING_MODEL"
+elif [ "$learning_provider" = "claude-code" ] && [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
+  # Follow Claude Code's Sonnet family alias, independently of its coding default.
+  export CLAUDE_SMART_CLI_MODEL="${CLAUDE_SMART_CLI_MODEL:-sonnet}"
 fi
 if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
   if [ "$learning_provider" = "opencode" ]; then

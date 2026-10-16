@@ -111,6 +111,7 @@ def test_optimizer_assistant_invokes_claude_and_emits_content(monkeypatch, key) 
     assert json.loads(stdout) == {"content": "assistant reply"}
     cmd, kwargs = calls[0]
     assert cmd[:3] == ["/bin/claude", "-p", "--output-format"]
+    assert cmd[cmd.index("--model") + 1] == "sonnet"
     assert cmd[cmd.index("--permission-mode") + 1] == "plan"
     assert cmd[cmd.index("--tools") + 1] == "Read,Grep,Glob,LS"
     assert (
@@ -431,3 +432,18 @@ def test_optimizer_assistant_resolve_helpers(monkeypatch) -> None:
 
     monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/bridge/claude")
     assert optimizer_assistant._resolve_claude_cli_path() == "/bridge/claude"
+
+
+@pytest.mark.parametrize("model", ["sonnet", "chosen-model"])
+def test_optimizer_preserves_explicit_learning_model(monkeypatch, model):
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", model)
+    monkeypatch.setattr(optimizer_assistant.shutil, "which", lambda _: "/bin/claude")
+    calls = []
+
+    def run(cmd, **_kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout='{"result":"reply"}', stderr="")
+
+    monkeypatch.setattr(optimizer_assistant.subprocess, "run", run)
+    assert optimizer_assistant._run_claude(prompt="test", system_prompt="") == "reply"
+    assert calls[0][calls[0].index("--model") + 1] == model
