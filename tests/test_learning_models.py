@@ -27,6 +27,7 @@ def test_extraction_bridge_passes_selected_model_to_agent(
     executable = tmp_path / provider
     recorded = tmp_path / "args.json"
     node = shutil.which("node")
+    assert node is not None, "Node is required for CLI integration tests"
     executable.write_text(f"""#!{node}
 const fs = require('fs');
 const args = process.argv.slice(2);
@@ -98,16 +99,18 @@ def test_optimizer_passes_same_model_to_selected_provider(
     assert calls[0][calls[0].index("--model") + 1] == model
 
 
-def test_installer_preserves_model_on_update_and_clears_it_on_provider_change(tmp_path):
+def test_installer_preserves_model_on_update_and_adopts_new_provider_default(tmp_path):
     installer, env = fake_guide(tmp_path)
     state = tmp_path / ".claude-smart"
     state.mkdir()
     (state / ".env").write_text(
         'REFLEXIO_URL="http://localhost:8071/"\nCLAUDE_SMART_LEARNING_PROVIDER="codex"\nCLAUDE_SMART_LEARNING_MODEL="gpt-6.1-sol"\n'
     )
+    node = shutil.which("node")
+    assert node is not None, "Node is required for CLI integration tests"
     for args, expected in [
         (["--host", "claude-code"], "gpt-6.1-sol"),
-        (["--host", "claude-code", "--provider", "claude-code"], ""),
+        (["--host", "claude-code", "--provider", "claude-code"], "sonnet"),
         (
             [
                 "--host",
@@ -121,7 +124,7 @@ def test_installer_preserves_model_on_update_and_clears_it_on_provider_change(tm
         ),
     ]:
         result = subprocess.run(
-            [shutil.which("node"), str(installer), "update", *args],
+            [node, str(installer), "update", *args],
             env=env,
             text=True,
             capture_output=True,
@@ -131,4 +134,4 @@ def test_installer_preserves_model_on_update_and_clears_it_on_provider_change(tm
         assert (
             f'CLAUDE_SMART_LEARNING_MODEL="{expected}"' in (state / ".env").read_text()
         )
-        assert f"Learning model: {expected or 'Provider default'}" in result.stdout
+        assert f"Learning model: {expected}" in result.stdout
