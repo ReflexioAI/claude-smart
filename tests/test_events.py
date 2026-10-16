@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import json
 import sys
+import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -886,7 +888,7 @@ def test_stop_retries_read_when_transcript_not_yet_flushed(
                     + "\n"
                 )
 
-    monkeypatch.setattr("claude_smart.events.stop.time.sleep", fake_sleep)
+    monkeypatch.setattr(stop, "time", SimpleNamespace(time=time.time, sleep=fake_sleep))
     monkeypatch.setattr(
         "claude_smart.publish.publish_unpublished",
         lambda **_: ("nothing", 0),
@@ -917,13 +919,21 @@ def test_stop_retry_exhausts_budget_and_returns_empty(
     )
     sleep_calls: list[float] = []
     monkeypatch.setattr(
-        "claude_smart.events.stop.time.sleep",
-        lambda d: sleep_calls.append(d),
+        stop,
+        "time",
+        SimpleNamespace(time=time.time, sleep=lambda d: sleep_calls.append(d)),
     )
     monkeypatch.setattr(
         "claude_smart.publish.publish_unpublished",
         lambda **_: ("nothing", 0),
     )
+    append = state.append
+
+    def append_with_dependency_sleep(*args, **kwargs):
+        time.sleep(0)
+        return append(*args, **kwargs)
+
+    monkeypatch.setattr(state, "append", append_with_dependency_sleep)
     stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
     records = state.read_all("s1")
     assert records[-1]["role"] == "Assistant"
