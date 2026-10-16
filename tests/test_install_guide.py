@@ -694,22 +694,24 @@ def test_learning_summary_and_sonnet_default_on_actual_guide(
 
 
 @pytest.mark.parametrize(
-    "provider,explicit,expected",
+    "provider,explicit,use_local_cli,expected",
     [
-        ("claude-code", "", "sonnet"),
-        ("claude-code", "chosen-model", "chosen-model"),
-        ("codex", "", ""),
-        ("opencode", "", ""),
+        ("claude-code", "", "1", "sonnet"),
+        ("claude-code", "chosen-model", "1", "chosen-model"),
+        ("claude-code", "", "0", ""),
+        ("codex", "", "1", ""),
+        ("opencode", "", "1", ""),
     ],
 )
 def test_backend_learning_model_selection(
-    tmp_path: Path, provider: str, explicit: str, expected: str
+    tmp_path: Path, provider: str, explicit: str, use_local_cli: str, expected: str
 ) -> None:
     source = (REPO_ROOT / "plugin/scripts/backend-service.sh").read_text()
     block = source[source.index("learning_provider=") : source.index("\nSTATE_DIR=")]
     env = guide_env(tmp_path)
     env["CLAUDE_SMART_LEARNING_PROVIDER"] = provider
     env["CLAUDE_SMART_LEARNING_MODEL"] = explicit
+    env["CLAUDE_SMART_USE_LOCAL_CLI"] = use_local_cli
     env.pop("CLAUDE_SMART_CLI_MODEL", None)
     env.pop("CLAUDE_SMART_CLI_PATH", None)
     result = subprocess.run(

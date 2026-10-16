@@ -200,7 +200,11 @@ def _run_claude(*, prompt: str, system_prompt: str) -> str:
         "json",
     ]
     model = os.environ.get("CLAUDE_SMART_LEARNING_MODEL")
-    if not model and not os.environ.get(_ENV_CLI_PATH):
+    if (
+        not model
+        and not os.environ.get(_ENV_CLI_PATH)
+        and os.environ.get("CLAUDE_SMART_USE_LOCAL_CLI") != "0"
+    ):
         model = "sonnet"
     if model:
         cmd.extend(["--model", model])
