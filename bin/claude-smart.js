@@ -1450,7 +1450,11 @@ function reusePreparedRuntime(previous, current, externalVenv = false) {
   const helper = join(PACKAGE_ROOT, "plugin", "scripts", "dashboard-cache.js");
   if (!existsSync(helper)) return;
   const cache = require(helper);
-  if (existsSync(dashboard) && cache.reusable(oldDashboard) && cache.buildKey(oldDashboard) === cache.buildKey(dashboard)) {
+  // npx may run under a different Node than the private build runtime.
+  // Clone against the recorded runtime; bootstrap revalidates the actual one.
+  const builtWith = cache.recordedVersion(oldDashboard);
+  if (builtWith && existsSync(dashboard) && cache.reusable(oldDashboard, builtWith) &&
+      cache.buildKey(oldDashboard, builtWith) === cache.buildKey(dashboard, builtWith)) {
     try {
       for (const name of ["node_modules", ".next"]) clone(join(oldDashboard, name), join(dashboard, name));
     } catch {

@@ -28,13 +28,17 @@ function reusable(root, nodeVersion = process.version) {
     return fs.existsSync(path.join(root, "node_modules", "next", "dist", "bin", "next")) &&
       fs.existsSync(path.join(root, ".next", "required-server-files.json")) &&
       fs.existsSync(path.join(root, ".next", "BUILD_ID")) &&
-      fs.readFileSync(path.join(root, ".next", ".claude-smart-inputs"), "utf8") === buildKey(root, nodeVersion);
+      JSON.parse(fs.readFileSync(path.join(root, ".next", ".claude-smart-inputs"), "utf8")).key === buildKey(root, nodeVersion);
   } catch { return false; }
 }
 function record(root, nodeVersion = process.version) {
-  fs.writeFileSync(path.join(root, ".next", ".claude-smart-inputs"), buildKey(root, nodeVersion));
+  fs.writeFileSync(path.join(root, ".next", ".claude-smart-inputs"), JSON.stringify({key: buildKey(root, nodeVersion), nodeVersion}));
 }
-module.exports = { buildKey, reusable, record };
+function recordedVersion(root) {
+  try { return JSON.parse(fs.readFileSync(path.join(root, ".next", ".claude-smart-inputs"), "utf8")).nodeVersion; }
+  catch { return null; }
+}
+module.exports = { buildKey, reusable, record, recordedVersion };
 if (require.main === module) {
   const [action, root] = process.argv.slice(2);
   if (action === "record") record(root);

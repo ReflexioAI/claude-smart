@@ -77,3 +77,12 @@ test("a cloned Python environment runs from its new prefix", {skip:process.platf
   assert.equal(checked.status, 0, checked.stderr);
   assert.equal(checked.stdout.trim(), fs.realpathSync(target));
 });
+
+test("npx and private Node versions may differ without defeating artifact reuse", t => {
+  const root = fixture(t), old = path.join(root, "old", "dashboard");
+  cache.record(old, "private-node-version");
+  reusePreparedRuntime(path.join(root, "old"), path.join(root, "new"));
+  const current = path.join(root, "new", "dashboard");
+  assert.equal(cache.reusable(current, "private-node-version"), true);
+  assert.equal(cache.reusable(current, "another-node-version"), false);
+});
