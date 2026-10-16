@@ -205,3 +205,28 @@ test("provider version probes are bounded and reject failed or unsafe output", (
   const result = spawnSync(process.execPath,["-e",script],{encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
 });
+
+
+test("managed configured aliases are not reported as resolved versions", () => {
+  const summary = describe({hosts:["codex"],backend:"managed",reportedModel:"sonnet",url:"https://example.com",sharing:"project"});
+  assert.match(summary,/Learning model: sonnet/);
+  assert.match(summary,/Model version: not reported by provider/);
+  assert.doesNotMatch(summary,/Model version: sonnet/);
+});
+
+test("Windows OpenCode batch probe supports spaces", {skip:process.platform !== "win32"}, () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const directory = fs.mkdtempSync(path.join(require("node:os").tmpdir(),"claude smart version "));
+  const executable = path.join(directory,"opencode.cmd");
+  const original = process.env.CLAUDE_SMART_OPENCODE_PATH;
+  try {
+    fs.writeFileSync(executable,"@echo off\r\necho 1.2.3\r\n");
+    process.env.CLAUDE_SMART_OPENCODE_PATH = executable;
+    assert.equal(require("../bin/claude-smart").learningProviderVersion({provider:"opencode"}),"1.2.3");
+  } finally {
+    if (original === undefined) delete process.env.CLAUDE_SMART_OPENCODE_PATH;
+    else process.env.CLAUDE_SMART_OPENCODE_PATH = original;
+    fs.rmSync(directory,{recursive:true,force:true});
+  }
+});

@@ -716,11 +716,11 @@ def test_backend_learning_model_selection(
         [
             "bash",
             "-c",
-            f'. "{LIB}"; PLUGIN_ROOT=/fixture; {block}\nprintf "%s" "${{CLAUDE_SMART_CLI_MODEL:-}}"',
+            f'. "{LIB}"; PLUGIN_ROOT=/fixture; {block}\nprintf "%s:%s" "${{CLAUDE_SMART_CLI_MODEL:-}}" "${{CLAUDE_SMART_LEARNING_MODEL:-}}"',
         ],
         env=env,
         text=True,
         capture_output=True,
         check=True,
     )
-    assert result.stdout == expected
+    assert result.stdout == f"{expected}:{expected}"

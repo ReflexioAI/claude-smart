@@ -1789,10 +1789,15 @@ function learningProviderVersion(config) {
   const command = config.provider === HOST_OPENCODE ? resolveOpenCodePath()
     : config.provider === HOST_CODEX ? "codex" : config.provider === HOST_CLAUDE_CODE ? "claude" : null;
   if (!command) return undefined;
-  const result = spawnSync(command, ["--version"], {
+  const shell = isWindows() && (command === "claude" || command === "codex" || /\.(?:cmd|bat)$/i.test(command));
+  // Node joins shell arguments without quoting batch-file paths. Optional
+  // metadata probes must not interpret shell metacharacters in a custom path.
+  if (shell && /[%!^&|<>"\r\n]/.test(command)) return undefined;
+  const probeCommand = shell ? `"${command}"` : command;
+  const result = spawnSync(probeCommand, ["--version"], {
     encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000,
     maxBuffer: 4096, windowsHide: true,
-    shell: isWindows() && (command === "claude" || command === "codex" || /\.(?:cmd|bat)$/i.test(command)),
+    shell,
   });
   if (result.status !== 0 || result.error || result.signal) return undefined;
   const version = (result.stdout || "").trim();

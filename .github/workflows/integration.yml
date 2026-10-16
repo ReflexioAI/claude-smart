@@ -91,6 +91,9 @@ jobs:
 
       - uses: astral-sh/setup-uv@v3
 
+      - name: Check guided model reporting
+        run: node --test tests/install-guide.test.js
+
       - name: Check Python dependency lock
         shell: bash
         run: |

@@ -190,7 +190,7 @@ function describe(config) {
     `  Background learning: ${config.backend === "managed" ? "Managed Reflexio" : config.useLocalCli === "0" ? "configured cloud LLM" : config.cliPath ? `custom executable (${config.cliPath})` : `${LABELS[config.provider]} CLI`}`,
     `  Learning model: ${model}`,
     ...(config.backend === "local" && config.useLocalCli !== "0" ? [`  Provider CLI version: ${config.providerVersion || "not reported"}`] : []),
-    `  Model version: ${config.reportedModel || "not reported by provider"}`,
+    `  Model version: not reported by provider`,
     `  Mode: ${config.readOnly ? "read-only" : "learn and retrieve"} · sharing: ${config.sharing}`,
   ].join("\n");
 }
