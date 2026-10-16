@@ -63,8 +63,8 @@ def test_resolve_bash_windows_skips_system32_bash(monkeypatch, tmp_path) -> None
     monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
     monkeypatch.setattr(
         cli,
-        "_is_windows_system_bash",
-        lambda path: path == str(system_bash),
+        "_resolve_candidate",
+        lambda path: path if path in {str(system_bash), str(git_bash)} else None,
     )
 
     assert cli._resolve_bash() == str(git_bash)

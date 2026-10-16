@@ -10,7 +10,7 @@ function buildKey(root, nodeVersion = process.version) {
     Object.entries(process.env).filter(([name]) => name.startsWith("NEXT_PUBLIC_")).sort()]));
   function visit(directory) {
     for (const name of fs.readdirSync(directory).sort()) {
-      if (["node_modules", ".next", ".git"].includes(name)) continue;
+      if (["node_modules", ".next", ".git", "next-env.d.ts", ".DS_Store"].includes(name) || name.endsWith(".tsbuildinfo")) continue;
       const file = path.join(directory, name);
       const stat = fs.statSync(file);
       if (stat.isDirectory()) visit(file);

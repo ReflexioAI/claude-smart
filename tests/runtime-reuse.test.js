@@ -86,3 +86,12 @@ test("npx and private Node versions may differ without defeating artifact reuse"
   assert.equal(cache.reusable(current, "private-node-version"), true);
   assert.equal(cache.reusable(current, "another-node-version"), false);
 });
+
+test("Next-generated root files do not prevent reuse from a packaged reinstall", t => {
+  const root = fixture(t), old = path.join(root, "old", "dashboard");
+  fs.writeFileSync(path.join(old, "next-env.d.ts"), "generated next types");
+  fs.writeFileSync(path.join(old, "tsconfig.tsbuildinfo"), "generated build state");
+  cache.record(old);
+  reusePreparedRuntime(path.join(root, "old"), path.join(root, "new"));
+  assert.ok(cache.reusable(path.join(root, "new", "dashboard")));
+});
