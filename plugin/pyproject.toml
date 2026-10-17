@@ -26,7 +26,7 @@ dependencies = [
     # normal installs; vendor releases may override it after uv sync by
     # installing plugin/vendor/reflexio. Keep in sync via
     # scripts/sync-reflexio-dep.py.
-    "reflexio-ai>=0.2.28",
+    "reflexio-ai>=0.2.32",
     # Keep both the PyPI baseline and vendored runtime above the security floor.
     "litellm>=1.103.1,<2",
     "einops>=0.8.0",
