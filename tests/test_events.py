@@ -1485,9 +1485,6 @@ def test_session_start_emits_continue_without_memory_lookup(
     session_dir, monkeypatch
 ) -> None:
     class StubAdapter:
-        def apply_extraction_defaults(self, **_kw):
-            return True
-
         def apply_optimizer_defaults(self, **_kw):
             return True
 
@@ -1512,9 +1509,6 @@ def test_session_start_ignores_available_memory_and_continues(
     class Stub:
         url = "http://localhost:8071/"
 
-        def apply_extraction_defaults(self, **_kw):
-            return True
-
         def apply_optimizer_defaults(self, **_kw):
             return True
 
@@ -1533,97 +1527,6 @@ def test_session_start_ignores_available_memory_and_continues(
     }
 
 
-def test_session_start_applies_claude_smart_extraction_defaults(
-    session_dir, monkeypatch
-) -> None:
-    """SessionStart must push claude-smart's 5/3 extraction defaults to reflexio."""
-    applied: list[dict[str, Any]] = []
-
-    class Stub:
-        def apply_extraction_defaults(self, **kwargs):
-            applied.append(kwargs)
-            return True
-
-        def apply_optimizer_defaults(self, **_kw):
-            return True
-
-        def fetch_all(self, **_kw):
-            return ([], [], [])
-
-    monkeypatch.setattr(
-        "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
-    )
-    buf = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", buf)
-    session_start.handle({"session_id": "s1", "source": "startup"})
-    assert applied == [{"window_size": 5, "stride_size": 3}]
-
-
-def test_session_start_honours_extraction_env_overrides(
-    session_dir, monkeypatch
-) -> None:
-    """CLAUDE_SMART_WINDOW_SIZE / STRIDE_SIZE env vars override the defaults."""
-    # The module-level constants are read at import time, so reload after
-    # monkeypatching the env to make the overrides take effect.
-    import importlib
-
-    monkeypatch.setenv("CLAUDE_SMART_WINDOW_SIZE", "2")
-    monkeypatch.setenv("CLAUDE_SMART_STRIDE_SIZE", "1")
-    import claude_smart.events.session_start as ss
-
-    importlib.reload(ss)
-
-    applied: list[dict[str, Any]] = []
-
-    class Stub:
-        def apply_extraction_defaults(self, **kwargs):
-            applied.append(kwargs)
-            return True
-
-        def apply_optimizer_defaults(self, **_kw):
-            return True
-
-        def fetch_all(self, **_kw):
-            return ([], [], [])
-
-    monkeypatch.setattr(ss, "Adapter", lambda *a, **kw: Stub())
-    buf = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", buf)
-    try:
-        ss.handle({"session_id": "s1", "source": "startup"})
-        assert applied == [{"window_size": 2, "stride_size": 1}]
-    finally:
-        # Reload again with env unset so other tests see the real defaults.
-        monkeypatch.delenv("CLAUDE_SMART_WINDOW_SIZE", raising=False)
-        monkeypatch.delenv("CLAUDE_SMART_STRIDE_SIZE", raising=False)
-        importlib.reload(ss)
-
-
-def test_session_start_falls_back_to_defaults_on_garbage_env_values(
-    session_dir, monkeypatch
-) -> None:
-    """A non-integer env value must fall back to the default rather than
-    raising at import time. Addresses CodeRabbit review on PR #30:
-    SessionStart is the hook that wires every other hook, so an
-    import-time crash here silently disables the whole plugin.
-    """
-    import importlib
-
-    monkeypatch.setenv("CLAUDE_SMART_WINDOW_SIZE", "not-an-int")
-    monkeypatch.setenv("CLAUDE_SMART_STRIDE_SIZE", "")
-    import claude_smart.events.session_start as ss
-
-    # Must not raise on reload.
-    importlib.reload(ss)
-    try:
-        assert ss._CLAUDE_SMART_WINDOW_SIZE == 5  # default
-        assert ss._CLAUDE_SMART_STRIDE_SIZE == 3  # default
-    finally:
-        monkeypatch.delenv("CLAUDE_SMART_WINDOW_SIZE", raising=False)
-        monkeypatch.delenv("CLAUDE_SMART_STRIDE_SIZE", raising=False)
-        importlib.reload(ss)
-
-
 def test_session_start_skips_optimizer_defaults_when_opted_out(
     session_dir, monkeypatch
 ) -> None:
@@ -1631,9 +1534,6 @@ def test_session_start_skips_optimizer_defaults_when_opted_out(
 
     class Stub:
         url = "http://localhost:8071/"
-
-        def apply_extraction_defaults(self, **_kw):
-            return True
 
         def apply_optimizer_defaults(self, **kwargs):
             optimizer_calls.append(kwargs)
@@ -1661,9 +1561,6 @@ def test_session_start_applies_optimizer_defaults_by_default(
 
     class Stub:
         url = "http://localhost:8071/"
-
-        def apply_extraction_defaults(self, **_kw):
-            return True
 
         def apply_optimizer_defaults(self, **kwargs):
             optimizer_calls.append(kwargs)
@@ -1697,9 +1594,6 @@ def test_session_start_skips_optimizer_defaults_for_hosted_reflexio_by_default(
     class Stub:
         url = "https://www.reflexio.ai/"
 
-        def apply_extraction_defaults(self, **_kw):
-            return True
-
         def apply_optimizer_defaults(self, **kwargs):
             optimizer_calls.append(kwargs)
             return True
@@ -1725,9 +1619,6 @@ def test_session_start_can_force_optimizer_defaults_for_hosted_reflexio(
 
     class Stub:
         url = "https://www.reflexio.ai/"
-
-        def apply_extraction_defaults(self, **_kw):
-            return True
 
         def apply_optimizer_defaults(self, **kwargs):
             optimizer_calls.append(kwargs)
@@ -1760,9 +1651,6 @@ def test_session_start_never_fetches_memory_for_any_source(
     calls: list[dict[str, Any]] = []
 
     class Stub:
-        def apply_extraction_defaults(self, **_kw):
-            return True
-
         def apply_optimizer_defaults(self, **_kw):
             return True
 

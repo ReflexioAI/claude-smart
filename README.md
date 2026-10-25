@@ -354,6 +354,13 @@ publications). This fallback is a low-urgency policy, not proof a session ended.
 Normal full-window and stride extraction still runs promptly. A negative judge
 result produces no learning and is recorded as examined.
 
+Extraction cadence is owned by the Reflexio server: configure `window_size` and
+`stride_size` there. Starting a client session preserves those settings. The
+former hook overrides `CLAUDE_SMART_WINDOW_SIZE` and `CLAUDE_SMART_STRIDE_SIZE`
+are no longer read; remove them from launchers and set the server configuration
+explicitly when a benchmark needs a different cadence. Existing persisted values
+are preserved; fresh servers use their own defaults.
+
 Managed mode requires a server update; changing the plugin alone cannot update a
 cloud server. An older server retains saved messages and logs that completion is
 unsupported; the plugin does not republish or force extraction. Idle fallback

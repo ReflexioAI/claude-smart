@@ -58,7 +58,9 @@ def test_stalled_unnotified_prepends_banner(stalled_state, monkeypatch, session_
     assert text.startswith("claude-smart: learning paused")
 
 
-def test_stalled_unnotified_calls_mark_notified(stalled_state, monkeypatch, session_dir):
+def test_stalled_unnotified_calls_mark_notified(
+    stalled_state, monkeypatch, session_dir
+):
     stub = _AdapterStub(stalled_state)
     monkeypatch.setattr("claude_smart.events.session_start._adapter", lambda: stub)
     _capture_output({"session_id": "s1", "cwd": "/tmp"})
@@ -121,7 +123,9 @@ def test_banner_only_emits_just_banner(stalled_state, monkeypatch, session_dir):
     text = _capture_output({"session_id": "s1", "cwd": "/tmp"})
     assert text.startswith("claude-smart: learning paused")
     # No double-newline trailing — banner is the only content
-    assert "\n\n" not in text or text.split("\n\n")[1:] == [""]  # tolerate trailing newline
+    assert "\n\n" not in text or text.split("\n\n")[1:] == [
+        ""
+    ]  # tolerate trailing newline
 
 
 class _AdapterStub:
@@ -138,9 +142,6 @@ class _AdapterStub:
     # Mirror the rest of Adapter's API as needed — return [] / no-op.
     def fetch_both(self, **kw):
         return [], []
-
-    def apply_extraction_defaults(self, **kw):
-        return True
 
     def apply_optimizer_defaults(self, **kw):
         return True

@@ -361,47 +361,6 @@ class Adapter:
                 http_status=status if isinstance(status, int) else None,
             ), None
 
-    def apply_extraction_defaults(self, *, window_size: int, stride_size: int) -> bool:
-        """Push claude-smart's preferred extraction defaults to the reflexio server.
-
-        Reads the current ``Config`` and only issues a ``set_config`` when the
-        server-side values differ, so steady state is a single cheap GET.
-
-        Reflexio persists ``Config`` to disk, so once these values land they
-        survive backend restarts. The flip side: if an operator customizes
-        ``window_size``/``stride_size`` via the dashboard, this call will
-        overwrite those values back to the claude-smart defaults on the next
-        SessionStart. To change the defaults, edit the constants at the call
-        site in ``events/session_start.py``.
-
-        Args:
-            window_size (int): Desired ``Config.window_size`` on the server.
-            stride_size (int): Desired ``Config.stride_size`` on the
-                server. Must be ``<= window_size`` (reflexio enforces this).
-
-        Returns:
-            bool: True if the server is already at the target values or the
-                write succeeded; False if reflexio is unreachable or the call
-                raised.
-        """
-        client = self._get_client()
-        if client is None:
-            return False
-        try:
-            config = client.get_config()
-            if (
-                getattr(config, "window_size", None) == window_size
-                and getattr(config, "stride_size", None) == stride_size
-            ):
-                return True
-            config.window_size = window_size
-            config.stride_size = stride_size
-            client.set_config(config)
-            return True
-        except Exception as exc:  # noqa: BLE001 — adapter must never raise.
-            _LOGGER.warning("apply_extraction_defaults failed: %s", exc)
-            return False
-
     def apply_optimizer_defaults(
         self, *, script_path: str, timeout_seconds: int = 300
     ) -> bool:

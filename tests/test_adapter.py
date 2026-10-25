@@ -831,65 +831,6 @@ def test_fetch_agent_playbooks_filters_rejected_locally() -> None:
 
 
 # -----------------------------------------------------------------------------
-# apply_extraction_defaults — push claude-smart's preferred cadence to reflexio
-# -----------------------------------------------------------------------------
-
-
-class _ConfigClient:
-    """Captures get_config/set_config calls against a mutable config object."""
-
-    def __init__(self, *, window_size: int, stride_size: int, get_raises=None):
-        self._config = SimpleNamespace(window_size=window_size, stride_size=stride_size)
-        self._get_raises = get_raises
-        self.set_calls: list[SimpleNamespace] = []
-
-    def get_config(self):
-        if self._get_raises is not None:
-            raise self._get_raises
-        return self._config
-
-    def set_config(self, config):
-        self.set_calls.append(
-            SimpleNamespace(
-                window_size=config.window_size, stride_size=config.stride_size
-            )
-        )
-        self._config = config
-        return {"ok": True}
-
-
-def test_apply_extraction_defaults_writes_when_values_differ() -> None:
-    client = _ConfigClient(window_size=10, stride_size=5)
-    a = _adapter_with(client)
-    assert a.apply_extraction_defaults(window_size=5, stride_size=3) is True
-    assert len(client.set_calls) == 1
-    assert client.set_calls[0].window_size == 5
-    assert client.set_calls[0].stride_size == 3
-
-
-def test_apply_extraction_defaults_skips_set_when_values_match() -> None:
-    client = _ConfigClient(window_size=5, stride_size=3)
-    a = _adapter_with(client)
-    assert a.apply_extraction_defaults(window_size=5, stride_size=3) is True
-    assert client.set_calls == []
-
-
-def test_apply_extraction_defaults_returns_false_when_client_unavailable(
-    monkeypatch,
-) -> None:
-    a = reflexio_adapter.Adapter()
-    monkeypatch.setattr(a, "_get_client", lambda: None)
-    assert a.apply_extraction_defaults(window_size=5, stride_size=3) is False
-
-
-def test_apply_extraction_defaults_absorbs_get_config_errors() -> None:
-    a = _adapter_with(
-        _ConfigClient(window_size=10, stride_size=5, get_raises=RuntimeError("down"))
-    )
-    assert a.apply_extraction_defaults(window_size=5, stride_size=3) is False
-
-
-# -----------------------------------------------------------------------------
 # apply_optimizer_defaults — opt-in Reflexio optimizer wiring
 # -----------------------------------------------------------------------------
 

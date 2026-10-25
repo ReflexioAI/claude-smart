@@ -19,17 +19,10 @@ class FakeReflexioAdapter:
         self.url = "http://localhost:8071/"
         self.search_calls: list[dict[str, Any]] = []
         self.publish_calls: list[dict[str, Any]] = []
-        self.extraction_defaults: list[dict[str, int]] = []
         self.optimizer_defaults: list[dict[str, Any]] = []
 
     def fetch_stall_state(self) -> None:
         return None
-
-    def apply_extraction_defaults(self, *, window_size: int, stride_size: int) -> bool:
-        self.extraction_defaults.append(
-            {"window_size": window_size, "stride_size": stride_size}
-        )
-        return True
 
     def apply_optimizer_defaults(
         self, *, script_path: str, timeout_seconds: int = 300
@@ -242,9 +235,6 @@ def run_host_learning_happy_path(
         stop_output = _run_hook(host, "stop", stop_payload)
         assert stop_output["continue"] is True
 
-        assert fake_reflexio.extraction_defaults == [
-            {"window_size": 5, "stride_size": 3}
-        ]
         assert fake_reflexio.search_calls == [
             {
                 "project_id": project.name,

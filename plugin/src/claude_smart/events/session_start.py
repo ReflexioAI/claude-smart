@@ -1,4 +1,4 @@
-"""SessionStart hook — apply startup defaults without broad memory retrieval."""
+"""SessionStart hook — show learning stalls without broad memory retrieval."""
 
 from __future__ import annotations
 
@@ -14,35 +14,6 @@ from claude_smart import hook
 from claude_smart.reflexio_adapter import Adapter
 from claude_smart.stall_banner import render_banner
 
-# Claude-smart's preferred extraction cadence — more frequent, smaller windows
-# than reflexio's out-of-box 10/5. Applied idempotently to the reflexio server
-# on every SessionStart via Adapter.apply_extraction_defaults.
-#
-# Env-var overrides let benchmark harnesses (SWE-bench Verified, in particular)
-# run with ``CLAUDE_SMART_STRIDE_SIZE=1`` so a single short autonomous session
-# triggers extraction on its sole publish instead of being silently filtered
-# out by the stride pre-filter (``new < stride_size``). Production users keep
-# the defaults; the values are only read on SessionStart, so a launcher that
-# sets the env var has predictable effect for the entire Claude Code session.
-#
-# Parsing is defensive: a non-integer env value falls back to the default
-# rather than raising at import time. SessionStart is the hook that wires up
-# every subsequent hook, so an import-time crash here would silently disable
-# the whole plugin for the session.
-
-
-def _int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-
-_CLAUDE_SMART_WINDOW_SIZE = _int_env("CLAUDE_SMART_WINDOW_SIZE", 5)
-_CLAUDE_SMART_STRIDE_SIZE = _int_env("CLAUDE_SMART_STRIDE_SIZE", 3)
 # Optimizer defaults are local-only by default because they store an absolute
 # path to the claude-smart helper process. Set this env var to "1" to force
 # enabling against a non-local Reflexio URL, or "0" to disable everywhere.
@@ -109,10 +80,6 @@ def handle(payload: dict[str, Any]) -> None:
     # stall event (controlled server-side via mark_stall_notified).
     banner = _stall_banner(adapter)
 
-    adapter.apply_extraction_defaults(
-        window_size=_CLAUDE_SMART_WINDOW_SIZE,
-        stride_size=_CLAUDE_SMART_STRIDE_SIZE,
-    )
     if _should_apply_optimizer_defaults(adapter):
         adapter.apply_optimizer_defaults(
             script_path=_optimizer_assistant_path(),
