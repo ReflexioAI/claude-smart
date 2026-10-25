@@ -30,12 +30,13 @@ def _functions() -> str:
     return "\n".join(functions)
 
 
+@pytest.mark.parametrize("crlf", [False, True])
 @pytest.mark.parametrize("legacy", ["0", "1"])
 @pytest.mark.parametrize(
     "endpoint", [None, "http://127.0.0.1:9999", "https://owned.invalid"]
 )
-def test_health_and_cleanup_follow_real_sdk_ownership(tmp_path, legacy, endpoint):
-    _run_checks(tmp_path, legacy=legacy, endpoint=endpoint, failure=None)
+def test_health_and_cleanup_follow_real_sdk_ownership(tmp_path, legacy, endpoint, crlf):
+    _run_checks(tmp_path, legacy=legacy, endpoint=endpoint, failure=None, crlf=crlf)
 
 
 @pytest.mark.parametrize("failure", ["exit", "invalid"])
@@ -43,7 +44,7 @@ def test_unknown_ownership_is_not_healthy_and_never_kills(tmp_path, failure):
     _run_checks(tmp_path, legacy="1", endpoint=None, failure=failure)
 
 
-def _run_checks(tmp_path, *, legacy, endpoint, failure):
+def _run_checks(tmp_path, *, legacy, endpoint, failure, crlf=False):
     calls = tmp_path / "queries"
     actions = tmp_path / "actions"
     python = tmp_path / "selected-python"
@@ -58,7 +59,15 @@ def _run_checks(tmp_path, *, legacy, endpoint, failure):
             if failure == "exit"
             else "print('invalid ownership')\n"
             if failure == "invalid"
-            else f"os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n"
+            else (
+                "import io,runpy\n"
+                + (
+                    "sys.stdout=io.TextIOWrapper(sys.stdout.buffer, newline='\\r\\n')\n"
+                    if crlf
+                    else ""
+                )
+                + "runpy.run_path(sys.argv[1], run_name='__main__')\n"
+            )
         )
     )
     python.chmod(0o700)

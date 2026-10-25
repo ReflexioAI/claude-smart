@@ -559,6 +559,8 @@ resolve_inference_ownership() {
     inference_ownership="unavailable"
     return 1
   fi
+  # Native Windows Python emits CRLF; command substitution strips only LF.
+  inference_ownership="${inference_ownership%$'\r'}"
   case "$inference_ownership" in
     colocated|attached) return 0 ;;
     *) inference_ownership="unavailable"; return 1 ;;
