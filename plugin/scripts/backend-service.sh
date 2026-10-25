@@ -545,8 +545,29 @@ backend_current_or_compatible() {
   return 1
 }
 
+# Reuse the installed SDK's actual launcher decision, including on older pinned
+# runtimes. A failed query is neither evidence of attachment nor permission to kill.
+inference_ownership=""
+resolve_inference_ownership() {
+  case "$inference_ownership" in
+    colocated|attached) return 0 ;;
+    unavailable) return 1 ;;
+  esac
+  prepare_backend_import_context
+  if ! inference_ownership="$(cd "$PLUGIN_ROOT" && PYTHONPATH="$backend_pythonpath" \
+    "$backend_python" "$HERE/backend-inference-owner.py")"; then
+    inference_ownership="unavailable"
+    return 1
+  fi
+  case "$inference_ownership" in
+    colocated|attached) return 0 ;;
+    *) inference_ownership="unavailable"; return 1 ;;
+  esac
+}
+
 embedding_owned_by_current_vendor() {
-  [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-}" = "1" ] || return 0
+  resolve_inference_ownership || return 1
+  [ "$inference_ownership" = "colocated" ] || return 0
   pids="$(claude_smart_port_listener_pids "$EMBEDDING_PORT")"
   for pid in $pids; do
     if is_claude_smart_backend_pid "$pid" && pid_uses_current_vendor_root "$pid"; then
@@ -557,7 +578,8 @@ embedding_owned_by_current_vendor() {
 }
 
 embedding_current_or_compatible() {
-  [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-}" = "1" ] || return 0
+  resolve_inference_ownership || return 1
+  [ "$inference_ownership" = "colocated" ] || return 0
   pids="$(claude_smart_port_listener_pids "$EMBEDDING_PORT")"
   for pid in $pids; do
     if is_claude_smart_backend_pid "$pid" && backend_pid_current_or_compatible "$pid"; then
@@ -669,7 +691,11 @@ stop_stale_backend_listener_if_owned() {
 }
 
 stop_stale_embedding_listener_if_owned() {
-  [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-}" = "1" ] || return 0
+  if ! resolve_inference_ownership; then
+    echo "[claude-smart] inference ownership unavailable; skipping embedding cleanup" >&2
+    return 1
+  fi
+  [ "$inference_ownership" = "colocated" ] || return 0
   pids="$(claude_smart_port_listener_pids "$EMBEDDING_PORT")"
   [ -n "$pids" ] || return 0
   ours=""

@@ -72,7 +72,11 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 
 ## Embeddings
 
-claude-smart uses one shared local embedding daemon by default. The backend starts `reflexio embeddings serve` on `127.0.0.1:8072` when `CLAUDE_SMART_USE_LOCAL_EMBEDDING=1`, then every backend worker and host process calls its OpenAI-compatible `/v1/embeddings` endpoint instead of loading a model in each process.
+claude-smart uses one shared local inference daemon by default. Reflexio's launcher owns a local child when `REFLEXIO_EMBEDDING_SERVICE_URL` is unset; an explicit URL attaches to a separately owned process, including when that URL is loopback. Model selection and process ownership are separate: reranking can also use the shared daemon.
+
+`plugin/scripts/backend-inference-owner.py` asks the selected SDK launcher for that same ownership decision. Backend health/compatibility checks and stale-child cleanup follow it rather than `CLAUDE_SMART_USE_LOCAL_EMBEDDING`. Attached inference does not require or clean up a child on the default loopback port. Unknown ownership reports degraded health and skips child cleanup. The decision is cached for one backend command, and the query does not create a missing environment file. It uses the backend launcher's plugin working directory and selected environment file, with implicit dotenv discovery blocked.
+
+`CLAUDE_SMART_USE_LOCAL_EMBEDDING` remains supported by routing, installer and dashboard settings; this ownership correction does not retire it or change existing model preferences or request timeouts. Workers call the selected service's OpenAI-compatible `/v1/embeddings` endpoint instead of loading a model in each process.
 
 Supported local models are `local/nomic-embed-v1.5`, `local/nomic-embed-text-v1.5`, and `local/minilm-l6-v2`. The daemon owns exactly one model for its lifetime; start a second daemon on another port if you need to serve a different model concurrently.
 
