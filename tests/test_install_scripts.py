@@ -58,6 +58,8 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
     env["SHELL"] = "/bin/sh"
     env.pop("BASH_ENV", None)
     env.pop("ENV", None)
+    # Retention matrix cases supply their own policy, independent of the shell.
+    env.pop("REFLEXIO_ROW_LIMIT_INTERACTIONS", None)
     # These fixtures exercise the native per-agent workers and their rollback
     # contracts. The guided coordinator is covered separately in test_install_guide.
     env["CLAUDE_SMART_INSTALL_CHILD"] = "1"
@@ -8877,9 +8879,12 @@ def test_status_attributes_each_claude_registration_to_its_scope(
 
 @pytest.mark.parametrize("saved", [None, "0", "4300"])
 @pytest.mark.parametrize("exported", [None, "9000"])
-def test_local_install_preserves_canonical_retention_budget(tmp_path, saved, exported):
+def test_local_install_preserves_canonical_retention_budget(
+    tmp_path, monkeypatch, saved, exported
+):
     from importlib.metadata import distribution
 
+    monkeypatch.setenv("REFLEXIO_ROW_LIMIT_INTERACTIONS", "123456")
     _plugin_root, installer, env = _prepare_smart_install_sync_fixture(
         tmp_path, mode="fresh"
     )
@@ -8961,6 +8966,7 @@ def test_local_retention_defaults_preserve_dotenv_policy_across_installers(
         assignment + "\n" if assignment is not None else ""
     )
     selected.write_text(original)
+    monkeypatch.setenv("REFLEXIO_ROW_LIMIT_INTERACTIONS", "123456")
     env = _isolated_env(tmp_path)
     if exported is not None:
         env["REFLEXIO_ROW_LIMIT_INTERACTIONS"] = exported
