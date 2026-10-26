@@ -1,24 +1,22 @@
 import { useEffect, useState } from "react";
+import { provenanceRequestKey } from "./model-provenance-source";
 import type {
   LearningEntityType,
   LearningModelProvenance,
 } from "./model-lineage";
 
 export type { LearningEntityType, LearningModelProvenance };
+export { modelProvenanceAvailable } from "./model-provenance-source";
 
 export function useLearningModelProvenance(
+  source: string | null,
   entityType: LearningEntityType | null,
   entityId: string | number | null | undefined,
 ): LearningModelProvenance | null {
   const [provenance, setProvenance] = useState<LearningModelProvenance | null>(
     null,
   );
-  const ready =
-    !!entityType &&
-    entityId !== null &&
-    entityId !== undefined &&
-    entityId !== "";
-  const requestKey = ready ? `${entityType}:${String(entityId)}` : null;
+  const requestKey = provenanceRequestKey(source, entityType, entityId);
 
   useEffect(() => {
     if (!requestKey || !entityType) return;

@@ -37,7 +37,10 @@ import { reflexio } from "@/lib/reflexio-client";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { LearningModelProvenanceView } from "@/components/common/model-provenance";
-import { useLearningModelProvenance } from "@/lib/model-provenance";
+import {
+  modelProvenanceAvailable,
+  useLearningModelProvenance,
+} from "@/lib/model-provenance";
 import { agentPlaybookStatusLabel, statusLabel } from "@/lib/status";
 import type { StatusLabel } from "@/lib/status";
 import type { AgentPlaybook, AgentPlaybookStatus } from "@/lib/types";
@@ -94,6 +97,7 @@ export default function SharedSkillDetailPage({
 
   const [playbook, setPlaybook] = useState<AgentPlaybook | null>(null);
   const modelProvenance = useLearningModelProvenance(
+    source,
     "agent_playbook",
     playbook?.agent_playbook_id ?? id,
   );
@@ -489,12 +493,16 @@ export default function SharedSkillDetailPage({
                       display={truncateId(playbook.playbook_metadata, 32, 8)}
                     />
                   )}
-                  <Meta
-                    label="Model"
-                    value={
-                      <LearningModelProvenanceView provenance={modelProvenance} />
-                    }
-                  />
+                  {modelProvenanceAvailable(source) && (
+                    <Meta
+                      label="Model"
+                      value={
+                        <LearningModelProvenanceView
+                          provenance={modelProvenance}
+                        />
+                      }
+                    />
+                  )}
                 </dl>
               </div>
             </aside>

@@ -46,10 +46,53 @@ function empty(
   };
 }
 
-function dbPath(): string {
-  const override = process.env.CLAUDE_SMART_REFLEXIO_DB?.trim();
-  if (override) return override;
-  return path.join(os.homedir(), ".reflexio", "data", "reflexio.db");
+// claude-smart's backend runs under this org id (backend-service.sh hard-sets
+// REFLEXIO_DEFAULT_ORG_ID), which names its config file and per-org database.
+const CLAUDE_SMART_ORG_ID = "claude-smart";
+
+/** Mirror of reflexio.cli.paths.reflexio_home(). */
+function reflexioHome(env: NodeJS.ProcessEnv): string {
+  const base = env.REFLEXIO_LOG_DIR;
+  if (!base) return path.join(os.homedir(), ".reflexio");
+  const expanded = base.replace(/^~(?=$|[\\/])/, os.homedir());
+  return path.join(path.resolve(os.homedir(), expanded), ".reflexio");
+}
+
+/**
+ * The SQLite file claude-smart's local backend stores lineage in, or null when
+ * its local storage is not SQLite.
+ *
+ * The org config's `storage_config.db_path` is authoritative: the backend
+ * runner (plugin/scripts/backend-python-runner.py) pins it on every start.
+ * When it is unset, resolve it the way that runner does: the legacy
+ * `reflexio.db`, unless only the per-org `reflexio_<org>.db` exists.
+ */
+export function resolveLocalReflexioDbPath(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const home = reflexioHome(env);
+  const configFile = path.join(
+    home,
+    "configs",
+    `config_${CLAUDE_SMART_ORG_ID}.json`,
+  );
+  let storage: unknown;
+  try {
+    storage = JSON.parse(fs.readFileSync(configFile, "utf8"))?.storage_config;
+  } catch {
+    storage = undefined;
+  }
+  if (storage && typeof storage === "object") {
+    const configured = (storage as Record<string, unknown>).db_path;
+    if (typeof configured === "string" && configured.trim())
+      return configured.trim();
+    // StorageConfigSQLite is the only storage config carrying db_path.
+    if (!("db_path" in storage)) return null;
+  }
+  const root = env.LOCAL_STORAGE_PATH?.trim() || path.join(home, "data");
+  const legacy = path.join(root, "reflexio.db");
+  const derived = path.join(root, `reflexio_${CLAUDE_SMART_ORG_ID}.db`);
+  return fs.existsSync(derived) && !fs.existsSync(legacy) ? derived : legacy;
 }
 
 function openDatabase(sqlitePath: string): SqliteDatabase {
@@ -88,7 +131,7 @@ function nonEmpty(value: unknown): string | null {
 export function getLearningModelProvenance(
   entityTypeRaw: string,
   entityIdRaw: string,
-  sqlitePath: string = dbPath(),
+  sqlitePath: string | null = resolveLocalReflexioDbPath(),
 ): LearningModelProvenance {
   const entityType = entityTypeRaw as LearningEntityType;
   const entityId = String(entityIdRaw ?? "").trim();
@@ -101,6 +144,9 @@ export function getLearningModelProvenance(
   }
   if (!entityId) {
     return empty(entityType, entityId, true, "missing entityId");
+  }
+  if (!sqlitePath) {
+    return empty(entityType, entityId, true, "local storage is not SQLite");
   }
   if (!fs.existsSync(sqlitePath)) {
     console.error(`[model-lineage] database unavailable at ${sqlitePath}`);

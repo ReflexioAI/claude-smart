@@ -35,7 +35,10 @@ import { Separator } from "@/components/ui/separator";
 import { reflexio } from "@/lib/reflexio-client";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import { useRequestHostAttribution } from "@/lib/host-attribution";
-import { useLearningModelProvenance } from "@/lib/model-provenance";
+import {
+  modelProvenanceAvailable,
+  useLearningModelProvenance,
+} from "@/lib/model-provenance";
 import { cn } from "@/lib/utils";
 import { statusLabel as status } from "@/lib/status";
 import type { UserProfile } from "@/lib/types";
@@ -59,6 +62,7 @@ export default function PreferenceDetailPage({
   const [content, setContent] = useState("");
   const attribution = useRequestHostAttribution();
   const modelProvenance = useLearningModelProvenance(
+    source,
     "profile",
     profile?.profile_id ?? id,
   );
@@ -365,12 +369,16 @@ export default function PreferenceDetailPage({
                       }
                     />
                   )}
-                  <Meta
-                    label="Model"
-                    value={
-                      <LearningModelProvenanceView provenance={modelProvenance} />
-                    }
-                  />
+                  {modelProvenanceAvailable(source) && (
+                    <Meta
+                      label="Model"
+                      value={
+                        <LearningModelProvenanceView
+                          provenance={modelProvenance}
+                        />
+                      }
+                    />
+                  )}
                   {profile.source && (
                     <Meta label="Integration" value={profile.source} mono />
                   )}

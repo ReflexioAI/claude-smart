@@ -31,7 +31,10 @@ import { Separator } from "@/components/ui/separator";
 import { reflexio } from "@/lib/reflexio-client";
 import { formatTimestamp, truncateId } from "@/lib/format";
 import { useRequestHostAttribution } from "@/lib/host-attribution";
-import { useLearningModelProvenance } from "@/lib/model-provenance";
+import {
+  modelProvenanceAvailable,
+  useLearningModelProvenance,
+} from "@/lib/model-provenance";
 import { cn } from "@/lib/utils";
 import { statusLabel } from "@/lib/status";
 import type { StatusLabel } from "@/lib/status";
@@ -78,6 +81,7 @@ export default function ProjectSkillDetailPage({
   });
   const attribution = useRequestHostAttribution();
   const modelProvenance = useLearningModelProvenance(
+    source,
     "user_playbook",
     playbook?.user_playbook_id ?? id,
   );
@@ -368,12 +372,16 @@ export default function ProjectSkillDetailPage({
                       }
                     />
                   )}
-                  <Meta
-                    label="Model"
-                    value={
-                      <LearningModelProvenanceView provenance={modelProvenance} />
-                    }
-                  />
+                  {modelProvenanceAvailable(source) && (
+                    <Meta
+                      label="Model"
+                      value={
+                        <LearningModelProvenanceView
+                          provenance={modelProvenance}
+                        />
+                      }
+                    />
+                  )}
                   {playbook.source && (
                     <Meta label="Integration" value={playbook.source} mono />
                   )}
