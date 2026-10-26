@@ -96,6 +96,11 @@ uv run --project plugin --no-sync pytest -q -o addopts= tests
 Result: **1,184 passed in 397.93 seconds**. Two existing tar extraction
 deprecation warnings remain in packaging tests. All changed Python files pass
 Ruff lint/format; changed runtime modules pass Pyright with zero errors/warnings.
-Node syntax, package inclusion and `git diff --check` pass. The original
-enterprise checkout and installed plugin remain unchanged. No commit, push,
-PR, release, installation or live-service mutation was performed.
+Node syntax, package inclusion and `git diff --check` pass. At this implementation
+checkpoint, the original enterprise checkout and installed plugin were unchanged;
+no commit, push, PR, release, installation or live-service mutation had occurred.
+
+The user subsequently authorized PR creation, local Codex review through P0/P1
+clearance, and merge after CI passes. PR #200 rebases the implementation onto
+`cedc05f` and refreshes the locked vendor bundle and validation against that base.
+Release and installation remain outside this PR's scope.

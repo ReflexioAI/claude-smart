@@ -216,6 +216,7 @@ class ReflexioClient:
     finally:
         (gate / "allow").touch()
     deadline = time.monotonic() + 8
+    jobs = list((session_dir / "publish-outbox").glob("*.json"))
     while time.monotonic() < deadline:
         jobs = list((session_dir / "publish-outbox").glob("*.json"))
         if (gate / "saved.json").exists() and not jobs:
