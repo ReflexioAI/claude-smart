@@ -3573,8 +3573,22 @@ def test_backend_python_runner_exposes_metadata_and_forwards_reflexio_args(
         "}))\n"
     )
     output = tmp_path / "out.json"
-    env = os.environ.copy()
-    env.update({"OUT": str(output), "PYTHONPATH": str(tmp_path)})
+    # This stub exercises argument forwarding, not a configured organization.
+    # Real SDK imports elsewhere in the suite may initialize routing defaults.
+    # Account routing and HOME must not enter a metadata-only child process.
+    env = {
+        key: os.environ[key]
+        for key in ("PATH", "LANG", "SYSTEMROOT", "COMSPEC")
+        if key in os.environ
+    }
+    env.update(
+        {
+            "HOME": str(tmp_path),
+            "USERPROFILE": str(tmp_path),
+            "OUT": str(output),
+            "PYTHONPATH": str(tmp_path),
+        }
+    )
 
     result = subprocess.run(
         [
