@@ -129,17 +129,6 @@ export interface ClaudeSmartConfig {
   [extra: string]: string | boolean | undefined;
 }
 
-export type OptimizerMode = "auto" | "enabled" | "disabled";
-
-export interface ClaudeCodeHookConfig {
-  CLAUDE_SMART_ENABLE_OPTIMIZER: OptimizerMode;
-  effectiveValue: OptimizerMode;
-  localValue: OptimizerMode | null;
-  userValue: OptimizerMode | null;
-  settingsPath: string;
-  userSettingsPath: string;
-}
-
 export interface ReflexioExtractorConfig {
   extraction_definition_prompt?: string;
   [k: string]: unknown;

@@ -6807,7 +6807,6 @@ def _assert_installed_host_learning_e2e(
             "PYTHONPATH": os.pathsep.join(pythonpath_entries),
             "CLAUDE_SMART_STATE_DIR": str(home / ".claude-smart" / f"{host}-sessions"),
             "CLAUDE_SMART_HOOK_LOG": str(home / ".claude-smart" / f"{host}-hook.log"),
-            "CLAUDE_SMART_ENABLE_OPTIMIZER": "0",
             "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
             "CLAUDE_SMART_DASHBOARD_AUTOSTART": "0",
         }

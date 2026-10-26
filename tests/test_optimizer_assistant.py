@@ -447,3 +447,70 @@ def test_optimizer_preserves_explicit_learning_model(monkeypatch, model):
     monkeypatch.setattr(optimizer_assistant.subprocess, "run", run)
     assert optimizer_assistant._run_claude(prompt="test", system_prompt="") == "reply"
     assert calls[0][calls[0].index("--model") + 1] == model
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX plugin-root symlink layout")
+def test_installed_optimizer_helper_survives_plugin_root_refresh(tmp_path):
+    """An explicit stable backend path follows an install's refreshed root link."""
+    import shutil
+
+    root = Path(__file__).resolve().parents[1]
+    helper = Path(sys.executable).parent / "claude-smart-optimizer-assistant"
+    assert helper.is_file(), "install the plugin console entry points before testing"
+    home = tmp_path / "home"
+    home.mkdir()
+    fake_cli = tmp_path / "owned-cli"
+    fake_cli.write_text(
+        "#!/bin/sh\n"
+        'test "$CLAUDE_SMART_INTERNAL" = 1 || exit 44\n'
+        'echo \'{"result":"owned reply"}\'\n'
+    )
+    fake_cli.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        HOME=str(home),
+        USERPROFILE=str(home),
+        CLAUDE_SMART_CLI_PATH=str(fake_cli),
+        CLAUDE_SMART_HOST="claude-code",
+        CLAUDE_SMART_LEARNING_PROVIDER="claude-code",
+    )
+    env.pop("CODEX_HOME", None)
+    env.pop("CLAUDE_SMART_LEARNING_MODEL", None)
+    saved_binding = (
+        home / ".reflexio/plugin-root/.venv/bin/claude-smart-optimizer-assistant"
+    )
+    old_install = None
+    for version in ("1.0.0", "2.0.0"):
+        install = home / ".claude/plugins/cache/reflexioai/claude-smart" / version
+        install.mkdir(parents=True)
+        (install / "pyproject.toml").write_text(
+            (root / "plugin/pyproject.toml").read_text()
+        )
+        (install / ".venv").symlink_to(helper.parent.parent, target_is_directory=True)
+        subprocess.run(
+            ["bash", str(root / "plugin/scripts/ensure-plugin-root.sh"), str(install)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        assert (home / ".reflexio/plugin-root").resolve() == install
+        if old_install is not None:
+            shutil.rmtree(old_install)
+        result = subprocess.run(
+            [str(saved_binding)],
+            input=json.dumps(
+                {
+                    "messages": [{"role": "user", "content": "synthetic"}],
+                    "playbooks": [],
+                }
+            ),
+            text=True,
+            capture_output=True,
+            env=env,
+            check=True,
+            timeout=15,
+        )
+        assert json.loads(result.stdout) == {"content": "owned reply"}
+        old_install = install

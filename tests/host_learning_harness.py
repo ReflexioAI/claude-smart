@@ -20,18 +20,9 @@ class FakeReflexioAdapter:
         self.api_key = ""
         self.search_calls: list[dict[str, Any]] = []
         self.publish_calls: list[dict[str, Any]] = []
-        self.optimizer_defaults: list[dict[str, Any]] = []
 
     def fetch_stall_state(self) -> None:
         return None
-
-    def apply_optimizer_defaults(
-        self, *, script_path: str, timeout_seconds: int = 300
-    ) -> bool:
-        self.optimizer_defaults.append(
-            {"script_path": script_path, "timeout_seconds": timeout_seconds}
-        )
-        return True
 
     def search_all(
         self,

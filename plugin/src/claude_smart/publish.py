@@ -149,11 +149,9 @@ def _publish_unpublished_locked(
         skip_aggregation (bool): When True, reflexio extracts preferences and
             raw project-specific skill entries but skips the rollup into
             shared skills. claude-smart passes False on every publish
-            path so ``user_playbooks`` roll up into ``agent_playbooks``; aggregation
-            additionally requires `aggregation_config` to be set on
-            reflexio's `user_playbook_extractor_configs[0]` and
-            `optimize_agent_playbooks=true` at the top level — otherwise
-            the rollup silently no-ops.
+            path to permit ``user_playbooks`` to roll up into ``agent_playbooks``.
+            The server's ``user_playbook_extractor_config.aggregation_config``
+            owns aggregation policy; optimizer opt-ins do not enable rollups.
         adapter (Adapter | None): Injection point for tests; a fresh
             ``Adapter()`` is constructed when omitted.
 

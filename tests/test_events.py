@@ -1485,9 +1485,6 @@ def test_session_start_emits_continue_without_memory_lookup(
     session_dir, monkeypatch
 ) -> None:
     class StubAdapter:
-        def apply_optimizer_defaults(self, **_kw):
-            return True
-
         def fetch_all(self, **_kw):
             raise AssertionError("SessionStart must not fetch memory")
 
@@ -1509,9 +1506,6 @@ def test_session_start_ignores_available_memory_and_continues(
     class Stub:
         url = "http://localhost:8071/"
 
-        def apply_optimizer_defaults(self, **_kw):
-            return True
-
         def fetch_all(self, **_kw):
             raise AssertionError("SessionStart must not fetch memory")
 
@@ -1527,133 +1521,12 @@ def test_session_start_ignores_available_memory_and_continues(
     }
 
 
-def test_session_start_skips_optimizer_defaults_when_opted_out(
-    session_dir, monkeypatch
-) -> None:
-    optimizer_calls: list[dict[str, Any]] = []
-
-    class Stub:
-        url = "http://localhost:8071/"
-
-        def apply_optimizer_defaults(self, **kwargs):
-            optimizer_calls.append(kwargs)
-            return True
-
-        def fetch_all(self, **_kw):
-            return ([], [], [])
-
-    monkeypatch.setenv("CLAUDE_SMART_ENABLE_OPTIMIZER", "0")
-    monkeypatch.setattr(
-        "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
-    )
-    buf = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", buf)
-
-    session_start.handle({"session_id": "s1", "source": "startup"})
-
-    assert optimizer_calls == []
-
-
-def test_session_start_applies_optimizer_defaults_by_default(
-    session_dir, monkeypatch
-) -> None:
-    optimizer_calls: list[dict[str, Any]] = []
-
-    class Stub:
-        url = "http://localhost:8071/"
-
-        def apply_optimizer_defaults(self, **kwargs):
-            optimizer_calls.append(kwargs)
-            return True
-
-        def fetch_all(self, **_kw):
-            return ([], [], [])
-
-    monkeypatch.setattr(session_start.sys, "executable", "/tmp/venv/bin/python")
-    monkeypatch.setattr(
-        "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
-    )
-    buf = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", buf)
-
-    session_start.handle({"session_id": "s1", "source": "startup"})
-
-    assert optimizer_calls == [
-        {
-            "script_path": "/tmp/venv/bin/claude-smart-optimizer-assistant",
-            "timeout_seconds": 300,
-        }
-    ]
-
-
-def test_session_start_skips_optimizer_defaults_for_hosted_reflexio_by_default(
-    session_dir, monkeypatch
-) -> None:
-    optimizer_calls: list[dict[str, Any]] = []
-
-    class Stub:
-        url = "https://www.reflexio.ai/"
-
-        def apply_optimizer_defaults(self, **kwargs):
-            optimizer_calls.append(kwargs)
-            return True
-
-        def fetch_all(self, **_kw):
-            return ([], [], [])
-
-    monkeypatch.setattr(
-        "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
-    )
-    buf = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", buf)
-
-    session_start.handle({"session_id": "s1", "source": "startup"})
-
-    assert optimizer_calls == []
-
-
-def test_session_start_can_force_optimizer_defaults_for_hosted_reflexio(
-    session_dir, monkeypatch
-) -> None:
-    optimizer_calls: list[dict[str, Any]] = []
-
-    class Stub:
-        url = "https://www.reflexio.ai/"
-
-        def apply_optimizer_defaults(self, **kwargs):
-            optimizer_calls.append(kwargs)
-            return True
-
-        def fetch_all(self, **_kw):
-            return ([], [], [])
-
-    monkeypatch.setenv("CLAUDE_SMART_ENABLE_OPTIMIZER", "1")
-    monkeypatch.setattr(session_start.sys, "executable", "/tmp/venv/bin/python")
-    monkeypatch.setattr(
-        "claude_smart.events.session_start.Adapter", lambda *a, **kw: Stub()
-    )
-    buf = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", buf)
-
-    session_start.handle({"session_id": "s1", "source": "startup"})
-
-    assert optimizer_calls == [
-        {
-            "script_path": "/tmp/venv/bin/claude-smart-optimizer-assistant",
-            "timeout_seconds": 300,
-        }
-    ]
-
-
 def test_session_start_never_fetches_memory_for_any_source(
     session_dir, monkeypatch
 ) -> None:
     calls: list[dict[str, Any]] = []
 
     class Stub:
-        def apply_optimizer_defaults(self, **_kw):
-            return True
-
         def fetch_all(self, **kwargs):
             calls.append(kwargs)
             raise AssertionError("SessionStart must not fetch memory")

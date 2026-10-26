@@ -24,8 +24,7 @@ def session_dir(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def clear_install_environment(monkeypatch, tmp_path):
-    """Keep optimizer setup and live account paths out of isolated installs."""
-    monkeypatch.delenv("CLAUDE_SMART_ENABLE_OPTIMIZER", raising=False)
+    """Keep live account paths out of isolated installs."""
     # Isolated HOME subprocesses must never inherit a live Orca/Codex account.
     monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_HOOK_LOG", raising=False)

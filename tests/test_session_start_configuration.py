@@ -15,11 +15,11 @@ import pytest
 
 
 @pytest.mark.parametrize("legacy_value", [None, "1", "", "invalid"])
-def test_session_start_preserves_server_extraction_policy(tmp_path, legacy_value):
-    """Repeated sessions must not read/replace the server's extraction policy.
+@pytest.mark.parametrize("optimizer_value", [None, "0", "1", "invalid"])
+def test_session_start_preserves_server_policy(tmp_path, legacy_value, optimizer_value):
+    """Repeated sessions must not read or replace server configuration.
 
-    Keep the independent optimizer opt-in disabled so its existing configuration
-    path cannot obscure an extraction-policy regression. Exercise the real hook
+    Exercise the real hook
     dispatcher, Adapter and installed Reflexio SDK over loopback HTTP.
     """
     requests: list[tuple[str, str]] = []
@@ -27,6 +27,17 @@ def test_session_start_preserves_server_extraction_policy(tmp_path, legacy_value
         "window_size": 23,
         "stride_size": 7,
         "future_server_field": {"preserve": [1, 2]},
+        "playbook_optimizer_config": {
+            "enabled": False,
+            "optimize_agent_playbooks": True,
+            "auto_update_pending_agent_playbooks": False,
+            "user_playbooks_enabled": True,
+            "max_metric_calls": 7,
+            "min_commit_windows": 4,
+            "assistant_script_path": "/operator/assistant",
+            "webhook_timeout_seconds": 67,
+            "future_optimizer_policy": {"preserve": True},
+        },
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -49,7 +60,7 @@ def test_session_start_preserves_server_extraction_policy(tmp_path, legacy_value
             requests.append(("POST", self.path))
             self.send_error(500, "SessionStart must not write extraction policy")
 
-        def log_message(self, *_args):
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -71,10 +82,12 @@ def test_session_start_preserves_server_extraction_policy(tmp_path, legacy_value
         USERPROFILE=str(tmp_path),
         REFLEXIO_URL=f"http://127.0.0.1:{server.server_port}",
         REFLEXIO_API_KEY="owned-test-key",
-        CLAUDE_SMART_ENABLE_OPTIMIZER="0",
         CLAUDE_SMART_STATE_DIR=str(tmp_path / "state"),
         PYTHONPATH=str(Path(__file__).resolve().parents[1] / "plugin" / "src"),
     )
+    env.pop("CLAUDE_SMART_ENABLE_OPTIMIZER", None)
+    if optimizer_value is not None:
+        env["CLAUDE_SMART_ENABLE_OPTIMIZER"] = optimizer_value
     for name in ("CLAUDE_SMART_WINDOW_SIZE", "CLAUDE_SMART_STRIDE_SIZE"):
         env.pop(name, None)
         if legacy_value is not None:
@@ -84,6 +97,8 @@ def test_session_start_preserves_server_extraction_policy(tmp_path, legacy_value
             # Simulate an operator changing server policy between sessions.
             config["window_size"] = 23 + index
             config["stride_size"] = 7 + index
+            config["playbook_optimizer_config"]["enabled"] = bool(index)
+            config["playbook_optimizer_config"]["max_metric_calls"] = 7 + index
             expected = copy.deepcopy(config)
             result = subprocess.run(
                 [sys.executable, "-m", "claude_smart.hook", "session-start"],

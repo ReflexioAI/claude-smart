@@ -361,48 +361,6 @@ class Adapter:
                 http_status=status if isinstance(status, int) else None,
             ), None
 
-    def apply_optimizer_defaults(
-        self, *, script_path: str, timeout_seconds: int = 300
-    ) -> bool:
-        """Push claude-smart's shared skill optimizer defaults to reflexio.
-
-        Idempotent compare-then-write: reads ``Config``, only issues a
-        ``set_config`` when the server-side values differ from the desired
-        dict below. SessionStart calls this only for local Reflexio URLs by
-        default; ``CLAUDE_SMART_ENABLE_OPTIMIZER=1`` forces hosted URLs, and
-        ``CLAUDE_SMART_ENABLE_OPTIMIZER=0`` disables it everywhere.
-        """
-        client = self._get_client()
-        if client is None:
-            return False
-        try:
-            config = client.get_config()
-            opt = getattr(config, "playbook_optimizer_config", None)
-            if opt is None:
-                return False
-
-            desired = {
-                "enabled": True,
-                "optimize_user_playbooks": False,
-                "optimize_agent_playbooks": True,
-                "auto_update_user_playbooks": True,
-                "min_commit_windows": 1,
-                "max_metric_calls": 15,
-                "assistant_script_path": script_path,
-                "assistant_script_args": [],
-                "webhook_url": None,
-                "webhook_timeout_seconds": timeout_seconds,
-            }
-            if all(getattr(opt, key, None) == value for key, value in desired.items()):
-                return True
-            for key, value in desired.items():
-                setattr(opt, key, value)
-            client.set_config(config)
-            return True
-        except Exception as exc:  # noqa: BLE001 — adapter must never raise.
-            _LOGGER.warning("apply_optimizer_defaults failed: %s", exc)
-            return False
-
     # -----------------------------------------------------------------
     # Stall-state reads/writes (used by SessionStart banner)
     # -----------------------------------------------------------------

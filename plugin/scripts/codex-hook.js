@@ -260,7 +260,6 @@ function loadReflexioEnv() {
     "CLAUDE_SMART_OPENCODE_PATH",
     "CLAUDE_SMART_CLI_TIMEOUT",
     "CLAUDE_SMART_STATE_DIR",
-    "CLAUDE_SMART_ENABLE_OPTIMIZER",
   ]);
   for (const rawLine of text.split(/\r?\n/)) {
     let line = rawLine.trim();

@@ -18,7 +18,7 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 
 | Handler | Hook | Role |
 |---------|------|------|
-| `session_start.py` | SessionStart | Apply extraction defaults, render stall banner, push optimizer context. |
+| `session_start.py` | SessionStart | Recover Codex publish intents and render the stall banner; leave server configuration unchanged. |
 | `user_prompt.py` | UserPromptSubmit | Inject learned playbooks/preferences into context. |
 | `pre_tool.py` | PreToolUse (Edit/Write/Bash/NotebookEdit) | Inject project-specific context before tool execution. |
 | `post_tool.py` | PostToolUse | Buffer the tool invocation (name, input, response, duration) into session state. |

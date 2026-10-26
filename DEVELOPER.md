@@ -57,7 +57,6 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | `REFLEXIO_ROW_LIMIT_INTERACTIONS` | `500` (local installer) | Existing SDK interaction-row cap, saved in `~/.claude-smart/.env`; `0` disables cap cleanup. Existing file and process overrides remain authoritative. |
 | `EMBEDDING_PORT` | `8072` | Local embedding daemon port. Shared by Claude Code and Codex on the same machine. |
 | `REFLEXIO_RERANK_ENABLED` | `false` (hard-set by `backend-service.sh`) | claude-smart disables Reflexio's shared-service cross-encoder completely, so the local inference process skips reranker model loading and prewarm. This is intentionally not user-overridable in the bundled backend. |
-| `CLAUDE_SMART_ENABLE_OPTIMIZER` | auto: local Reflexio only | Hook-side env var that controls shared skill optimization and rollups during `SessionStart`. Set to `1` to force optimizer defaults for hosted Reflexio, or `0` to disable everywhere. Set it in Claude Code settings, not `~/.reflexio/.env`. |
 | `CLAUDE_SMART_CITATIONS` | `on` | Controls the final `✨ claude-smart rule applied` marker instruction. `on` (default) injects a compact instruction asking the assistant to cite only memories that materially changed the answer. `off` skips injection of the citation instruction entirely and strips any stray marker line from the assistant text before publishing. Legacy values `auto` and `marker-only` are accepted as enabled aliases. Set in Claude Code settings (hook env), not `~/.reflexio/.env`. |
 | `CLAUDE_SMART_CITATION_LINK_STYLE` | `markdown` | Controls the visible links in the final `✨ claude-smart rule applied` marker. `markdown` asks the model to emit `[human title](dashboard URL)` links and is the Codex default because Codex renders markdown links in assistant messages. `osc8` asks it to emit terminal-native OSC 8 hyperlinks so the human title can be clickable without showing the URL; unsupported terminals should fall back to markdown links. |
 | `CLAUDE_SMART_DASHBOARD_URL` | `http://localhost:3001` | Base URL used in injected citation targets and the final `✨ claude-smart rule applied` marker links. Override only if the local dashboard is exposed on another host or port. Model-facing citation links use short `/rules/{citationId}` resolver URLs; canonical direct links remain `/skills/project/{id}`, `/skills/shared/{id}`, and `/preferences/project/{id}`. `/preferences/{id}` remains a compatibility alias. |
@@ -813,3 +812,33 @@ Retry tests replace the Stop handler's local time reference, not the global
 `time.sleep` function. Persistence/file-lock sleeps must not be counted as
 transcript retries. Native executable fallback tests run on the Windows and
 macOS dependency-platform jobs.
+
+## Optimizer backend binding
+
+Session hooks do not read or write Reflexio configuration. Configure
+`playbook_optimizer_config` through the server's configuration API/UI, including
+its enabled state, target/adoption permissions, quality and cost budgets, and
+assistant backend. The plugin does not replace these choices with local defaults
+or automatically activate optimization on a fresh server. Existing saved values
+remain unchanged, including disabled settings and external webhook backends.
+
+The installed `claude-smart-optimizer-assistant` console script still implements
+the Reflexio local-script protocol. For a server on the **same machine and user
+account**, the existing install-managed `~/.reflexio/plugin-root` link provides a
+stable route through plugin cache updates. Resolve `$HOME` to an absolute path
+when configuring `assistant_script_path`, for example
+`/home/alice/.reflexio/plugin-root/.venv/bin/claude-smart-optimizer-assistant` on
+POSIX. Do not send this client-machine path to a hosted/remote server; the
+executable must exist in the server's filesystem. On Windows the console script
+lives in `.venv/Scripts/claude-smart-optimizer-assistant.exe`; use the actual
+server-side absolute path (the installer may use `plugin-root.txt` when junctions
+are unavailable).
+
+The plugin does not rewrite historical absolute helper paths or reset other
+optimizer choices during an update. A previously configured version-specific
+path remains the server's binding and can become stale when that installation
+is removed. If that is already your saved binding, explicitly point it at the
+stable same-machine link or a separately managed server executable. This change
+does not repair an already-stale binding. The stable-link probe verifies helper
+execution after the normal link is refreshed, not a customer configuration
+migration or remote deployment.

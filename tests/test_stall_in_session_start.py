@@ -142,6 +142,3 @@ class _AdapterStub:
     # Mirror the rest of Adapter's API as needed — return [] / no-op.
     def fetch_both(self, **kw):
         return [], []
-
-    def apply_optimizer_defaults(self, **kw):
-        return True
