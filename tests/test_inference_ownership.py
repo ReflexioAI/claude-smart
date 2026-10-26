@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.metadata import distribution
 import os
 from pathlib import Path
 import re
@@ -31,20 +32,45 @@ def _functions() -> str:
 
 
 @pytest.mark.parametrize("crlf", [False, True])
-@pytest.mark.parametrize("legacy", ["0", "1"])
 @pytest.mark.parametrize(
     "endpoint", [None, "http://127.0.0.1:9999", "https://owned.invalid"]
 )
-def test_health_and_cleanup_follow_real_sdk_ownership(tmp_path, legacy, endpoint, crlf):
-    _run_checks(tmp_path, legacy=legacy, endpoint=endpoint, failure=None, crlf=crlf)
+def test_health_and_cleanup_follow_real_sdk_ownership(tmp_path, endpoint, crlf):
+    _run_checks(tmp_path, legacy=None, endpoint=endpoint, failure=None, crlf=crlf)
 
 
 @pytest.mark.parametrize("failure", ["exit", "invalid"])
 def test_unknown_ownership_is_not_healthy_and_never_kills(tmp_path, failure):
-    _run_checks(tmp_path, legacy="1", endpoint=None, failure=failure)
+    _run_checks(tmp_path, legacy=None, endpoint=None, failure=failure)
 
 
-def _run_checks(tmp_path, *, legacy, endpoint, failure, crlf=False):
+@pytest.mark.parametrize("legacy", ["", "0", "1", "private-not-to-log"])
+@pytest.mark.parametrize(
+    "endpoint", [None, "http://127.0.0.1:9999", "https://owned.invalid"]
+)
+def test_retired_setting_fails_ownership_before_process_actions(
+    tmp_path, legacy, endpoint
+):
+    _run_checks(tmp_path, legacy=legacy, endpoint=endpoint, failure=None)
+
+
+@pytest.mark.parametrize("legacy", [None, "1"])
+def test_ownership_probe_also_supports_installed_sdk_baseline(tmp_path, legacy):
+    _run_checks(tmp_path, legacy=legacy, endpoint=None, failure=None, installed=True)
+
+
+def _run_checks(tmp_path, *, legacy, endpoint, failure, crlf=False, installed=False):
+    vendor = (
+        Path(str(distribution("reflexio-ai").locate_file("")))
+        if installed
+        else ROOT / "plugin" / "vendor" / "reflexio"
+    )
+    assert (vendor / "reflexio").is_dir(), (
+        "Materialize the selected SDK before this gate"
+    )
+    if not installed:
+        assert (vendor / "reflexio" / "removed_env.py").is_file()
+
     calls = tmp_path / "queries"
     actions = tmp_path / "actions"
     python = tmp_path / "selected-python"
@@ -67,6 +93,7 @@ def _run_checks(tmp_path, *, legacy, endpoint, failure, crlf=False):
                     else ""
                 )
                 + "runpy.run_path(sys.argv[1], run_name='__main__')\n"
+                + f"assert Path(sys.modules['reflexio'].__file__).resolve().is_relative_to(Path({str(vendor)!r}).resolve())\n"
             )
         )
     )
@@ -77,15 +104,18 @@ def _run_checks(tmp_path, *, legacy, endpoint, failure, crlf=False):
         "REFLEXIO_EMBEDDING_DAEMON_HOST",
         "REFLEXIO_DISABLE_LOCAL_EMBEDDING_DAEMON",
         "PYTHON_DOTENV_DISABLED",
+        "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
     ):
         env.pop(key, None)
     env.update(
         HOME=str(tmp_path),
         USERPROFILE=str(tmp_path),
         REFLEXIO_ENV_FILE=str(tmp_path / "selected.env"),
-        CLAUDE_SMART_USE_LOCAL_EMBEDDING=legacy,
         OWNED_ACTIONS=str(actions),
     )
+    env["PYTHONPATH"] = os.pathsep.join([str(vendor), env.get("PYTHONPATH", "")])
+    if legacy is not None:
+        env["CLAUDE_SMART_USE_LOCAL_EMBEDDING"] = legacy
     # Endpoint comes from the same explicitly selected file the launcher reads.
     if endpoint:
         (tmp_path / "selected.env").write_text(
@@ -129,8 +159,11 @@ def _run_checks(tmp_path, *, legacy, endpoint, failure, crlf=False):
     if not endpoint:
         assert not (tmp_path / "selected.env").exists()
         assert not (tmp_path / ".reflexio").exists()
-    if failure:
+    if failure or legacy is not None:
         assert result.stdout.splitlines() == ["failed"] * 3
+        if legacy is not None:
+            assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" in result.stderr
+            assert "private-not-to-log" not in result.stderr
         assert "skipping embedding cleanup" in result.stderr
         assert not actions.exists()
     elif endpoint:

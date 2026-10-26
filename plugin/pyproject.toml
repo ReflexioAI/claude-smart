@@ -29,6 +29,9 @@ dependencies = [
     "reflexio-ai>=0.2.32",
     # Keep both the PyPI baseline and vendored runtime above the security floor.
     "litellm>=1.103.1,<2",
+    # The pinned vendor uses strict JSON decoding beyond the PyPI baseline.
+    # Vendor installation uses --no-deps, so keep its requirement in the lock.
+    "simplejson>=4.2.0",
     "einops>=0.8.0",
     # Native SQLite vector KNN for local storage. Reflexio can fall back to
     # Python ranking without this, but installed claude-smart should include

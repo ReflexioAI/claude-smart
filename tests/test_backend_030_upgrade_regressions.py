@@ -142,7 +142,8 @@ def _write_config_with_null_db_path(home: Path) -> None:
         timeout=120,
     )
     assert json.loads(_config_file(home).read_text())["storage_config"] == {
-        "db_path": None
+        "db_path": None,
+        "type": "sqlite",
     }
 
 
@@ -166,7 +167,8 @@ def test_backend_runner_pins_reflexio_db_so_history_is_opened(tmp_path: Path) ->
 
     assert result.returncode == 0, result.stderr
     assert json.loads(_config_file(tmp_path).read_text())["storage_config"] == {
-        "db_path": str(legacy)
+        "db_path": str(legacy),
+        "type": "sqlite",
     }
     assert _opened_db_path(tmp_path) == str(legacy)
     conn = sqlite3.connect(legacy)
@@ -184,7 +186,8 @@ def test_backend_runner_pins_a_fresh_install(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     config = json.loads(_config_file(tmp_path).read_text())
     assert config["storage_config"] == {
-        "db_path": str(tmp_path / "data" / "reflexio.db")
+        "db_path": str(tmp_path / "data" / "reflexio.db"),
+        "type": "sqlite",
     }
 
 
@@ -193,7 +196,10 @@ def test_backend_runner_keeps_a_custom_db_path(tmp_path: Path) -> None:
     _write_config_with_null_db_path(tmp_path)
     config_file = _config_file(tmp_path)
     config = json.loads(config_file.read_text())
-    config["storage_config"] = {"db_path": str(tmp_path / "elsewhere.db")}
+    config["storage_config"] = {
+        "type": "sqlite",
+        "db_path": str(tmp_path / "elsewhere.db"),
+    }
     config_file.write_text(json.dumps(config))
     before = config_file.read_bytes()
 
@@ -355,27 +361,19 @@ def test_pin_does_not_let_litellm_load_a_parent_dotenv(tmp_path: Path) -> None:
 def test_backend_env_makes_the_launcher_start_the_local_embedding_daemon(
     tmp_path: Path,
 ) -> None:
-    """Run the script's embedding env block, then ask the vendored launcher.
-
-    Reflexio's launcher skips the local embedding daemon whenever
-    REFLEXIO_EMBEDDING_SERVICE_URL is set, so the env backend-service.sh
-    builds must leave it unset for the daemon to start at all.
-    """
+    """The plugin leaves default endpoint selection to the selected SDK."""
     service = BACKEND_SERVICE.read_text()
-    start = service.index('export CLAUDE_SMART_USE_LOCAL_EMBEDDING="')
-    end = service.index("\nfi\n", start) + 4
+    assert "export REFLEXIO_EMBEDDING_SERVICE_URL=" not in service
+    assert "export REFLEXIO_EMBEDDING_PROVIDER=" not in service
+    assert "export CLAUDE_SMART_USE_LOCAL_EMBEDDING=" not in service
     probe = (
         "from reflexio.cli.run_services import should_start_local_embedding_service\n"
         "from reflexio.server.llm.providers.embedding_service_provider import (\n"
-        "    embedding_service_url,\n"
+        "    inference_service_url,\n"
         ")\n"
-        "print(should_start_local_embedding_service(), embedding_service_url())\n"
+        "print(should_start_local_embedding_service(), inference_service_url())\n"
     )
-    script = (
-        "export EMBEDDING_PORT=18999\n"
-        + service[start:end]
-        + f'"{sys.executable}" -P -c "$PROBE"\n'
-    )
+    script = "export EMBEDDING_PORT=18999\n" + f'"{sys.executable}" -P -c "$PROBE"\n'
     env = _env(tmp_path)
     for key in (
         "REFLEXIO_EMBEDDING_SERVICE_URL",
@@ -398,3 +396,80 @@ def test_backend_env_makes_the_launcher_start_the_local_embedding_daemon(
     assert result.stdout.strip().splitlines()[-1] == ("True http://127.0.0.1:18999"), (
         result.stdout + result.stderr
     )
+
+
+@requires_vendor
+@pytest.mark.parametrize("derived", [False, True])
+@pytest.mark.parametrize("historical_alias", [False, True])
+def test_explicit_saved_config_upgrade_preserves_original_and_database(
+    tmp_path, derived, historical_alias
+):
+    """Explicit conversion preserves old SQLite identity and original policy."""
+    legacy = _write_legacy_db_with_foreign_label(tmp_path)
+    if derived:
+        target = legacy.with_name(f"reflexio_{ORG}.db")
+        legacy.rename(target)
+    else:
+        target = legacy
+    _write_config_with_null_db_path(tmp_path)
+    original = _config_file(tmp_path)
+    config = json.loads(original.read_text())
+    config["storage_config"].pop("type")
+    if historical_alias:
+        config["storage_config"]["storage_type"] = "sqlite"
+    original.write_text(json.dumps(config))
+    before = original.read_bytes()
+    # Plain untagged SQLite still loads; a retired field requires conversion.
+    # Neither read path may quietly rewrite the saved document.
+    rejected = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-c",
+            f"from reflexio.server.services.configurator.local_file_config_storage import LocalFileConfigStorage; LocalFileConfigStorage(org_id={ORG!r}).load_config()",
+        ],
+        env=_env(tmp_path),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert (rejected.returncode != 0) == historical_alias, rejected.stderr
+    assert original.read_bytes() == before
+    converted = original.with_suffix(".canonical.json")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-m",
+            "reflexio.cli",
+            "config",
+            "upgrade-file",
+            str(original),
+            "--output",
+            str(converted),
+        ],
+        env=_env(tmp_path),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert original.read_bytes() == before
+    canonical = json.loads(converted.read_text())
+    assert canonical["storage_config"] == {"type": "sqlite", "db_path": None}
+    assert {
+        key: value for key, value in canonical.items() if key != "storage_config"
+    } == {key: value for key, value in config.items() if key != "storage_config"}
+    backup = original.with_suffix(".pre-upgrade.json")
+    original.rename(backup)
+    converted.rename(original)
+    result = _run_runner(tmp_path, "--claude-smart-backend=1")
+    assert result.returncode == 0, result.stderr
+    assert backup.read_bytes() == before
+    assert _opened_db_path(tmp_path) == str(target)
+    with sqlite3.connect(target) as db:
+        assert db.execute("SELECT note FROM claude_smart_history").fetchall() == [
+            ("remembered",)
+        ]

@@ -212,24 +212,6 @@ export default function ConfigureEnvPage() {
 
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <Label htmlFor="use-local-embed">
-                    CLAUDE_SMART_USE_LOCAL_EMBEDDING
-                  </Label>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Use in-process ONNX embedder (offline-friendly).
-                  </p>
-                </div>
-                <Switch
-                  id="use-local-embed"
-                  checked={!!config.CLAUDE_SMART_USE_LOCAL_EMBEDDING}
-                  onCheckedChange={(v) =>
-                    update("CLAUDE_SMART_USE_LOCAL_EMBEDDING", v)
-                  }
-                />
-              </div>
-
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
                   <Label htmlFor="read-only-mode">CLAUDE_SMART_READ_ONLY</Label>
                   <p className="text-xs text-muted-foreground mt-0.5">
                     Keep session context available but skip publishing

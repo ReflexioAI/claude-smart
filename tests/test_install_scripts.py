@@ -90,6 +90,7 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         f"  cat > \"$PWD/.venv/bin/python\" <<'PYSH'\n"
         "#!/bin/sh\n"
         'if [ "$1" = "-P" ]; then shift; fi\n'
+        'case "$1" in */backend-inference-owner.py) [ "${CLAUDE_SMART_TEST_INFERENCE_OWNER:-}" != "exit" ] || exit 1; printf "%s\\n" "${CLAUDE_SMART_TEST_INFERENCE_OWNER:-colocated}"; exit 0 ;; esac\n'
         'if [ "$1" = "-" ] && [ "$2" = "onnxruntime" ] && [ -n "${CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS:-}" ]; then\n'
         '  exit "$CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS"\n'
         "fi\n"
@@ -471,7 +472,11 @@ def test_backend_service_forces_utf8_stdio_for_managed_backend() -> None:
 def test_backend_service_uses_prepared_venv_reflexio_cli() -> None:
     service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
-    assert 'backend_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"' in service
+    assert 'claude_smart_prepare_backend_import_context "$PLUGIN_ROOT"' in service
+    assert (
+        'backend_python="$(claude_smart_plugin_python "$plugin_root")"'
+        in LIB.read_text()
+    )
     assert '"$backend_python" "$HERE/backend-python-runner.py"' in service
     assert "-- services start" in service
     assert 'uv run --project "$PLUGIN_ROOT" --no-sync --quiet' not in service
@@ -481,7 +486,7 @@ def test_backend_service_uses_prepared_venv_reflexio_cli() -> None:
         'uv pip install --project "$PLUGIN_ROOT" --python "$plugin_python" '
         '--quiet --reinstall --no-deps "$vendor"'
     ) in service
-    assert 'vendor_pythonpath="$VENDORED_REFLEXIO"' in service
+    assert 'vendor_pythonpath="$plugin_root/vendor/reflexio"' in LIB.read_text()
     assert 'verify_bundled_reflexio_import "$backend_python"' in service
     assert 'PYTHONPATH="$backend_pythonpath"' in service
 
@@ -740,7 +745,6 @@ def test_smart_install_repairs_local_env_defaults() -> None:
 
     assert 'touch "$REFLEXIO_ENV"' in script
     assert "CLAUDE_SMART_USE_LOCAL_CLI" in script
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" in script
     assert "CLAUDE_SMART_READ_ONLY=0" in script
     assert "CLAUDE_SMART_HOST=claude-code" in script
     assert "CLAUDE_SMART_USE_LOCAL_CLI=" in script.split("install_complete()", 1)[1]
@@ -1101,7 +1105,7 @@ def test_installer_mode_matches_runtime_resolution(
     # A local report must leave the local backend its provider defaults.
     if not installer_managed:
         assert "CLAUDE_SMART_USE_LOCAL_CLI=" in final_text, context
-        assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=" in final_text, context
+        assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in final_text, context
     if "REFLEXIO_URL" in final_text and "REFLEXIO_URL" not in file_text:
         assert re.search(r'^REFLEXIO_API_KEY="?[^"\s]', final_text, re.MULTILINE), (
             context
@@ -1255,7 +1259,7 @@ def test_setup_script_local_mode_creates_env(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     text = (tmp_path / ".claude-smart" / ".env").read_text()
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
     assert 'CLAUDE_SMART_READ_ONLY="0"' in text
 
 
@@ -1319,7 +1323,7 @@ def test_setup_script_local_mode_cleans_managed_keys(tmp_path: Path) -> None:
     assert "REFLEXIO_API_KEY" not in text
     assert "REFLEXIO_USER_ID" not in text
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
     assert "CLAUDE_SMART_READ_ONLY=1" in text
     assert 'CLAUDE_SMART_READ_ONLY="0"' not in text
 
@@ -1335,7 +1339,7 @@ def test_setup_script_local_mode_replaces_managed_only_env(tmp_path: Path) -> No
     text = env_path.read_text()
     assert "REFLEXIO_API_KEY" not in text
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
     assert 'CLAUDE_SMART_READ_ONLY="0"' in text
 
 
@@ -1540,9 +1544,7 @@ def test_node_installer_ignores_stale_url_without_api_key(tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     assert (
-        "CLAUDE_SMART_USE_LOCAL_CLI, "
-        "CLAUDE_SMART_USE_LOCAL_EMBEDDING, CLAUDE_SMART_READ_ONLY, "
-        "CLAUDE_SMART_HOST.\n"
+        "CLAUDE_SMART_USE_LOCAL_CLI, CLAUDE_SMART_READ_ONLY, CLAUDE_SMART_HOST.\n"
     ) in result.stdout
     assert "Using local Reflexio backend at http://localhost:8071/." in result.stdout
     # ~/.reflexio/.env belongs to other Reflexio tools: never rewritten.
@@ -1550,7 +1552,7 @@ def test_node_installer_ignores_stale_url_without_api_key(tmp_path: Path) -> Non
     runtime_text = claude_smart_env_path.read_text()
     assert "REFLEXIO_URL" not in runtime_text
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in runtime_text
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in runtime_text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in runtime_text
     assert 'CLAUDE_SMART_READ_ONLY="0"' in runtime_text
     assert "CLAUDE_SMART_HOST=opencode" in runtime_text
 
@@ -1592,7 +1594,7 @@ def test_node_installer_updates_existing_host_and_local_defaults(
     assert "CLAUDE_SMART_HOST=opencode" in text
     assert "CLAUDE_SMART_HOST=codex" not in text
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
     assert 'CLAUDE_SMART_READ_ONLY="1"' in text
 
 
@@ -3515,8 +3517,13 @@ def test_backend_service_verifies_bundled_reflexio_runtime_identity() -> None:
     assert "module.relative_to(vendor)" in backend
     assert "reflexio import resolved outside bundled vendor" in backend
     assert "bundled Reflexio import preflight failed" in backend
-    assert 'vendor_pythonpath="$VENDORED_REFLEXIO"' in backend
-    assert 'vendor_pythonpath="$VENDORED_REFLEXIO_FOR_PYTHON"' in backend
+    assert 'claude_smart_prepare_backend_import_context "$PLUGIN_ROOT"' in backend
+    shared = LIB.read_text()
+    assert 'vendor_pythonpath="$plugin_root/vendor/reflexio"' in shared
+    assert (
+        'vendor_pythonpath="$(claude_smart_to_windows_path "$vendor_pythonpath")"'
+        in shared
+    )
     assert (
         'verify_bundled_reflexio_import "$backend_python" "$backend_pythonpath" "$VENDORED_REFLEXIO_FOR_PYTHON"'
         in backend
@@ -4353,7 +4360,9 @@ def test_smart_install_locked_sync_success_does_not_refresh_lock(
     ]
 
 
-def test_smart_install_persists_local_embedding_override(tmp_path: Path) -> None:
+def test_smart_install_does_not_persist_retired_embedding_export(
+    tmp_path: Path,
+) -> None:
     _plugin_root, smart_install, env = _prepare_smart_install_sync_fixture(
         tmp_path,
         mode="fresh",
@@ -4371,7 +4380,7 @@ def test_smart_install_persists_local_embedding_override(tmp_path: Path) -> None
     assert result.returncode == 0, result.stderr
     text = (tmp_path / ".claude-smart" / ".env").read_text()
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
 
 
 def test_smart_install_rerun_preserves_existing_host(tmp_path: Path) -> None:
@@ -4695,7 +4704,7 @@ def test_smart_install_repairs_reflexio_template_env_drift(tmp_path: Path) -> No
     env_text = reflexio_env.read_text()
     assert "OPENAI_API_KEY=" in env_text
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in env_text
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in env_text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in env_text
     assert 'CLAUDE_SMART_READ_ONLY="0"' in env_text
     assert (tmp_path / "uv.log").read_text().count(
         "sync --locked --python 3.12 --quiet"
@@ -4720,7 +4729,8 @@ def test_backend_service_configures_shared_embedding_daemon() -> None:
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
     assert 'EMBEDDING_PORT="${EMBEDDING_PORT:-8072}"' in backend
-    assert "REFLEXIO_EMBEDDING_PROVIDER:-local_service" in backend
+    assert "REFLEXIO_EMBEDDING_PROVIDER:-local_service" not in backend
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in backend
     assert "export REFLEXIO_EMBEDDING_SERVICE_URL" not in backend
 
 
@@ -7436,8 +7446,10 @@ def test_node_installer_preserves_occupied_plugin_root(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("ownership", ["colocated", "attached", "invalid", "exit"])
 def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
     tmp_path: Path,
+    ownership: str,
 ) -> None:
     node = shutil.which("node")
     if not node:
@@ -7476,6 +7488,7 @@ def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
                 f"{fake_bin}:/bin:/usr/bin:{os.environ.get('PATH', '')}"
             ),
             "CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS": "1",
+            "CLAUDE_SMART_TEST_INFERENCE_OWNER": ownership,
             "SHELL": "",
         }
     )
@@ -7483,7 +7496,7 @@ def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
         f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
         f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
         "{ patchCodexHooks: false })"
-        ".then(() => { console.error('unexpected success'); process.exit(1); })"
+        ".then(() => { process.exit(0); })"
         ".catch((err) => { console.error(err.message); process.exit(2); });"
     )
 
@@ -7497,11 +7510,20 @@ def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
     )
 
     marker = home / ".claude-smart" / "install-failed"
+    if ownership == "attached":
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists()
+        return
     assert result.returncode == 2
-    assert "Windows local embedding requires Microsoft Visual C++" in result.stderr
+    expected = {
+        "colocated": "Windows local embedding requires Microsoft Visual C++",
+        "invalid": "Invalid inference ownership result",
+        "exit": "Unable to determine inference ownership",
+    }[ownership]
+    assert expected in result.stderr
     assert marker.exists()
     marker_text = marker.read_text()
-    assert "Windows local embedding requires Microsoft Visual C++" in marker_text
+    assert expected in marker_text
     assert "fingerprint=" in marker_text
     assert "verify-windows-embedding" in (home / "bash.log").read_text()
     npm_log = home / "npm.log"

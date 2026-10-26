@@ -258,7 +258,6 @@ function loadReflexioEnv() {
   ]);
   const localConfigKeys = new Set([
     "CLAUDE_SMART_USE_LOCAL_CLI",
-    "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
     "CLAUDE_SMART_BACKEND_AUTOSTART",
     "CLAUDE_SMART_DASHBOARD_AUTOSTART",
     "CLAUDE_SMART_CLI_PATH",

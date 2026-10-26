@@ -60,7 +60,9 @@ def test_codex_hook_loads_managed_reflexio_env_and_skips_backend_start() -> None
     assert "function parsePositiveInteger(value, fallback)" in script
     assert "const SERVICE_SCRIPT_TIMEOUT_MS = parsePositiveInteger" in script
     assert "timeout: SERVICE_SCRIPT_TIMEOUT_MS" in script
-    assert 'runServiceScript(root, "backend-service.sh", "start", "backend.log")' in script
+    assert (
+        'runServiceScript(root, "backend-service.sh", "start", "backend.log")' in script
+    )
     assert (
         'runServiceScript(root, "dashboard-service.sh", "start", "dashboard.log")'
         in script
@@ -535,7 +537,7 @@ def test_codex_install_succeeds_when_hooks_and_marketplace_succeed(
     assert rc == 0
     env_text = env_path.read_text()
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in env_text
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in env_text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in env_text
     assert 'CLAUDE_SMART_READ_ONLY="0"' in env_text
     config = config_path.read_text()
     assert "plugin_hooks = true" in config
@@ -703,9 +705,13 @@ def test_codex_uninstall_cleans_plugin_config_cache_and_marketplace(
     # both inside tmp_path, never the real home.
     monkeypatch.setattr(cli, "_REFLEXIO_DIR", tmp_path / ".reflexio")
     monkeypatch.setattr(cli, "_STATE_DIR", tmp_path / ".claude-smart")
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
     monkeypatch.setattr(
-        cli, "_OPENCODE_LOCAL_PACKAGE_DIR", tmp_path / ".claude-smart" / "opencode" / "claude-smart"
+        cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env"
+    )
+    monkeypatch.setattr(
+        cli,
+        "_OPENCODE_LOCAL_PACKAGE_DIR",
+        tmp_path / ".claude-smart" / "opencode" / "claude-smart",
     )
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(

@@ -121,7 +121,7 @@ claude_smart_source_reflexio_env() {
         ;;
       # CLAUDE_SMART_* flags: respect anything the caller already exported so
       # per-session overrides (e.g., a manual test) take precedence over the file.
-      CLAUDE_SMART_USE_LOCAL_CLI|CLAUDE_SMART_USE_LOCAL_EMBEDDING|CLAUDE_SMART_HOST|CLAUDE_SMART_BACKEND_AUTOSTART|CLAUDE_SMART_DASHBOARD_AUTOSTART|CLAUDE_SMART_CLI_PATH|CLAUDE_SMART_OPENCODE_PATH|CLAUDE_SMART_CLI_TIMEOUT|CLAUDE_SMART_STATE_DIR|CLAUDE_SMART_ENABLE_OPTIMIZER)
+      CLAUDE_SMART_USE_LOCAL_CLI|CLAUDE_SMART_HOST|CLAUDE_SMART_BACKEND_AUTOSTART|CLAUDE_SMART_DASHBOARD_AUTOSTART|CLAUDE_SMART_CLI_PATH|CLAUDE_SMART_OPENCODE_PATH|CLAUDE_SMART_CLI_TIMEOUT|CLAUDE_SMART_STATE_DIR|CLAUDE_SMART_ENABLE_OPTIMIZER)
         if [ -z "$(eval "printf '%s' \"\${$key:-}\"")" ]; then
           value="$(claude_smart_env_unquote "$value")"
           export "$key=$value"
@@ -330,6 +330,23 @@ claude_smart_plugin_python() {
   else
     printf '%s\n' "$plugin_root/.venv/bin/python"
   fi
+}
+
+# The launcher, ownership probe and installer must import the same SDK.
+claude_smart_prepare_backend_import_context() {
+  local plugin_root vendor_pythonpath pythonpath_sep
+  plugin_root="$(cd "$1" && pwd -P)" || return 1
+  backend_pythonpath="${PYTHONPATH:-}"
+  if [ -d "$plugin_root/vendor/reflexio/reflexio" ]; then
+    vendor_pythonpath="$plugin_root/vendor/reflexio"
+    pythonpath_sep=":"
+    if claude_smart_is_windows; then
+      pythonpath_sep=";"
+      vendor_pythonpath="$(claude_smart_to_windows_path "$vendor_pythonpath")"
+    fi
+    backend_pythonpath="$vendor_pythonpath${backend_pythonpath:+$pythonpath_sep$backend_pythonpath}"
+  fi
+  backend_python="$(claude_smart_plugin_python "$plugin_root")"
 }
 
 claude_smart_python_imports() {

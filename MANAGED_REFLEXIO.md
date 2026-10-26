@@ -193,7 +193,6 @@ When switching from local mode to managed mode, setup removes local-only flags:
 
 ```env
 CLAUDE_SMART_USE_LOCAL_CLI=...
-CLAUDE_SMART_USE_LOCAL_EMBEDDING=...
 ```
 
 If an existing `REFLEXIO_URL` points at a loopback host (`localhost`,

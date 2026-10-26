@@ -99,3 +99,26 @@ def test_check_reflexio_lock_vendor_source_does_not_require_tomllib(
     assert result.returncode == 0, result.stderr
     assert "OK: vendored Reflexio bundle present" in result.stdout
     assert f"OK: {dependency} (vendor)" in result.stdout
+
+
+def test_materialized_vendor_dependencies_are_in_the_locked_environment():
+    """The installer uses --no-deps; its existing lock must satisfy the vendor."""
+    from importlib.metadata import PackageNotFoundError, version
+    import tomllib
+    from packaging.requirements import Requirement
+    import pytest
+
+    metadata = REPO_ROOT / "plugin/vendor/reflexio/pyproject.toml"
+    assert metadata.is_file(), "Materialize the locked vendor before this gate"
+    requirements = tomllib.loads(metadata.read_text())["project"]["dependencies"]
+    for raw in requirements:
+        requirement = Requirement(raw)
+        if requirement.marker and not requirement.marker.evaluate():
+            continue
+        try:
+            installed = version(requirement.name)
+        except PackageNotFoundError:
+            pytest.fail(f"Missing locked vendor dependency: {requirement.name}")
+        assert requirement.specifier.contains(installed), (
+            f"Unsatisfied vendor dependency: {raw}"
+        )

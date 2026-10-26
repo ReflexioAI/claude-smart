@@ -13,7 +13,6 @@ const KNOWN_KEYS = [
   "REFLEXIO_URL",
   "REFLEXIO_API_KEY",
   "CLAUDE_SMART_USE_LOCAL_CLI",
-  "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
   "CLAUDE_SMART_READ_ONLY",
   "CLAUDE_SMART_CLI_PATH",
   "CLAUDE_SMART_LEARNING_MODEL",
@@ -25,7 +24,6 @@ const KNOWN = new Set<string>(KNOWN_KEYS);
 
 const BOOL_KEYS = new Set([
   "CLAUDE_SMART_USE_LOCAL_CLI",
-  "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
   "CLAUDE_SMART_READ_ONLY",
 ]);
 
@@ -62,10 +60,9 @@ export async function readConfig(): Promise<ClaudeSmartConfig> {
   const defaults: ClaudeSmartConfig = {
     REFLEXIO_URL: defaultReflexioUrl(),
     REFLEXIO_API_KEY: "",
-    // Absent means the local default (smart-install seeds both as 1). Reading
-    // them as false would make the next save write 0 into the runtime file.
+    // Absent means the local CLI default (smart-install seeds it as 1).
+    // Reading false would make the next save disable authenticated CLI use.
     CLAUDE_SMART_USE_LOCAL_CLI: true,
-    CLAUDE_SMART_USE_LOCAL_EMBEDDING: true,
     CLAUDE_SMART_READ_ONLY: false,
     CLAUDE_SMART_CLI_PATH: "",
     CLAUDE_SMART_LEARNING_MODEL: "",

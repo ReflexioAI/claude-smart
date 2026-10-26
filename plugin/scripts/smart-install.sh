@@ -101,7 +101,22 @@ write_failure() {
 
 verify_windows_local_embedding_runtime() {
   claude_smart_is_windows || return 0
-  [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}" = "1" ] || return 0
+  local ownership
+  if claude_smart_reflexio_url_is_remote || claude_smart_reflexio_url_is_custom_local; then
+    return 0
+  fi
+  claude_smart_prepare_backend_import_context "$PLUGIN_ROOT"
+  if ! ownership="$(cd "$PLUGIN_ROOT" && PYTHONPATH="$backend_pythonpath" \
+    REFLEXIO_ENV_FILE="$HOME/.claude-smart/.env" \
+    "$backend_python" "$HERE/backend-inference-owner.py")"; then
+    write_failure "Unable to determine inference ownership; resolve the SDK startup error before retrying."
+  fi
+  ownership="${ownership%$'\r'}"
+  case "$ownership" in
+    attached) return 0 ;;
+    colocated) ;;
+    *) write_failure "Invalid inference ownership result; repair the selected runtime before retrying." ;;
+  esac
   if claude_smart_python_imports "$PLUGIN_ROOT" onnxruntime; then
     return 0
   fi
@@ -134,7 +149,6 @@ install_complete() {
   if ! claude_smart_managed_env_active; then
     [ -f "$HOME/.claude-smart/.env" ] || return 1
     grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$HOME/.claude-smart/.env" || return 1
-    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$HOME/.claude-smart/.env" || return 1
     grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY=' "$HOME/.claude-smart/.env" || return 1
     grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_HOST=' "$HOME/.claude-smart/.env" || return 1
   fi
@@ -685,9 +699,8 @@ claude_smart_prune_managed_env_keys_for_local() {
 }
 
 claude_smart_ensure_local_env_defaults() {
-  local local_cli_default local_embedding_default
+  local local_cli_default
   local_cli_default="${CLAUDE_SMART_USE_LOCAL_CLI:-1}"
-  local_embedding_default="${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}"
   claude_smart_managed_env_active && return 0
   mkdir -p "$(dirname "$REFLEXIO_ENV")"
   touch "$REFLEXIO_ENV"
@@ -703,11 +716,6 @@ claude_smart_ensure_local_env_defaults() {
     printf '# Route reflexio generation through the configured local host CLI\n' >> "$REFLEXIO_ENV"
     claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_CLI "$local_cli_default"
     echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_CLI=$local_cli_default to $REFLEXIO_ENV" >&2
-  fi
-  if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
-    printf '# Use the in-process ONNX embedder (ONNX Runtime) - no API key for semantic search\n' >> "$REFLEXIO_ENV"
-    claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_EMBEDDING "$local_embedding_default"
-    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_EMBEDDING=$local_embedding_default to $REFLEXIO_ENV" >&2
   fi
   if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY=' "$REFLEXIO_ENV"; then
     claude_smart_env_upsert CLAUDE_SMART_READ_ONLY "0"

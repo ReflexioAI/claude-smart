@@ -290,7 +290,7 @@ Advanced users can tune claude-smart via environment variables — see [DEVELOPE
 | Path | What |
 | --- | --- |
 | `~/.reflexio/data/reflexio.db` | Source of truth for learned preferences, skills, interactions, full-text indexes, and embedding tables (plus `.db-shm` / `.db-wal` WAL sidecars). Inspect with `sqlite3`. |
-| `~/.claude-smart/.env` | claude-smart config read by the hooks, backend, installer, and `npx claude-smart setup` — `CLAUDE_SMART_HOST`, `CLAUDE_SMART_USE_LOCAL_CLI`, `CLAUDE_SMART_USE_LOCAL_EMBEDDING`, `CLAUDE_SMART_OPENCODE_PATH`, and in managed mode `REFLEXIO_URL` / `REFLEXIO_API_KEY`. |
+| `~/.claude-smart/.env` | claude-smart config read by the hooks, backend, installer, and `npx claude-smart setup` — `CLAUDE_SMART_HOST`, `CLAUDE_SMART_USE_LOCAL_CLI`, `CLAUDE_SMART_OPENCODE_PATH`, and in managed mode `REFLEXIO_URL` / `REFLEXIO_API_KEY`. |
 | `~/.claude-smart/claude-code/claude-smart/` | Claude Code's stable local copy of the active npm package, registered as the `reflexioai` marketplace. Claude Code runs the plugin in place from its `plugin/` dir. |
 | `.claude/settings.local.json` or `~/.claude/settings.json` | Claude Code hook environment, such as `CLAUDE_SMART_ENABLE_OPTIMIZER`; use project-local settings for one repo or user settings for all projects. |
 | `~/.codex/config.toml` | Codex plugin state, hook feature flags, and per-hook trust entries after `claude-smart install --host codex`. |
@@ -301,6 +301,10 @@ Advanced users can tune claude-smart via environment variables — see [DEVELOPE
 | `~/.claude-smart/sessions/{session_id}.jsonl` | Per-session buffer. User turns, assistant turns, tool invocations, `{"published_up_to": N}` watermarks. Safe to inspect and safe to delete — everything past the latest watermark has already been written to reflexio's DB. |
 | `~/.claude-smart/node/current/` | Private Node.js/npm runtime used by hooks and the dashboard after install. |
 | `~/.cache/chroma/onnx_models/all-MiniLM-L6-v2/` | Cached ONNX weights (~86 MB, downloaded once). Delete to force a re-download. |
+
+Upgrading from `CLAUDE_SMART_USE_LOCAL_EMBEDDING` requires removing the retired
+assignment after preserving the effective model, endpoint and timeout policy.
+See the [embedding upgrade guide](https://github.com/ReflexioAI/claude-smart/blob/main/DEVELOPER.md#upgrade-from-the-old-embedding-flag), including the case where an old local default shadowed a written `off`.
 
 For troubleshooting, see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
 

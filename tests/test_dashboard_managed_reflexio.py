@@ -183,7 +183,7 @@ def test_dashboard_save_does_not_turn_off_absent_local_providers(
     _run_config_module(tmp_path, "await m.writeConfig(await m.readConfig());", {})
     text = env_file.read_text()
     assert "CLAUDE_SMART_USE_LOCAL_CLI=0" not in text
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" not in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
 
 
 def test_dashboard_proxy_follows_the_backend_port_for_default_spellings(
@@ -297,3 +297,29 @@ def test_explicitly_clearing_managed_key_also_forgets_saved_dashboard_key(
         {},
     )
     assert "cloud-secret" not in config.read_text()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_dashboard_does_not_advertise_or_write_retired_embedding_setting(
+    tmp_path, existing
+):
+    env_file = tmp_path / ".claude-smart" / ".env"
+    env_file.parent.mkdir()
+    original = "# Preserve unrelated SDK policy\nREFLEXIO_EMBEDDING_PROVIDER=off\n"
+    if existing:
+        original += "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0\n"
+    env_file.write_text(original)
+    output = _run_config_module(
+        tmp_path,
+        "const before=await m.readConfig(); "
+        "await m.writeConfig({CLAUDE_SMART_USE_LOCAL_EMBEDDING:true, CLAUDE_SMART_READ_ONLY:true}); "
+        "process.stdout.write(JSON.stringify({before, keys:m.KNOWN_KEYS}));",
+        {},
+    )
+    result = json.loads(output)
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in result["before"]
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in result["keys"]
+    saved = env_file.read_text()
+    assert original.strip() in saved
+    assert "CLAUDE_SMART_READ_ONLY=1" in saved
+    assert saved.count("CLAUDE_SMART_USE_LOCAL_EMBEDDING") == int(existing)

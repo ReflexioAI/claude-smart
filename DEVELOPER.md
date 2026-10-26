@@ -52,8 +52,7 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | `CLAUDE_SMART_LOCAL_URL`, `CLAUDE_SMART_LOCAL_API_KEY` | unset (bundled loopback endpoint, no key) | Private saved local dashboard connection. The installer and Configure page retain the previous connection when changing runtime modes. These keys are not exposed to browser clients. |
 | `CLAUDE_SMART_MANAGED_URL`, `CLAUDE_SMART_MANAGED_API_KEY` | unset (managed view unavailable) | Private saved managed dashboard connection. Allows viewing managed data while the runtime remains local. Selecting a view does not rewrite runtime settings, start services, or send cloud credentials to the local endpoint. |
 | `CLAUDE_SMART_GUIDED_CONFIG` | unset (legacy setup) | Internal saved marker (`1`) written after confirming guided configuration. Preserves explicit local endpoints and sharing settings even when a custom executable or cloud provider replaces the named learning provider. |
-| `CLAUDE_SMART_USE_LOCAL_EMBEDDING` | `0` (installer sets `1`) | Route embeddings to the shared local embedding daemon on `localhost:8072`. Written to `~/.claude-smart/.env` by `claude-smart install`. |
-| `REFLEXIO_EMBEDDING_PROVIDER` | `local_service` when local embedding is enabled | Embedding provider mode: `cloud`, `local_service`, `internal_service`, `inprocess`, or `off`. |
+| `REFLEXIO_EMBEDDING_PROVIDER` | model-derived when unset | Embedding provider mode: `cloud`, `local_service`, `internal_service`, `inprocess`, or `off`. |
 | `REFLEXIO_EMBEDDING_SERVICE_URL` | `http://127.0.0.1:$EMBEDDING_PORT` | OpenAI-compatible embedding endpoint used by `local_service` and `internal_service`. |
 | `EMBEDDING_PORT` | `8072` | Local embedding daemon port. Shared by Claude Code and Codex on the same machine. |
 | `REFLEXIO_RERANK_ENABLED` | `false` (hard-set by `backend-service.sh`) | claude-smart disables Reflexio's shared-service cross-encoder completely, so the local inference process skips reranker model loading and prewarm. This is intentionally not user-overridable in the bundled backend. |
@@ -76,7 +75,48 @@ claude-smart uses one shared local inference daemon by default. Reflexio's launc
 
 `plugin/scripts/backend-inference-owner.py` asks the selected SDK launcher for that same ownership decision. Backend health/compatibility checks and stale-child cleanup follow it rather than `CLAUDE_SMART_USE_LOCAL_EMBEDDING`. Attached inference does not require or clean up a child on the default loopback port. Unknown ownership reports degraded health and skips child cleanup. The shell accepts both LF and native Windows CRLF output. The decision is cached for one backend command, and the query does not create a missing environment file. It uses the backend launcher's plugin working directory and selected environment file, with implicit dotenv discovery blocked.
 
-`CLAUDE_SMART_USE_LOCAL_EMBEDDING` remains supported by routing, installer and dashboard settings; this ownership correction does not retire it or change existing model preferences or request timeouts. Workers call the selected service's OpenAI-compatible `/v1/embeddings` endpoint instead of loading a model in each process.
+`CLAUDE_SMART_USE_LOCAL_EMBEDDING` is retired. The selected embedding model owns execution, the explicit service URL owns attachment, and existing timeout settings retain their budgets. The installer checks local native dependencies only for a plugin-owned colocated inference process. The dashboard no longer offers a second embedding switch. Workers call the selected service's OpenAI-compatible `/v1/embeddings` endpoint instead of loading a model in each process.
+
+### Upgrade from the old embedding flag
+
+Before upgrading, record the effective embedding model, endpoint, provider and
+request timeout, and preserve any explicit values through their existing settings.
+Stop the local backend/dashboard before editing the selected `~/.claude-smart/.env`.
+Remove the retired assignment and parent-process exports; the bundled SDK rejects
+active old assignments, including blanks, before normal startup. No automatic
+configuration rewrite or permanent conversion command is installed.
+
+- False never meant embeddings off or prevented the SDK launcher from owning a
+  child. Removing it preserves model-based routing. Deliberate disabling uses
+  canonical `REFLEXIO_EMBEDDING_PROVIDER=off`.
+- Exact `1` and empty/default values made the old plugin shell choose
+  `local_service` before the SDK loaded canonical file settings. A written `off`
+  could be shadowed. To retain actual old behavior choose canonical local service;
+  to honor the written off deliberately keep off. Resolve that policy explicitly
+  before removing the old assignment; do not infer intent from the file alone.
+- Other truthy spellings, such as `true`, reached SDK normalization after file
+  loading and did not shadow a written provider in the same way. Preserve that
+  canonical setting. When no canonical setting existed, preserve the former local
+  preference with the existing `REFLEXIO_EMBEDDING_PROVIDER=local_service`.
+- Keep explicit cloud models and remote endpoints. A canonical remote service
+  defaults to two seconds, whereas direct library callers using the former flag
+  could default to 30 seconds. Preserve any required old/default/custom budget
+  explicitly with `REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS`. Do not apply a raw
+  library migration blindly to plugin startup, which already normalized modes.
+
+The newer bundled SDK rejects retired field names in saved organization JSON.
+Untagged SQLite still selects SQLite. If startup reports historical aliases such
+as `storage_type`, use its existing
+offline `python -m reflexio.cli config upgrade-file INPUT --output COPY` command with
+the plugin virtualenv Python. Keep the original, inspect the separate canonical
+copy (including the SQLite path and backend tag), then back up and replace the
+selected JSON only after verification. Stop services first. This operation does
+not migrate env files or choose a different database; the plugin retains its
+existing explicit legacy SQLite path pin after conversion.
+
+The bundled old and new SDKs both choose MiniLM when the embedding model is
+unconfigured. Credential availability must not silently replace an explicit
+cloud model. The authenticated local-CLI opt-in remains independent.
 
 Supported local models are `local/nomic-embed-v1.5`, `local/nomic-embed-text-v1.5`, and `local/minilm-l6-v2`. The daemon owns exactly one model for its lifetime; start a second daemon on another port if you need to serve a different model concurrently.
 

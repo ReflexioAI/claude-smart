@@ -56,18 +56,9 @@ export REFLEXIO_ENV_FILE="$HOME/.claude-smart/.env"
 # reranker model, even if a shared Reflexio env file enables it.
 export REFLEXIO_RERANK_ENABLED=false
 
-# Default: route extraction through the active host CLI + ONNX embedder
-# so claude-smart works without any LLM API key. Users can opt out by
-# pre-exporting these to 0.
+# The authenticated host CLI retains its own opt-in. Embedding execution is
+# selected by the SDK's model/endpoint policy, without a second plugin toggle.
 export CLAUDE_SMART_USE_LOCAL_CLI="${CLAUDE_SMART_USE_LOCAL_CLI:-1}"
-export CLAUDE_SMART_USE_LOCAL_EMBEDDING="${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-1}"
-if [ "${CLAUDE_SMART_USE_LOCAL_EMBEDDING:-}" = "1" ]; then
-  export REFLEXIO_EMBEDDING_PROVIDER="${REFLEXIO_EMBEDDING_PROVIDER:-local_service}"
-  # Do NOT default REFLEXIO_EMBEDDING_SERVICE_URL. Reflexio derives
-  # 127.0.0.1:$EMBEDDING_PORT itself, and since reflexio#425 its launcher
-  # treats ANY configured URL as a remote service and skips starting the
-  # local daemon -- defaulting it here left every install without embeddings.
-fi
 # The backend can be spawned from contexts whose PATH lacks the host
 # CLI dir (commonly ~/.local/bin or /opt/homebrew/bin). Pin the CLI
 # explicitly if we can resolve it from our own (post-login-path) PATH.
@@ -623,19 +614,7 @@ PY
 }
 
 prepare_backend_import_context() {
-  backend_pythonpath="${PYTHONPATH:-}"
-  if [ -d "$VENDORED_REFLEXIO/reflexio" ]; then
-    vendor_pythonpath="$VENDORED_REFLEXIO"
-    pythonpath_sep=":"
-    if claude_smart_is_windows; then
-      # Native Windows Python expects ;-separated Windows-style paths in
-      # PYTHONPATH; MSYS does not auto-convert arbitrary env vars.
-      pythonpath_sep=";"
-      vendor_pythonpath="$VENDORED_REFLEXIO_FOR_PYTHON"
-    fi
-    backend_pythonpath="$vendor_pythonpath${backend_pythonpath:+$pythonpath_sep$backend_pythonpath}"
-  fi
-  backend_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
+  claude_smart_prepare_backend_import_context "$PLUGIN_ROOT"
 }
 
 # Repair the vendored install if its version drifted, then prove this plugin

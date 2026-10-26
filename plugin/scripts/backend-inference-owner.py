@@ -9,7 +9,20 @@ from pathlib import Path
 import sys
 
 
+def reject_retired_embedding_setting() -> None:
+    # Source checkouts may use the older PyPI baseline, without removed_env.
+    # This read-only probe must reject obsolete policy even with no env file.
+    name = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
+    if name in os.environ:
+        raise ValueError(
+            f"Removed environment name: {name}; preserve the effective model, "
+            "endpoint and timeout with REFLEXIO_EMBEDDING_PROVIDER and remove "
+            "the old assignment. See the embedding upgrade guide."
+        )
+
+
 def main() -> None:
+    reject_retired_embedding_setting()
     # Older supported SDKs expose this same launcher decision through run_services;
     # current SDKs delegate it to the dependency-free inference launch plan.
     # Keep library output off the small stdout protocol consumed by the shell.
@@ -35,6 +48,7 @@ def main() -> None:
         # must remain read-only; the actual launch/installer owns first-run setup.
         if Path(".env").is_file() or get_env_path().is_file():
             load_reflexio_env()
+        reject_retired_embedding_setting()
         from reflexio.cli.run_services import should_start_local_embedding_service
 
         colocated = should_start_local_embedding_service()

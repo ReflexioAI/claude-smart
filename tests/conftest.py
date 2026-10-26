@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
+
+# npm installs the pinned vendor after the PyPI baseline with --no-deps.
+# CI materializes that same bundle: test it consistently in this process too,
+# rather than mixing old PyPI imports with strict-vendor subprocesses.
+_vendor = Path(__file__).resolve().parents[1] / "plugin/vendor/reflexio"
+if (_vendor / "reflexio").is_dir():
+    sys.path.insert(0, str(_vendor))
 
 
 @pytest.fixture

@@ -162,7 +162,9 @@ def test_cmd_install_refresh_existing_uninstalls_and_retries(
     monkeypatch.setattr(cli, "_configure_reflexio_setup", lambda **_kwargs: False)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     monkeypatch.setattr(
-        cli, "_bootstrap_claude_code_install", lambda _root: (True, str(tmp_path / "plugin"))
+        cli,
+        "_bootstrap_claude_code_install",
+        lambda _root: (True, str(tmp_path / "plugin")),
     )
     monkeypatch.setattr(cli, "_restore_publish_hooks_from_source", lambda _root: None)
 
@@ -186,7 +188,7 @@ def test_install_setup_default_creates_local_env(monkeypatch, tmp_path: Path) ->
     assert read_only is False
     text = env_path.read_text()
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
     assert 'CLAUDE_SMART_READ_ONLY="0"' in text
     assert env_path.stat().st_mode & 0o777 == 0o600
 
@@ -197,11 +199,7 @@ def test_install_setup_updates_existing_host_and_local_defaults(
 ) -> None:
     env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
-    env_path.write_text(
-        "# keep\n"
-        "CLAUDE_SMART_HOST=codex\n"
-        'CLAUDE_SMART_READ_ONLY="1"\n'
-    )
+    env_path.write_text('# keep\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_READ_ONLY="1"\n')
     monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
     monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "0")
 
@@ -213,11 +211,13 @@ def test_install_setup_updates_existing_host_and_local_defaults(
     assert "CLAUDE_SMART_HOST=opencode" in text
     assert "CLAUDE_SMART_HOST=codex" not in text
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=0" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
     assert 'CLAUDE_SMART_READ_ONLY="1"' in text
 
 
-def test_opencode_install_persists_resolved_cli_path(monkeypatch, tmp_path: Path) -> None:
+def test_opencode_install_persists_resolved_cli_path(
+    monkeypatch, tmp_path: Path
+) -> None:
     runtime_env_path = tmp_path / ".claude-smart" / ".env"
     opencode = tmp_path / "bin" / "opencode"
     opencode.parent.mkdir()
@@ -272,7 +272,9 @@ def test_install_setup_managed_key_without_url_persists_host_and_url(
     # installing for, into the file the runtime reads.
     env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
-    env_path.write_text('REFLEXIO_API_KEY="rflx-test-secret"\nCLAUDE_SMART_HOST=codex\n')
+    env_path.write_text(
+        'REFLEXIO_API_KEY="rflx-test-secret"\nCLAUDE_SMART_HOST=codex\n'
+    )
     monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
     monkeypatch.delenv("REFLEXIO_URL", raising=False)
 
@@ -317,7 +319,7 @@ def test_install_setup_ignores_stale_url_without_api_key(
     text = env_path.read_text()
     assert "REFLEXIO_URL" not in text
     assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
-    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
 
 
 def test_install_parser_keeps_plain_install() -> None:
@@ -561,7 +563,9 @@ def test_read_only_never_prunes_the_source_checkout_manifests(
     assert "CLAUDE_SMART_READ_ONLY" in capsys.readouterr().out
 
 
-def test_env_writes_are_private_before_content_lands(monkeypatch, tmp_path: Path) -> None:
+def test_env_writes_are_private_before_content_lands(
+    monkeypatch, tmp_path: Path
+) -> None:
     env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     modes: list[int] = []
@@ -596,7 +600,10 @@ def test_python_installer_warns_about_exported_url_it_ignores(
 
     captured = capsys.readouterr()
     assert "Using local Reflexio backend" in captured.out
-    assert "REFLEXIO_URL=https://www.reflexio.ai/ is exported in this shell" in captured.err
+    assert (
+        "REFLEXIO_URL=https://www.reflexio.ai/ is exported in this shell"
+        in captured.err
+    )
 
 
 @pytest.mark.parametrize("other_host_installed", [True, False])
@@ -608,13 +615,17 @@ def test_python_repair_plugin_root_after_removing_an_integration(
     state = tmp_path / ".claude-smart"
     reflexio = tmp_path / ".reflexio"
     opencode_pkg = state / "opencode" / "claude-smart"
-    codex_cache = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    codex_cache = (
+        tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    )
     monkeypatch.setattr(cli, "_STATE_DIR", state)
     monkeypatch.setattr(cli, "_REFLEXIO_DIR", reflexio)
     monkeypatch.setattr(cli, "_OPENCODE_LOCAL_PACKAGE_DIR", opencode_pkg)
     monkeypatch.setattr(cli, "_CODEX_PLUGIN_CACHE_DIR", codex_cache)
     codex_root = codex_cache / "0.2.50"
-    roots = [codex_root, opencode_pkg / "plugin"] if other_host_installed else [codex_root]
+    roots = (
+        [codex_root, opencode_pkg / "plugin"] if other_host_installed else [codex_root]
+    )
     for root in roots:
         (root / "scripts").mkdir(parents=True)
         (root / "scripts" / "backend-service.sh").write_text("#!/bin/sh\n")
@@ -637,10 +648,14 @@ def test_python_repair_plugin_root_prefers_the_newest_codex_version(
     # 0.2.10 is newer than 0.2.9; a lexical sort would pick 0.2.9.
     state = tmp_path / ".claude-smart"
     reflexio = tmp_path / ".reflexio"
-    codex_cache = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    codex_cache = (
+        tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    )
     monkeypatch.setattr(cli, "_STATE_DIR", state)
     monkeypatch.setattr(cli, "_REFLEXIO_DIR", reflexio)
-    monkeypatch.setattr(cli, "_OPENCODE_LOCAL_PACKAGE_DIR", state / "opencode" / "claude-smart")
+    monkeypatch.setattr(
+        cli, "_OPENCODE_LOCAL_PACKAGE_DIR", state / "opencode" / "claude-smart"
+    )
     monkeypatch.setattr(cli, "_CODEX_PLUGIN_CACHE_DIR", codex_cache)
     removed = state / "claude-code" / "claude-smart"
     for root in (removed / "plugin", codex_cache / "0.2.9", codex_cache / "0.2.10"):
@@ -660,11 +675,15 @@ def test_python_repair_hands_the_host_to_the_remaining_runtime(
 ) -> None:
     state = tmp_path / ".claude-smart"
     reflexio = tmp_path / ".reflexio"
-    codex_cache = tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    codex_cache = (
+        tmp_path / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart"
+    )
     env_path = state / ".env"
     monkeypatch.setattr(cli, "_STATE_DIR", state)
     monkeypatch.setattr(cli, "_REFLEXIO_DIR", reflexio)
-    monkeypatch.setattr(cli, "_OPENCODE_LOCAL_PACKAGE_DIR", state / "opencode" / "claude-smart")
+    monkeypatch.setattr(
+        cli, "_OPENCODE_LOCAL_PACKAGE_DIR", state / "opencode" / "claude-smart"
+    )
     monkeypatch.setattr(cli, "_CODEX_PLUGIN_CACHE_DIR", codex_cache)
     monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
     claude_root = state / "claude-code" / "claude-smart" / "plugin"
@@ -681,4 +700,3 @@ def test_python_repair_hands_the_host_to_the_remaining_runtime(
 
     assert (reflexio / "plugin-root").resolve() == claude_root.resolve()
     assert 'CLAUDE_SMART_HOST="claude-code"' in env_path.read_text()
-
