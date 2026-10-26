@@ -105,6 +105,24 @@ configuration rewrite or permanent conversion command is installed.
   library migration blindly to plugin startup, which already normalized modes.
 
 The newer bundled SDK rejects retired field names in saved organization JSON.
+The bundled startup runner prepares supported previous-generation local files
+before its strict SQLite identity check. It preserves the old agent optimizer
+switches' conjunction in `agent_playbooks_enabled`, keeps independent user
+consent and custom budgets, and writes format metadata outside the logical
+configuration API. Normal reads reject the retired pair. An ambiguous unmarked
+file already containing the formerly ignored new name requires deliberate
+offline conversion; startup must not infer consent from it.
+
+The path pin uses the SDK's locked raw file edit, preserving extensions and an
+already selected database. Its legacy-versus-derived SQLite selection is
+unchanged. The actual requested backend port is checked before preparation,
+including forwarded `--backend-port`; an occupied port leaves the file alone.
+Stop old writers before upgrading: this check is not a reservation or a
+cross-port writer detector. A failed preparation or identity pin now aborts
+startup, preventing an unpinned resolver from choosing an empty derived file
+beside existing history. Fix the saved policy/permissions and retry rather than
+continuing into another database.
+
 Untagged SQLite still selects SQLite. If startup reports historical aliases such
 as `storage_type`, use its existing
 offline `python -m reflexio.cli config upgrade-file INPUT --output COPY` command with

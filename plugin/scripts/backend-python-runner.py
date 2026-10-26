@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import runpy
 import sys
@@ -13,7 +12,9 @@ from pathlib import Path
 LEGACY_DB_FILENAME = "reflexio.db"
 
 
-def pin_legacy_sqlite_db_path() -> None:
+def pin_legacy_sqlite_db_path(
+    backend_port: int | None = None, backend_host: str | None = None
+) -> None:
     """Point the org's SQLite storage at an explicit file when no path is set.
 
     Newer Reflexio resolves a null ``storage_config.db_path`` per org and
@@ -28,8 +29,11 @@ def pin_legacy_sqlite_db_path() -> None:
 
     It must land on disk: uvicorn runs in a child process that re-reads the
     config. A path someone already set, and any non-SQLite storage, is left
-    alone, and a config that fails validation is never overwritten. Failure is
-    logged and swallowed so a pin problem never stops the backend.
+    alone. Supported saved-file upgrades run before strict discovery, and the
+    path-only edit preserves unrelated raw fields under the shared file lock.
+    Invalid configuration is never replaced. Preparation or identity-pin
+    failure stops startup instead of letting the resolver select another file.
+    An occupied backend port exits before file preparation.
 
     Returns:
         None: Side effect only -- may rewrite the org config file.
@@ -44,6 +48,10 @@ def pin_legacy_sqlite_db_path() -> None:
         from reflexio.cli.env_loader import block_implicit_dotenv_walkup
 
         block_implicit_dotenv_walkup()
+        from reflexio.cli.config_upgrade import prepare_local_config
+        from reflexio.cli.run_services import DEFAULT_OSS_PORTS, get_env_port
+        from reflexio.cli.utils import ensure_requested_ports_available
+        from reflexio.config_file import LocalConfigFile
         from reflexio.models.config_schema import (
             StorageConfigSQLite,
             validate_stored_config,
@@ -56,39 +64,53 @@ def pin_legacy_sqlite_db_path() -> None:
             derive_db_path,
         )
 
-        storage = LocalFileConfigStorage(org_id=org_id)
-        config_file = Path(storage.config_file)
-        if config_file.exists():
-            # load_config swallows parse AND validation errors and returns
-            # defaults; saving those would overwrite the user's config.
-            data = json.loads(config_file.read_text(encoding="utf-8"))
-            config = validate_stored_config(data)
-        else:
-            config = storage.load_config()
-        storage_config = config.storage_config
-        if not isinstance(storage_config, StorageConfigSQLite):
-            return
-        if storage_config.db_path is not None:
-            return
-
-        root = Path(LOCAL_STORAGE_PATH)
-        legacy = root / LEGACY_DB_FILENAME
-        derived = derive_db_path(root, org_id)
-        target = derived if derived.exists() and not legacy.exists() else legacy
-        if target == legacy and derived.exists():
-            print(
-                f"[claude-smart] using {legacy}; memories written by 0.3.0 "
-                f"remain in {derived} and are not merged",
-                file=sys.stderr,
-            )
-        storage_config.db_path = str(target)
-        storage.save_config(config)
-    except Exception as exc:  # noqa: BLE001 - never block backend start
-        print(
-            f"[claude-smart] could not pin SQLite db_path ({exc!r}); "
-            "Reflexio will resolve the database path itself",
-            file=sys.stderr,
+        port = (
+            backend_port
+            if backend_port is not None
+            else get_env_port("BACKEND_PORT", DEFAULT_OSS_PORTS["backend"])
         )
+        # Must precede file preparation; a refused duplicate start cannot
+        # rewrite the settings of the process already serving on this port.
+        host = (
+            backend_host
+            or os.environ.get("CLAUDE_SMART_BACKEND_HOST", "").strip()
+            or "127.0.0.1"
+        )
+        ensure_requested_ports_available({"backend": port}, host=host)
+        prepare_local_config(org_id=org_id)
+        storage = LocalFileConfigStorage(org_id=org_id)
+        storage.load_config()  # Initialize only an absent file.
+
+        def pin(document):
+            storage_config = validate_stored_config(document).storage_config
+            if (
+                not isinstance(storage_config, StorageConfigSQLite)
+                or storage_config.db_path is not None
+            ):
+                return
+            root = Path(LOCAL_STORAGE_PATH)
+            legacy = root / LEGACY_DB_FILENAME
+            derived = derive_db_path(root, org_id)
+            target = derived if derived.exists() and not legacy.exists() else legacy
+            if target == legacy and derived.exists():
+                print(
+                    f"[claude-smart] using {legacy}; memories written by 0.3.0 "
+                    f"remain in {derived} and are not merged",
+                    file=sys.stderr,
+                )
+            document["storage_config"] = {
+                **document.get("storage_config", {}),
+                "type": "sqlite",
+                "db_path": str(target),
+            }
+
+        LocalConfigFile(storage.config_file).edit_document(pin)
+    except Exception:
+        raise RuntimeError(
+            "Could not prepare the local configuration and pin SQLite db_path; "
+            "startup stopped to preserve database identity. Stop old writers, "
+            "inspect the saved configuration and file permissions, then retry."
+        ) from None
 
 
 def main() -> int:
@@ -120,7 +142,27 @@ def main() -> int:
         env_key = key.replace("-", "_").upper()
         os.environ.setdefault(env_key, value)
 
-    pin_legacy_sqlite_db_path()
+    backend_port = None
+    backend_host = None
+    if (
+        reflexio_args[:2] == ["services", "start"]
+        and os.environ.get("CLAUDE_SMART_BACKEND") == "1"
+        and os.environ.get("REFLEXIO_DEFAULT_ORG_ID", "").strip()
+    ):
+        # Use the same parser and precedence as the bundled launcher, including
+        # a forwarded --backend-port; unknown Typer options remain its concern.
+        from reflexio.cli.run_services import (
+            DEFAULT_OSS_PORTS,
+            _build_run_services_parser,
+            resolve_ports,
+        )
+
+        options, _unknown = _build_run_services_parser().parse_known_args(
+            reflexio_args[2:]
+        )
+        backend_port = resolve_ports(options, DEFAULT_OSS_PORTS)["backend"]
+        backend_host = options.backend_host
+    pin_legacy_sqlite_db_path(backend_port, backend_host)
     sys.argv = ["reflexio.cli", *reflexio_args]
     runpy.run_module("reflexio.cli", run_name="__main__")
     return 0
