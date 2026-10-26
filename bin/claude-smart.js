@@ -471,7 +471,7 @@ function migrateLegacyManagedEnvOnce() {
   if (existsSync(LEGACY_REFLEXIO_ENV_PATH)) {
     for (const line of readFileSync(LEGACY_REFLEXIO_ENV_PATH, "utf8").split(/\r?\n/)) {
       const parsed = parseEnvLine(line);
-      if (parsed && /^CLAUDE_SMART_[A-Z0-9_]+$/.test(parsed.key) && !runtime.has(parsed.key)) {
+      if (parsed && /^CLAUDE_SMART_[A-Z0-9_]+$/.test(parsed.key) && parsed.key !== "CLAUDE_SMART_USE_LOCAL_EMBEDDING" && !runtime.has(parsed.key)) {
         runtimeLines.set(parsed.key, line);
       }
     }

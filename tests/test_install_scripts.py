@@ -8429,7 +8429,7 @@ def test_local_legacy_runtime_flags_migrate_without_connection_keys(
 ) -> None:
     legacy = tmp_path / ".reflexio" / ".env"
     legacy.parent.mkdir()
-    original = 'REFLEXIO_URL="http://localhost:8081/"\nREFLEXIO_API_KEY="other-server-key"\nCLAUDE_SMART_READ_ONLY="1"\nCLAUDE_SMART_CLI_TIMEOUT="90"\n'
+    original = 'REFLEXIO_URL="http://localhost:8081/"\nREFLEXIO_API_KEY="other-server-key"\nCLAUDE_SMART_READ_ONLY="1"\nCLAUDE_SMART_CLI_TIMEOUT="90"\nCLAUDE_SMART_USE_LOCAL_EMBEDDING=1\n'
     legacy.write_text(original)
     runtime = tmp_path / ".claude-smart" / ".env"
     if runtime_read_only is not None:
@@ -8453,6 +8453,7 @@ def test_local_legacy_runtime_flags_migrate_without_connection_keys(
     assert f'CLAUDE_SMART_READ_ONLY="{expected}"' in text
     assert 'CLAUDE_SMART_CLI_TIMEOUT="90"' in text
     assert "other-server-key" not in text
+    assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
     assert legacy.read_text() == original
 
 
