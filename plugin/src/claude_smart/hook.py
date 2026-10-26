@@ -6,7 +6,7 @@ The plugin's ``hook_entry.sh`` calls either
 This module reads the hook JSON from stdin, routes to the matching handler,
 and makes sure no unhandled exception ever propagates.
 
-Every fire produces one structured JSON line in
+Every fire attempts one best-effort structured JSON line in
 ``~/.claude-smart/hook.log`` via ``hook_log.log_event`` — covers the
 event name, session id, internal-invocation skip, handler outcome
 (``ok`` / ``raised:<Exc>`` / ``unknown_event``), and for Stop/SessionEnd
@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import sys
+import time
 from collections.abc import Callable
 from contextlib import redirect_stdout
 from io import StringIO
@@ -111,6 +112,7 @@ def _parse_args(argv: list[str]) -> tuple[str, str]:
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point used by ``python -m claude_smart.hook`` and the console script."""
+    started = time.monotonic()
     argv = argv if argv is not None else sys.argv[1:]
     declared_host, event = _parse_args(argv)
     if not event:
@@ -142,6 +144,10 @@ def main(argv: list[str] | None = None) -> int:
             cwd=payload.get("cwd"),
             internal_skipped=True,
             handler_status="ok",
+            extra={
+                "stage": "handler",
+                "duration_ms": (time.monotonic() - started) * 1000,
+            },
         )
         emit_continue()
         return 0
@@ -157,6 +163,10 @@ def main(argv: list[str] | None = None) -> int:
             project_id=ids.resolve_project_id(payload.get("cwd")),
             cwd=payload.get("cwd"),
             handler_status="unknown_event",
+            extra={
+                "stage": "handler",
+                "duration_ms": (time.monotonic() - started) * 1000,
+            },
         )
         emit_continue()
         return 0
@@ -192,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         handler_status=handler_status,
         publish_status=publish_status,
         publish_count=publish_count,
+        extra={"stage": "handler", "duration_ms": (time.monotonic() - started) * 1000},
     )
     return 0
 

@@ -266,7 +266,11 @@ def test_codex_stop_prefers_last_assistant_message(session_dir, monkeypatch) -> 
     runtime.set_host(runtime.HOST_CODEX)
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        stop.publish, "publish_unpublished", lambda **kw: calls.append(kw)
+        stop.publish_outbox,
+        "enqueue",
+        lambda session_id, project_id: (
+            calls.append(dict(session_id=session_id, project_id=project_id)) or True
+        ),
     )
     monkeypatch.setattr(stop.ids, "resolve_user_id", lambda *_a, **_kw: "demo")
 
@@ -318,7 +322,11 @@ def test_codex_stop_skips_internal_prompt_from_transcript(
         + "\n"
     )
     monkeypatch.setattr(
-        stop.publish, "publish_unpublished", lambda **kw: calls.append(kw)
+        stop.publish_outbox,
+        "enqueue",
+        lambda session_id, project_id: (
+            calls.append(dict(session_id=session_id, project_id=project_id)) or True
+        ),
     )
 
     stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
@@ -331,7 +339,11 @@ def test_codex_stop_skips_orphan_title_response(session_dir, monkeypatch) -> Non
     runtime.set_host(runtime.HOST_CODEX)
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        stop.publish, "publish_unpublished", lambda **kw: calls.append(kw)
+        stop.publish_outbox,
+        "enqueue",
+        lambda session_id, project_id: (
+            calls.append(dict(session_id=session_id, project_id=project_id)) or True
+        ),
     )
 
     stop.handle(
@@ -351,7 +363,11 @@ def test_codex_stop_skips_orphan_suggestions_response(session_dir, monkeypatch) 
     runtime.set_host(runtime.HOST_CODEX)
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        stop.publish, "publish_unpublished", lambda **kw: calls.append(kw)
+        stop.publish_outbox,
+        "enqueue",
+        lambda session_id, project_id: (
+            calls.append(dict(session_id=session_id, project_id=project_id)) or True
+        ),
     )
 
     stop.handle(
@@ -375,7 +391,11 @@ def test_codex_stop_keeps_user_requested_title_json(session_dir, monkeypatch) ->
     runtime.set_host(runtime.HOST_CODEX)
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        stop.publish, "publish_unpublished", lambda **kw: calls.append(kw)
+        stop.publish_outbox,
+        "enqueue",
+        lambda session_id, project_id: (
+            calls.append(dict(session_id=session_id, project_id=project_id)) or True
+        ),
     )
     state.append(
         "s1",
@@ -407,7 +427,11 @@ def test_codex_stop_keeps_user_requested_suggestions_json(
     runtime.set_host(runtime.HOST_CODEX)
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        stop.publish, "publish_unpublished", lambda **kw: calls.append(kw)
+        stop.publish_outbox,
+        "enqueue",
+        lambda session_id, project_id: (
+            calls.append(dict(session_id=session_id, project_id=project_id)) or True
+        ),
     )
     state.append(
         "s1",

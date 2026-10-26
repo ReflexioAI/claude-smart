@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from claude_smart import hook
+from claude_smart import hook, publish_outbox, runtime
 from claude_smart.reflexio_adapter import Adapter
 from claude_smart.stall_banner import render_banner
 
@@ -69,6 +69,8 @@ def _stall_banner(adapter: Any) -> str:
 
 
 def handle(payload: dict[str, Any]) -> None:
+    if runtime.is_codex():
+        publish_outbox.kick()
     session_id = payload.get("session_id")
     if not session_id:
         hook.emit_continue()

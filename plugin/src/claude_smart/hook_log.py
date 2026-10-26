@@ -1,4 +1,4 @@
-"""Structured, append-only log of every hook fire and its outcome.
+"""Best-effort structured log of hook fires and their outcomes.
 
 Why a dedicated log rather than relying on the Python ``logging`` module:
 hooks run as short-lived subprocesses with no preconfigured handler, so
@@ -7,13 +7,14 @@ captures but typically does not surface. The dispatcher already wraps
 handlers in a broad ``except`` (so a hook crash never breaks the user's
 session) — without a forensic trail the silent-fail mode is invisible.
 
-This module writes one JSON line per hook fire to
+This module attempts one JSON line per hook fire to
 ``~/.claude-smart/hook.log`` from ``hook.main`` after the handler returns.
 The Stop and SessionEnd handlers additionally piggyback their publish
 outcome into the record so the chain hook→adapter→backend is fully
 observable from a single file.
 
-Failure policy: every public function in this module swallows all
+Failure policy: a busy log lock skips a diagnostic instead of blocking a hook.
+Every public function in this module swallows all
 ``OSError``/``Exception`` paths. Logging is best-effort; a stuck disk
 or read-only ``$HOME`` must never abort an in-progress hook.
 """
@@ -87,7 +88,8 @@ def log_event(
             when the handler raised — formatted by ``hook.main``.
         publish_status (str | None): Status returned by
             ``publish.publish_unpublished`` (``"ok"`` / ``"recovered"`` /
-            ``"failed"`` / ``"nothing"``). Only emitted by Stop + SessionEnd.
+            ``"failed"`` / ``"nothing"``), or ``"queued"`` for Codex local
+            enqueue. Worker records report subsequent publication separately.
         publish_count (int | None): Interaction count from the same
             tuple. ``None`` when the handler doesn't publish.
         extra (dict[str, Any] | None): Free-form fields preserved as-is.
@@ -147,7 +149,9 @@ def log_event(
     # On Windows ``_fcntl`` is None and writes proceed unlocked — same
     # behaviour as before. The original PIPE_BUF-based append atomicity
     # is preserved by ``_TRUNCATE_LIMIT`` keeping each record below 4 KiB.
-    with _rotation_lock(path):
+    with _rotation_lock(path) as acquired:
+        if not acquired:
+            return
         try:
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(line)
@@ -198,25 +202,25 @@ def _truncate(value: Any) -> Any:
 
 
 @contextlib.contextmanager
-def _rotation_lock(path: Path) -> Iterator[None]:
+def _rotation_lock(path: Path) -> Iterator[bool]:
     """Hold an exclusive cross-process flock on a sibling ``.lock`` file.
 
     Serialises every ``log_event`` call against itself so the rotation
     ``read_bytes → write tmp → rename`` sequence cannot interleave with a
     concurrent append. On Windows or when the lock cannot be acquired
-    (no ``fcntl``, read-only parent, etc.) the lock degrades to a no-op
-    and the caller proceeds unlocked — matches the pre-existing
-    best-effort policy of this module.
+    (no ``fcntl``), the caller proceeds unlocked. On lock contention or an
+    acquisition error, skip this best-effort record rather than waiting or
+    racing a concurrent rotation. The durable session/outbox is independent.
 
     Args:
         path (Path): The log file path; the lock file is a sibling at
             ``<path>.lock``.
 
     Yields:
-        None.
+        Whether the caller may safely append and rotate.
     """
     if _fcntl is None:
-        yield
+        yield True
         return
     lock_path = path.with_name(path.name + ".lock")
     fh: IO[bytes] | None = None
@@ -224,17 +228,17 @@ def _rotation_lock(path: Path) -> Iterator[None]:
         fh = lock_path.open("ab")
     except OSError as exc:
         _LOGGER.debug("hook_log: lock open %s failed: %s", lock_path, exc)
-        yield
+        yield False
         return
     try:
-        _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+        _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
     except OSError as exc:
         _LOGGER.debug("hook_log: flock acquire failed: %s", exc)
         fh.close()
-        yield
+        yield False
         return
     try:
-        yield
+        yield True
     finally:
         with contextlib.suppress(OSError):
             _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)

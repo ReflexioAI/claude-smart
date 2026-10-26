@@ -9,7 +9,7 @@ Technical reference for how `claude-smart` wires Claude Code's lifecycle hooks t
    - `UserPromptSubmit` — buffers each user turn, heuristically flags corrections, and searches reflexio with the prompt text to inject matching preference/skill hits as `additionalContext`.
    - `PreToolUse` — searches reflexio keyed on the first line of the tool-call text (Bash command, Edit `new_string`, etc.) and injects top matches as `additionalContext`.
    - `PostToolUse` — records tool invocations for later extraction.
-   - `Stop` — finalizes the assistant turn from the transcript, publishes to reflexio.
+   - `Stop` — finalizes the assistant turn; Codex queues publication after local capture, while other hosts publish synchronously.
    - `SessionEnd` — publishes the remaining buffer without forcing extraction, then sends a completion hint even if all messages were already saved. The backend retains its usefulness judge.
 2. **Local state buffer** — JSONL per session at `~/.claude-smart/sessions/{session_id}.jsonl`. Offline-safe.
 3. **Reflexio backend** (`reflexio-ai` package, or a generated `plugin/vendor/reflexio` bundle in fast npm releases) — SQLite storage, hybrid search, preference/skill extraction, dedup, status lifecycle (`CURRENT` → `ARCHIVED`). Runs on `localhost:8071`.
@@ -36,6 +36,30 @@ Next user prompt / tool call → query-aware search for project-specific skills,
 ```
 
 ## Mapping to reflexio
+
+### Codex publication ownership
+
+Codex's Node launcher dispatches through the prepared `.venv` Python, bounded
+below the host's prompt/tool and Stop deadlines. Native final-message payloads
+avoid reading the transcript when the user prompt is already known; the existing
+fallback retains internal-call filtering when it is missing.
+
+Stop atomically records a private intent under `~/.claude-smart/publish-outbox/`.
+The JSONL buffer remains the sole payload and frozen-request owner. Intents bind
+the session/project, backend/account fingerprint, configuration digest and last
+completed assistant record. A single detached worker drains these bounds through
+the existing publisher. Session-level publication locks also serialize manual
+callers. Enqueue never advances the acknowledgement watermark.
+
+A queue gate, launch claim and generation comparison prevent duplicate launch
+bursts, lost wakeups and deletion of a newer intent. The worker drains bounded
+rounds and hands off remaining healthy work; failed work waits for a later Stop
+or SessionStart. Read-only mode stops dispatch. Changed configuration or a
+different backend/account holds pending intents rather than redirecting them;
+restore the matching context to recover them. No legacy buffers are swept and
+no credentials or conversation content are copied into the outbox.
+
+### Field mapping
 
 | Reflexio field | claude-smart value |
 | --- | --- |

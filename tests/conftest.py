@@ -68,3 +68,11 @@ def reset_runtime_host(monkeypatch):
     runtime.set_host(runtime.HOST_CLAUDE_CODE)
     yield
     runtime.set_host(runtime.HOST_CLAUDE_CODE)
+
+
+@pytest.fixture(autouse=True)
+def no_background_publish_process(monkeypatch):
+    """Unit tests must not start a real worker against inherited account routing."""
+    from claude_smart import publish_outbox
+
+    monkeypatch.setattr(publish_outbox, "_spawn_worker", lambda _token: None)

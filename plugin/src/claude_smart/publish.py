@@ -11,10 +11,12 @@ from __future__ import annotations
 import uuid
 from typing import Any, Literal
 
+from filelock import FileLock, Timeout
+
 from claude_smart import state
 from claude_smart.reflexio_adapter import Adapter
 
-PublishStatus = Literal["nothing", "ok", "recovered", "failed"]
+PublishStatus = Literal["nothing", "ok", "recovered", "failed", "queued"]
 
 
 def _publish_request_id(session_id: str, start: int, end: int) -> str:
@@ -26,12 +28,19 @@ def _publish_request_id(session_id: str, start: int, end: int) -> str:
 
 def _prepare_publish_batch(
     session_id: str,
+    through_record: int | None = None,
 ) -> tuple[int, int, list[dict[str, Any]]] | None:
     """Freeze and return one canonical unpublished record range."""
 
     while True:
         records = state.read_all(session_id)
         published, available = state.unpublished_slice(records)
+        if through_record is not None:
+            if published >= through_record:
+                return None
+            _, available = state.unpublished_slice(
+                records[:through_record], published_override=published
+            )
         if not available:
             return None
 
@@ -49,6 +58,8 @@ def _prepare_publish_batch(
                 if next_starts
                 else state.safe_publish_end(records, published)
             )
+            if through_record is not None:
+                publish_end = min(publish_end, through_record)
             _, proposed = state.unpublished_slice(
                 records[:publish_end], published_override=published
             )
@@ -71,6 +82,8 @@ def _prepare_publish_batch(
         canonical_end = state.pending_publish_end(canonical, published)
         if canonical_end is None:
             continue
+        if through_record is not None and canonical_end > through_record:
+            return None
         _, interactions = state.unpublished_slice(
             canonical[:canonical_end], published_override=published
         )
@@ -86,6 +99,38 @@ def publish_unpublished(
     skip_aggregation: bool,
     override_learning_stall: bool = False,
     adapter: Adapter | None = None,
+    max_batches: int | None = None,
+    through_record: int | None = None,
+) -> tuple[PublishStatus, int]:
+    """Serialize drains across automatic workers and explicit manual publishers."""
+    path = state.session_path(session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with FileLock(str(path) + ".publish.lock", timeout=0):
+            return _publish_unpublished_locked(
+                session_id=session_id,
+                project_id=project_id,
+                force_extraction=force_extraction,
+                skip_aggregation=skip_aggregation,
+                override_learning_stall=override_learning_stall,
+                adapter=adapter,
+                max_batches=max_batches,
+                through_record=through_record,
+            )
+    except Timeout:
+        return "failed", 0
+
+
+def _publish_unpublished_locked(
+    *,
+    session_id: str,
+    project_id: str,
+    force_extraction: bool,
+    skip_aggregation: bool,
+    override_learning_stall: bool,
+    adapter: Adapter | None,
+    max_batches: int | None,
+    through_record: int | None,
 ) -> tuple[PublishStatus, int]:
     """Drain the session buffer to reflexio and stamp the high-water mark.
 
@@ -122,12 +167,13 @@ def publish_unpublished(
             so the next hook retries the same batch.
     """
     total = 0
+    batches = 0
     recovered = False
     reserved_starts = {
         start
         for start, _, _ in state.reserved_publish_requests(state.read_all(session_id))
     }
-    while (batch := _prepare_publish_batch(session_id)) is not None:
+    while (batch := _prepare_publish_batch(session_id, through_record)) is not None:
         status, count = _publish_batch(
             session_id,
             project_id,
@@ -138,9 +184,12 @@ def publish_unpublished(
             batch,
         )
         total += count
+        batches += 1
         recovered = recovered or status == "recovered"
         if status == "failed":
             return status, total
+        if max_batches is not None and batches >= max_batches:
+            break
         # Drain only response reservations present when this call began. Hooks
         # can append concurrently; legacy batches retain their one-call boundary.
         watermark = state.published_record_offset(state.read_all(session_id))

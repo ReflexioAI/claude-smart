@@ -445,10 +445,10 @@ def test_log_rotation_tolerates_read_failure(hook_log_path, monkeypatch) -> None
     not hasattr(hook_log, "_fcntl") or hook_log._fcntl is None,
     reason="flock-based rotation lock is POSIX-only",
 )
-def test_log_event_lock_serialises_rotation_and_append(
+def test_contended_log_skips_append_without_blocking_or_racing_rotation(
     hook_log_path, monkeypatch
 ) -> None:
-    """A concurrent append fired mid-rotation must not be silently dropped.
+    """Best-effort logging cannot block a hook behind another log rotation.
 
     Regression for CodeRabbit review on PR #30: the rotation
     ``read_bytes → write tmp → rename`` sequence used to race with a
@@ -461,8 +461,8 @@ def test_log_event_lock_serialises_rotation_and_append(
     ``log_event`` fires while A is paused. Without the lock, B would
     append to the original file and A's pending replace would then
     overwrite that append with the pre-B snapshot — B's record is lost.
-    With the lock, B blocks on the flock until A releases, then writes
-    to the post-rotation file. The test asserts both records survive.
+    B must return while A still holds the lock, without modifying its snapshot.
+    A later uncontended append must succeed against the rotated file.
     """
     # Prime with a high cap so no rotation fires during priming.
     monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 100_000)
@@ -513,18 +513,17 @@ def test_log_event_lock_serialises_rotation_and_append(
     t_rot.start()
     t_app.start()
 
-    # Rotator is paused at replace. With the lock held, the appender's
-    # log_event call is blocked acquiring the flock — give it generous
-    # wall time to attempt and queue.
+    # The held rotation must not delay B; its diagnostic record is optional.
     assert replace_called.wait(timeout=5.0)
-    completed_early = appender_finished.wait(timeout=0.5)
-    assert not completed_early, (
-        "appender finished before rotator released the lock — the lock "
-        "isn't actually serialising rotation against concurrent appends, "
-        "so a record could be silently dropped under real concurrency."
-    )
-
-    replace_may_finish.set()
+    try:
+        assert appender_finished.wait(timeout=0.5), (
+            "contended diagnostic blocked the hook"
+        )
+        assert "appender-record" not in {
+            r["session_id"] for r in _read_lines(hook_log_path)
+        }
+    finally:
+        replace_may_finish.set()
     t_rot.join(timeout=5.0)
     t_app.join(timeout=5.0)
     assert not t_rot.is_alive()
@@ -532,10 +531,23 @@ def test_log_event_lock_serialises_rotation_and_append(
 
     final = _read_lines(hook_log_path)
     session_ids = {r["session_id"] for r in final}
-    assert "appender-record" in session_ids, (
-        "appender's record was dropped by rotation — the lock did not "
-        f"serialise the rotation/append. File has: {sorted(session_ids)}"
+    assert "rotator-record" in session_ids
+    assert "appender-record" not in session_ids
+    hook_log.log_event(event="stop", host="codex", session_id="after-contention")
+    assert "after-contention" in {r["session_id"] for r in _read_lines(hook_log_path)}
+
+
+def test_handler_completion_records_elapsed_stage_metadata(
+    hook_log_path, stdin_payload, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        hook, "_load_handlers", lambda: {"post-tool": lambda payload: None}
     )
+    stdin_payload({"session_id": "timing", "cwd": "/tmp"})
+    assert hook.main(["codex", "post-tool"]) == 0
+    [record] = _read_lines(hook_log_path)
+    assert record["stage"] == "handler"
+    assert record["duration_ms"] >= 0
 
 
 @pytest.mark.parametrize("manifest_failure", ["missing", "malformed"])

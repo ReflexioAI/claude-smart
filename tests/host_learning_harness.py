@@ -17,6 +17,7 @@ class FakeReflexioAdapter:
     def __init__(self, host_label: str) -> None:
         self.host_label = host_label
         self.url = "http://localhost:8071/"
+        self.api_key = ""
         self.search_calls: list[dict[str, Any]] = []
         self.publish_calls: list[dict[str, Any]] = []
         self.optimizer_defaults: list[dict[str, Any]] = []
@@ -158,7 +159,14 @@ def run_host_learning_happy_path(
     expected_state_dir: Path | None = None,
 ) -> dict[str, Any]:
     import claude_smart
-    from claude_smart import context_inject, cs_cite, publish, runtime, state
+    from claude_smart import (
+        context_inject,
+        cs_cite,
+        publish,
+        publish_outbox,
+        runtime,
+        state,
+    )
     from claude_smart.events import session_start
 
     loaded_from = Path(claude_smart.__file__).resolve()
@@ -174,10 +182,14 @@ def run_host_learning_happy_path(
     fake_reflexio = FakeReflexioAdapter(host_label=host)
     original_context_adapter = context_inject.Adapter
     original_publish_adapter = publish.Adapter
+    original_outbox_adapter = publish_outbox.Adapter
+    original_outbox_spawn = publish_outbox._spawn_worker
     original_session_start_adapter = session_start._adapter
     previous_host = runtime.host()
     context_inject.Adapter = lambda: fake_reflexio
     publish.Adapter = lambda: fake_reflexio
+    publish_outbox.Adapter = lambda: fake_reflexio
+    publish_outbox._spawn_worker = lambda _token: None
     session_start._adapter = lambda: fake_reflexio
     try:
         project = work_root / f"{host}-learning-e2e-project"
@@ -234,6 +246,13 @@ def run_host_learning_happy_path(
 
         stop_output = _run_hook(host, "stop", stop_payload)
         assert stop_output["continue"] is True
+        if host == runtime.HOST_CODEX:
+            # Exercise the durable enqueue/drain boundary deterministically;
+            # the separate launcher test covers actual detached process startup.
+            assert fake_reflexio.publish_calls == []
+            claim = publish_outbox._root() / "launch.claim"
+            token = json.loads(claim.read_text())["token"]
+            publish_outbox.run_worker(token)
 
         assert fake_reflexio.search_calls == [
             {
@@ -302,5 +321,7 @@ def run_host_learning_happy_path(
     finally:
         context_inject.Adapter = original_context_adapter
         publish.Adapter = original_publish_adapter
+        publish_outbox.Adapter = original_outbox_adapter
+        publish_outbox._spawn_worker = original_outbox_spawn
         session_start._adapter = original_session_start_adapter
         runtime.set_host(previous_host)

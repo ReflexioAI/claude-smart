@@ -217,10 +217,6 @@ function commandPath(names) {
   return null;
 }
 
-function uvPath() {
-  return commandPath(process.platform === "win32" ? ["uv.exe", "uv"] : ["uv"]);
-}
-
 function bashPath() {
   return commandPath(process.platform === "win32" ? ["bash.exe", "bash"] : ["bash"]);
 }
@@ -429,21 +425,40 @@ async function startDashboard(root) {
 }
 
 function runHook(root, event) {
-  trimLog(path.join(STATE_DIR, "backend.log"));
-  let uv = uvPath();
-  if (!uv) {
-    startInstallerDetached(root, "hook: uv not on PATH");
-    uv = uvPath();
-    if (!uv) {
-      appendLog("backend.log", "[claude-smart] hook: uv not on PATH; installer recovery scheduled; skipping");
-      emitHookOk();
-      return 0;
+  const started = process.hrtime.bigint();
+  // Leave room for the launcher and its diagnostics inside the host's existing
+  // 15-second tool/prompt and 30-second Stop limits. No per-hook uv resolution:
+  // the installer owns the prepared environment and its vendored dependency set.
+  const timeoutMs = ["user-prompt", "post-tool", "pre-tool"].includes(event)
+    ? 12_000 : 24_000;
+  const python = path.join(root, ".venv", process.platform === "win32"
+    ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python");
+  function trace(outcome, extra = {}) {
+    try {
+      appendLog("hook-launch.log", JSON.stringify({
+        ts: Date.now(), event, stage: "python", outcome,
+        duration_ms: Number(process.hrtime.bigint() - started) / 1e6,
+        budget_ms: timeoutMs, ...extra,
+      }));
+    } catch {
+      // Diagnostics are best effort and must not turn a degraded hook into a
+      // second failure. Never log stdin, output, credentials or exception text.
     }
+  }
+  function degraded(outcome, message) {
+    trace(outcome);
+    process.stdout.write(`${JSON.stringify({continue: true,
+      systemMessage: `[claude-smart] ${message}`})}\n`);
+    return 0;
+  }
+  if (!fs.existsSync(python)) {
+    try { startInstallerDetached(root, "hook: prepared Python missing"); } catch { /* best effort */ }
+    return degraded("not_ready", "Prepared Python is missing. Learning skipped for this hook; check installer status or rerun installation.");
   }
   const input = fs.readFileSync(0);
   const result = spawnSync(
-    uv,
-    ["run", "--project", root, "--quiet", "python", "-m", "claude_smart.hook", "codex", event],
+    python,
+    ["-m", "claude_smart.hook", "codex", event],
     {
       cwd: root,
       env: {
@@ -455,9 +470,21 @@ function runHook(root, event) {
       },
       input,
       stdio: ["pipe", "pipe", "inherit"],
+      timeout: timeoutMs,
+      // spawnSync otherwise waits indefinitely if the child ignores SIGTERM.
+      killSignal: "SIGKILL",
       windowsHide: true,
     },
   );
+  if (result.error && result.error.code === "ETIMEDOUT") {
+    return degraded("timeout", `${event} exceeded its ${timeoutMs / 1000}s execution budget. Existing buffered work remains available for retry.`);
+  }
+  if (result.error) {
+    return degraded("spawn_failed", "Prepared Python could not start. Learning skipped for this hook.");
+  }
+  trace(result.status === 0 ? "completed" : "failed", {
+    exit_code: result.status, signal: result.signal || null,
+  });
   emitNormalizedHookOutput(result.stdout);
   return typeof result.status === "number" ? result.status : 1;
 }

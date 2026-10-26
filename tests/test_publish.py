@@ -251,16 +251,13 @@ def test_early_publish_keeps_refs_for_the_next_assistant(session_dir) -> None:
     ]
 
 
-def test_overlapping_publishers_adopt_one_frozen_batch(
+def test_overlapping_publishers_serialize_one_frozen_batch(
     session_dir, monkeypatch
 ) -> None:
     _inject_profile("s1", "p1", 1)
     _append_assistant("s1", 2, "first")
-
     first_marker_ready = threading.Event()
     allow_first_marker = threading.Event()
-    second_request_ready = threading.Event()
-    allow_second_request = threading.Event()
     original_append = state.append
 
     def append_with_pause(session_id: str, record: dict[str, Any]) -> None:
@@ -270,48 +267,30 @@ def test_overlapping_publishers_adopt_one_frozen_batch(
         original_append(session_id, record)
 
     monkeypatch.setattr(state, "append", append_with_pause)
-
     first_adapter = _RecordingAdapter()
     first_result: list[tuple[str, int]] = []
     first_thread = threading.Thread(
         name="first", target=lambda: first_result.append(_publish("s1", first_adapter))
     )
     first_thread.start()
-    assert first_marker_ready.wait(timeout=5)
-
-    _inject_profile("s1", "p2", 3)
-    _append_assistant("s1", 4, "second")
-
-    class BlockingAdapter(_RecordingAdapter):
-        def publish(self, **kwargs: Any) -> PublishResult:
-            self.calls.append(kwargs)
-            second_request_ready.set()
-            assert allow_second_request.wait(timeout=5)
-            return PublishResult(True, kwargs.get("request_id"))
-
-    second_adapter = BlockingAdapter()
-    second_result: list[tuple[str, int]] = []
-    second_thread = threading.Thread(
-        name="second",
-        target=lambda: second_result.append(_publish("s1", second_adapter)),
-    )
-    second_thread.start()
-    assert second_request_ready.wait(timeout=5)
-
-    allow_first_marker.set()
-    first_thread.join(timeout=5)
+    try:
+        assert first_marker_ready.wait(timeout=5)
+        _inject_profile("s1", "p2", 3)
+        _append_assistant("s1", 4, "second")
+        second_adapter = _RecordingAdapter()
+        assert _publish("s1", second_adapter) == ("failed", 0)
+        assert second_adapter.calls == []
+    finally:
+        allow_first_marker.set()
+        first_thread.join(timeout=5)
     assert not first_thread.is_alive()
-    allow_second_request.set()
-    second_thread.join(timeout=5)
-    assert not second_thread.is_alive()
-
-    assert first_result == [("ok", 2)]
-    assert second_result == [("ok", 2)]
-    assert first_adapter.calls[0]["request_id"] == second_adapter.calls[0]["request_id"]
-    assert (
-        first_adapter.calls[0]["interactions"]
-        == second_adapter.calls[0]["interactions"]
-    )
+    assert first_result == [("ok", 1)]
+    assert _publish("s1", second_adapter) == ("ok", 1)
+    assert first_adapter.calls[0]["request_id"] != second_adapter.calls[0]["request_id"]
+    for adapter, identity in ((first_adapter, "p1"), (second_adapter, "p2")):
+        assert adapter.calls[0]["interactions"][0]["retrieved_learnings"] == [
+            {"kind": "profile", "learning_id": identity}
+        ]
 
 
 def test_invalid_empty_attempt_marker_is_skipped(session_dir) -> None:

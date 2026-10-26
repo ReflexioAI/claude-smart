@@ -6002,7 +6002,7 @@ def test_codex_hook_recovers_missing_dependencies_without_cli_command() -> None:
     script = CODEX_HOOK.read_text()
 
     assert "function startInstallerDetached(root, reason)" in script
-    assert 'startInstallerDetached(root, "hook: uv not on PATH")' in script
+    assert 'startInstallerDetached(root, "hook: prepared Python missing")' in script
     assert "function runServiceScript(root, scriptName, action, logName)" in script
     assert 'path.join(root, "scripts", scriptName)' in script
     assert "[script, action]" in script
@@ -8216,6 +8216,15 @@ def test_codex_hook_post_tool_fallback_omits_suppress_output(tmp_path: Path) -> 
     assert json.loads(result.stdout) == {"continue": True}
 
 
+def _prepared_hook_root(tmp_path: Path, body: str) -> Path:
+    root = tmp_path / "plugin"
+    python = root / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    (root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    _write_executable(python, body)
+    return root
+
+
 def test_codex_hook_reflexio_env_file_overrides_stale_managed_process_env(
     tmp_path: Path,
 ) -> None:
@@ -8238,21 +8247,17 @@ def test_codex_hook_reflexio_env_file_overrides_stale_managed_process_env(
         'REFLEXIO_URL="https://localhost:8081"\nREFLEXIO_API_KEY="rflx-dev"\n'
     )
 
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    uv = bin_dir / "uv"
-    uv.write_text(
+    root = _prepared_hook_root(
+        tmp_path,
         "#!/bin/sh\n"
         'printf \'{"hookSpecificOutput":{"hookEventName":"PostToolUse",'
         '"additionalContext":"%s|%s|%s|%s"}}\\n\' '
         '"$REFLEXIO_URL" "$REFLEXIO_API_KEY" '
-        '"$CLAUDE_SMART_USE_LOCAL_CLI" "$CLAUDE_SMART_READ_ONLY"\n'
+        '"$CLAUDE_SMART_USE_LOCAL_CLI" "$CLAUDE_SMART_READ_ONLY"\n',
     )
-    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
-
     env = _isolated_env(tmp_path)
-    env["PATH"] = str(bin_dir)
-    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT / "plugin")
+    env["PATH"] = str(root / ".venv" / "bin")
+    env["CLAUDE_PLUGIN_ROOT"] = str(root)
     env["REFLEXIO_URL"] = "https://stale.example/"
     env["REFLEXIO_API_KEY"] = "rflx-stale-secret"
     env["CLAUDE_SMART_USE_LOCAL_CLI"] = "env-local"
@@ -8281,17 +8286,13 @@ def test_codex_hook_normalizer_removes_suppress_output_for_hooks(
     if not node:
         pytest.skip("node is required for codex hook wrapper tests")
 
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    uv = bin_dir / "uv"
-    uv.write_text(
-        "#!/bin/sh\nprintf '%s\\n' '{\"continue\":true,\"suppressOutput\":true}'\n"
+    root = _prepared_hook_root(
+        tmp_path,
+        "#!/bin/sh\nprintf '%s\\n' '{\"continue\":true,\"suppressOutput\":true}'\n",
     )
-    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
-
     env = _isolated_env(tmp_path)
-    env["PATH"] = str(bin_dir)
-    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT / "plugin")
+    env["PATH"] = str(root / ".venv" / "bin")
+    env["CLAUDE_PLUGIN_ROOT"] = str(root)
     result = subprocess.run(
         [node, str(CODEX_HOOK), "hook", "post-tool"],
         env=env,
@@ -8310,20 +8311,16 @@ def test_codex_hook_defaults_citation_links_to_markdown(tmp_path: Path) -> None:
     if not node:
         pytest.skip("node is required for codex hook wrapper tests")
 
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    uv = bin_dir / "uv"
-    uv.write_text(
+    root = _prepared_hook_root(
+        tmp_path,
         "#!/bin/sh\n"
         'printf \'%s\\n\' "{\\"hookSpecificOutput\\":'
         '{\\"hookEventName\\":\\"UserPromptSubmit\\",'
-        '\\"additionalContext\\":\\"$CLAUDE_SMART_CITATION_LINK_STYLE\\"}}"\n'
+        '\\"additionalContext\\":\\"$CLAUDE_SMART_CITATION_LINK_STYLE\\"}}"\n',
     )
-    uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
-
     env = _isolated_env(tmp_path)
-    env["PATH"] = str(bin_dir)
-    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT / "plugin")
+    env["PATH"] = str(root / ".venv" / "bin")
+    env["CLAUDE_PLUGIN_ROOT"] = str(root)
     env.pop("CLAUDE_SMART_CITATION_LINK_STYLE", None)
     result = subprocess.run(
         [node, str(CODEX_HOOK), "hook", "user-prompt"],

@@ -11,6 +11,7 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 | `cli.py` | `claude-smart` CLI: `install`, `uninstall`, `show`, `learn`, `restart`, `dashboard`, `clear-all`. |
 | `state.py` | Per-session JSONL buffer at `~/.claude-smart/sessions/{session_id}.jsonl`; high-water mark for idempotent publish retries. |
 | `publish.py` | Drains the session buffer, calls the Reflexio adapter, and stamps the watermark. Used by Stop, SessionEnd, and `learn`. |
+| `publish_outbox.py` | Private, destination-bound Codex publish intents and one detached worker; reuses the existing publisher and recovers on startup/Stop. |
 | `reflexio_adapter.py` | Thin wrapper over `reflexio.ReflexioClient` — isolates import failures, 5s HTTP timeout, injects/queries learnings, degrades gracefully when the backend is down. |
 
 ## Event Handlers (`events/`)
@@ -21,7 +22,7 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 | `user_prompt.py` | UserPromptSubmit | Inject learned playbooks/preferences into context. |
 | `pre_tool.py` | PreToolUse (Edit/Write/Bash/NotebookEdit) | Inject project-specific context before tool execution. |
 | `post_tool.py` | PostToolUse | Buffer the tool invocation (name, input, response, duration) into session state. |
-| `stop.py` | Stop | Publish unpublished interactions (force extraction if configured). |
+| `stop.py` | Stop | Save the assistant turn; queue Codex publication, otherwise publish synchronously. |
 | `session_end.py` | SessionEnd | Publish unsaved turns, then finalize the saved prefix through the judge; optional backend/dashboard shutdown. |
 
 ## Supporting Modules
@@ -47,7 +48,8 @@ UserPromptSubmit / PreToolUse -> context_inject pulls relevant learnings back in
 
 - **Dual-host** — the same package runs under Claude Code (native slash commands) and Codex (shell-script fallbacks in `../scripts/`); host shape is normalized in `runtime.py`.
 - **Offline-resilient** — if Reflexio is unreachable, interactions stay buffered and drain on the next successful publish.
-- **Hooks registered** in `../hooks/hooks.json` (Claude Code) and `../hooks/codex-hooks.json` (Codex), dispatched through `../scripts/hook_entry.sh`.
+- **Hooks registered** in `../hooks/hooks.json` (Claude Code) and `../hooks/codex-hooks.json` (Codex). Claude Code uses `../scripts/hook_entry.sh`; Codex uses `../scripts/codex-hook.js` and the prepared Python environment directly.
+- **Codex deadlines** — Python dispatch has a 12s prompt/tool budget and 24s Stop budget. Publication runs outside Stop in one detached worker; acknowledgement still controls watermarks. Launcher, handler and worker timings distinguish slow stages; optional log writes skip contended locks.
 
 ## Requirements / Problems to Avoid
 

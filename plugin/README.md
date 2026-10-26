@@ -38,6 +38,13 @@ Run `/reload-plugins` in your existing Claude Code session, or use the update in
 
 ### Codex
 
+Codex hooks use the installer's prepared Python environment. Stop saves the
+completed turn locally and queues publication for a single shared worker, so
+network retries do not hold up the session. Queued work is not a remote success:
+watermarks advance only after acknowledgement or verified storage. Later Stops
+and session startup recover pending work. Manual `learn` still runs synchronously.
+See [troubleshooting](https://github.com/ReflexioAI/claude-smart/blob/main/TROUBLESHOOTING.md) for timing logs and recovery.
+
 ```bash
 npx claude-smart install --host codex
 ```

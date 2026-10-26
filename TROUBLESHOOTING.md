@@ -10,7 +10,23 @@ The default local setup starts `reflexio embeddings serve` on `127.0.0.1:8072` w
 Check `~/.claude-smart/sessions/`. If your current session's JSONL has no `User`/`Assistant` rows, the plugin isn't receiving hook events — verify `.claude/settings.local.json` has the right path and that `enabledPlugins` is `true`.
 
 **Hooks appear to time out.**
-Each hook is capped at 10–60s (see `plugin/hooks/hooks.json`). If you see long pauses, check `uv` is on PATH — hooks shell out to `uv run`.
+Check the host-specific limits in `plugin/hooks/hooks.json` or
+`plugin/hooks/codex-hooks.json`. Codex dispatch runs the installer's prepared
+Python directly, with a 12-second subprocess budget for prompt/tool events and
+24 seconds for Stop. Missing environments produce a degraded warning and attempt
+installer recovery; check installation status or rerun `npx claude-smart install --host codex`.
+Dependency installation does not run inside a prompt or Stop hook.
+
+`~/.claude-smart/hook-launch.log` records Codex Python launch outcomes and
+`duration_ms`/`budget_ms`, including timeouts before Python can log completion.
+`hook.log` records handler and background publication durations. A contended
+diagnostic log lock skips that optional record rather than holding up the hook.
+These timings omit prompts, tool output and credentials.
+
+Codex Stop saves the turn and queues publication for one detached worker. A
+`queued` result means saved locally, not accepted by Reflexio. Failed work stays
+pending and is retried on a later Stop or SessionStart; HTTP 402 and backend
+rejections still require fixing the underlying billing or server issue.
 
 **Dashboard says npm or Node is missing.**
 The Setup hook should install a private Node.js/npm runtime under `~/.claude-smart/node/current` when no suitable global Node.js is available. If private Node setup or dashboard build fails, claude-smart writes the non-fatal marker `~/.claude-smart/dashboard-unavailable`; `/claude-smart:dashboard` prints that file before log tails. Rerun `npx claude-smart install` to retry dependency setup, or install Node.js 20.9+ manually and run `/claude-smart:restart`. Plugin reload alone does not retry dependency setup.
