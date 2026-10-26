@@ -148,9 +148,9 @@ install_complete() {
   claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook || return 1
   if ! claude_smart_managed_env_active; then
     [ -f "$HOME/.claude-smart/.env" ] || return 1
-    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$HOME/.claude-smart/.env" || return 1
-    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY=' "$HOME/.claude-smart/.env" || return 1
-    grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_HOST=' "$HOME/.claude-smart/.env" || return 1
+    grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI[[:space:]]*=' "$HOME/.claude-smart/.env" || return 1
+    grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY[[:space:]]*=' "$HOME/.claude-smart/.env" || return 1
+    grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_HOST[[:space:]]*=' "$HOME/.claude-smart/.env" || return 1
   fi
   if [ -d "$PLUGIN_ROOT/dashboard" ]; then
     [ -d "$PLUGIN_ROOT/dashboard/.next" ] || [ -f "$MARKER_DIR/dashboard-build.pid" ] || [ -f "$(claude_smart_dashboard_unavailable_marker)" ] || return 1
@@ -659,8 +659,8 @@ claude_smart_env_upsert() {
   key="$1"
   value="$2"
   quoted="$(claude_smart_env_quote "$value")"
-  if grep -qE "^(export[[:space:]]+)?${key}=" "$REFLEXIO_ENV"; then
-    sed -i.bak -E "s|^(export[[:space:]]+)?${key}=.*$|${key}=\"${quoted}\"|" "$REFLEXIO_ENV"
+  if grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$REFLEXIO_ENV"; then
+    sed -i.bak -E "s|^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=.*$|${key}=\"${quoted}\"|" "$REFLEXIO_ENV"
     rm -f "$REFLEXIO_ENV.bak"
   else
     printf '%s="%s"\n' "$key" "$quoted" >> "$REFLEXIO_ENV"
@@ -671,7 +671,7 @@ claude_smart_env_append_raw_if_missing() {
   local key value
   key="$1"
   value="$2"
-  if ! grep -qE "^(export[[:space:]]+)?${key}=" "$REFLEXIO_ENV"; then
+  if ! grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$REFLEXIO_ENV"; then
     printf '%s=%s\n' "$key" "$value" >> "$REFLEXIO_ENV"
   fi
 }
@@ -712,16 +712,22 @@ claude_smart_ensure_local_env_defaults() {
     claude_smart_prune_managed_env_keys_for_local
     unset REFLEXIO_URL REFLEXIO_API_KEY REFLEXIO_USER_ID CLAUDE_SMART_MANAGED_SETUP
   fi
-  if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
+  if ! grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI[[:space:]]*=' "$REFLEXIO_ENV"; then
     printf '# Route reflexio generation through the configured local host CLI\n' >> "$REFLEXIO_ENV"
     claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_CLI "$local_cli_default"
     echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_CLI=$local_cli_default to $REFLEXIO_ENV" >&2
   fi
-  if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY=' "$REFLEXIO_ENV"; then
+  if ! grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY[[:space:]]*=' "$REFLEXIO_ENV"; then
     claude_smart_env_upsert CLAUDE_SMART_READ_ONLY "0"
     echo "[claude-smart] appended CLAUDE_SMART_READ_ONLY=0 to $REFLEXIO_ENV" >&2
   fi
-  if ! grep -qE '^(export[[:space:]]+)?CLAUDE_SMART_HOST=' "$REFLEXIO_ENV"; then
+  if ! grep -qE '^[[:space:]]*(export[[:space:]]+)?REFLEXIO_ROW_LIMIT_INTERACTIONS[[:space:]]*=' "$REFLEXIO_ENV"; then
+    # Preserve the local history budget as visible SDK configuration. Never
+    # export a launcher default over a cap already saved in the selected file.
+    printf '# Local interaction history row cap; 0 disables cap cleanup\n' >> "$REFLEXIO_ENV"
+    claude_smart_env_append_raw_if_missing REFLEXIO_ROW_LIMIT_INTERACTIONS "${REFLEXIO_ROW_LIMIT_INTERACTIONS:-500}"
+  fi
+  if ! grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_HOST[[:space:]]*=' "$REFLEXIO_ENV"; then
     claude_smart_env_upsert CLAUDE_SMART_HOST "claude-code"
     echo "[claude-smart] appended CLAUDE_SMART_HOST=claude-code to $REFLEXIO_ENV" >&2
   fi

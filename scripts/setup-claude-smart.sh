@@ -155,6 +155,10 @@ ensure_local_env_defaults() {
     printf '# Route reflexio generation through the local Claude Code CLI\n' >> "$REFLEXIO_ENV"
     append_env_raw CLAUDE_SMART_USE_LOCAL_CLI "1"
   fi
+  if ! get_env_value REFLEXIO_ROW_LIMIT_INTERACTIONS >/dev/null 2>&1; then
+    printf '# Local interaction history row cap; 0 disables cap cleanup\n' >> "$REFLEXIO_ENV"
+    append_env_raw REFLEXIO_ROW_LIMIT_INTERACTIONS "${REFLEXIO_ROW_LIMIT_INTERACTIONS:-500}"
+  fi
   if ! get_env_value CLAUDE_SMART_READ_ONLY >/dev/null 2>&1; then
     append_env_value CLAUDE_SMART_READ_ONLY "0"
   fi

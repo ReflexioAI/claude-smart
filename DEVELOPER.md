@@ -54,6 +54,7 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | `CLAUDE_SMART_GUIDED_CONFIG` | unset (legacy setup) | Internal saved marker (`1`) written after confirming guided configuration. Preserves explicit local endpoints and sharing settings even when a custom executable or cloud provider replaces the named learning provider. |
 | `REFLEXIO_EMBEDDING_PROVIDER` | model-derived when unset | Embedding provider mode: `cloud`, `local_service`, `internal_service`, or `off`. |
 | `REFLEXIO_EMBEDDING_SERVICE_URL` | `http://127.0.0.1:$EMBEDDING_PORT` | OpenAI-compatible embedding endpoint used by `local_service` and `internal_service`. |
+| `REFLEXIO_ROW_LIMIT_INTERACTIONS` | `500` (local installer) | Existing SDK interaction-row cap, saved in `~/.claude-smart/.env`; `0` disables cap cleanup. Existing file and process overrides remain authoritative. |
 | `EMBEDDING_PORT` | `8072` | Local embedding daemon port. Shared by Claude Code and Codex on the same machine. |
 | `REFLEXIO_RERANK_ENABLED` | `false` (hard-set by `backend-service.sh`) | claude-smart disables Reflexio's shared-service cross-encoder completely, so the local inference process skips reranker model loading and prewarm. This is intentionally not user-overridable in the bundled backend. |
 | `CLAUDE_SMART_ENABLE_OPTIMIZER` | auto: local Reflexio only | Hook-side env var that controls shared skill optimization and rollups during `SessionStart`. Set to `1` to force optimizer defaults for hosted Reflexio, or `0` to disable everywhere. Set it in Claude Code settings, not `~/.reflexio/.env`. |
@@ -113,6 +114,14 @@ copy (including the SQLite path and backend tag), then back up and replace the
 selected JSON only after verification. Stop services first. This operation does
 not migrate env files or choose a different database; the plugin retains its
 existing explicit legacy SQLite path pin after conversion.
+
+The launcher no longer exports the retired `INTERACTION_CLEANUP_THRESHOLD` or
+unused `INTERACTION_CLEANUP_DELETE_COUNT`. Local installation records its existing
+500-row interaction budget through `REFLEXIO_ROW_LIMIT_INTERACTIONS` only when
+that setting is absent. Preserve custom old caps with the canonical setting and
+remove old assignments before startup. Existing canonical file values are never
+replaced by a launcher default; zero still disables cap cleanup. This is retention
+compatibility for the SDK upgrade and earns no configuration-count reduction.
 
 The bundled old and new SDKs both choose MiniLM when the embedding model is
 unconfigured. Credential availability must not silently replace an explicit

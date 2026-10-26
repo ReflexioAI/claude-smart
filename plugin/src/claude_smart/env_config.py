@@ -37,10 +37,16 @@ _LOCAL_DEFAULT_ENTRIES = (
         "1",
     ),
     (None, CLAUDE_SMART_READ_ONLY_ENV, "0"),
+    (
+        "# Local interaction history row cap; 0 disables cap cleanup",
+        "REFLEXIO_ROW_LIMIT_INTERACTIONS",
+        "500",
+    ),
     (None, CLAUDE_SMART_HOST_ENV, DEFAULT_CLAUDE_SMART_HOST),
 )
 _ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS = {
     CLAUDE_SMART_USE_LOCAL_CLI_ENV,
+    "REFLEXIO_ROW_LIMIT_INTERACTIONS",
 }
 _LOCAL_MODE_PRUNE_KEYS = {
     REFLEXIO_URL_ENV,

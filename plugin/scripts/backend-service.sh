@@ -963,12 +963,8 @@ case "$CMD" in
     fi
     cd "$PLUGIN_ROOT"
 
-    # Cap local interaction history to keep the SQLite store small for
-    # claude-smart users. Reflexio's library defaults are much higher
-    # (250k/50k) for server deployments; here we override only in the
-    # claude-smart plugin context. Users can still override via env.
-    export INTERACTION_CLEANUP_THRESHOLD="${INTERACTION_CLEANUP_THRESHOLD:-500}"
-    export INTERACTION_CLEANUP_DELETE_COUNT="${INTERACTION_CLEANUP_DELETE_COUNT:-200}"
+    # Retention policy comes from the selected SDK environment. The installer
+    # records the plugin's local budget there using its canonical setting.
 
     # Keep plugin runtime data in ~/.reflexio even when the backend imports
     # Reflexio from an editable checkout inside a larger repo with its own

@@ -1238,8 +1238,11 @@ def test_no_code_path_uses_the_shared_reflexio_env_file() -> None:
     assert offenders == []
 
 
-def _run_setup_script(tmp_path: Path, stdin: str) -> subprocess.CompletedProcess[str]:
+def _run_setup_script(
+    tmp_path: Path, stdin: str, env_extra: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     env = _isolated_env(tmp_path)
+    env.update(env_extra or {})
     env["CLAUDE_SMART_SETUP_NO_INSTALL"] = "1"
     return subprocess.run(
         ["/bin/bash", str(SETUP_CLAUDE_SMART)],
@@ -1544,7 +1547,7 @@ def test_node_installer_ignores_stale_url_without_api_key(tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     assert (
-        "CLAUDE_SMART_USE_LOCAL_CLI, CLAUDE_SMART_READ_ONLY, CLAUDE_SMART_HOST.\n"
+        "CLAUDE_SMART_USE_LOCAL_CLI, CLAUDE_SMART_READ_ONLY, REFLEXIO_ROW_LIMIT_INTERACTIONS, CLAUDE_SMART_HOST.\n"
     ) in result.stdout
     assert "Using local Reflexio backend at http://localhost:8071/." in result.stdout
     # ~/.reflexio/.env belongs to other Reflexio tools: never rewritten.
@@ -8870,3 +8873,147 @@ def test_status_attributes_each_claude_registration_to_its_scope(
             in result.stdout
         )
         assert "Installed version: 3.0.0 (scope: user, enabled: true)" in result.stdout
+
+
+@pytest.mark.parametrize("saved", [None, "0", "4300"])
+@pytest.mark.parametrize("exported", [None, "9000"])
+def test_local_install_preserves_canonical_retention_budget(tmp_path, saved, exported):
+    from importlib.metadata import distribution
+
+    _plugin_root, installer, env = _prepare_smart_install_sync_fixture(
+        tmp_path, mode="fresh"
+    )
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir(exist_ok=True)
+    original = "# keep policy\nUNKNOWN=keep\n"
+    if saved is not None:
+        original += f"REFLEXIO_ROW_LIMIT_INTERACTIONS={saved}\n"
+    selected.write_text(original)
+    if exported is not None:
+        env["REFLEXIO_ROW_LIMIT_INTERACTIONS"] = exported
+    result = _run_smart_install(installer, env)
+    assert result.returncode == 0, result.stderr
+    stored = saved if saved is not None else exported or "500"
+    text = selected.read_text()
+    assert original.strip() in text
+    assert text.count("REFLEXIO_ROW_LIMIT_INTERACTIONS=") == 1
+    assert f"REFLEXIO_ROW_LIMIT_INTERACTIONS={stored}" in text
+    backend = (REPO_ROOT / "plugin/scripts/backend-service.sh").read_text()
+    assert "INTERACTION_CLEANUP_THRESHOLD" not in backend
+    assert "INTERACTION_CLEANUP_DELETE_COUNT" not in backend
+    # Execute both real SDK policies, without starting compute or services.
+    probe = (
+        "from reflexio.cli.env_loader import block_implicit_dotenv_walkup, load_reflexio_env; "
+        "block_implicit_dotenv_walkup(); load_reflexio_env(); "
+        "from reflexio.server.services.storage.retention import get_row_retention_limits; "
+        "print(get_row_retention_limits()['interactions'])"
+    )
+    for sdk in (
+        REPO_ROOT / "plugin/vendor/reflexio",
+        Path(str(distribution("reflexio-ai").locate_file(""))),
+    ):
+        probe_env = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(tmp_path),
+            "PYTHONPATH": str(sdk),
+            "REFLEXIO_ENV_FILE": str(selected),
+        }
+        if exported is not None:
+            probe_env["REFLEXIO_ROW_LIMIT_INTERACTIONS"] = exported
+        checked = subprocess.run(
+            [sys.executable, "-P", "-c", probe],
+            env=probe_env,
+            cwd=tmp_path,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        assert checked.returncode == 0, checked.stderr
+        assert checked.stdout.strip().splitlines()[-1] == (exported or stored)
+
+
+@pytest.mark.parametrize(
+    "installer", ["node-codex", "node-opencode", "python", "bash", "smart-install"]
+)
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        None,
+        "REFLEXIO_ROW_LIMIT_INTERACTIONS=0",
+        "REFLEXIO_ROW_LIMIT_INTERACTIONS=4300",
+        "REFLEXIO_ROW_LIMIT_INTERACTIONS = 0",
+        "  REFLEXIO_ROW_LIMIT_INTERACTIONS=4300",
+        '  export REFLEXIO_ROW_LIMIT_INTERACTIONS = "0"',
+    ],
+)
+@pytest.mark.parametrize("exported", [None, "9000"])
+def test_local_retention_defaults_preserve_dotenv_policy_across_installers(
+    tmp_path, monkeypatch, installer, assignment, exported
+):
+    from claude_smart.env_config import ensure_local_env_defaults, parse_env_line
+    from dotenv import dotenv_values
+    from io import StringIO
+
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = "# policy\nUNKNOWN=keep\n" + (
+        assignment + "\n" if assignment is not None else ""
+    )
+    selected.write_text(original)
+    env = _isolated_env(tmp_path)
+    if exported is not None:
+        env["REFLEXIO_ROW_LIMIT_INTERACTIONS"] = exported
+    if installer.startswith("node-"):
+        host = installer.removeprefix("node-")
+        result = subprocess.run(
+            [
+                "node",
+                "-e",
+                f"require({str(NODE_INSTALLER)!r}).configureReflexioSetup({host!r})",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
+    elif installer == "python":
+        if exported is None:
+            monkeypatch.delenv("REFLEXIO_ROW_LIMIT_INTERACTIONS", raising=False)
+        else:
+            monkeypatch.setenv("REFLEXIO_ROW_LIMIT_INTERACTIONS", exported)
+        ensure_local_env_defaults(selected, host="codex")
+        result = subprocess.CompletedProcess([], 0, "", "")
+    elif installer == "bash":
+        result = _run_setup_script(
+            tmp_path,
+            "codex\nlocal\n",
+            env_extra={"REFLEXIO_ROW_LIMIT_INTERACTIONS": exported}
+            if exported
+            else None,
+        )
+    else:
+        # This fixture prepares only its plugin/toolchain, retaining our saved policy.
+        _root, script, env = _prepare_smart_install_sync_fixture(tmp_path, mode="fresh")
+        if exported is not None:
+            env["REFLEXIO_ROW_LIMIT_INTERACTIONS"] = exported
+        result = _run_smart_install(script, env)
+    assert result.returncode == 0, result.stderr
+    text = selected.read_text()
+    assert original.strip() in text
+    parsed = [parse_env_line(line) for line in text.splitlines()]
+    caps = [
+        value
+        for pair in parsed
+        if pair is not None
+        for key, value in [pair]
+        if key == "REFLEXIO_ROW_LIMIT_INTERACTIONS"
+    ]
+    assert len(caps) == 1
+    expected = (
+        dotenv_values(stream=StringIO(original)).get("REFLEXIO_ROW_LIMIT_INTERACTIONS")
+        if assignment is not None
+        else exported or "500"
+    )
+    assert caps == [expected]
+    assert dotenv_values(selected)["REFLEXIO_ROW_LIMIT_INTERACTIONS"] == expected
