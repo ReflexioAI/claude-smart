@@ -104,3 +104,9 @@ The user subsequently authorized PR creation, local Codex review through P0/P1
 clearance, and merge after CI passes. PR #200 rebases the implementation onto
 `cedc05f` and refreshes the locked vendor bundle and validation against that base.
 Release and installation remain outside this PR's scope.
+
+The first local Codex PR review found two P2 recovery defects: failed-generation
+exclusions were lost across worker continuations, and enqueue could replace a
+held environment digest. Both were reproduced by new failing regression tests,
+then fixed: exclusions travel in the private continuation claim and coalescing
+requires the original environment digest. Both regressions pass afterward.

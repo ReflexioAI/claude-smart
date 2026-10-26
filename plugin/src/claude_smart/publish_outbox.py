@@ -107,7 +107,7 @@ def _spawn_worker(token: str) -> None:
     )
 
 
-def _ensure_worker_locked(root: Path) -> None:
+def _ensure_worker_locked(root: Path, *, skipped: set[str] | None = None) -> None:
     owner = FileLock(root / "worker.lock", timeout=0)
     try:
         owner.acquire()
@@ -121,7 +121,10 @@ def _ensure_worker_locked(root: Path) -> None:
     except (OSError, ValueError, KeyError, TypeError):
         pass
     token = uuid.uuid4().hex
-    _atomic_write(claim, dict(token=token, created_at=time.time()))
+    _atomic_write(
+        claim,
+        dict(token=token, created_at=time.time(), skipped=sorted(skipped or ())),
+    )
     try:
         _spawn_worker(token)
     except OSError:
@@ -138,11 +141,13 @@ def enqueue(session_id: str, project_id: str) -> bool:
         binding = _binding(Adapter())
         path = root / (_digest(session_id) + ".json")
         with FileLock(root / "gate.lock", timeout=0.2):
+            environment = _environment_digest()
             if path.exists():
                 previous = _read(path)
                 if (
                     previous["binding"] != binding
                     or previous["project_id"] != project_id
+                    or previous["environment"] != environment
                 ):
                     return False  # Held destination; never silently redirect pending turns.
             records = state.read_all(session_id)
@@ -160,7 +165,7 @@ def enqueue(session_id: str, project_id: str) -> bool:
                     session_id=session_id,
                     project_id=project_id,
                     binding=binding,
-                    environment=_environment_digest(),
+                    environment=environment,
                     generation=uuid.uuid4().hex,
                     through_record=through_record,
                 ),
@@ -227,12 +232,19 @@ def run_worker(launch_token: str | None = None) -> None:
         return
     owner = FileLock(root / "worker.lock", timeout=0)
     acquired = False
+    skipped: set[str] = set()
     try:
         with FileLock(root / "gate.lock", timeout=5):
             claim = root / "launch.claim"
             if launch_token is not None:
-                if not claim.exists() or _read(claim)["token"] != launch_token:
+                if not claim.exists():
+                    return
+                admission = _read(claim)
+                if admission["token"] != launch_token:
                     return  # Superseded launch must not steal its successor's owner.
+                # Continuations resume the same recovery round. A new explicit
+                # wake creates a claim without exclusions and may retry failures.
+                skipped.update(admission.get("skipped", []))
             elif claim.exists():
                 return  # Explicit local drains also respect an admitted child.
             owner.acquire()
@@ -241,7 +253,6 @@ def run_worker(launch_token: str | None = None) -> None:
                 claim.unlink()
         adapter = Adapter()
         binding = _binding(adapter)
-        skipped: set[str] = set()
         for _ in range(_MAX_BATCHES):
             with FileLock(root / "gate.lock", timeout=5):
                 selected = None if read_only() else _select(root, binding, skipped)
@@ -298,7 +309,7 @@ def run_worker(launch_token: str | None = None) -> None:
             owner.release()
             acquired = False
             if again:
-                _ensure_worker_locked(root)
+                _ensure_worker_locked(root, skipped=skipped)
     except (OSError, ValueError, KeyError, Timeout):
         return
     finally:

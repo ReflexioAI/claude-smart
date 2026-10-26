@@ -476,3 +476,76 @@ def test_worker_observes_read_only_enabled_between_batches(adapter, session_dir)
     _worker()
     assert adapter.publish.call_count == 1
     assert len(_jobs(session_dir)) == 1
+
+
+def test_failed_generations_are_not_retried_by_continuations_before_healthy_job(
+    adapter, session_dir, monkeypatch
+):
+    sessions = sorted((f"queued-{index}" for index in range(4)), key=outbox._digest)
+    failures = set(sessions[:3])
+    healthy = sessions[3]
+    for session in sessions:
+        _turn(session)
+        assert outbox.enqueue(session, "project")
+    adapter.publish.side_effect = lambda **kw: PublishResult(
+        kw["session_id"] not in failures, kw["request_id"]
+    )
+    monkeypatch.setattr(outbox, "_MAX_BATCHES", 2)
+    claim = outbox._root() / "launch.claim"
+    for _ in range(5):
+        if not claim.exists():
+            break
+        _worker()
+
+    attempts = [call.kwargs["session_id"] for call in adapter.publish.call_args_list]
+    assert attempts == sessions
+    assert not claim.exists()
+    assert {
+        json.loads(path.read_text())["session_id"] for path in _jobs(session_dir)
+    } == failures
+    assert attempts.count(healthy) == 1
+
+    # A new explicit wake is a fresh recovery round, rather than a permanent
+    # suppression of failures recorded during the previous bounded handoff.
+    outbox.kick()
+    for _ in range(5):
+        if not claim.exists():
+            break
+        _worker()
+    attempts = [call.kwargs["session_id"] for call in adapter.publish.call_args_list]
+    assert all(attempts.count(session) == 2 for session in failures)
+    assert attempts.count(healthy) == 1
+    assert not claim.exists()
+
+
+def test_same_account_environment_change_cannot_rebind_held_generation(
+    adapter, session_dir
+):
+    config = env_config.CLAUDE_SMART_ENV_PATH
+    config.parent.mkdir(parents=True)
+    original_config = 'CLAUDE_SMART_READ_ONLY="0"\n'
+    config.write_text(original_config)
+    _turn()
+    assert outbox.enqueue("s1", "project")
+    [job] = _jobs(session_dir)
+    original_job = job.read_bytes()
+    config.write_text(original_config + "# Different configuration authority\n")
+    _turn(text="newer answer")
+
+    assert not outbox.enqueue("s1", "project")
+    assert job.read_bytes() == original_job
+    _worker()
+    adapter.publish.assert_not_called()
+    assert job.read_bytes() == original_job
+
+    config.write_text(original_config)
+    outbox.kick()
+    _worker()
+    assert not _jobs(session_dir)
+    assert adapter.publish.call_count == 1
+    assert [
+        turn["content"] for turn in adapter.publish.call_args.kwargs["interactions"]
+    ] == ["question", "answer"]
+    assert outbox.enqueue("s1", "project")
+    _worker()
+    assert adapter.publish.call_count == 2

@@ -53,7 +53,8 @@ callers. Enqueue never advances the acknowledgement watermark.
 
 A queue gate, launch claim and generation comparison prevent duplicate launch
 bursts, lost wakeups and deletion of a newer intent. The worker drains bounded
-rounds and hands off remaining healthy work; failed work waits for a later Stop
+rounds and carries failed-generation exclusions through continuation claims,
+so healthy work progresses without immediate repeated failures. Failed work waits for a later Stop
 or SessionStart. Read-only mode stops dispatch. Changed configuration or a
 different backend/account holds pending intents rather than redirecting them;
 restore the matching context to recover them. No legacy buffers are swept and
