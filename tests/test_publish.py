@@ -1449,3 +1449,23 @@ def test_large_batch_stops_between_chunks_at_the_deadline(session_dir, monkeypat
     assert _drain("large", adapter, deadline=clock[0] + 60.0) == ("recovered", 1501)
     assert len(client.posts) == 2
     assert len(set(client.posts)) == 2
+
+
+def test_parking_is_reported_even_when_later_batches_publish(session_dir, monkeypatch):
+    now = _clock(monkeypatch)
+    _append_user("mixed", 1, "poison")
+    state.reserve_publish_request_id("mixed")
+    _append_assistant("mixed", 2)
+    _append_user("mixed", 3, "fine")
+    state.reserve_publish_request_id("mixed")
+    _append_assistant("mixed", 4)
+    adapter = _RejectingAdapter(
+        error_type="ServerRejected", http_status=200, server_message="bad batch"
+    )
+    for _ in range(publish.POISON_REJECTION_LIMIT - 1):
+        assert _drain("mixed", adapter)[0] == "failed"
+        now[0] += publish.POISON_MIN_SPAN_SECONDS
+    status, count = _drain("mixed", adapter)
+    assert status == "parked"
+    assert count == 2
+    assert adapter.calls[-1]["interactions"][0]["content"] == "fine"

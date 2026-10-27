@@ -183,8 +183,8 @@ def _publish_unpublished_locked(
             was unreachable. On ``"failed"`` the watermark is not advanced,
             so the next hook retries the same batch. ``("deferred", n)``
             means the deadline left too little time to send the next batch;
-            ``("parked", 0)`` means the only drained batch was parked after
-            repeated identical rejections.
+            ``("parked", n)`` means a batch was parked after repeated
+            identical rejections; ``n`` counts other batches published.
     """
     total = 0
     batches = 0
@@ -230,13 +230,14 @@ def _publish_unpublished_locked(
         watermark = state.published_record_offset(state.read_all(session_id))
         if not any(start >= watermark for start in reserved_starts):
             break
+    # Parking skips interactions for good, so it outranks any later success.
     return (
-        "recovered"
+        "parked"
+        if parked
+        else "recovered"
         if recovered
         else "ok"
         if total
-        else "parked"
-        if parked
         else "nothing",
         total,
     )
