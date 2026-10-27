@@ -1,6 +1,6 @@
 [project]
 name = "claude-smart"
-version = "0.3.14"
+version = "0.3.15"
 description = "Self-improving Claude Code, Codex, and OpenCode plugin that turns corrections and successful workflows into Preferences, Project-specific skills, and Shared skills"
 keywords = [
     "claude",

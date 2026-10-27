@@ -3664,7 +3664,10 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert (
         "startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup)" in node_installer
     )
-    assert "startAndReportServices(cacheDir, HOST_CODEX, setup)" in node_installer
+    assert (
+        "startAndReportServices(CODEX_RUNTIME_PLUGIN_ROOT, HOST_CODEX, setup)"
+        in node_installer
+    )
     assert (
         'runPluginService(pluginRoot, "dashboard-service.sh", "stop")' in node_installer
     )
@@ -6635,6 +6638,16 @@ process.stdin.on("data", (chunk) => {
     const message = JSON.parse(line);
     if (!message.id) continue;
     if (message.method === "hooks/list") {
+      const path = require("path");
+      const cache = path.join(process.env.CODEX_HOME || `${home}/.codex`, "plugins/cache/reflexioai/claude-smart");
+      const validate = (dir) => {
+        for (const name of fs.readdirSync(dir)) {
+          const file = path.join(dir, name), stat = fs.lstatSync(file);
+          if (stat.isDirectory()) validate(file);
+          else if (!stat.isFile()) throw new Error(`unsupported plugin entry type: ${file}`);
+        }
+      };
+      validate(cache);
       process.stdout.write(JSON.stringify({
         id: message.id,
         result: {
@@ -6929,9 +6942,11 @@ def test_claude_code_fresh_tarball_install_prepares_stable_copy(
 
 
 @pytest.mark.parametrize("custom_home", [False, True])
+@pytest.mark.parametrize("reinstall", [False, True])
 def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
     tmp_path: Path,
     custom_home: bool,
+    reinstall: bool,
 ) -> None:
     if os.name == "nt":
         pytest.skip("tarball smoke uses POSIX npm bin paths")
@@ -6952,7 +6967,12 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
     _write_executable(private_node / "node", "#!/bin/sh\nprintf 'v20.9.0\\n'\n")
     _write_executable(
         private_node / "npm",
-        '#!/bin/sh\nprintf "npm %s\\n" "$*" >> "$HOME/npm.log"\nexit 0\n',
+        '#!/bin/sh\nprintf "npm %s\\n" "$*" >> "$HOME/npm.log"\n'
+        'if [ "$1" = "ci" ]; then\n'
+        "  mkdir -p node_modules/.bin node_modules/acorn/bin\n"
+        '  printf "#!/bin/sh\\nexit 0\\n" > node_modules/acorn/bin/acorn\n'
+        "  ln -sf ../acorn/bin/acorn node_modules/.bin/acorn\n"
+        "fi\nexit 0\n",
     )
     _write_bootstrap_uv(uv_bin / "uv", mode="fresh")
 
@@ -7000,15 +7020,53 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
     cache_plugin = (
         codex_home / "plugins" / "cache" / "reflexioai" / "claude-smart" / version
     )
+    if reinstall:
+        # Reproduce a previously bootstrapped cache, including the rejected
+        # npm entry. Reinstall must replace it without reusing dependencies.
+        old_bin = cache_plugin / "dashboard" / "node_modules" / ".bin"
+        old_bin.mkdir(parents=True)
+        (old_bin / "acorn").symlink_to("../acorn/bin/acorn")
+        result = subprocess.run(
+            [str(prefix / "bin" / "claude-smart"), "install", "--host", "codex"],
+            cwd=project,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
     for root in [marketplace_plugin, cache_plugin]:
         assert (root / "pyproject.toml").exists()
         assert (root / "uv.lock").exists()
         assert (root / "scripts" / "hook_entry.sh").exists()
         assert (root / "opencode" / "dist" / "server.mjs").exists()
         _assert_matching_smart_install_hash(root, installed_package)
-    assert (cache_plugin / ".venv" / "bin" / "python").exists()
+    runtime_plugin = codex_home / "claude-smart" / "runtime" / "plugin"
+    assert (runtime_plugin / ".venv" / "bin" / "python").exists()
+    assert (runtime_plugin / "dashboard/node_modules/.bin/acorn").is_symlink()
+    for root in [marketplace_plugin, cache_plugin]:
+        assert not (root / ".venv").exists()
+        assert not (root / "dashboard" / "node_modules").exists()
+        assert not any(p.is_symlink() for p in root.rglob("*"))
+    manifest = json.loads((cache_plugin / "hooks" / "codex-hooks.json").read_text())
+    ensure_root = manifest["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert "--runtime-root" in ensure_root
+    # Codex sets these variables to the validated package, not the runtime.
+    hook_env = {
+        **env,
+        "PLUGIN_ROOT": str(cache_plugin),
+        "CLAUDE_PLUGIN_ROOT": str(cache_plugin),
+    }
+    # The private-node stub only reports a version; execute with the real Node.
+    hook_argv = shlex.split(ensure_root)
+    hook_argv[0] = node
+    hook_result = subprocess.run(
+        hook_argv, env=hook_env, capture_output=True, text=True, timeout=10
+    )
+    assert hook_result.returncode == 0, hook_result.stderr
+    assert (home / ".reflexio" / "plugin-root").resolve() == runtime_plugin.resolve()
     _assert_installed_host_learning_e2e(
-        cache_plugin,
+        runtime_plugin,
         host="codex",
         home=home,
         tmp_path=tmp_path,

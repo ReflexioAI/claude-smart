@@ -233,6 +233,16 @@ and `~/.claude-smart/` is preserved.
 
 Installers and hook discovery use `CODEX_HOME` when set, falling back to `~/.codex`. Configuration, plugin caches, and hook trust remain in that account home. Run the installer with the same `CODEX_HOME` as the Codex session you want to update.
 
+The installer prepares the npm package at `$CODEX_HOME/claude-smart/runtime`
+(default `~/.codex/claude-smart/runtime`). Its `plugin/` owns the Python venv
+and dashboard dependencies/build. The marketplace and versioned plugin cache
+contain only package files: Codex validates their entire tree and rejects
+dependency symlinks such as `node_modules/.bin/acorn`. Patched hook commands
+pass `--runtime-root` to the external runner, overriding the cache path Codex
+supplies through `PLUGIN_ROOT`/`CLAUDE_PLUGIN_ROOT`. Reinstall/update uses the
+existing package lock, runtime reuse, and rollback mechanism; uninstall removes
+the account runtime along with the cache.
+
 `npx claude-smart uninstall --host codex` stops local claude-smart services and removes plugin/cache/config state; learned data under `~/.reflexio/` and `~/.claude-smart/` is preserved and shared with the other hosts.
 
 ### OpenCode

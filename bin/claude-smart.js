@@ -92,6 +92,10 @@ const CODEX_HOME = (() => {
   try { return realpathSync(configured); } catch { return configured; }
 })();
 const CODEX_CONFIG_PATH = join(CODEX_HOME, "config.toml");
+// Codex validates every entry in a plugin package and rejects dependency
+// symlinks. Keep the mutable runtime outside plugins/, scoped to this account.
+const CODEX_RUNTIME_PACKAGE_DIR = join(CODEX_HOME, "claude-smart", "runtime");
+const CODEX_RUNTIME_PLUGIN_ROOT = join(CODEX_RUNTIME_PACKAGE_DIR, "plugin");
 const PACKAGE_ROOT = dirname(dirname(__filename));
 const CODEX_MARKETPLACE_DIR = join(
   homedir(),
@@ -935,6 +939,7 @@ function installedPluginRoots() {
   const roots = [
     join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin"),
     join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"),
+    CODEX_RUNTIME_PLUGIN_ROOT,
   ];
   try {
     const versions = readdirSync(CODEX_PLUGIN_CACHE_DIR).map((name) => join(CODEX_PLUGIN_CACHE_DIR, name));
@@ -2413,7 +2418,8 @@ function patchCodexHooksForNode(pluginRoot, nodePath) {
   const hookPath = join(pluginRoot, "hooks", "codex-hooks.json");
   const parsed = JSON.parse(readFileSync(hookPath, "utf8"));
   const runner = join(pluginRoot, "scripts", "codex-hook.js");
-  const command = (...args) => [nodePath, runner, ...args].map(quoteCommandPart).join(" ");
+  const command = (...args) => [nodePath, runner, ...args, "--runtime-root", pluginRoot]
+    .map(quoteCommandPart).join(" ");
   // Dispatch by command content rather than index — entries can be added or
   // reordered without breaking the patch.
   const patchOne = (original) => {
@@ -2819,6 +2825,7 @@ function cleanupCodexInstallState() {
   });
   rmSync(CODEX_MARKETPLACE_DIR, { recursive: true, force: true });
   rmSync(CODEX_PLUGIN_CACHE_DIR, { recursive: true, force: true });
+  rmSync(CODEX_RUNTIME_PACKAGE_DIR, { recursive: true, force: true });
   repairPluginRoot(HOST_CODEX);
   try {
     rmSync(dirname(CODEX_PLUGIN_CACHE_DIR), { recursive: false, force: true });
@@ -3088,7 +3095,6 @@ function installCodexPluginCache(pluginRoot) {
       recursive: true, force: true, verbatimSymlinks: false, filter: shouldCopyPath,
     });
     replaceLocalPluginPackage(staged, cacheDir);
-    reusePreparedRuntime(pendingPreviousPackages.get(cacheDir)?.backupPackage, cacheDir);
     setCodexPluginEnabled();
     return cacheDir;
   } catch (err) {
@@ -3142,7 +3148,8 @@ async function runUpdate(args) {
 }
 
 async function runUpdateCodex(args) {
-  const pluginRoot = findCodexPluginRoot() || join(PACKAGE_ROOT, "plugin");
+  const pluginRoot = existsSync(CODEX_RUNTIME_PLUGIN_ROOT)
+    ? CODEX_RUNTIME_PLUGIN_ROOT : findCodexPluginRoot() || join(PACKAGE_ROOT, "plugin");
   stopClaudeSmartServices(pluginRoot);
   process.stdout.write("Updating claude-smart Codex support by reinstalling from this package...\n");
   await runInstallCodex(args);
@@ -3410,15 +3417,21 @@ async function runInstallCodex(args) {
   let trustedHookCount = 0;
   let trustError = null;
   try {
+    installLocalPluginPackage(CODEX_RUNTIME_PACKAGE_DIR, "Codex runtime");
+    await bootstrapPluginRuntime(CODEX_RUNTIME_PLUGIN_ROOT, { readOnly });
+    // Only the patched manifest enters the marketplace/cache. Its commands
+    // execute the account runtime even when Codex supplies PLUGIN_ROOT=cache.
+    cpSync(join(CODEX_RUNTIME_PLUGIN_ROOT, "hooks", "codex-hooks.json"),
+      join(codexMarketplacePluginRoot(marketplaceRoot), "hooks", "codex-hooks.json"));
     cacheDir = installCodexPluginCache(codexMarketplacePluginRoot(marketplaceRoot));
     process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
-    await bootstrapPluginRuntime(cacheDir, { readOnly });
     if (readOnly) {
       process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
     }
     // Preparation succeeded; discard the rollback cache only now.
     commitLocalPluginPackage(cacheDir);
-    await startAndReportServices(cacheDir, HOST_CODEX, setup);
+    commitLocalPluginPackage(CODEX_RUNTIME_PACKAGE_DIR);
+    await startAndReportServices(CODEX_RUNTIME_PLUGIN_ROOT, HOST_CODEX, setup);
   } catch (err) {
     process.stderr.write(
       `error: automatic Codex plugin install failed: ${err && err.message ? err.message : err}\n`,

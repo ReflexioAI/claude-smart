@@ -172,6 +172,12 @@ function stablePluginRoot(root) {
 }
 
 function pluginRoot() {
+  const runtimeIndex = process.argv.indexOf("--runtime-root");
+  if (runtimeIndex !== -1) {
+    const root = process.argv[runtimeIndex + 1];
+    if (!root || !isPluginLikeRoot(root)) throw new Error("Missing installed Codex runtime; rerun claude-smart install --host codex");
+    return path.resolve(root);
+  }
   for (const value of [process.env.CLAUDE_PLUGIN_ROOT, process.env.PLUGIN_ROOT]) {
     if (value && fs.existsSync(path.join(value, "pyproject.toml"))) {
       return stablePluginRoot(path.resolve(value));
