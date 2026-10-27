@@ -14,6 +14,7 @@ shell commands there.
 ## Command Map
 
 - Dashboard: `bash ~/.reflexio/plugin-root/scripts/dashboard-open.sh`
+- Load the full text of an injected learning: `bash ~/.reflexio/plugin-root/scripts/cli.sh load --session <session-id> <id>` (the injected index header gives the exact command)
 - Show learned state: `bash ~/.reflexio/plugin-root/scripts/cli.sh show`
 - Learn from the latest turn: `bash ~/.reflexio/plugin-root/scripts/cli.sh learn`
 - Learn with a note: `bash ~/.reflexio/plugin-root/scripts/cli.sh learn --note "<note>"`

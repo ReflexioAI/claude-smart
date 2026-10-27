@@ -31,7 +31,9 @@ from typing import Any
 from claude_smart import context_inject, ids, runtime, state
 
 _LOGGER = logging.getLogger(__name__)
-_TOP_K = 3
+# Hits per collection. Each is one bounded index line, so 5 x 3 collections
+# fits INLINE_CONTEXT_BUDGET_CHARS with room to spare.
+_TOP_K = 5
 
 
 def handle(payload: dict[str, Any]) -> None:

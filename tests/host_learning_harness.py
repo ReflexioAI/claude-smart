@@ -152,6 +152,7 @@ def run_host_learning_happy_path(
 ) -> dict[str, Any]:
     import claude_smart
     from claude_smart import (
+        context_format,
         context_inject,
         cs_cite,
         publish,
@@ -209,7 +210,11 @@ def run_host_learning_happy_path(
         additional_context = user_prompt_output["hookSpecificOutput"][
             "additionalContext"
         ]
-        assert f"{host} project skill" in additional_context
+        # Index lines show when an item applies (its trigger), not its content;
+        # items without a trigger fall back to their content's first line.
+        assert "] matching prompt" in additional_context
+        assert f"{host} project skill" not in additional_context
+        assert context_format.LOADER_COMMAND in additional_context
         assert f"{host} shared skill" in additional_context
         assert f"{host} preference" in additional_context
         assert cs_cite.MARKER_PREFIX in additional_context
@@ -250,7 +255,7 @@ def run_host_learning_happy_path(
             {
                 "project_id": project.name,
                 "query": prompt,
-                "top_k": 3,
+                "top_k": 5,
                 "session_id": session_id,
                 "host": host,
                 "request_id": fake_reflexio.publish_calls[0]["request_id"],

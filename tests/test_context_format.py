@@ -276,14 +276,16 @@ def test_render_inline_compact_with_registry_is_one_logical_line(
     assert "\n" not in md.rstrip("\n")
     assert "###" not in md
     assert "- [cs:" not in md
-    assert "[cs:" not in md
-    assert "claude-smart: using relevant memory. Skill:" in md
-    assert "Preference:" in md
-    assert "Run uv sync after pyproject edits" in md
-    assert "Then run an import smoke test before committing" in md
-    assert "Run uv sync after pyproject edits: Run uv sync" not in md
-    assert "title: Run uv sync after pyproject edits" in md
-    assert "open: http://localhost:3001/rules/s1-17" in md
+    assert md.startswith("Relevant learnings from claude-smart")
+    # No trigger: the label falls back to the first line of the content.
+    assert (
+        "Skill: [cs:s1-17] Run uv sync after pyproject edits. Then run an import "
+        "smoke test before committing. (open: http://localhost:3001/rules/s1-17)."
+    ) in md
+    assert (
+        "Preference: [cs:p1-pref] prefers concise answers "
+        "(open: http://localhost:3001/rules/p1-pref)."
+    ) in md
     assert "prefers concise answers" in md
     assert "✨ claude-smart rule applied:" in md
     assert md.count("✨ claude-smart rule applied:") == 1
@@ -515,23 +517,180 @@ def test_compact_citation_guidance_does_not_grow_with_unused_memories(
     )
 
 
-def _long_playbooks(count: int, id_field: str, prefix: str) -> list[dict]:
+def _index_hits(count: int, prefix: str) -> list[dict]:
     return [
         {
-            id_field: f"{prefix}{index}",
-            "content": f"{prefix} rule {index}. " + "step " * 300,
-            "trigger": "when editing " + "x" * 200,
+            f"{prefix}_playbook_id": f"{prefix}{index}",
+            "content": f"FULL {prefix} {index} content. " + "detail " * 400,
+            "trigger": f"when {prefix} {index} applies " + "word " * 60,
             "rationale": "because " + "y" * 300,
         }
         for index in range(1, count + 1)
     ]
 
 
-def _long_profiles(count: int) -> list[dict]:
+def _index_profiles(count: int) -> list[dict]:
     return [
-        {"profile_id": f"pref{index}", "content": f"pref {index}. " + "z" * 1_500}
+        {"profile_id": f"pref{index}", "content": f"pref {index} " + "z " * 400}
         for index in range(1, count + 1)
     ]
+
+
+def test_index_label_uses_trigger_and_never_content() -> None:
+    entry = {"trigger": "editing pyproject.toml", "content": "SECRET body"}
+    assert context_format.index_label(entry) == "editing pyproject.toml"
+
+
+def test_index_label_cuts_at_word_boundary() -> None:
+    trigger = " ".join(f"word{index}" for index in range(60))
+    label = context_format.index_label({"trigger": trigger, "content": "x"})
+    assert label.endswith("…")
+    assert len(label) <= context_format.INDEX_LABEL_MAX_CHARS + 1
+    assert trigger.startswith(label[:-1])
+    # The cut lands on a whole word: the next character in the source is a space.
+    assert trigger[len(label) - 1] == " "
+
+
+def test_index_label_never_splits_a_word_at_the_limit() -> None:
+    trigger = "x" * 145 + " lengthyword more words"
+    label = context_format.index_label({"trigger": trigger, "content": "x"})
+    assert label == "x" * 145 + "…"
+
+
+def test_marker_title_comes_from_index_label_and_keeps_whole_words(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
+    md, _ = context_format.render_inline_compact_with_registry(
+        project_id="demo",
+        user_playbooks=[
+            {
+                "user_playbook_id": 403,
+                "content": "SECRET body text.",
+                "trigger": "checking out a branch for a worktree that another agent "
+                "worktree may already hold",
+            }
+        ],
+        agent_playbooks=[],
+        profiles=[],
+    )
+    assert (
+        "[checking out a branch for a worktree that another agent]"
+        "(http://localhost:3001/rules/s1-403)"
+    ) in md
+    assert "SECRET" not in md
+
+
+def test_index_label_hard_cuts_a_single_long_word() -> None:
+    label = context_format.index_label({"trigger": "a" * 400, "content": "x"})
+    assert label == "a" * context_format.INDEX_LABEL_MAX_CHARS + "…"
+
+
+def test_index_label_falls_back_to_first_content_line_without_trigger() -> None:
+    entry = {"trigger": "", "content": "Use uv sync.\nSecond line stays hidden."}
+    assert context_format.index_label(entry) == "Use uv sync."
+
+
+def test_index_label_for_profile_uses_cut_content() -> None:
+    entry = {"kind": "profile", "content": "prefers " + "very " * 100 + "short"}
+    label = context_format.index_label(entry)
+    assert label.startswith("prefers very")
+    assert label.endswith("…")
+    assert len(label) <= context_format.INDEX_LABEL_MAX_CHARS + 1
+
+
+def test_render_inline_index_lines_show_trigger_link_and_loader(monkeypatch) -> None:
+    monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
+    md, registry = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=[
+            {
+                "user_playbook_id": 17,
+                "content": "Run uv sync after pyproject edits.",
+                "trigger": "editing pyproject.toml",
+                "rationale": "stale lockfile broke CI",
+            }
+        ],
+        agent_playbooks=[],
+        profiles=[{"profile_id": "pref", "content": "prefers concise answers"}],
+        session_id="sess-1",
+    )
+    lines = md.splitlines()
+    assert lines[0] == (
+        "Relevant learnings from claude-smart — each line says when one applies. "
+        "Before relying on one that applies, load its full text with: "
+        f"`{context_format.LOADER_COMMAND} --session sess-1 <id>`"
+    )
+    assert (
+        "- [cs:s1-17] editing pyproject.toml "
+        "_(open: http://localhost:3001/rules/s1-17)_"
+    ) in lines
+    assert (
+        "- [cs:p1-pref] prefers concise answers "
+        "_(open: http://localhost:3001/rules/p1-pref)_"
+    ) in lines
+    assert "Run uv sync after pyproject edits" not in md
+    assert "stale lockfile" not in md
+    # The registry caches the full item for the loader.
+    assert registry[0]["content"] == "Run uv sync after pyproject edits."
+    assert registry[0]["trigger"] == "editing pyproject.toml"
+    assert registry[0]["rationale"] == "stale lockfile broke CI"
+
+
+def test_render_inline_omits_session_flag_without_session() -> None:
+    md, _ = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "x", "trigger": "y"}],
+        agent_playbooks=[],
+        profiles=[],
+    )
+    assert f"`{context_format.LOADER_COMMAND} <id>`" in md
+    assert "--session" not in md
+
+
+@pytest.mark.parametrize("link_style", ["markdown", "osc8"])
+@pytest.mark.parametrize(
+    ("renderer", "budget"),
+    [
+        (
+            context_format.render_inline_with_registry,
+            context_format.INLINE_CONTEXT_BUDGET_CHARS,
+        ),
+        (
+            context_format.render_inline_compact_with_registry,
+            context_format.CODEX_INLINE_CONTEXT_BUDGET_CHARS,
+        ),
+    ],
+)
+def test_render_inline_fits_fifteen_items_within_budget(
+    monkeypatch, renderer, budget: int, link_style: str
+) -> None:
+    """Five hits per collection, all with maximal labels, fit the budget."""
+    monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", link_style)
+    md, registry = renderer(
+        project_id="demo",
+        user_playbooks=_index_hits(5, "user"),
+        agent_playbooks=_index_hits(5, "agent"),
+        profiles=_index_profiles(5),
+        session_id="0b6f1c1e-6a8f-4d3b-9b8e-3d1f2a7c9e10",
+    )
+    assert len(md) <= budget
+    assert len(registry) == 15
+    assert "FULL" not in md
+    assert "because" not in md
+    for entry in registry:
+        assert f"[cs:{entry['id']}]" in md
+
+
+def test_render_inline_registry_matches_shown_index_lines() -> None:
+    md, registry = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=_index_hits(5, "user"),
+        agent_playbooks=_index_hits(5, "agent"),
+        profiles=_index_profiles(5),
+    )
+    shown_ids = re.findall(r"^- \[cs:([^\]]+)\]", md, flags=re.MULTILINE)
+    assert sorted(shown_ids) == sorted(entry["id"] for entry in registry)
 
 
 @pytest.mark.parametrize(
@@ -541,124 +700,73 @@ def _long_profiles(count: int) -> list[dict]:
         context_format.render_inline_compact_with_registry,
     ],
 )
-@pytest.mark.parametrize("link_style", ["markdown", "osc8"])
-def test_render_inline_fits_budget_and_drops_lowest_ranked_whole_items(
-    monkeypatch, renderer, link_style: str
-) -> None:
-    """Oversized hits are trimmed to the budget by dropping whole low-ranked items.
-
-    Measured hook blocks reached 10-14 KB; Claude Code persists any
-    ``additionalContext`` over 10,000 characters and shows only a preview.
-    """
-    monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", link_style)
-    agent = _long_playbooks(3, "agent_playbook_id", "agent")
-    user = _long_playbooks(3, "user_playbook_id", "user")
-    profiles = _long_profiles(3)
-    md, registry = renderer(
-        project_id="demo", user_playbooks=user, agent_playbooks=agent, profiles=profiles
-    )
-
-    assert 0 < len(md) <= context_format.INLINE_CONTEXT_BUDGET_CHARS
-    assert context_format.INLINE_CONTEXT_BUDGET_CHARS < 10_000
+def test_render_inline_overflow_drops_only_lowest_ranked_lines(renderer) -> None:
+    """The budget backstop keeps a rank-order prefix (s1, p1, s2, p2, ...)."""
+    kwargs = {
+        "project_id": "demo",
+        "user_playbooks": [],
+        "agent_playbooks": _index_hits(5, "agent"),
+        "profiles": _index_profiles(5),
+    }
+    full_md, full_registry = renderer(**kwargs, budget_chars=100_000)
+    assert len(full_registry) == 10
+    md, registry = renderer(**kwargs, budget_chars=len(full_md) - 1)
     ids = [entry["id"] for entry in registry]
-    # Highest-ranked skill and preference survive; lowest-ranked are dropped.
-    assert ids[0].startswith("s1-")
-    assert any(cite_id.startswith("p1-") for cite_id in ids)
-    assert len(ids) < 9
-    assert not any(cite_id.startswith("s6-") for cite_id in ids)
-    # Every kept item is shown in full and nothing dropped is half-shown.
-    for entry in registry:
-        assert " ".join(entry["content"].split()) in " ".join(md.split())
-    kept = {entry["content"] for entry in registry}
-    dropped = [
-        item["content"].strip()
-        for item in agent + user + profiles
-        if item["content"].strip() not in kept
+    assert len(md) < len(full_md)
+    # Order is s1, p1, s2, p2, ..., s5, p5, so one char short drops p5 only.
+    assert ids == [f"s{rank}-agen" for rank in range(1, 6)] + [
+        f"p{rank}-pref" for rank in range(1, 5)
     ]
-    assert dropped
-    for content in dropped:
-        assert content.split(".")[0] + "." not in md
-    assert cs_cite.WHEN_TO_CITE_COMPACT in md or "When to cite" in md
+    assert "p5-pref" not in ids
+    assert "[cs:p5-pref]" not in md
 
 
-def test_render_inline_registry_matches_shown_ids_after_trimming() -> None:
-    md, registry = context_format.render_inline_with_registry(
-        project_id="demo",
-        user_playbooks=_long_playbooks(3, "user_playbook_id", "user"),
-        agent_playbooks=_long_playbooks(3, "agent_playbook_id", "agent"),
-        profiles=_long_profiles(3),
-    )
-    shown_ids = re.findall(r"^- \[cs:([^\]]+)\]", md, flags=re.MULTILINE)
-    assert shown_ids == [entry["id"] for entry in registry]
-    assert all(md.count(f"[cs:{cite_id}] ") == 1 for cite_id in shown_ids)
-
-
-_RENDERERS = pytest.mark.parametrize(
+@pytest.mark.parametrize(
     "renderer",
     [
         context_format.render_inline_with_registry,
         context_format.render_inline_compact_with_registry,
     ],
 )
-
-
-@_RENDERERS
-def test_render_inline_skips_oversized_top_item_and_keeps_lower_ranked(
-    renderer,
-) -> None:
-    """One oversized item must not empty the injection."""
+def test_render_inline_never_emits_header_or_footer_alone(renderer) -> None:
     md, registry = renderer(
         project_id="demo",
-        user_playbooks=[
-            {"user_playbook_id": 1, "content": "huge " * 2_000},
-            {"user_playbook_id": 2, "content": "small rule"},
-        ],
+        user_playbooks=_index_hits(1, "user"),
         agent_playbooks=[],
-        profiles=[{"profile_id": "pref", "content": "small preference"}],
-    )
-    assert [entry["id"] for entry in registry] == ["s2-2", "p1-pref"]
-    assert "huge" not in md
-    assert "small rule" in md
-    assert "small preference" in md
-    assert len(md) <= context_format.INLINE_CONTEXT_BUDGET_CHARS
-
-
-@_RENDERERS
-def test_render_inline_skips_mid_rank_item_and_keeps_lower_ranked(renderer) -> None:
-    """A mid-rank item that no longer fits is skipped; later ones still fit."""
-    md, registry = renderer(
-        project_id="demo",
-        user_playbooks=[
-            {"user_playbook_id": 1, "content": "first rule"},
-            {"user_playbook_id": 2, "content": "second rule"},
-        ],
-        agent_playbooks=[],
-        profiles=[{"profile_id": "pref", "content": "wide " * 1_500}],
-    )
-    assert [entry["id"] for entry in registry] == ["s1-1", "s2-2"]
-    assert "wide" not in md
-    assert "first rule" in md
-    assert "second rule" in md
-    assert len(md) <= context_format.INLINE_CONTEXT_BUDGET_CHARS
-
-
-@_RENDERERS
-def test_render_inline_never_emits_footer_alone(renderer) -> None:
-    """When no item fits, nothing is injected."""
-    md, registry = renderer(
-        project_id="demo",
-        user_playbooks=[{"user_playbook_id": 1, "content": "x " * 6_000}],
-        agent_playbooks=[],
-        profiles=[{"profile_id": "pref", "content": "y " * 6_000}],
+        profiles=[],
+        budget_chars=200,
     )
     assert (md, registry) == ("", [])
 
 
-def test_render_inline_keeps_everything_under_budget() -> None:
-    user = [{"user_playbook_id": i, "content": f"rule {i}"} for i in range(1, 4)]
-    profiles = [{"profile_id": f"p{i}", "content": f"pref {i}"} for i in range(1, 4)]
-    md, registry = context_format.render_inline_with_registry(
-        project_id="demo", user_playbooks=user, agent_playbooks=[], profiles=profiles
+def test_inline_budget_chars_per_host() -> None:
+    assert context_format.inline_budget_chars("claude-code") == 8_000
+    assert context_format.inline_budget_chars("opencode") == 8_000
+    assert context_format.inline_budget_chars("codex") == 6_000
+    assert context_format.CODEX_INLINE_CONTEXT_BUDGET_CHARS < (
+        context_format.INLINE_CONTEXT_BUDGET_CHARS
     )
-    assert len(registry) == 6
-    assert len(md) <= context_format.INLINE_CONTEXT_BUDGET_CHARS
+    assert context_format.INLINE_CONTEXT_BUDGET_CHARS < 10_000
+
+
+def test_render_loaded_item_prints_full_text() -> None:
+    _, registry = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=[
+            {
+                "user_playbook_id": 17,
+                "content": "Run uv sync after pyproject edits.",
+                "trigger": "editing pyproject.toml",
+                "rationale": "stale lockfile broke CI",
+            }
+        ],
+        agent_playbooks=[],
+        profiles=[],
+    )
+    assert context_format.render_loaded_item(registry[0]) == (
+        "[cs:s1-17] project skill\n"
+        "When: editing pyproject.toml\n"
+        "Run uv sync after pyproject edits.\n"
+        "Why: stale lockfile broke CI\n"
+        "Open: http://localhost:3001/rules/s1-17\n"
+    )

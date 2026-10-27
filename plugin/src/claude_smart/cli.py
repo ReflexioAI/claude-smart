@@ -13,6 +13,8 @@ Exposes the following subcommands:
   (as markdown).
 - ``learn``: publish unpublished interactions and force reflexio
   extraction now over the active session buffer.
+- ``load``: print the full text of a ``[cs:ID]`` item a hook injected as an
+  index line. The model runs it through ``context_format.LOADER_COMMAND``.
 - ``restart``: stop and restart the reflexio backend + dashboard services
   (rebuilding the dashboard bundle) so local Reflexio checkout edits or
   ``plugin/dashboard/`` edits take effect without restarting Claude Code.
@@ -2015,6 +2017,61 @@ def _reflexio_show_footer() -> str:
     )
 
 
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def cmd_load(args: argparse.Namespace) -> int:
+    """Print the full text of one injected ``[cs:ID]`` item.
+
+    Reads the session's citation registry, which already holds each shown
+    item's content, trigger and rationale, so loading needs no backend call
+    and works offline, in managed mode, and after the item is edited
+    server-side (it prints what was retrieved for this session).
+
+    Args:
+        args (argparse.Namespace): ``args.id`` is the item id, with or
+            without the ``cs:`` prefix or brackets; ``args.session`` overrides
+            the session (defaults to the most recently injected one).
+
+    Returns:
+        int: 0 when the item was printed, 1 for an unknown id or session.
+    """
+    item_id = args.id.strip().strip("[]").removeprefix("cs:")
+    session_id = (
+        args.session if args.session is not None else _latest_injected_session_id()
+    )
+    if session_id is not None and not _SESSION_ID_RE.match(session_id):
+        sys.stderr.write(f"error: invalid session id {session_id!r}\n")
+        return 1
+    if not session_id:
+        sys.stderr.write(
+            "error: no claude-smart session has injected learnings yet; "
+            "pass --session <id> from the injected load command.\n"
+        )
+        return 1
+    entry = state.read_injected(session_id).get(item_id)
+    if entry is None:
+        sys.stderr.write(
+            f"error: unknown id {item_id!r} in session {session_id}. Use an id "
+            "from a [cs:…] line injected in this session.\n"
+        )
+        return 1
+    sys.stdout.write(context_format.render_loaded_item(entry))
+    return 0
+
+
+def _latest_injected_session_id() -> str | None:
+    """Session whose citation registry was written most recently."""
+    root = state.state_dir()
+    if not root.is_dir():
+        return None
+    suffix = ".injected.jsonl"
+    files = sorted(
+        root.glob(f"*{suffix}"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
+    return files[0].name[: -len(suffix)] if files else None
+
+
 def cmd_learn(args: argparse.Namespace) -> int:
     """Force reflexio extraction over the active session's interactions.
 
@@ -2800,6 +2857,16 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     ln.set_defaults(func=cmd_learn)
+
+    ld = sub.add_parser(
+        "load",
+        help="Print the full text of an injected [cs:ID] learning",
+    )
+    ld.add_argument("id", help="Injected item id, e.g. s1-ab12")
+    ld.add_argument(
+        "--session", help="Session id (defaults to the latest injected session)"
+    )
+    ld.set_defaults(func=cmd_load)
 
     ca = sub.add_parser(
         "clear-all",

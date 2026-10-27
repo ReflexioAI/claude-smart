@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sys
 import time
 from types import SimpleNamespace
@@ -1049,11 +1050,16 @@ def test_user_prompt_injects_context_when_hits_present(
     payload = json.loads(buf.getvalue().strip())
     assert payload["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
     markdown = payload["hookSpecificOutput"]["additionalContext"]
-    assert "run uv sync after edits" in markdown
+    # Index line: trigger, not content; preferences show their content.
+    assert "] pyproject.toml _(open: " in markdown
+    assert "run uv sync after edits" not in markdown
     assert "prefers anyio over asyncio" in markdown
+    assert "load --session s1 <id>" in markdown
     # Prompt text is passed verbatim as the search query.
     assert calls[0]["project_id"] == "demo"
     assert calls[0]["query"] == "edit pyproject.toml"
+    # Five hits per collection: index lines are bounded, so 15 fit the budget.
+    assert calls[0]["top_k"] == 5
     # Session id scopes server-side injection dedup.
     assert calls[0]["session_id"] == "s1"
     # The prompt is still buffered for downstream extraction.
@@ -1073,49 +1079,82 @@ def test_user_prompt_injects_context_when_hits_present(
         assert entry["title"]
 
 
-def test_user_prompt_context_stays_under_claude_code_hook_cap(
-    session_dir, monkeypatch
-) -> None:
-    """Large hits must not exceed Claude Code's 10,000-character hook cap.
+def _fifteen_hits() -> dict[str, list[dict[str, Any]]]:
+    def skills(prefix: str) -> list[dict[str, Any]]:
+        return [
+            {
+                f"{prefix}_playbook_id": f"{prefix}-{index}",
+                "content": f"FULL {prefix} {index}. " + "do the thing carefully " * 80,
+                "trigger": f"when {prefix} {index} applies " + "word " * 60,
+                "rationale": "because " + "y" * 400,
+            }
+            for index in range(1, 6)
+        ]
 
-    Over the cap, Claude Code saves the context to a file and shows the model
-    only a 2,000-character preview. Only the items actually shown may enter
-    the citation registry.
+    return {
+        "playbooks": skills("user"),
+        "agent_playbooks": skills("agent"),
+        "profiles": [
+            {"profile_id": f"profile-{index}", "content": f"pref {index} " + "z " * 800}
+            for index in range(1, 6)
+        ],
+    }
+
+
+_INDEX_ID_RE = re.compile(r"\[cs:([sp]\d+[^\]\s]*)\]")
+
+
+@pytest.mark.parametrize(
+    ("host", "hook_event", "budget"),
+    [
+        ("claude-code", "UserPromptSubmit", 8_000),
+        ("claude-code", "PreToolUse", 8_000),
+        ("codex", "UserPromptSubmit", 6_000),
+        ("codex", "PreToolUse", 6_000),
+        ("opencode", "UserPromptSubmit", 8_000),
+    ],
+)
+def test_hook_index_stays_within_host_budget_with_fifteen_items(
+    session_dir, monkeypatch, host: str, hook_event: str, budget: int
+) -> None:
+    """Every host's injection path renders bounded index lines within budget.
+
+    Claude Code caps ``additionalContext`` at 10,000 characters and Codex at
+    roughly 2,500 tokens; over either cap the model sees only a preview.
+    OpenCode receives the same string through ``hook_entry.sh opencode
+    user-prompt`` and appends it to the system prompt. Only items actually
+    shown may enter the citation registry.
     """
-    long_hits = [
-        {
-            "user_playbook_id": f"playbook-{index}",
-            "content": f"rule {index}. " + "do the thing carefully " * 80,
-            "trigger": "when " + "x" * 300,
-            "rationale": "because " + "y" * 400,
-        }
-        for index in range(1, 4)
-    ]
-    _stub_user_prompt_adapter(
-        monkeypatch,
-        playbooks=long_hits,
-        agent_playbooks=[
-            dict(hit, agent_playbook_id=hit["user_playbook_id"]) for hit in long_hits
-        ],
-        profiles=[
-            {"profile_id": f"profile-{index}", "content": "z" * 1_500}
-            for index in range(1, 4)
-        ],
-    )
+    from claude_smart.events import pre_tool
+
+    monkeypatch.setenv("CLAUDE_SMART_HOST", host)
+    hits = _fifteen_hits()
+    _stub_user_prompt_adapter(monkeypatch, **hits)
+    _stub_pretool_adapter(monkeypatch, **hits)
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
-    user_prompt.handle({"session_id": "s1", "prompt": "edit", "cwd": "/r"})
+    if hook_event == "UserPromptSubmit":
+        user_prompt.handle({"session_id": "s1", "prompt": "edit", "cwd": "/r"})
+    else:
+        pre_tool.handle(
+            {
+                "session_id": "s1",
+                "tool_name": "Bash",
+                "tool_input": {"command": "uv sync"},
+            }
+        )
 
-    markdown = json.loads(buf.getvalue().strip())["hookSpecificOutput"][
-        "additionalContext"
-    ]
-    assert len(markdown) <= 10_000
-    shown_ids = {
-        line.split("]", 1)[0].removeprefix("- [cs:")
-        for line in markdown.splitlines()
-        if line.startswith("- [cs:")
-    }
-    assert shown_ids
+    payload = json.loads(buf.getvalue().strip())
+    assert payload["hookSpecificOutput"]["hookEventName"] == hook_event
+    context = payload["hookSpecificOutput"]["additionalContext"]
+    assert len(context) <= budget
+    assert context.startswith("Relevant learnings from claude-smart")
+    assert "bash ~/.reflexio/plugin-root/scripts/cli.sh load --session s1 <id>" in (
+        context
+    )
+    assert "FULL" not in context
+    shown_ids = set(_INDEX_ID_RE.findall(context))
+    assert len(shown_ids) == 15
     assert set(state.read_injected("s1")) == shown_ids
 
 
@@ -1149,19 +1188,18 @@ def test_user_prompt_injects_compact_context_for_codex(
     assert payload["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
     assert markdown.endswith("\n")
     assert "\n" not in markdown.rstrip("\n")
-    assert "claude-smart: using relevant memory. Skill:" in markdown
-    assert "Preference:" in markdown
+    assert markdown.startswith("Relevant learnings from claude-smart")
+    assert "load --session s1 <id>" in markdown
+    assert "Skill: [cs:s1] pyproject.toml (open: http://localhost:3001/rules/s1)." in (
+        markdown
+    )
+    assert "Preference: [cs:p1] prefers anyio over asyncio" in markdown
     assert "### Relevant project preferences" not in markdown
-    assert "[cs:" not in markdown
-    assert "Run uv sync after pyproject edits" in markdown
-    assert "Then run an import smoke test before committing" in markdown
-    assert "Run uv sync after pyproject edits: Run uv sync" not in markdown
-    assert "prefers anyio over asyncio" in markdown
+    assert "Run uv sync after pyproject edits" not in markdown
     assert "✨ claude-smart rule applied:" in markdown
     assert "Include only memories that materially changed the response." in markdown
     assert (
-        "✨ claude-smart rule applied: "
-        "[Run uv sync after pyproject edits](http://localhost:3001/rules/s1)"
+        "✨ claude-smart rule applied: [pyproject.toml](http://localhost:3001/rules/s1)"
     ) in markdown
     assert "\x1b]8;;" not in markdown
 
@@ -1678,11 +1716,15 @@ def test_pre_tool_injects_context_when_hits_present(session_dir, monkeypatch) ->
     payload = json.loads(buf.getvalue().strip())
     assert payload["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
     markdown = payload["hookSpecificOutput"]["additionalContext"]
-    assert "run uv sync after edits" in markdown
+    # Index line: trigger, not content; preferences show their content.
+    assert "] pyproject.toml _(open: " in markdown
+    assert "run uv sync after edits" not in markdown
     assert "prefers anyio over asyncio" in markdown
+    assert "load --session s1 <id>" in markdown
     # Composed query must reach the adapter scoped to the project.
     assert calls[0]["project_id"] == "demo"
     assert "pyproject.toml" in calls[0]["query"]
+    assert calls[0]["top_k"] == 5
     # Session id scopes server-side injection dedup.
     assert calls[0]["session_id"] == "s1"
 

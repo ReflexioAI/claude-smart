@@ -306,7 +306,7 @@ def test_opencode_learning_loop_buffers_injects_tools_and_publishes(
             "project_id": "demo",
             "query": "Use my learned rules before editing AGENTS.md",
             "hook_event_name": "UserPromptSubmit",
-            "top_k": 3,
+            "top_k": 5,
         }
     ]
     assert [record["role"] for record in records] == [

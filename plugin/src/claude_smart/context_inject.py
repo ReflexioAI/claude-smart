@@ -1,7 +1,7 @@
 """Shared "search reflexio, render markdown, emit hookSpecificOutput" pipeline.
 
 PreToolUse and UserPromptSubmit both (a) run a query-aware reflexio
-search, (b) render the hits with ``context_format.render_inline_with_registry``,
+search, (b) render the hits as an index with ``context_format.render_inline_with_registry``,
 (c) persist the citation registry for the Stop hook to resolve, and
 (d) emit a Claude Code ``hookSpecificOutput.additionalContext`` envelope
 on stdout. This module owns that shared pipeline so the two hook
@@ -64,10 +64,10 @@ def emit_context(
         session_id=session_id or None,
         request_id=state.reserve_publish_request_id(session_id) if session_id else None,
     )
+    host = os.environ.get("CLAUDE_SMART_HOST", "")
     renderer = (
         context_format.render_inline_compact_with_registry
-        if hook_event_name == "UserPromptSubmit"
-        and os.environ.get("CLAUDE_SMART_HOST") == "codex"
+        if hook_event_name == "UserPromptSubmit" and host == "codex"
         else context_format.render_inline_with_registry
     )
     markdown, registry = renderer(
@@ -75,6 +75,8 @@ def emit_context(
         user_playbooks=user_playbooks,
         agent_playbooks=agent_playbooks,
         profiles=profiles,
+        session_id=session_id,
+        budget_chars=context_format.inline_budget_chars(host),
     )
     if not markdown:
         return False

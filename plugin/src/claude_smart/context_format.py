@@ -17,13 +17,30 @@ _LOCAL_REFLEXIO_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}  # noqa: S1
 
 # Claude Code caps each hook ``additionalContext`` string at 10,000 characters.
 # A longer one is saved to a file and the model sees only a 2,000-character
-# preview, i.e. one or two items. The inline renderers keep their whole output,
-# footer included, within this budget; the 2,000-character margin absorbs URL
+# preview. Index lines are bounded, so this budget is a backstop: overflow
+# drops only the lowest-ranked lines. The 2,000-character margin absorbs URL
 # and instruction growth without a re-measure.
 INLINE_CONTEXT_BUDGET_CHARS = 8_000
 
-# One rendered item: its markdown bullet and its citation-registry entry.
-_Item = tuple[str, dict[str, Any]]
+# Codex limits each model-visible hook-output message to "roughly 2,500
+# tokens" (``additionalContextLimit``) and saves longer output to a file.
+# 6,000 characters stays under that even at 2.4 characters per token, which
+# URL-heavy index lines do not reach. OpenCode documents no limit and gets
+# the Claude Code budget.
+CODEX_INLINE_CONTEXT_BUDGET_CHARS = 6_000
+
+# Upper bound for the "when it applies" text on one index line.
+INDEX_LABEL_MAX_CHARS = 150
+
+# Shell command that prints an injected item's full text (``cli.py load``).
+# ``~/.reflexio/plugin-root`` is the symlink ``ensure-plugin-root.sh``
+# refreshes on every SessionStart for both Claude Code and Codex, and
+# ``cli.sh`` bootstraps PATH and the plugin venv, so the model can run this
+# from any shell either host gives it.
+LOADER_COMMAND = "bash ~/.reflexio/plugin-root/scripts/cli.sh load"
+
+# Upper bound for a citation-marker link label shown in the footer.
+_MARKER_TITLE_MAX_CHARS = 60
 
 
 def _first_nonempty(*values: Any) -> str:
@@ -159,24 +176,39 @@ def render_inline(
     return markdown
 
 
+def inline_budget_chars(host: str) -> int:
+    """Return the inline context budget for ``host`` (see the constants)."""
+    if host == "codex":
+        return CODEX_INLINE_CONTEXT_BUDGET_CHARS
+    return INLINE_CONTEXT_BUDGET_CHARS
+
+
 def render_inline_with_registry(
     *,
     project_id: str,
     user_playbooks: Iterable[Any],
     agent_playbooks: Iterable[Any],
     profiles: Iterable[Any],
+    session_id: str = "",
+    budget_chars: int = INLINE_CONTEXT_BUDGET_CHARS,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Variant of ``render_inline`` that also returns the citation registry.
+    """Render the mid-session index block and its citation registry.
 
-    The markdown never exceeds ``INLINE_CONTEXT_BUDGET_CHARS``; items that
-    do not fit are skipped whole, lower-ranked ones are still tried, and
-    the registry lists only the items kept.
+    Like a skill list, each retrieved item is one line: its ``[cs:ID]``,
+    when it applies (its ``trigger``, or the first line of its content when
+    it has none), and its link. A header tells the model how to load an
+    item's full text with ``LOADER_COMMAND``. The block never exceeds
+    ``budget_chars``; the registry lists only the lines kept.
 
     Args:
         project_id (str): Reserved for future use; currently unused.
         user_playbooks (Iterable[Any]): Relevance-ranked project-scoped hits.
         agent_playbooks (Iterable[Any]): Relevance-ranked global hits.
         profiles (Iterable[Any]): Relevance-ranked preference hits.
+        session_id (str): Session whose registry the loader should read.
+            Omitted from the load command when empty.
+        budget_chars (int): Size cap for the whole block; see
+            ``inline_budget_chars``.
 
     Returns:
         tuple[str, list[dict[str, Any]]]: ``(markdown, registry_entries)``.
@@ -184,79 +216,99 @@ def render_inline_with_registry(
             registry is ``[]``.
     """
     del project_id  # kept for symmetry with ``render_with_registry``.
+    _, playbook_entries = _format_combined_playbooks(
+        agent_playbooks=agent_playbooks, user_playbooks=user_playbooks
+    )
+    _, profile_entries = _format_profiles(profiles)
     return _fit_inline_budget(
-        _items(
-            *_format_combined_playbooks(
-                agent_playbooks=agent_playbooks, user_playbooks=user_playbooks
-            )
-        ),
-        _items(*_format_profiles(profiles)),
-        _assemble_inline,
+        playbook_entries,
+        profile_entries,
+        lambda playbooks, prefs: _assemble_index(playbooks, prefs, session_id),
+        budget_chars,
     )
 
 
-def _assemble_inline(playbooks: list[_Item], profiles: list[_Item]) -> str:
-    """Render the markdown block for exactly the given items."""
-    sections: list[str] = []
-    if playbooks:
-        sections.append("### Relevant project-specific skills")
-        sections.extend(line for line, _ in playbooks)
-    if profiles:
-        sections.append("### Relevant project preferences")
-        sections.extend(line for line, _ in profiles)
-    instruction = _citation_instruction(
-        os.environ.get("CLAUDE_SMART_CITATIONS", "on"),
-        os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
+def render_inline_compact_with_registry(
+    *,
+    project_id: str,
+    user_playbooks: Iterable[Any],
+    agent_playbooks: Iterable[Any],
+    profiles: Iterable[Any],
+    session_id: str = "",
+    budget_chars: int = CODEX_INLINE_CONTEXT_BUDGET_CHARS,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Render the same index as one logical line, for Codex.
+
+    Codex currently displays ``UserPromptSubmit.additionalContext`` in the
+    TUI, so the index entries are joined on one line instead of listed.
+    """
+    del project_id  # kept for symmetry with ``render_inline_with_registry``.
+    _, playbook_entries = _format_combined_playbooks(
+        agent_playbooks=agent_playbooks, user_playbooks=user_playbooks
     )
-    if instruction:
-        sections.append(instruction)
-    exact_osc8_marker = _exact_osc8_marker_instruction(
-        [entry for _, entry in playbooks + profiles]
+    _, profile_entries = _format_profiles(profiles)
+    return _fit_inline_budget(
+        playbook_entries,
+        profile_entries,
+        lambda playbooks, prefs: _assemble_compact(playbooks, prefs, session_id),
+        budget_chars,
     )
-    if exact_osc8_marker:
-        sections.append(exact_osc8_marker)
-    return "\n".join(sections) + "\n"
 
 
-def _items(lines: list[str], entries: list[dict[str, Any]]) -> list[_Item]:
-    return list(zip(lines, entries, strict=True))
+def render_loaded_item(entry: dict[str, Any]) -> str:
+    """Render one registry entry's full text for ``cli.py load``."""
+    kind = entry.get("kind")
+    if kind == "profile":
+        label = "preference"
+    elif entry.get("source_kind") == "agent_playbook":
+        label = "shared skill"
+    else:
+        label = "project skill"
+    lines = [f"[cs:{entry.get('id', '')}] {label}"]
+    trigger = _first_nonempty(entry.get("trigger"))
+    if trigger:
+        lines.append(f"When: {trigger}")
+    lines.append(str(entry.get("content") or "").strip())
+    rationale = _first_nonempty(entry.get("rationale"))
+    if rationale:
+        lines.append(f"Why: {rationale}")
+    rule_url = _first_nonempty(entry.get("rule_url"))
+    if rule_url:
+        lines.append(f"Open: {rule_url}")
+    return "\n".join(lines) + "\n"
 
 
 def _fit_inline_budget(
-    playbooks: list[_Item],
-    profiles: list[_Item],
-    assemble: Callable[[list[_Item], list[_Item]], str],
+    playbooks: list[dict[str, Any]],
+    profiles: list[dict[str, Any]],
+    assemble: Callable[[list[dict[str, Any]], list[dict[str, Any]]], str],
+    budget_chars: int,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Render every item, in rank order, that still fits the inline budget.
+    """Keep the highest-ranked index lines whose whole block fits the budget.
 
-    Items are tried by rank, alternating sections (skill 1, preference 1,
-    skill 2, ...). Each is kept when the whole output, with it added, stays
-    within the budget; otherwise it is skipped and lower-ranked items are
-    still tried, so one oversized item cannot empty the injection. Items
-    are skipped whole, never cut, so every ``[cs:…]`` bullet shown is
-    complete and the registry lists exactly the items shown. The output is
-    measured after assembly, so headers and the citation footer count
-    against the budget.
+    Lines are admitted by rank, alternating sections (skill 1, preference 1,
+    skill 2, ...), until the next one would push the assembled block, header
+    and footer included, past ``budget_chars``. Every line is
+    bounded, so only the lowest-ranked lines are ever dropped.
 
     Returns:
-        tuple[str, list[dict[str, Any]]]: ``(markdown, registry_entries)``,
-            or ``("", [])`` when there are no items or none fits; the footer
-            is never emitted on its own.
+        tuple[str, list[dict[str, Any]]]: ``(text, registry_entries)`` for
+            the lines kept, or ``("", [])`` when there are no items or none
+            fits; the header and footer are never emitted on their own.
     """
-    candidates = {"playbook": iter(playbooks), "profile": iter(profiles)}
-    kept: dict[str, list[_Item]] = {"playbook": [], "profile": []}
-    markdown = ""
-    for kind in _interleave_by_rank(len(playbooks), len(profiles)):
-        item = next(candidates[kind])
-        kept[kind].append(item)
-        trial = assemble(kept["playbook"], kept["profile"])
-        if len(trial) <= INLINE_CONTEXT_BUDGET_CHARS:
-            markdown = trial
-        else:
-            kept[kind].pop()
-    if not markdown:
+    order = _interleave_by_rank(len(playbooks), len(profiles))
+    text = ""
+    kept_playbooks = kept_profiles = 0
+    for keep in range(1, len(order) + 1):
+        playbook_count = order[:keep].count("playbook")
+        trial = assemble(playbooks[:playbook_count], profiles[: keep - playbook_count])
+        if len(trial) > budget_chars:
+            break
+        text = trial
+        kept_playbooks, kept_profiles = playbook_count, keep - playbook_count
+    if not text:
         return "", []
-    return markdown, [entry for _, entry in kept["playbook"] + kept["profile"]]
+    return text, playbooks[:kept_playbooks] + profiles[:kept_profiles]
 
 
 def _interleave_by_rank(playbook_count: int, profile_count: int) -> list[str]:
@@ -269,76 +321,128 @@ def _interleave_by_rank(playbook_count: int, profile_count: int) -> list[str]:
     return order
 
 
-def render_inline_compact_with_registry(
-    *,
-    project_id: str,
-    user_playbooks: Iterable[Any],
-    agent_playbooks: Iterable[Any],
-    profiles: Iterable[Any],
-) -> tuple[str, list[dict[str, Any]]]:
-    """Render mid-session context as one compact logical line.
-
-    Codex currently displays ``UserPromptSubmit.additionalContext`` in the TUI.
-    This renderer preserves the model-visible ids and rule URLs needed for
-    citation tracking while avoiding the multi-line markdown block used by
-    hosts that can hide hook context.
-    """
-    del project_id  # kept for symmetry with ``render_inline_with_registry``.
-    return _fit_inline_budget(
-        _items(
-            *_format_combined_playbooks(
-                agent_playbooks=agent_playbooks, user_playbooks=user_playbooks
-            )
-        ),
-        _items(*_format_profiles(profiles)),
-        _assemble_compact,
+def _assemble_index(
+    playbooks: list[dict[str, Any]],
+    profiles: list[dict[str, Any]],
+    session_id: str,
+) -> str:
+    """Render the multi-line index block for exactly the given entries."""
+    sections: list[str] = [_index_header(session_id)]
+    if playbooks:
+        sections.append("### Relevant project-specific skills")
+        sections.extend(_index_line(entry) for entry in playbooks)
+    if profiles:
+        sections.append("### Relevant project preferences")
+        sections.extend(_index_line(entry) for entry in profiles)
+    instruction = _citation_instruction(
+        os.environ.get("CLAUDE_SMART_CITATIONS", "on"),
+        os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
     )
+    if instruction:
+        sections.append(instruction)
+    exact_osc8_marker = _exact_osc8_marker_instruction(playbooks + profiles)
+    if exact_osc8_marker:
+        sections.append(exact_osc8_marker)
+    return "\n".join(sections) + "\n"
 
 
-def _assemble_compact(playbooks: list[_Item], profiles: list[_Item]) -> str:
-    """Render the one-line compact block for exactly the given items."""
-    entries = [entry for _, entry in playbooks + profiles]
-    skill_parts = []
-    preference_parts = []
-    marker_parts = []
+def _assemble_compact(
+    playbooks: list[dict[str, Any]],
+    profiles: list[dict[str, Any]],
+    session_id: str,
+) -> str:
+    """Render the one-line index block for exactly the given entries."""
     link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
-    for entry in entries:
-        title = _one_line(str(entry.get("title") or entry["content"]))
-        content = _one_line(str(entry["content"]))
+    marker_parts = []
+    for entry in playbooks + profiles:
         rule_url = str(entry.get("rule_url") or "")
-        if link_style == "osc8" and rule_url:
-            linked_title = _osc8_link(
-                rule_url, _strip_trailing_sentence_punctuation(title)
-            )
-            item = _osc8_link(rule_url, _strip_trailing_sentence_punctuation(content))
-            marker_parts.append(linked_title)
-        else:
-            item = f"{content} (title: {title}"
-            if rule_url:
-                item += f"; open: {rule_url}"
-                marker_parts.append(
-                    _markdown_link(
-                        rule_url, _strip_trailing_sentence_punctuation(title)
-                    )
-                )
-            item += ")"
-        if entry.get("kind") == "profile":
-            preference_parts.append(item)
-        else:
-            skill_parts.append(item)
-
-    memory_sections = []
-    if skill_parts:
-        label = "Skill" if len(skill_parts) == 1 else "Skills"
-        memory_sections.append(f"{label}: {'; '.join(skill_parts)}")
-    if preference_parts:
-        label = "Preference" if len(preference_parts) == 1 else "Preferences"
-        memory_sections.append(f"{label}: {'; '.join(preference_parts)}")
-    sections = [f"claude-smart: using relevant memory. {'. '.join(memory_sections)}."]
+        if not rule_url:
+            continue
+        title = _marker_title(entry)
+        marker_parts.append(
+            _osc8_link(rule_url, title)
+            if link_style == "osc8"
+            else _markdown_link(rule_url, title)
+        )
+    sections = [_index_header(session_id)]
+    if playbooks:
+        label = "Skill" if len(playbooks) == 1 else "Skills"
+        sections.append(
+            f"{label}: {'; '.join(_compact_index_item(e) for e in playbooks)}."
+        )
+    if profiles:
+        label = "Preference" if len(profiles) == 1 else "Preferences"
+        sections.append(
+            f"{label}: {'; '.join(_compact_index_item(e) for e in profiles)}."
+        )
     instruction = _compact_citation_instruction(marker_parts)
     if instruction:
         sections.append(instruction)
     return " ".join(sections) + "\n"
+
+
+def _index_header(session_id: str) -> str:
+    command = LOADER_COMMAND
+    if session_id:
+        command += f" --session {session_id}"
+    return (
+        "Relevant learnings from claude-smart — each line says when one "
+        "applies. Before relying on one that applies, load its full text "
+        f"with: `{command} <id>`"
+    )
+
+
+def _index_line(entry: dict[str, Any]) -> str:
+    line = f"- [cs:{entry['id']}] {index_label(entry)}"
+    rule_url = str(entry.get("rule_url") or "")
+    if rule_url:
+        line += f" _(open: {rule_url})_"
+    return line
+
+
+def _compact_index_item(entry: dict[str, Any]) -> str:
+    label = index_label(entry)
+    rule_url = str(entry.get("rule_url") or "")
+    if rule_url and os.environ.get(_CITATION_LINK_STYLE_ENV) == "osc8":
+        label = _osc8_link(rule_url, label)
+    elif rule_url:
+        label += f" (open: {rule_url})"
+    return f"[cs:{entry['id']}] {label}"
+
+
+def index_label(entry: dict[str, Any]) -> str:
+    """Return the bounded "when it applies" text for one index line.
+
+    Uses the item's ``trigger``; without one (always so for preferences),
+    the first line of its content. Cut at a word boundary to
+    ``INDEX_LABEL_MAX_CHARS`` plus an ellipsis.
+    """
+    text = _one_line(str(entry.get("trigger") or ""))
+    if not text:
+        text = _one_line(str(entry.get("content") or "").strip().split("\n", 1)[0])
+    return _cut_at_word(text, INDEX_LABEL_MAX_CHARS)
+
+
+def _marker_title(entry: dict[str, Any]) -> str:
+    """Short link label for citation-marker examples, from the index label.
+
+    Derived from the same text as the index line, so the injected block
+    never quotes an item's content when the item has a trigger.
+    """
+    label = index_label(entry).removesuffix("…")
+    sentence_end = label.find(". ")
+    if 0 < sentence_end <= _MARKER_TITLE_MAX_CHARS:
+        label = label[:sentence_end]
+    title = _cut_at_word(label, _MARKER_TITLE_MAX_CHARS).removesuffix("…")
+    return _strip_trailing_sentence_punctuation(title)
+
+
+def _cut_at_word(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    head = text[: limit + 1]
+    cut = head.rsplit(" ", 1)[0] if " " in head else text[:limit]
+    return cut.rstrip(" ,;:.") + "…"
 
 
 def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
@@ -402,10 +506,7 @@ def _exact_osc8_marker_instruction(entries: list[dict[str, Any]]) -> str:
         rule_url = str(entry.get("rule_url") or "")
         if not rule_url:
             continue
-        title = _one_line(str(entry.get("title") or entry["content"]))
-        marker_parts.append(
-            _osc8_link(rule_url, _strip_trailing_sentence_punctuation(title))
-        )
+        marker_parts.append(_osc8_link(rule_url, _marker_title(entry)))
     if not marker_parts:
         return ""
 
@@ -477,6 +578,10 @@ def _append_playbook_bullet(
             "source_kind": source_kind,
             "dashboard_url": dashboard_url,
             "rule_url": rule_url,
+            # Kept so ``cli.py load`` can print the full item from the
+            # session registry without a backend round trip.
+            "trigger": trigger,
+            "rationale": rationale,
         }
     )
     receipt = _field(pb, "exposure_receipt")
