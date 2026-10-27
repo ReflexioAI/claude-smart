@@ -1406,3 +1406,46 @@ def test_drain_never_sends_without_time_to_record_the_outcome(
     # A later hook with a fresh budget drains the remainder.
     assert _drain("budget", adapter, deadline=clock[0] + 60.0)[0] == "ok"
     assert len(adapter.calls) >= 2
+
+
+def test_large_batch_stops_between_chunks_at_the_deadline(session_dir, monkeypatch):
+    """Each chunk is a request: none is sent without time to record its outcome."""
+    from claude_smart import reflexio_adapter
+
+    clock = [100.0]
+    monkeypatch.setattr(publish.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(reflexio_adapter.time, "monotonic", lambda: clock[0])
+
+    class Client:
+        def __init__(self) -> None:
+            self.saved: dict[str, dict[str, Any]] = {}
+            self.posts: list[str] = []
+
+        def _make_request(self, method: str, path: str, **kwargs: Any) -> Any:
+            payload = kwargs["json"]
+            if path == "/api/get_requests":
+                stored = self.saved.get(payload["request_id"])
+                if stored is None:
+                    return {"success": True, "sessions": []}
+                return _stored_request_response(stored)
+            self.posts.append(payload["request_id"])
+            self.saved[payload["request_id"]] = payload
+            clock[0] += 9.0
+            return {"success": True}
+
+    for i in range(1500):
+        _append_user("large", i, str(i))
+    _append_assistant("large", 1500)
+    client = Client()
+    adapter = Adapter(url="https://example.com")
+    adapter._client = client
+    deadline = clock[0] + publish.PUBLISH_RESERVE_SECONDS + 8.0
+    assert _drain("large", adapter, deadline=deadline) == ("deferred", 0)
+    assert len(client.posts) == 1
+    assert state.published_record_offset(state.read_all("large")) == 0
+
+    # The next drain recovers the accepted chunk by its frozen identity and
+    # sends only the remainder.
+    assert _drain("large", adapter, deadline=clock[0] + 60.0) == ("recovered", 1501)
+    assert len(client.posts) == 2
+    assert len(set(client.posts)) == 2

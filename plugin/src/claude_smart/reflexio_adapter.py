@@ -10,6 +10,7 @@ import hashlib
 import logging
 import os
 import re
+import time
 import uuid
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +32,10 @@ _HTTP_TIMEOUT_SECONDS = 5
 # Worst case for one stable publish attempt: the POST plus one stored-request
 # verification read. Hook drains reserve this before sending a batch.
 PUBLISH_ATTEMPT_SECONDS = 2 * _HTTP_TIMEOUT_SECONDS
+# A deadline-bound publish sends a request only when the attempt and the local
+# outcome write still fit before the host kills the hook. Sending without that
+# margin is how a stored request lost its watermark.
+PUBLISH_RESERVE_SECONDS = PUBLISH_ATTEMPT_SECONDS + 2
 # GetRequests does not return these fields, so a replay cannot compare them.
 _UNVERIFIABLE_FIELDS = ("citations", "image_encoding")
 _SERVER_MESSAGE_LIMIT = 200
@@ -174,8 +179,14 @@ class Adapter:
         force_extraction: bool = False,
         override_learning_stall: bool = False,
         skip_aggregation: bool = False,
+        deadline: float | None = None,
     ) -> PublishResult:
-        """Publish interactions and return this call's confirmed request ID."""
+        """Publish interactions and return this call's confirmed request ID.
+
+        With a ``time.monotonic()`` ``deadline``, no stable request is sent
+        unless ``PUBLISH_RESERVE_SECONDS`` remain; the batch then fails as
+        ``DeadlineReached`` and keeps its frozen request identities.
+        """
         if not interactions:
             return PublishResult(True)
         client = self._get_client()
@@ -194,6 +205,7 @@ class Adapter:
             force_extraction=force_extraction,
             override_learning_stall=override_learning_stall,
             skip_aggregation=skip_aggregation,
+            deadline=deadline,
         )
         self._log_publish(
             result,
@@ -274,6 +286,7 @@ class Adapter:
         force_extraction: bool,
         override_learning_stall: bool,
         skip_aggregation: bool,
+        deadline: float | None = None,
     ) -> tuple[PublishResult, Any]:
         """Run the publish and return ``(result, raw response)``.
 
@@ -328,6 +341,15 @@ class Adapter:
                             unverified.update(stored.unverified_fields)
                             confirmed_ids.append(chunk_id)
                             continue
+                    if (
+                        deadline is not None
+                        and deadline - time.monotonic() < PUBLISH_RESERVE_SECONDS
+                    ):
+                        # Accepted earlier chunks are recovered by the next
+                        # drain's preflight read under the same identities.
+                        return PublishResult(
+                            False, chunk_id, error_type="DeadlineReached"
+                        ), raw_response
                     try:
                         raw_response = raw_request(
                             "POST",

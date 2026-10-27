@@ -2091,6 +2091,16 @@ def cmd_learn(args: argparse.Namespace) -> int:
     if status == "nothing":
         sys.stdout.write(f"No unpublished interactions on session `{session_id}`.\n")
         return 0
+    if status == "parked":
+        sys.stdout.write(
+            f"Reflexio repeatedly rejected a buffered batch on session `{session_id}`; "
+            "it was skipped so later interactions can publish.\n"
+            "Its `publish_dead_letter` record in the session buffer keeps the "
+            "request ID, range and reason. The local interactions remain there; "
+            "retrying will not resend that range. "
+            "See `publish-parked` in ~/.claude-smart/hook.log.\n"
+        )
+        return 1
     sys.stdout.write(_REFLEXIO_UNREACHABLE_MSG)
     return 1
 

@@ -15,16 +15,11 @@ from typing import Any, Literal
 from filelock import FileLock, Timeout
 
 from claude_smart import hook_log, runtime, state
-from claude_smart.reflexio_adapter import PUBLISH_ATTEMPT_SECONDS, Adapter
+from claude_smart.reflexio_adapter import PUBLISH_RESERVE_SECONDS, Adapter
 
 PublishStatus = Literal[
     "nothing", "ok", "recovered", "failed", "queued", "deferred", "parked"
 ]
-
-# A deadline-bound drain sends a batch only when the attempt, its verification
-# read and the local outcome write all still fit before the host kills the hook.
-# Sending without that margin is how a stored request lost its watermark.
-PUBLISH_RESERVE_SECONDS = PUBLISH_ATTEMPT_SECONDS + 2
 
 # A frozen batch the server rejects with the same logical reason this many
 # times is parked so the rest of the session can drain. Only HTTP 200
@@ -218,11 +213,14 @@ def _publish_unpublished_locked(
             override_learning_stall,
             adapter,
             batch,
+            deadline,
         )
         total += count
         batches += 1
         recovered = recovered or status == "recovered"
         parked = parked or status == "parked"
+        if status == "deferred":
+            return status, total
         if status == "failed":
             return status, total
         if max_batches is not None and batches >= max_batches:
@@ -252,6 +250,7 @@ def _publish_batch(
     override_learning_stall: bool,
     adapter: Adapter | None,
     batch: tuple[int, int, list[dict[str, Any]]],
+    deadline: float | None = None,
 ) -> tuple[PublishStatus, int]:
     """Publish one immutable response range, including legacy retry identities."""
     published_record_offset, publish_end, interactions = batch
@@ -272,6 +271,7 @@ def _publish_batch(
         force_extraction=force_extraction,
         override_learning_stall=override_learning_stall,
         skip_aggregation=skip_aggregation,
+        deadline=deadline,
     )
     if result:
         marker: dict[str, Any] = {"published_up_to": publish_end}
@@ -284,6 +284,11 @@ def _publish_batch(
         if result.no_op:
             return ("nothing", 0)
         return ("recovered" if result.recovered else "ok", len(interactions))
+    if result.error_type == "DeadlineReached":
+        _log_drain_event(
+            "publish-deferred", session_id, project_id, batch, request_id=request_id
+        )
+        return ("deferred", 0)
     if result.error_type == "ServerRejected" and _park_if_poisoned(
         session_id, project_id, batch, request_id, result.server_message
     ):

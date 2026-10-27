@@ -130,10 +130,15 @@ the watermark moves past that range; its local records stay in the buffer. Trans
 errors, HTTP 402 billing stops and 5xx outages never count toward parking. hook.log
 records each park as `publish-parked`.
 
-The Claude Code Stop hook drains synchronously within a 20-second budget, inside the
-host's 30-second limit. It sends a batch only while enough time remains for the request,
-its stored-request verification and the local watermark write; otherwise it logs
-`publish-deferred` and the next Stop continues from the same batch.
+Claude Code and OpenCode Stop handlers drain synchronously within a 20-second budget
+(Claude Code cancels the Stop hook at its 30-second `timeout`; OpenCode applies no limit,
+so the budget only bounds how long an idle session waits). Claude Code's SessionEnd drain
+uses 45 seconds, inside the 60-second ceiling Claude Code places on SessionEnd hooks.
+Codex Stop only queues the turn; its detached worker is not killed by the host and
+publishes one batch per pass with the same recovery and parking rules. It sends each request, including each chunk of a large batch,
+only while enough time remains for the request, its stored-request verification and the
+local watermark write; otherwise it logs `publish-deferred` and the next drain continues
+from the same frozen batch. A manual `learn` that parks a batch says so and exits nonzero.
 
 **Dashboard loads without layout or styling.**
 

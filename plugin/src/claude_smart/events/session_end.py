@@ -36,6 +36,12 @@ _LOGGER = logging.getLogger(__name__)
 # a session ended without any model response.
 _PLACEHOLDER_ASSISTANT_TEXT = "<session ended without final assistant response>"
 
+# Claude Code cancels SessionEnd hooks at a shared budget that a longer
+# per-hook ``timeout`` raises "up to 60 seconds" (code.claude.com/docs/en/hooks),
+# whatever ``hooks/hooks.json`` asks for. Leave room for interpreter start-up,
+# the completion hint below and the dispatcher log.
+_SESSION_END_PUBLISH_BUDGET_SECONDS = 45.0
+
 
 def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
     """Flush any remaining buffered turns to reflexio.
@@ -49,6 +55,7 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
             forensic hook log captures the publish outcome. ``None``
             when the payload had no ``session_id``.
     """
+    deadline = time.monotonic() + _SESSION_END_PUBLISH_BUDGET_SECONDS
     session_id = payload.get("session_id")
     if not session_id:
         return None
@@ -68,8 +75,9 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
         project_id=project_id,
         force_extraction=False,
         skip_aggregation=False,
+        deadline=deadline,
     )
-    if result[0] != "failed":
+    if result[0] not in {"failed", "deferred"}:
         Adapter().finalize_session(session_id=session_id, project_id=project_id)
     return result
 

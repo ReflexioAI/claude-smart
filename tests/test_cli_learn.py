@@ -277,3 +277,17 @@ def test_real_learn_distinguishes_storage_recovery_from_extraction_request(
         assert "No unpublished interactions" in out
         assert not client.sent
     assert state.published_record_offset(state.read_all("s1")) > 0
+
+
+def test_cmd_learn_explains_a_parked_batch(session_dir, fake_publish, capsys) -> None:
+    state.append("s1", {"role": "User", "content": "hi"})
+    state.append("s1", {"role": "Assistant", "content": "answer"})
+    _, control = fake_publish
+    control["return_value"] = ("parked", 0)
+
+    rc = cli.cmd_learn(_make_args())
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "publish_dead_letter" in out
+    assert "Failed to reach" not in out

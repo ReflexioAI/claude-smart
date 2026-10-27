@@ -77,6 +77,7 @@ class FakeReflexioAdapter:
         force_extraction: bool = False,
         override_learning_stall: bool = False,
         skip_aggregation: bool = False,
+        deadline: float | None = None,
     ) -> PublishResult:
         from claude_smart import runtime
         from claude_smart.reflexio_adapter import PublishResult
