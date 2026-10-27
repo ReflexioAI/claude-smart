@@ -8,6 +8,7 @@ Technical reference for how `claude-smart` wires Claude Code's lifecycle hooks t
    - `SessionStart` — applies claude-smart/reflexio defaults and starts supporting services; it does not retrieve memory.
    - `UserPromptSubmit` — buffers each user turn, heuristically flags corrections, and searches reflexio with the prompt text to inject matching preference/skill hits as `additionalContext`.
    - `PreToolUse` — searches reflexio keyed on the first line of the tool-call text (Bash command, Edit `new_string`, etc.) and injects top matches as `additionalContext`.
+   - Both inject at most `INLINE_CONTEXT_BUDGET_CHARS` (8,000) characters, footer included, so the block stays under Claude Code's 10,000-character hook cap; the lowest-ranked hits are dropped whole to fit.
    - `PostToolUse` — records tool invocations for later extraction.
    - `Stop` — finalizes the assistant turn; Codex queues publication after local capture, while other hosts publish synchronously.
    - `SessionEnd` — publishes the remaining buffer without forcing extraction, then sends a completion hint even if all messages were already saved. The backend retains its usefulness judge.

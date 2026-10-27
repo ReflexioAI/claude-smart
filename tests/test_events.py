@@ -1073,6 +1073,52 @@ def test_user_prompt_injects_context_when_hits_present(
         assert entry["title"]
 
 
+def test_user_prompt_context_stays_under_claude_code_hook_cap(
+    session_dir, monkeypatch
+) -> None:
+    """Large hits must not exceed Claude Code's 10,000-character hook cap.
+
+    Over the cap, Claude Code saves the context to a file and shows the model
+    only a 2,000-character preview. Only the items actually shown may enter
+    the citation registry.
+    """
+    long_hits = [
+        {
+            "user_playbook_id": f"playbook-{index}",
+            "content": f"rule {index}. " + "do the thing carefully " * 80,
+            "trigger": "when " + "x" * 300,
+            "rationale": "because " + "y" * 400,
+        }
+        for index in range(1, 4)
+    ]
+    _stub_user_prompt_adapter(
+        monkeypatch,
+        playbooks=long_hits,
+        agent_playbooks=[
+            dict(hit, agent_playbook_id=hit["user_playbook_id"]) for hit in long_hits
+        ],
+        profiles=[
+            {"profile_id": f"profile-{index}", "content": "z" * 1_500}
+            for index in range(1, 4)
+        ],
+    )
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+    user_prompt.handle({"session_id": "s1", "prompt": "edit", "cwd": "/r"})
+
+    markdown = json.loads(buf.getvalue().strip())["hookSpecificOutput"][
+        "additionalContext"
+    ]
+    assert len(markdown) <= 10_000
+    shown_ids = {
+        line.split("]", 1)[0].removeprefix("- [cs:")
+        for line in markdown.splitlines()
+        if line.startswith("- [cs:")
+    }
+    assert shown_ids
+    assert set(state.read_injected("s1")) == shown_ids
+
+
 def test_user_prompt_injects_compact_context_for_codex(
     session_dir, monkeypatch
 ) -> None:

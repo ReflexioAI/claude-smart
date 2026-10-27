@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -14,6 +14,16 @@ _CITATION_LINK_STYLE_ENV = "CLAUDE_SMART_CITATION_LINK_STYLE"
 _DEFAULT_DASHBOARD_URL = "http://localhost:3001"
 _REFLEXIO_URL_ENV = "REFLEXIO_URL"
 _LOCAL_REFLEXIO_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}  # noqa: S104 -- Host allowlist; no socket is bound.
+
+# Claude Code caps each hook ``additionalContext`` string at 10,000 characters.
+# A longer one is saved to a file and the model sees only a 2,000-character
+# preview, i.e. one or two items. The inline renderers keep their whole output,
+# footer included, within this budget; the 2,000-character margin absorbs URL
+# and instruction growth without a re-measure.
+INLINE_CONTEXT_BUDGET_CHARS = 8_000
+
+# One rendered item: its markdown bullet and its citation-registry entry.
+_Item = tuple[str, dict[str, Any]]
 
 
 def _first_nonempty(*values: Any) -> str:
@@ -158,6 +168,10 @@ def render_inline_with_registry(
 ) -> tuple[str, list[dict[str, Any]]]:
     """Variant of ``render_inline`` that also returns the citation registry.
 
+    The markdown never exceeds ``INLINE_CONTEXT_BUDGET_CHARS``; the
+    lowest-ranked items are dropped whole until it fits, and the registry
+    lists only the items kept.
+
     Args:
         project_id (str): Reserved for future use; currently unused.
         user_playbooks (Iterable[Any]): Relevance-ranked project-scoped hits.
@@ -170,19 +184,26 @@ def render_inline_with_registry(
             registry is ``[]``.
     """
     del project_id  # kept for symmetry with ``render_with_registry``.
-    playbook_lines, playbook_entries = _format_combined_playbooks(
-        agent_playbooks=agent_playbooks, user_playbooks=user_playbooks
+    return _fit_inline_budget(
+        _items(
+            *_format_combined_playbooks(
+                agent_playbooks=agent_playbooks, user_playbooks=user_playbooks
+            )
+        ),
+        _items(*_format_profiles(profiles)),
+        _assemble_inline,
     )
-    profile_lines, profile_entries = _format_profiles(profiles)
-    if not playbook_lines and not profile_lines:
-        return "", []
+
+
+def _assemble_inline(playbooks: list[_Item], profiles: list[_Item]) -> str:
+    """Render the markdown block for exactly the given items."""
     sections: list[str] = []
-    if playbook_lines:
+    if playbooks:
         sections.append("### Relevant project-specific skills")
-        sections.extend(playbook_lines)
-    if profile_lines:
+        sections.extend(line for line, _ in playbooks)
+    if profiles:
         sections.append("### Relevant project preferences")
-        sections.extend(profile_lines)
+        sections.extend(line for line, _ in profiles)
     instruction = _citation_instruction(
         os.environ.get("CLAUDE_SMART_CITATIONS", "on"),
         os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
@@ -190,11 +211,54 @@ def render_inline_with_registry(
     if instruction:
         sections.append(instruction)
     exact_osc8_marker = _exact_osc8_marker_instruction(
-        playbook_entries + profile_entries
+        [entry for _, entry in playbooks + profiles]
     )
     if exact_osc8_marker:
         sections.append(exact_osc8_marker)
-    return "\n".join(sections) + "\n", playbook_entries + profile_entries
+    return "\n".join(sections) + "\n"
+
+
+def _items(lines: list[str], entries: list[dict[str, Any]]) -> list[_Item]:
+    return list(zip(lines, entries, strict=True))
+
+
+def _fit_inline_budget(
+    playbooks: list[_Item],
+    profiles: list[_Item],
+    assemble: Callable[[list[_Item], list[_Item]], str],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Render the most items whose whole output fits the inline budget.
+
+    Items are admitted by rank, alternating sections (skill 1, preference 1,
+    skill 2, ...), and the lowest-ranked are dropped first. Whole items are
+    dropped, never cut, so every ``[cs:…]`` bullet shown is complete and the
+    registry lists exactly the items shown. The output is measured after
+    assembly, so headers and the citation footer count against the budget.
+
+    Returns:
+        tuple[str, list[dict[str, Any]]]: ``(markdown, registry_entries)``,
+            or ``("", [])`` when there are no items or none fits; the footer
+            is never emitted on its own.
+    """
+    order = _interleave_by_rank(len(playbooks), len(profiles))
+    for keep in range(len(order), 0, -1):
+        playbook_count = order[:keep].count("playbook")
+        kept_playbooks = playbooks[:playbook_count]
+        kept_profiles = profiles[: keep - playbook_count]
+        markdown = assemble(kept_playbooks, kept_profiles)
+        if len(markdown) <= INLINE_CONTEXT_BUDGET_CHARS:
+            return markdown, [entry for _, entry in kept_playbooks + kept_profiles]
+    return "", []
+
+
+def _interleave_by_rank(playbook_count: int, profile_count: int) -> list[str]:
+    order: list[str] = []
+    for rank in range(max(playbook_count, profile_count)):
+        if rank < playbook_count:
+            order.append("playbook")
+        if rank < profile_count:
+            order.append("profile")
+    return order
 
 
 def render_inline_compact_with_registry(
@@ -212,14 +276,20 @@ def render_inline_compact_with_registry(
     hosts that can hide hook context.
     """
     del project_id  # kept for symmetry with ``render_inline_with_registry``.
-    _, playbook_entries = _format_combined_playbooks(
-        agent_playbooks=agent_playbooks, user_playbooks=user_playbooks
+    return _fit_inline_budget(
+        _items(
+            *_format_combined_playbooks(
+                agent_playbooks=agent_playbooks, user_playbooks=user_playbooks
+            )
+        ),
+        _items(*_format_profiles(profiles)),
+        _assemble_compact,
     )
-    _, profile_entries = _format_profiles(profiles)
-    entries = playbook_entries + profile_entries
-    if not entries:
-        return "", []
 
+
+def _assemble_compact(playbooks: list[_Item], profiles: list[_Item]) -> str:
+    """Render the one-line compact block for exactly the given items."""
+    entries = [entry for _, entry in playbooks + profiles]
     skill_parts = []
     preference_parts = []
     marker_parts = []
@@ -260,7 +330,7 @@ def render_inline_compact_with_registry(
     instruction = _compact_citation_instruction(marker_parts)
     if instruction:
         sections.append(instruction)
-    return " ".join(sections) + "\n", entries
+    return " ".join(sections) + "\n"
 
 
 def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
