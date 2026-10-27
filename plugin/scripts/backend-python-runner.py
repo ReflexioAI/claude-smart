@@ -142,8 +142,6 @@ def main() -> int:
         env_key = key.replace("-", "_").upper()
         os.environ.setdefault(env_key, value)
 
-    backend_port = None
-    backend_host = None
     if (
         reflexio_args[:2] == ["services", "start"]
         and os.environ.get("CLAUDE_SMART_BACKEND") == "1"
@@ -154,15 +152,19 @@ def main() -> int:
         from reflexio.cli.run_services import (
             DEFAULT_OSS_PORTS,
             _build_run_services_parser,
+            parse_only_flag,
             resolve_ports,
         )
 
         options, _unknown = _build_run_services_parser().parse_known_args(
             reflexio_args[2:]
         )
-        backend_port = resolve_ports(options, DEFAULT_OSS_PORTS)["backend"]
-        backend_host = options.backend_host
-    pin_legacy_sqlite_db_path(backend_port, backend_host)
+        selected = parse_only_flag(options.only, {"backend", "docs"})
+        if "backend" in selected:
+            pin_legacy_sqlite_db_path(
+                resolve_ports(options, DEFAULT_OSS_PORTS)["backend"],
+                options.backend_host,
+            )
     sys.argv = ["reflexio.cli", *reflexio_args]
     runpy.run_module("reflexio.cli", run_name="__main__")
     return 0

@@ -151,8 +151,8 @@ export interface ReflexioConfig {
   window_size?: number;
   stride_size?: number;
   retrieval_floor?: ReflexioRetrievalFloorConfig | null;
-  profile_extractor_configs?: ReflexioExtractorConfig[] | null;
-  user_playbook_extractor_configs?: ReflexioExtractorConfig[] | null;
+  profile_extractor_config?: ReflexioExtractorConfig | null;
+  user_playbook_extractor_config?: ReflexioExtractorConfig | null;
   [k: string]: unknown;
 }
 

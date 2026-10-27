@@ -64,10 +64,23 @@ def _config_file(home: Path) -> Path:
 
 
 def _run_runner(home: Path, *metadata: str) -> subprocess.CompletedProcess[str]:
-    # `--help` exercises the full runner path, pin included, without starting
-    # services: reflexio.cli prints usage and exits 0.
+    # Exercise the actual backend-start preparation. Intercept only the final
+    # CLI delegation, so no daemon is launched by this identity regression.
+    return _run_selected_command(
+        home, ["services", "start", "--only", "backend"], metadata
+    )
+
+
+def _run_selected_command(home: Path, args: list[str], metadata: tuple[str, ...]):
+    script = (
+        "import runpy,sys\n"
+        "runner = runpy.run_path(sys.argv[1])\n"
+        "runner['main'].__globals__['runpy'].run_module = lambda *a, **k: None\n"
+        "sys.argv = ['runner', *sys.argv[2:]]\n"
+        "raise SystemExit(runner['main']())\n"
+    )
     return subprocess.run(
-        [sys.executable, "-P", str(RUNNER), *metadata, "--", "--help"],
+        [sys.executable, "-P", "-c", script, str(RUNNER), *metadata, "--", *args],
         env=_env(home),
         cwd=home,
         text=True,
@@ -611,3 +624,54 @@ def test_failed_identity_pin_never_delegates_to_cli_or_selects_another_database(
         assert connection.execute(
             "SELECT note FROM claude_smart_history"
         ).fetchone() == ("remembered",)
+
+
+@requires_vendor
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--help"],
+        ["services", "stop"],
+        ["services", "start", "--only", "docs"],
+        ["services", "start", "--help"],
+    ],
+)
+@pytest.mark.parametrize("saved", ["absent", "legacy", "corrupt"])
+def test_non_backend_commands_never_prepare_or_pin_selected_configuration(
+    tmp_path, args, saved
+):
+    path = _config_file(tmp_path)
+    before = None
+    if saved != "absent":
+        path.parent.mkdir(parents=True)
+        before = (
+            b"{invalid-json"
+            if saved == "corrupt"
+            else (
+                b'{"storage_config":{"type":"sqlite","db_path":null},'
+                b'"playbook_optimizer_config":{"optimize_agent_playbooks":true}}'
+            )
+        )
+        path.write_bytes(before)
+    result = _run_selected_command(tmp_path, args, ("--claude-smart-backend=1",))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert path.exists() == (before is not None)
+    if before is not None:
+        assert path.read_bytes() == before
+    assert not (path.parent / ".config-migrations").exists()
+    assert not (tmp_path / "data").exists()
+
+
+@requires_vendor
+@pytest.mark.parametrize("only", [None, "backend,docs", "docs,backend"])
+def test_default_and_combined_service_selection_still_pin_backend(tmp_path, only):
+    _write_config_with_null_db_path(tmp_path)
+    args = ["services", "start"]
+    if only is not None:
+        args.extend(["--only", only])
+    result = _run_selected_command(tmp_path, args, ("--claude-smart-backend=1",))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(_config_file(tmp_path).read_text())["storage_config"] == {
+        "type": "sqlite",
+        "db_path": str(tmp_path / "data" / "reflexio.db"),
+    }

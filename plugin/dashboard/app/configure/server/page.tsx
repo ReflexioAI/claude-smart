@@ -12,8 +12,8 @@ import { Label } from "@/components/ui/label";
 import type { ReflexioConfig } from "@/lib/types";
 
 type ExtractorField =
-  | "profile_extractor_configs"
-  | "user_playbook_extractor_configs";
+  | "profile_extractor_config"
+  | "user_playbook_extractor_config";
 
 export default function ConfigureServerPage() {
   const [srvConfig, setSrvConfig] = useState<ReflexioConfig | null>(null);
@@ -21,6 +21,12 @@ export default function ConfigureServerPage() {
   const [srvSaved, setSrvSaved] = useState(false);
   const [srvSaving, setSrvSaving] = useState(false);
   const [srvLoading, setSrvLoading] = useState(true);
+  const [candidateBudgetDraft, setCandidateBudgetDraft] = useState("");
+  const supportsCandidateBudget = !!srvConfig?.retrieval_floor &&
+    "candidate_pool_size" in srvConfig.retrieval_floor;
+  const invalidCandidateBudget = supportsCandidateBudget &&
+    (!/^\d+$/.test(candidateBudgetDraft) ||
+      !Number.isSafeInteger(Number(candidateBudgetDraft)));
 
   const fetchSrvConfig = useCallback(async (): Promise<ReflexioConfig> => {
     return reflexio.getServerConfiguration();
@@ -33,7 +39,10 @@ export default function ConfigureServerPage() {
       setSrvError(null);
       try {
         const data = await fetchSrvConfig();
-        if (alive) setSrvConfig(data);
+        if (alive) {
+          setSrvConfig(data);
+          setCandidateBudgetDraft(data.retrieval_floor?.candidate_pool_size?.toString() ?? "");
+        }
       } catch (e) {
         if (alive) setSrvError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -57,38 +66,34 @@ export default function ConfigureServerPage() {
   const updateExtractorPrompt = (field: ExtractorField, v: string) => {
     setSrvConfig((prev) => {
       if (!prev) return prev;
-      const list = prev[field];
-      if (!list || list.length === 0) return prev;
-      const next = [...list];
-      next[0] = { ...next[0], extraction_definition_prompt: v };
-      return { ...prev, [field]: next };
+      const extractor = prev[field];
+      if (!extractor) return prev;
+      return {
+        ...prev,
+        [field]: { ...extractor, extraction_definition_prompt: v },
+      };
     });
     setSrvSaved(false);
   };
 
-  const updateCandidateBudget = (candidatePoolSize: number) => {
-    setSrvConfig((prev) =>
-      prev
-        ? {
-            ...prev,
-            retrieval_floor: {
-              ...(prev.retrieval_floor ?? {}),
-              candidate_pool_size: candidatePoolSize,
-            },
-          }
-        : prev,
-    );
-    setSrvSaved(false);
-  };
-
   const saveSrv = async () => {
-    if (!srvConfig) return;
+    if (!srvConfig || invalidCandidateBudget) return;
     setSrvSaving(true);
     setSrvError(null);
     try {
-      await reflexio.setServerConfiguration(srvConfig);
+      const publication = supportsCandidateBudget
+        ? {
+            ...srvConfig,
+            retrieval_floor: {
+              ...srvConfig.retrieval_floor,
+              candidate_pool_size: Number(candidateBudgetDraft),
+            },
+          }
+        : srvConfig;
+      await reflexio.setServerConfiguration(publication);
       const fresh = await fetchSrvConfig();
       setSrvConfig(fresh);
+      setCandidateBudgetDraft(fresh.retrieval_floor?.candidate_pool_size?.toString() ?? "");
       setSrvSaved(true);
     } catch (e) {
       setSrvError(e instanceof Error ? e.message : String(e));
@@ -105,7 +110,7 @@ export default function ConfigureServerPage() {
         actions={
           <Button
             onClick={saveSrv}
-            disabled={!srvConfig || srvSaving}
+            disabled={!srvConfig || srvSaving || invalidCandidateBudget}
             size="sm"
           >
             <Save className="h-3.5 w-3.5" />
@@ -204,37 +209,39 @@ export default function ConfigureServerPage() {
               </div>
               <Input
                 id="search-candidate-budget"
-                aria-describedby="search-candidate-budget-help"
+                aria-describedby={invalidCandidateBudget ? "search-candidate-budget-help search-candidate-budget-error" : "search-candidate-budget-help"}
+                aria-invalid={invalidCandidateBudget}
                 type="number"
-                disabled={!srvConfig.retrieval_floor || !("candidate_pool_size" in srvConfig.retrieval_floor)}
+                disabled={!supportsCandidateBudget}
                 min={0}
                 step={1}
-                value={srvConfig.retrieval_floor?.candidate_pool_size ?? ""}
+                value={candidateBudgetDraft}
                 onChange={(event) => {
-                  const budget = Number(event.target.value);
-                  if (Number.isSafeInteger(budget) && budget >= 0) {
-                    updateCandidateBudget(budget);
-                  }
+                  setCandidateBudgetDraft(event.target.value);
+                  setSrvSaved(false);
                 }}
                 className="w-24 shrink-0 font-mono text-xs"
               />
             </div>
 
+            {invalidCandidateBudget && (
+              <p id="search-candidate-budget-error" role="alert" className="text-xs text-destructive">
+                Enter a whole number zero or greater before saving.
+              </p>
+            )}
+
             <div className="space-y-2">
-              <Label>Preference focus area</Label>
+              <Label htmlFor="preference-extraction-prompt">Preference focus area</Label>
               <p className="text-xs text-muted-foreground">
                 What the preference extractor should focus on.
               </p>
-              {srvConfig.profile_extractor_configs &&
-              srvConfig.profile_extractor_configs.length > 0 ? (
+              {srvConfig.profile_extractor_config ? (
                 <textarea
-                  value={
-                    srvConfig.profile_extractor_configs[0]
-                      .extraction_definition_prompt ?? ""
-                  }
+                  id="preference-extraction-prompt"
+                  value={srvConfig.profile_extractor_config.extraction_definition_prompt ?? ""}
                   onChange={(e) =>
                     updateExtractorPrompt(
-                      "profile_extractor_configs",
+                      "profile_extractor_config",
                       e.target.value,
                     )
                   }
@@ -248,20 +255,17 @@ export default function ConfigureServerPage() {
             </div>
 
             <div className="space-y-2">
-              <Label>Project-specific skill focus area</Label>
+              <Label htmlFor="skill-extraction-prompt">Project-specific skill focus area</Label>
               <p className="text-xs text-muted-foreground">
                 What the project-specific skill extractor should focus on.
               </p>
-              {srvConfig.user_playbook_extractor_configs &&
-              srvConfig.user_playbook_extractor_configs.length > 0 ? (
+              {srvConfig.user_playbook_extractor_config ? (
                 <textarea
-                  value={
-                    srvConfig.user_playbook_extractor_configs[0]
-                      .extraction_definition_prompt ?? ""
-                  }
+                  id="skill-extraction-prompt"
+                  value={srvConfig.user_playbook_extractor_config.extraction_definition_prompt ?? ""}
                   onChange={(e) =>
                     updateExtractorPrompt(
-                      "user_playbook_extractor_configs",
+                      "user_playbook_extractor_config",
                       e.target.value,
                     )
                   }

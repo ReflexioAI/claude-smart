@@ -881,3 +881,12 @@ owner. Existing database selection, exact originals and inactive saved policies
 are preserved. An old-generation file already carrying the previously ignored
 candidate name requires deliberate explicit conversion. Publish/install of this
 plugin bundle is separate from source merge and is not performed by this change.
+
+
+The server settings editor uses the current singular `profile_extractor_config`
+and `user_playbook_extractor_config` objects. Editing a prompt preserves the
+other object fields; retired plural arrays are not interpreted as aliases. A
+blank or invalid candidate-budget edit blocks Save rather than disabling retrieval.
+Only explicit zero disables it. Help, stop and docs-only runner commands do not
+prepare, initialize, upgrade or pin a selected backend configuration; backend
+startup retains exact originals and database identity preparation.
