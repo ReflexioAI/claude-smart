@@ -270,7 +270,9 @@ def test_opencode_learning_loop_buffers_injects_tools_and_publishes(
     monkeypatch.setattr(
         stop.publish,
         "publish_unpublished",
-        lambda **kw: published.append(kw) or ("ok", 3),
+        # The Stop drain deadline is a monotonic instant; its bound is
+        # covered by test_stop_bounds_its_synchronous_drain_inside_the_hook_limit.
+        lambda deadline, **kw: published.append(kw) or ("ok", 3),
     )
 
     user_prompt.handle(

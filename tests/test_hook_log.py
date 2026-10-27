@@ -644,3 +644,28 @@ def test_rotation_retains_latest_record_larger_than_cap(hook_log_path, monkeypat
     hook_log.log_event(event="stop", host="claude-code", session_id="older")
     hook_log.log_event(event="stop", host="claude-code", session_id="newest")
     assert [row["session_id"] for row in _read_lines(hook_log_path)] == ["newest"]
+
+
+def test_test_runs_never_write_the_account_hook_log(tmp_path, monkeypatch) -> None:
+    """Suites that import the plugin in-process must not pollute the real log.
+
+    An external integration suite published through the adapter without this
+    repository's fixtures and wrote fake ``publish-result`` events into the
+    user's ``~/.claude-smart/hook.log``.
+    """
+    account_log = tmp_path / "account-home" / ".claude-smart" / "hook.log"
+    monkeypatch.setattr(hook_log, "_account_log_path", lambda: account_log)
+    monkeypatch.setattr(hook_log, "_LOG_PATH", account_log)
+    monkeypatch.delenv("CLAUDE_SMART_HOOK_LOG", raising=False)
+    assert os.environ.get("PYTEST_CURRENT_TEST")
+
+    hook_log.log_event(event="publish-result", host="codex", session_id="session")
+    monkeypatch.setenv("CLAUDE_SMART_HOOK_LOG", str(account_log))
+    hook_log.log_event(event="publish-result", host="codex", session_id="session")
+    assert not account_log.exists()
+
+    # A redirected log (tmp HOME, explicit override) still records normally.
+    redirected = tmp_path / "redirected.log"
+    monkeypatch.setenv("CLAUDE_SMART_HOOK_LOG", str(redirected))
+    hook_log.log_event(event="stop", host="codex", session_id="session")
+    assert _read_lines(redirected)[0]["event"] == "stop"

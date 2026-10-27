@@ -888,7 +888,11 @@ def test_stop_retries_read_when_transcript_not_yet_flushed(
                     + "\n"
                 )
 
-    monkeypatch.setattr(stop, "time", SimpleNamespace(time=time.time, sleep=fake_sleep))
+    monkeypatch.setattr(
+        stop,
+        "time",
+        SimpleNamespace(time=time.time, monotonic=time.monotonic, sleep=fake_sleep),
+    )
     monkeypatch.setattr(
         "claude_smart.publish.publish_unpublished",
         lambda **_: ("nothing", 0),
@@ -921,7 +925,11 @@ def test_stop_retry_exhausts_budget_and_returns_empty(
     monkeypatch.setattr(
         stop,
         "time",
-        SimpleNamespace(time=time.time, sleep=lambda d: sleep_calls.append(d)),
+        SimpleNamespace(
+            time=time.time,
+            monotonic=time.monotonic,
+            sleep=lambda d: sleep_calls.append(d),
+        ),
     )
     monkeypatch.setattr(
         "claude_smart.publish.publish_unpublished",
@@ -1950,3 +1958,39 @@ def test_read_only_session_end_does_not_finalize(
     monkeypatch.setenv("CLAUDE_SMART_READ_ONLY", "1")
     session_end.handle({"session_id": "saved", "cwd": "/tmp/project"})
     no_live_finalization.assert_not_called()
+
+
+def test_stop_bounds_its_synchronous_drain_inside_the_hook_limit(
+    session_dir, tmp_path, monkeypatch
+) -> None:
+    import json as _json
+    from pathlib import Path
+
+    transcript = _write_transcript(
+        tmp_path,
+        [
+            {"type": "user", "message": {"content": "hi"}},
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "ok"}]},
+            },
+        ],
+    )
+    seen: dict[str, Any] = {}
+
+    def capture(**kwargs: Any) -> tuple[str, int]:
+        seen.update(kwargs)
+        return ("nothing", 0)
+
+    monkeypatch.setattr("claude_smart.publish.publish_unpublished", capture)
+    before = time.monotonic()
+    stop.handle({"session_id": "s1", "transcript_path": str(transcript)})
+    deadline = seen["deadline"]
+    assert before < deadline <= time.monotonic() + stop._STOP_PUBLISH_BUDGET_SECONDS
+    hooks = _json.loads(
+        (Path(stop.__file__).parents[3] / "hooks" / "hooks.json").read_text()
+    )
+    host_limit = hooks["hooks"]["Stop"][0]["hooks"][0]["timeout"]
+    # A drain that starts a batch at the latest admissible moment still records
+    # its outcome before the host kills the hook.
+    assert stop._STOP_PUBLISH_BUDGET_SECONDS < host_limit

@@ -16,6 +16,11 @@ Each Claude Code session gets one file at
   one in-flight publish
 - ``{"publish_request": {"start": N, "request_id": "..."}}`` — response
   identity reserved before retrieval and retained through publication
+- ``{"publish_rejection": {"request_id", "start", "end", "reason", "ts"}}`` —
+  one logical server rejection of a frozen batch, counted toward parking
+- ``{"published_up_to": M, "publish_dead_letter": {...}}`` — a batch parked
+  after repeated identical rejections; the watermark moves past it and the
+  local records stay in this file
 
 The buffer exists for offline resilience: when reflexio is unreachable,
 Stop appends without publishing and the next successful hook drains.

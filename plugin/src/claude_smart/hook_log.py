@@ -88,8 +88,8 @@ def log_event(
             when the handler raised — formatted by ``hook.main``.
         publish_status (str | None): Status returned by
             ``publish.publish_unpublished`` (``"ok"`` / ``"recovered"`` /
-            ``"failed"`` / ``"nothing"``), or ``"queued"`` for Codex local
-            enqueue. Worker records report subsequent publication separately.
+            ``"failed"`` / ``"nothing"`` / ``"deferred"`` / ``"parked"``), or
+            ``"queued"`` for Codex local enqueue. Worker records report subsequent publication separately.
         publish_count (int | None): Interaction count from the same
             tuple. ``None`` when the handler doesn't publish.
         extra (dict[str, Any] | None): Free-form fields preserved as-is.
@@ -133,6 +133,11 @@ def log_event(
         return
 
     path = log_path()
+    if os.environ.get("PYTEST_CURRENT_TEST") and _is_account_log(path):
+        # Test harnesses import this module in-process, including other
+        # repositories' integration suites that publish against a live
+        # server. Their fake events must never reach the user's forensic log.
+        return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -187,6 +192,24 @@ def log_path() -> Path:
             return _LOG_PATH
         return Path(override)
     return _LOG_PATH
+
+
+def _account_log_path() -> Path:
+    """Return the signed-in account's real log, even when ``$HOME`` is redirected."""
+    try:
+        import pwd
+
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError, AttributeError):  # pragma: no cover — Windows
+        home = Path.home()
+    return home / ".claude-smart" / "hook.log"
+
+
+def _is_account_log(path: Path) -> bool:
+    try:
+        return path.expanduser().resolve() == _account_log_path().resolve()
+    except (OSError, RuntimeError):
+        return True
 
 
 def _truncate(value: Any) -> Any:

@@ -39,6 +39,11 @@ _PLAN_REJECTION_COMMENT_MARKER = "the user said:"
 
 _EXIT_PLAN_MODE_TOOL = "ExitPlanMode"
 
+# The synchronous drain must finish, including writing the watermark, inside
+# the host's 30-second Stop hook limit (``hooks/hooks.json``). Measured from
+# handler entry; the rest covers interpreter start-up and the dispatcher log.
+_STOP_PUBLISH_BUDGET_SECONDS = 20.0
+
 
 def _read_transcript_entries(path: Path) -> list[dict[str, Any]]:
     """Parse the transcript JSONL once into a list of entries.
@@ -352,6 +357,7 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
             ``session_id`` in the payload, or Codex internal-prompt
             detection skipped the fire).
     """
+    deadline = time.monotonic() + _STOP_PUBLISH_BUDGET_SECONDS
     session_id = payload.get("session_id")
     if not session_id:
         return None
@@ -462,4 +468,5 @@ def handle(payload: dict[str, Any]) -> tuple[publish.PublishStatus, int] | None:
         project_id=project_id,
         force_extraction=False,
         skip_aggregation=False,
+        deadline=deadline,
     )

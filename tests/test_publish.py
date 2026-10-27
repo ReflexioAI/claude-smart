@@ -586,9 +586,7 @@ def _stored_request_response(payload):
     ).model_dump(mode="json", exclude_none=True)
 
 
-@pytest.mark.parametrize(
-    "mismatch", ["content", "tools", "links", "scope", "unobservable"]
-)
+@pytest.mark.parametrize("mismatch", ["content", "tools", "links", "scope"])
 def test_existing_chunk_mismatch_keeps_watermark_unadvanced(session_dir, mismatch):
     class Client:
         def __init__(self):
@@ -631,8 +629,6 @@ def test_existing_chunk_mismatch_keeps_watermark_unadvanced(session_dir, mismatc
         assistant["retrieved_learnings"] = [
             {"kind": "profile", "learning_id": "profile-id"}
         ]
-    if mismatch == "unobservable":
-        assistant["image_encoding"] = "aGVsbG8="
     state.append("mismatch", assistant)
     _append_user("mismatch", 1001, "last")
     client = Client()
@@ -1154,3 +1150,259 @@ def test_real_publish_route_requires_storage_before_watermark(
         assert state.published_record_offset(state.read_all("route-storage")) == (
             message_count if storage_succeeds else 0
         )
+
+
+def _read_hook_log(tmp_path) -> list[dict[str, Any]]:
+    import json
+
+    path = tmp_path / "hook.log"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+class _HookKilled(BaseException):
+    """The host's launch budget killed the hook mid-request."""
+
+
+class _StoredOnceClient:
+    """Stores the first delivery, dies before its ack, then rejects replays."""
+
+    def __init__(self, stored_override: Callable[[dict[str, Any]], None] | None = None):
+        self.saved: dict[str, Any] | None = None
+        self.sent: list[dict[str, Any]] = []
+        self.stored_override = stored_override
+
+    def _make_request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        payload = kwargs["json"]
+        if path == "/api/get_requests":
+            if self.saved is None or payload["request_id"] != self.saved["request_id"]:
+                return {"success": True, "sessions": []}
+            response = _stored_request_response(self.saved)
+            if self.stored_override is not None:
+                self.stored_override(response["sessions"][0]["requests"][0])
+            return response
+        self.sent.append(payload)
+        if self.saved is None:
+            self.saved = payload
+            raise _HookKilled
+        return {
+            "success": False,
+            "message": f"request_id '{payload['request_id']}' already exists",
+        }
+
+
+def _append_cited_turn(session_id: str) -> None:
+    _append_user(session_id, 1, "question")
+    state.append(
+        session_id,
+        {
+            "role": "Assistant",
+            "ts": 2,
+            "content": "answer",
+            "user_id": "user",
+            "cited_items": [
+                {
+                    "id": "s1-301",
+                    "kind": "profile",
+                    "title": "Preference",
+                    "real_id": "profile-id",
+                }
+            ],
+        },
+    )
+
+
+def _drain(session_id: str, adapter: Any, **extra: Any) -> tuple[str, int]:
+    return publish.publish_unpublished(
+        session_id=session_id,
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+        adapter=adapter,
+        **extra,
+    )
+
+
+def test_replay_of_stored_batch_with_citations_recovers(session_dir, tmp_path):
+    """Incident 2b8bc393: a stored request with citations wedged the session."""
+    _append_cited_turn("cited")
+    client = _StoredOnceClient()
+    adapter = Adapter(url="https://example.com")
+    adapter._client = client
+
+    with pytest.raises(_HookKilled):
+        _drain("cited", adapter)
+    assert client.sent[0]["interaction_data_list"][-1]["citations"]
+    assert _drain("cited", adapter) == ("recovered", 2)
+
+    records = state.read_all("cited")
+    assert state.published_record_offset(records) == 2
+    assert records[-1]["request_id"] == client.sent[0]["request_id"]
+    assert client.sent[0] == client.sent[1]
+    recovered = [
+        r for r in _read_hook_log(tmp_path) if r.get("publish_status") == "recovered"
+    ]
+    assert recovered[-1]["unverified_fields"] == ["citations"]
+
+
+@pytest.mark.parametrize("field", ["content", "role", "user_id"])
+def test_replay_with_citations_still_refuses_a_visible_mismatch(session_dir, field):
+    def tamper(stored: dict[str, Any]) -> None:
+        if field == "user_id":
+            stored["request"]["user_id"] = "another-project"
+        elif field == "role":
+            stored["interactions"][-1]["role"] = "User"
+        else:
+            stored["interactions"][-1]["content"] = "different"
+
+    _append_cited_turn("tampered")
+    adapter = Adapter(url="https://example.com")
+    adapter._client = _StoredOnceClient(tamper)
+    with pytest.raises(_HookKilled):
+        _drain("tampered", adapter)
+    assert _drain("tampered", adapter) == ("failed", 2)
+    assert _drain("tampered", adapter) == ("failed", 2)
+    assert state.published_record_offset(state.read_all("tampered")) == 0
+
+
+class _RejectingAdapter(_RecordingAdapter):
+    def __init__(self, **failure: Any) -> None:
+        super().__init__()
+        self.failure = failure
+
+    def publish(self, **kwargs: Any) -> PublishResult:
+        self.calls.append(kwargs)
+        if kwargs["interactions"][0]["content"] == "poison":
+            return PublishResult(False, kwargs["request_id"], **self.failure)
+        return PublishResult(True, kwargs["request_id"])
+
+
+def _poisoned_session(session_id: str) -> None:
+    _append_user(session_id, 1, "poison")
+    _append_assistant(session_id, 2)
+
+
+def _clock(monkeypatch, start: float = 1_000_000.0) -> list[float]:
+    now = [start]
+    monkeypatch.setattr(publish.time, "time", lambda: now[0])
+    return now
+
+
+def test_repeated_identical_rejection_parks_batch_and_drains_rest(
+    session_dir, tmp_path, monkeypatch
+):
+    now = _clock(monkeypatch)
+    _poisoned_session("poison")
+    adapter = _RejectingAdapter(
+        error_type="ServerRejected", http_status=200, server_message="bad batch"
+    )
+    step = publish.POISON_MIN_SPAN_SECONDS / (publish.POISON_REJECTION_LIMIT - 1)
+    for _ in range(publish.POISON_REJECTION_LIMIT - 1):
+        assert _drain("poison", adapter) == ("failed", 2)
+        now[0] += step
+    assert state.published_record_offset(state.read_all("poison")) == 0
+
+    assert _drain("poison", adapter) == ("parked", 0)
+    records = state.read_all("poison")
+    parked = records[-1]
+    assert parked["published_up_to"] == 2
+    dead_letter = parked["publish_dead_letter"]
+    assert dead_letter["request_id"] == adapter.calls[0]["request_id"]
+    assert (dead_letter["start"], dead_letter["end"]) == (0, 2)
+    assert dead_letter["reason"] == "bad batch"
+    assert dead_letter["rejections"] == publish.POISON_REJECTION_LIMIT
+    assert {call["request_id"] for call in adapter.calls} == {dead_letter["request_id"]}
+    assert any(r["event"] == "publish-parked" for r in _read_hook_log(tmp_path))
+
+    # The rest of the session is no longer blocked behind the parked range.
+    _append_user("poison", 3, "next question")
+    _append_assistant("poison", 4, "next answer")
+    assert _drain("poison", adapter) == ("ok", 2)
+    assert state.published_record_offset(state.read_all("poison")) > 2
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        {"error_type": "HTTPError", "http_status": 402, "server_message": "billing"},
+        {"error_type": "HTTPError", "http_status": 503, "server_message": "outage"},
+        {"error_type": "ConnectionError"},
+        {"error_type": "ReadTimeout"},
+    ],
+)
+def test_billing_stops_outages_and_transport_errors_never_park(
+    session_dir, monkeypatch, failure
+):
+    now = _clock(monkeypatch)
+    _poisoned_session("retry")
+    adapter = _RejectingAdapter(**failure)
+    for _ in range(publish.POISON_REJECTION_LIMIT * 3):
+        assert _drain("retry", adapter) == ("failed", 2)
+        now[0] += publish.POISON_MIN_SPAN_SECONDS
+    records = state.read_all("retry")
+    assert state.published_record_offset(records) == 0
+    assert not any("publish_rejection" in r for r in records)
+
+
+def test_short_or_changing_rejection_streak_keeps_retrying(session_dir, monkeypatch):
+    now = _clock(monkeypatch)
+    _poisoned_session("streak")
+    adapter = _RejectingAdapter(error_type="ServerRejected", http_status=200)
+    # Many identical rejections inside the minimum span: a possible outage.
+    for _ in range(publish.POISON_REJECTION_LIMIT * 2):
+        adapter.failure["server_message"] = "database unavailable"
+        assert _drain("streak", adapter) == ("failed", 2)
+        now[0] += 1
+    # A changed reason restarts the streak even after the span has elapsed.
+    now[0] += publish.POISON_MIN_SPAN_SECONDS
+    adapter.failure["server_message"] = "different reason"
+    assert _drain("streak", adapter) == ("failed", 2)
+    assert state.published_record_offset(state.read_all("streak")) == 0
+
+
+def _reserved_two_batch_session(session_id: str) -> None:
+    _append_user(session_id, 1, "first")
+    state.reserve_publish_request_id(session_id)
+    _append_assistant(session_id, 2, "first answer")
+    _append_user(session_id, 3, "second")
+    state.reserve_publish_request_id(session_id)
+    _append_assistant(session_id, 4, "second answer")
+
+
+def test_drain_never_sends_without_time_to_record_the_outcome(
+    session_dir, tmp_path, monkeypatch
+):
+    clock = [100.0]
+    monkeypatch.setattr(publish.time, "monotonic", lambda: clock[0])
+
+    def slow_request() -> None:
+        clock[0] += 9.0
+
+    _reserved_two_batch_session("budget")
+    adapter = _CallbackAdapter(slow_request)
+    deadline = clock[0] + publish.PUBLISH_RESERVE_SECONDS + 8.0
+    # The first batch fits; after it, less than the reserve remains.
+    assert _drain("budget", adapter, deadline=deadline) == ("deferred", 2)
+    assert len(adapter.calls) == 1
+    records = state.read_all("budget")
+    watermark = state.published_record_offset(records)
+    assert watermark > 0
+    assert state.unpublished_slice(records)[1]
+    deferred = [r for r in _read_hook_log(tmp_path) if r["event"] == "publish-deferred"]
+    assert (
+        deferred
+        and deferred[-1]["remaining_ms"] < publish.PUBLISH_RESERVE_SECONDS * 1000
+    )
+
+    # Nothing is sent when even the first batch would not fit.
+    clock[0] = deadline
+    _append_user("budget", 5, "third")
+    _append_assistant("budget", 6, "third answer")
+    assert _drain("budget", adapter, deadline=deadline + 1.0) == ("deferred", 0)
+    assert len(adapter.calls) == 1
+    assert state.published_record_offset(state.read_all("budget")) == watermark
+
+    # A later hook with a fresh budget drains the remainder.
+    assert _drain("budget", adapter, deadline=clock[0] + 60.0)[0] == "ok"
+    assert len(adapter.calls) >= 2

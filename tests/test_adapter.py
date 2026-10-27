@@ -1645,3 +1645,77 @@ def test_finalize_acceptance_does_not_publish(monkeypatch):
     monkeypatch.setattr(adapter, "_get_client", lambda: client)
     assert adapter.finalize_session(session_id="s", project_id="u")
     client.publish_interaction.assert_not_called()
+
+
+class _RejectingRawClient:
+    def __init__(self, response=None, error=None):
+        self.response = response
+        self.error = error
+
+    def _make_request(self, method, path, **kwargs):
+        if path == "/api/get_requests":
+            return {"success": True, "sessions": []}
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+class _HttpErrorResponse:
+    status_code = 402
+
+    def json(self):
+        return {"detail": "Spending cap reached; token=sk-live-secret"}
+
+
+class _HttpError(Exception):
+    response = _HttpErrorResponse()
+
+
+@pytest.mark.parametrize("shape", ["rejection", "http"])
+def test_failed_publish_logs_request_id_and_sanitized_server_message(
+    tmp_path, monkeypatch, shape
+):
+    import json
+
+    from claude_smart import hook_log
+
+    path = tmp_path / "hook.log"
+    monkeypatch.setattr(hook_log, "_LOG_PATH", path)
+    message = (
+        "1 validation error: Value error [type=value_error, "
+        "input_value='secret-payload text', input_type=str] "
+        "Authorization: Bearer secret-token "
+        "postgresql://db-user:db-password@db.internal/reflexio " + "x" * 400
+    )
+    client = (
+        _RejectingRawClient(response={"success": False, "message": message})
+        if shape == "rejection"
+        else _RejectingRawClient(error=_HttpError("402 Payment Required"))
+    )
+    result = _adapter_with(client).publish(
+        session_id="session",
+        project_id="project",
+        request_id="request-1",
+        interactions=[{"role": "User", "content": "secret-payload text"}],
+    )
+    assert not result
+    record = json.loads(path.read_text())
+    assert record["publish_status"] == "failed"
+    assert record["request_id"] == "request-1"
+    logged = record["server_message"]
+    assert logged and len(logged) <= 200
+    if shape == "rejection":
+        assert record["error_type"] == "ServerRejected"
+        assert logged.startswith("1 validation error")
+    else:
+        assert record["http_status"] == 402
+        assert logged.startswith("Spending cap reached")
+    data = path.read_text()
+    for secret in (
+        "secret-payload",
+        "secret-token",
+        "db-password",
+        "db-user",
+        "sk-live-secret",
+    ):
+        assert secret not in data

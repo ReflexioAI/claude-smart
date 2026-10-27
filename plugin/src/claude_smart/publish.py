@@ -8,15 +8,32 @@ messaging without peeking at the adapter.
 
 from __future__ import annotations
 
+import time
 import uuid
 from typing import Any, Literal
 
 from filelock import FileLock, Timeout
 
-from claude_smart import state
-from claude_smart.reflexio_adapter import Adapter
+from claude_smart import hook_log, runtime, state
+from claude_smart.reflexio_adapter import PUBLISH_ATTEMPT_SECONDS, Adapter
 
-PublishStatus = Literal["nothing", "ok", "recovered", "failed", "queued"]
+PublishStatus = Literal[
+    "nothing", "ok", "recovered", "failed", "queued", "deferred", "parked"
+]
+
+# A deadline-bound drain sends a batch only when the attempt, its verification
+# read and the local outcome write all still fit before the host kills the hook.
+# Sending without that margin is how a stored request lost its watermark.
+PUBLISH_RESERVE_SECONDS = PUBLISH_ATTEMPT_SECONDS + 2
+
+# A frozen batch the server rejects with the same logical reason this many
+# times is parked so the rest of the session can drain. Only HTTP 200
+# ``success: false`` rejections count: transport errors, 402 billing stops and
+# 5xx outages surface as other error types and keep retrying indefinitely.
+POISON_REJECTION_LIMIT = 5
+# The server's catch-all also reports a storage outage as a 200 rejection, so
+# the identical streak must span this long before a batch is parked.
+POISON_MIN_SPAN_SECONDS = 3600
 
 
 def _publish_request_id(session_id: str, start: int, end: int) -> str:
@@ -101,8 +118,13 @@ def publish_unpublished(
     adapter: Adapter | None = None,
     max_batches: int | None = None,
     through_record: int | None = None,
+    deadline: float | None = None,
 ) -> tuple[PublishStatus, int]:
-    """Serialize drains across automatic workers and explicit manual publishers."""
+    """Serialize drains across automatic workers and explicit manual publishers.
+
+    ``deadline`` is a ``time.monotonic()`` instant after which the caller may
+    be killed; no batch is sent unless ``PUBLISH_RESERVE_SECONDS`` remain.
+    """
     path = state.session_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -116,6 +138,7 @@ def publish_unpublished(
                 adapter=adapter,
                 max_batches=max_batches,
                 through_record=through_record,
+                deadline=deadline,
             )
     except Timeout:
         return "failed", 0
@@ -131,6 +154,7 @@ def _publish_unpublished_locked(
     adapter: Adapter | None,
     max_batches: int | None,
     through_record: int | None,
+    deadline: float | None,
 ) -> tuple[PublishStatus, int]:
     """Drain the session buffer to reflexio and stamp the high-water mark.
 
@@ -162,16 +186,30 @@ def _publish_unpublished_locked(
             after a lost acknowledgement (extraction options are not confirmed),
             or ``("failed", n)`` if reflexio rejected or
             was unreachable. On ``"failed"`` the watermark is not advanced,
-            so the next hook retries the same batch.
+            so the next hook retries the same batch. ``("deferred", n)``
+            means the deadline left too little time to send the next batch;
+            ``("parked", 0)`` means the only drained batch was parked after
+            repeated identical rejections.
     """
     total = 0
     batches = 0
     recovered = False
+    parked = False
     reserved_starts = {
         start
         for start, _, _ in state.reserved_publish_requests(state.read_all(session_id))
     }
     while (batch := _prepare_publish_batch(session_id, through_record)) is not None:
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining < PUBLISH_RESERVE_SECONDS:
+            _log_drain_event(
+                "publish-deferred",
+                session_id,
+                project_id,
+                batch,
+                remaining_ms=round(remaining * 1000),
+            )
+            return "deferred", total
         status, count = _publish_batch(
             session_id,
             project_id,
@@ -184,6 +222,7 @@ def _publish_unpublished_locked(
         total += count
         batches += 1
         recovered = recovered or status == "recovered"
+        parked = parked or status == "parked"
         if status == "failed":
             return status, total
         if max_batches is not None and batches >= max_batches:
@@ -193,7 +232,16 @@ def _publish_unpublished_locked(
         watermark = state.published_record_offset(state.read_all(session_id))
         if not any(start >= watermark for start in reserved_starts):
             break
-    return ("recovered" if recovered else "ok" if total else "nothing", total)
+    return (
+        "recovered"
+        if recovered
+        else "ok"
+        if total
+        else "parked"
+        if parked
+        else "nothing",
+        total,
+    )
 
 
 def _publish_batch(
@@ -236,4 +284,91 @@ def _publish_batch(
         if result.no_op:
             return ("nothing", 0)
         return ("recovered" if result.recovered else "ok", len(interactions))
+    if result.error_type == "ServerRejected" and _park_if_poisoned(
+        session_id, project_id, batch, request_id, result.server_message
+    ):
+        return ("parked", 0)
     return ("failed", len(interactions))
+
+
+def _park_if_poisoned(
+    session_id: str,
+    project_id: str,
+    batch: tuple[int, int, list[dict[str, Any]]],
+    request_id: str,
+    reason: str | None,
+) -> bool:
+    """Record one logical rejection; park the batch after a sustained streak.
+
+    The streak is durable in the session buffer because every Stop is a new
+    process. A different reason for the same batch restarts it. Parking writes
+    the dead-letter record and the watermark in one append, so the range is
+    never skipped without the record of why.
+    """
+    start, end, _ = batch
+    now = time.time()
+    identity = {"request_id": request_id, "start": start, "end": end}
+    state.append(
+        session_id, {"publish_rejection": {**identity, "reason": reason, "ts": now}}
+    )
+    streak: list[float] = []
+    for record in state.read_all(session_id):
+        rejection = record.get("publish_rejection")
+        if not isinstance(rejection, dict) or any(
+            rejection.get(key) != value for key, value in identity.items()
+        ):
+            continue
+        ts = rejection.get("ts")
+        if rejection.get("reason") != reason or not isinstance(ts, (int, float)):
+            streak = []
+            continue
+        streak.append(float(ts))
+    if (
+        len(streak) < POISON_REJECTION_LIMIT
+        or now - streak[0] < POISON_MIN_SPAN_SECONDS
+    ):
+        return False
+    state.append(
+        session_id,
+        {
+            "published_up_to": end,
+            "publish_dead_letter": {
+                **identity,
+                "reason": reason,
+                "rejections": len(streak),
+                "first_rejected_at": streak[0],
+                "parked_at": now,
+            },
+        },
+    )
+    _log_drain_event(
+        "publish-parked",
+        session_id,
+        project_id,
+        batch,
+        request_id=request_id,
+        server_message=reason,
+        rejections=len(streak),
+    )
+    return True
+
+
+def _log_drain_event(
+    event: str,
+    session_id: str,
+    project_id: str,
+    batch: tuple[int, int, list[dict[str, Any]]],
+    **extra: Any,
+) -> None:
+    """Record drain control decisions; diagnostics never affect publication."""
+    start, end, _ = batch
+    try:
+        hook_log.log_event(
+            event=event,
+            host=runtime.host(),
+            session_id=session_id,
+            project_id=project_id,
+            extra={"start": start, "end": end, **extra},
+        )
+    except Exception:  # noqa: BLE001 — telemetry must never affect publication.
+        return
