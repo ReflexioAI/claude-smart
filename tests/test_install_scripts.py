@@ -3121,6 +3121,46 @@ def test_node_claude_uninstall_repoints_plugin_root_at_newest_codex(
     assert 'CLAUDE_SMART_HOST="codex"' in config.read_text()
 
 
+def test_codex_uninstall_stops_external_runtime_before_removing_it(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    runtime = tmp_path / ".codex" / "claude-smart" / "runtime" / "plugin"
+    (runtime / "scripts").mkdir(parents=True)
+    for service in ["backend", "dashboard"]:
+        _write_executable(
+            runtime / "scripts" / f"{service}-service.sh",
+            '#!/bin/sh\n[ -d "$(dirname "$0")" ] || exit 1\n'
+            'printf "%s %s\\n" "$0" "$*" >> "$HOME/runtime-stops.log"\n',
+        )
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "codex", "#!/bin/sh\nexit 0\n")
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        [
+            node,
+            str(package_root / "bin/claude-smart.js"),
+            "uninstall",
+            "--host",
+            "codex",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    stops = (tmp_path / "runtime-stops.log").read_text()
+    for service in ["backend", "dashboard"]:
+        assert f"{runtime}/scripts/{service}-service.sh stop" in stops
+    assert not runtime.exists()
+
+
 def test_node_install_survives_an_invalid_service_port(tmp_path: Path) -> None:
     package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
     result = _run_fake_claude_code_install(
@@ -6657,7 +6697,10 @@ process.stdin.on("data", (chunk) => {
           else if (!stat.isFile()) throw new Error(`unsupported plugin entry type: ${file}`);
         }
       };
-      validate(cache);
+      // Real Codex validates the installed version, not inactive cache entries.
+      const manifest = JSON.parse(fs.readFileSync(path.join(home,
+        ".claude/plugins/marketplaces/reflexioai/plugin/.codex-plugin/plugin.json"), "utf8"));
+      validate(path.join(cache, manifest.version));
       process.stdout.write(JSON.stringify({
         id: message.id,
         result: {
@@ -7036,6 +7079,9 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
         old_bin = cache_plugin / "dashboard" / "node_modules" / ".bin"
         old_bin.mkdir(parents=True)
         (old_bin / "acorn").symlink_to("../acorn/bin/acorn")
+        inactive = cache_plugin.parent / "0.3.14" / "dashboard/node_modules/.bin"
+        inactive.mkdir(parents=True)
+        (inactive / "acorn").symlink_to("../acorn/bin/acorn")
         result = subprocess.run(
             [str(prefix / "bin" / "claude-smart"), "install", "--host", "codex"],
             cwd=project,
@@ -7045,6 +7091,7 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
             timeout=120,
         )
         assert result.returncode == 0, result.stderr
+        assert (inactive / "acorn").is_symlink()
     for root in [marketplace_plugin, cache_plugin]:
         assert (root / "pyproject.toml").exists()
         assert (root / "uv.lock").exists()

@@ -3543,6 +3543,7 @@ async function runInstallOpenCode(args) {
 }
 
 async function runUninstallCodex() {
+  stopClaudeSmartServices(CODEX_RUNTIME_PLUGIN_ROOT);
   stopClaudeSmartServices(join(PACKAGE_ROOT, "plugin"));
   if (!hasCli("codex")) {
     process.stdout.write("Codex CLI not found; skipping marketplace removal.\n");
