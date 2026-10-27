@@ -860,3 +860,24 @@ stable same-machine link or a separately managed server executable. This change
 does not repair an already-stale binding. The stable-link probe verifies helper
 execution after the normal link is refreshed, not a customer configuration
 migration or remote deployment.
+
+### Retrieval candidate budget
+
+The bundled SDK uses `retrieval_floor.candidate_pool_size`: zero disables
+cross-encoder flooring, and a positive value selects a candidate pool per search
+arm when the server reranker is available. Request top-k and recency pools can
+require more candidates. Other search thresholds remain independent.
+
+The server configuration page edits this budget directly, preserving nullable
+calibrated score floors, exact numeric overrides and opaque nested fields. It
+no longer turns a toggle into an arbitrary capacity or three fixed score values.
+An older connected server that does not return the canonical budget keeps the
+control disabled until upgraded; editing unrelated settings does not synthesize
+a new ignored candidate field for that server.
+
+SDK #813 owns local-file generation2 and targeted upgrades from generations0/1.
+The runner prepares before database identity pinning through the shared raw-file
+owner. Existing database selection, exact originals and inactive saved policies
+are preserved. An old-generation file already carrying the previously ignored
+candidate name requires deliberate explicit conversion. Publish/install of this
+plugin bundle is separate from source merge and is not performed by this change.

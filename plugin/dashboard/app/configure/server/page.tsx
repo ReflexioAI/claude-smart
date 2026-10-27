@@ -9,29 +9,11 @@ import { PageHeader } from "@/components/common/page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import type { ReflexioConfig, ReflexioRetrievalFloorConfig } from "@/lib/types";
+import type { ReflexioConfig } from "@/lib/types";
 
 type ExtractorField =
   | "profile_extractor_configs"
   | "user_playbook_extractor_configs";
-
-const DEFAULT_RETRIEVAL_FLOOR: Required<
-  Pick<
-    ReflexioRetrievalFloorConfig,
-    | "enabled"
-    | "pool_size"
-    | "profile_floor"
-    | "user_playbook_floor"
-    | "agent_playbook_floor"
-  >
-> = {
-  enabled: false,
-  pool_size: 30,
-  profile_floor: -3,
-  user_playbook_floor: -3,
-  agent_playbook_floor: -3,
-};
 
 export default function ConfigureServerPage() {
   const [srvConfig, setSrvConfig] = useState<ReflexioConfig | null>(null);
@@ -84,15 +66,14 @@ export default function ConfigureServerPage() {
     setSrvSaved(false);
   };
 
-  const updateReranker = (enabled: boolean) => {
+  const updateCandidateBudget = (candidatePoolSize: number) => {
     setSrvConfig((prev) =>
       prev
         ? {
             ...prev,
             retrieval_floor: {
-              ...DEFAULT_RETRIEVAL_FLOOR,
               ...(prev.retrieval_floor ?? {}),
-              enabled,
+              candidate_pool_size: candidatePoolSize,
             },
           }
         : prev,
@@ -212,18 +193,30 @@ export default function ConfigureServerPage() {
 
             <div className="flex items-start justify-between gap-4 rounded-md border border-border bg-background/60 p-3">
               <div className="min-w-0">
-                <Label htmlFor="search-reranker">Search reranker</Label>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Use the shared-service cross-encoder relevance floor for
-                  injected memory search. The bundled claude-smart backend
-                  disables this model; the toggle applies to connected
-                  deployments that enable reranking.
+                <Label htmlFor="search-candidate-budget">Search candidate budget</Label>
+                <p id="search-candidate-budget-help" className="text-xs text-muted-foreground mt-0.5">
+                  Zero disables cross-encoder flooring. A positive budget sets
+                  the candidate pool per search arm when reranking is available;
+                  top-k or recency may require a larger pool. Existing score
+                  thresholds are preserved.
+                  {(!srvConfig.retrieval_floor || !("candidate_pool_size" in srvConfig.retrieval_floor)) && " Update the connected server to configure this budget."}
                 </p>
               </div>
-              <Switch
-                id="search-reranker"
-                checked={!!srvConfig.retrieval_floor?.enabled}
-                onCheckedChange={updateReranker}
+              <Input
+                id="search-candidate-budget"
+                aria-describedby="search-candidate-budget-help"
+                type="number"
+                disabled={!srvConfig.retrieval_floor || !("candidate_pool_size" in srvConfig.retrieval_floor)}
+                min={0}
+                step={1}
+                value={srvConfig.retrieval_floor?.candidate_pool_size ?? ""}
+                onChange={(event) => {
+                  const budget = Number(event.target.value);
+                  if (Number.isSafeInteger(budget) && budget >= 0) {
+                    updateCandidateBudget(budget);
+                  }
+                }}
+                className="w-24 shrink-0 font-mono text-xs"
               />
             </div>
 

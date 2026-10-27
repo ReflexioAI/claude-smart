@@ -135,11 +135,10 @@ export interface ReflexioExtractorConfig {
 }
 
 export interface ReflexioRetrievalFloorConfig {
-  enabled?: boolean;
-  pool_size?: number;
-  profile_floor?: number;
-  user_playbook_floor?: number;
-  agent_playbook_floor?: number;
+  candidate_pool_size?: number;
+  profile_floor?: number | null;
+  user_playbook_floor?: number | null;
+  agent_playbook_floor?: number | null;
   [k: string]: unknown;
 }
 

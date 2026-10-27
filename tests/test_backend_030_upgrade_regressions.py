@@ -464,7 +464,7 @@ def test_explicit_saved_config_upgrade_preserves_original_and_database(
     assert result.returncode == 0, result.stdout + result.stderr
     assert original.read_bytes() == before
     canonical = json.loads(converted.read_text())
-    assert canonical.pop("_reflexio_config_file")["version"] == 1
+    assert canonical.pop("_reflexio_config_file")["version"] == 2
     assert canonical["storage_config"] == {"type": "sqlite", "db_path": None}
     assert {
         key: value for key, value in canonical.items() if key != "storage_config"
