@@ -22,9 +22,11 @@ PublishStatus = Literal[
 ]
 
 # A frozen batch the server rejects with the same logical reason this many
-# times is parked so the rest of the session can drain. Only HTTP 200
-# ``success: false`` rejections count: transport errors, 402 billing stops and
-# 5xx outages surface as other error types and keep retrying indefinitely.
+# times is parked so the rest of the session can drain. Only logical
+# rejections count: HTTP 200 ``success: false`` and a 409 request-ID conflict.
+# Transport errors, 402 billing stops, other 4xx and 5xx outages keep retrying
+# indefinitely. A conflict the stored-request read also confirms is parked at
+# once: the server compared the whole payload, so no retry can succeed.
 POISON_REJECTION_LIMIT = 5
 # The server's catch-all also reports a storage outage as a 200 rejection, so
 # the identical streak must span this long before a batch is parked.
@@ -290,8 +292,18 @@ def _publish_batch(
             "publish-deferred", session_id, project_id, batch, request_id=request_id
         )
         return ("deferred", 0)
-    if result.error_type == "ServerRejected" and _park_if_poisoned(
-        session_id, project_id, batch, request_id, result.server_message
+    confirmed_conflict = result.error_type == "RequestIdConflict"
+    if (
+        confirmed_conflict
+        or result.error_type == "ServerRejected"
+        or result.error_reason == "request_id_conflict"
+    ) and _park_if_poisoned(
+        session_id,
+        project_id,
+        batch,
+        request_id,
+        ": ".join(filter(None, (result.error_reason, result.server_message))) or None,
+        immediate=confirmed_conflict,
     ):
         return ("parked", 0)
     return ("failed", len(interactions))
@@ -303,6 +315,8 @@ def _park_if_poisoned(
     batch: tuple[int, int, list[dict[str, Any]]],
     request_id: str,
     reason: str | None,
+    *,
+    immediate: bool = False,
 ) -> bool:
     """Record one logical rejection; park the batch after a sustained streak.
 
@@ -329,7 +343,7 @@ def _park_if_poisoned(
             streak = []
             continue
         streak.append(float(ts))
-    if (
+    if not immediate and (
         len(streak) < POISON_REJECTION_LIMIT
         or now - streak[0] < POISON_MIN_SPAN_SECONDS
     ):

@@ -76,7 +76,8 @@ rm -rf ~/.reflexio/data/           # reflexio SQLite store
 
 `~/.claude-smart/hook.log` includes `publish-result` records with the plugin version,
 backend scheme/hostname/port, publish count, exception class, and HTTP status when
-available. Failed records also carry the `request_id` and the server's `server_message`,
+available. Failed records also carry the `request_id`, the server's `error_reason` (such as
+`request_id_conflict`) and its `server_message`,
 reduced to one line of at most 200 characters with echoed values and credential-shaped
 tokens redacted. Missing or malformed version metadata uses `unknown`; unavailable
 URL metadata uses null fields. These records omit credentials, URL paths/query parameters, full response
@@ -123,11 +124,21 @@ keys and tuple values; a key collision fails before sending instead of losing da
 Empty placeholders are filtered before splitting; an empty-only batch advances
 the local watermark without sending a request. Original local records are retained.
 
-A frozen batch the server rejects with the same HTTP 200 `success: false` reason five
-times, over at least an hour, is parked so later turns can publish. The session buffer
+Reflexio servers that replay a reused `request_id` answer an identical retry with
+`success: true` and `replayed: true`; the plugin records that as `recovered`. A retry
+whose content differs gets HTTP 409 with reason `request_id_conflict`. When the
+stored-request read also shows the stored request is not this batch, the batch is
+parked at once, since no retry under that ID can succeed. Older servers answer a reused
+ID with HTTP 200 `success: false` "already exists" and go through the verified recovery
+above.
+
+A frozen batch the server rejects with the same HTTP 200 `success: false` reason, or with
+a 409 conflict the read could not confirm, five times over at least an hour, is parked
+so later turns can publish. The session buffer
 records a `publish_dead_letter` entry with the request ID, record range and reason, and
 the watermark moves past that range; its local records stay in the buffer. Transport
-errors, HTTP 402 billing stops and 5xx outages never count toward parking. hook.log
+errors, HTTP 402 billing stops, other 4xx responses and 5xx outages never count toward
+parking. hook.log
 records each park as `publish-parked`.
 
 Claude Code and OpenCode Stop handlers drain synchronously within a 20-second budget

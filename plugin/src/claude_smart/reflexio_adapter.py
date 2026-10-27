@@ -14,7 +14,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from claude_smart import env_config, runtime
@@ -39,6 +39,9 @@ PUBLISH_RESERVE_SECONDS = PUBLISH_ATTEMPT_SECONDS + 2
 # GetRequests does not return these fields, so a replay cannot compare them.
 _UNVERIFIABLE_FIELDS = ("citations", "image_encoding")
 _SERVER_MESSAGE_LIMIT = 200
+# Reflexio >= #807 answers a reused request_id naming different content with
+# HTTP 409 and this reason; an identical retry succeeds with ``replayed``.
+_REQUEST_ID_CONFLICT = "request_id_conflict"
 _SEARCH_MODE_HYBRID = "hybrid"  # reflexio.models.config_schema.SearchMode.HYBRID
 _SOURCE = "claude-smart"
 _UNIFIED_ENTITY_TYPES = ("profiles", "user_playbooks", "agent_playbooks")
@@ -76,10 +79,15 @@ class PublishResult:
     recovered: bool = False
     no_op: bool = False
     server_message: str | None = None
+    error_reason: str | None = None
     unverified_fields: tuple[str, ...] = ()
 
     def __bool__(self) -> bool:
         return self.ok
+
+
+class _StoredPublishMismatch(ValueError):
+    """The stored request under this ID is decidably not this payload."""
 
 
 @dataclass(frozen=True)
@@ -253,6 +261,7 @@ class Adapter:
             if not result.ok:
                 extra["request_id"] = result.request_id or request_id
                 extra["server_message"] = result.server_message
+                extra["error_reason"] = result.error_reason
             if result.unverified_fields:
                 extra["unverified_fields"] = list(result.unverified_fields)
             hook_log.log_event(
@@ -358,8 +367,14 @@ class Adapter:
                             params=None,
                         )
                     except Exception as exc:  # noqa: BLE001
+                        response = getattr(exc, "response", None)
+                        reason, message = _http_error_details(response)
                         try:
                             stored = _stored_publish_matches(raw_request, payload)
+                        except _StoredPublishMismatch:
+                            if reason != _REQUEST_ID_CONFLICT:
+                                raise exc from None
+                            stored = None
                         except Exception:  # noqa: BLE001 — preserve the publish failure.
                             raise exc from None
                         if stored:
@@ -367,15 +382,34 @@ class Adapter:
                             unverified.update(stored.unverified_fields)
                             confirmed_ids.append(chunk_id)
                             continue
+                        if reason == _REQUEST_ID_CONFLICT:
+                            # The server compared the full payload and the
+                            # read confirms the stored request is not this one.
+                            return PublishResult(
+                                False,
+                                chunk_id,
+                                error_type="RequestIdConflict",
+                                http_status=getattr(response, "status_code", None),
+                                server_message=message,
+                                error_reason=reason,
+                            ), raw_response
                         raise
                     _log_publish_warnings(raw_response)
                     result = _confirmed_publish(raw_response, chunk_id)
+                    recovered = recovered or result.recovered
                     if not result:
+                        conflict = replace(result, error_type="RequestIdConflict")
                         try:
                             stored = _stored_publish_matches(raw_request, payload)
+                        except _StoredPublishMismatch:
+                            if result.error_reason == _REQUEST_ID_CONFLICT:
+                                return conflict, raw_response
+                            return result, raw_response
                         except Exception:  # noqa: BLE001 — preserve rejection diagnostics.
                             return result, raw_response
                         if not stored:
+                            if result.error_reason == _REQUEST_ID_CONFLICT:
+                                return conflict, raw_response
                             return result, raw_response
                         recovered = True
                         unverified.update(stored.unverified_fields)
@@ -416,11 +450,13 @@ class Adapter:
             _LOGGER.warning("publish_interaction failed: %s", exc)
             response = getattr(exc, "response", None)
             status = getattr(response, "status_code", None)
+            reason, message = _http_error_details(response)
             return PublishResult(
                 False,
                 error_type=type(exc).__name__,
                 http_status=status if isinstance(status, int) else None,
-                server_message=_http_error_message(response),
+                server_message=message,
+                error_reason=reason,
             ), None
 
     # -----------------------------------------------------------------
@@ -725,10 +761,14 @@ def _stored_publish_matches(
     if not sessions:
         return None
     if len(sessions) != 1 or sessions[0].get("session_id") != payload["session_id"]:
-        raise ValueError("Stored publish confirmation returned another session")
+        raise _StoredPublishMismatch(
+            "Stored publish confirmation returned another session"
+        )
     requests = sessions[0].get("requests")
     if not isinstance(requests, list) or len(requests) != 1:
-        raise ValueError("Stored publish confirmation returned another request")
+        raise _StoredPublishMismatch(
+            "Stored publish confirmation returned another request"
+        )
     stored = requests[0]
     request = stored.get("request", {})
     identity_fields = (
@@ -740,12 +780,12 @@ def _stored_publish_matches(
         "evaluation_only",
     )
     if any(request.get(key) != payload[key] for key in identity_fields):
-        raise ValueError("Stored publish request identity does not match")
+        raise _StoredPublishMismatch("Stored publish request identity does not match")
     interactions = stored.get("interactions")
     if not isinstance(interactions, list) or len(interactions) != len(
         payload["interaction_data_list"]
     ):
-        raise ValueError("Stored publish interaction count does not match")
+        raise _StoredPublishMismatch("Stored publish interaction count does not match")
 
     from reflexio.models.api_schema.common import ToolUsed
     from reflexio.models.api_schema.domain.entities import InteractionData
@@ -781,7 +821,9 @@ def _stored_publish_matches(
             item.get("request_id") != payload["request_id"]
             or item.get("user_id") != payload["user_id"]
         ):
-            raise ValueError("Stored publish interaction identity does not match")
+            raise _StoredPublishMismatch(
+                "Stored publish interaction identity does not match"
+            )
         # Real schema defaults normalize omitted content, tool status and lists.
         # Caller-provided timestamps are part of the payload; server defaults are not.
         excluded = omitted if "created_at" in original else omitted | {"created_at"}
@@ -841,7 +883,9 @@ def _stored_publish_matches(
         if json.dumps(observed, sort_keys=True, separators=(",", ":")) != json.dumps(
             normalized, sort_keys=True, separators=(",", ":")
         ):
-            raise ValueError("Stored publish interaction payload does not match")
+            raise _StoredPublishMismatch(
+                "Stored publish interaction payload does not match"
+            )
     if unverified:
         _LOGGER.warning(
             "Recovered stored publish %s without verifying %s; the read API "
@@ -940,6 +984,11 @@ def _confirmed_publish(response: Any, request_id: str | None = None) -> PublishR
         else getattr(response, "message", None)
     )
     if success is not True:
+        reason = (
+            dict.get(response, "error_reason")
+            if isinstance(response, dict)
+            else getattr(response, "error_reason", None)
+        )
         return PublishResult(
             False,
             request_id,
@@ -948,6 +997,7 @@ def _confirmed_publish(response: Any, request_id: str | None = None) -> PublishR
             else "InvalidPublishAcknowledgement",
             http_status=200,
             server_message=sanitize_server_message(message),
+            error_reason=reason if reason == _REQUEST_ID_CONFLICT else None,
         )
     if message == "Interaction queued for processing":
         # Legacy routes acknowledge a background task before durable storage.
@@ -955,7 +1005,14 @@ def _confirmed_publish(response: Any, request_id: str | None = None) -> PublishR
         return PublishResult(
             False, request_id, error_type="StorageNotConfirmed", http_status=200
         )
-    return PublishResult(True, request_id)
+    replayed = (
+        dict.get(response, "replayed")
+        if isinstance(response, dict)
+        else getattr(response, "replayed", None)
+    )
+    # A replay confirms the original stored publish; its extraction options
+    # were not rerun, exactly like a verified lost-acknowledgement recovery.
+    return PublishResult(True, request_id, recovered=replayed is True)
 
 
 _REDACTIONS = (
@@ -991,15 +1048,26 @@ def sanitize_server_message(message: Any) -> str | None:
     return text
 
 
-def _http_error_message(response: Any) -> str | None:
-    """Read a server's error reason from an HTTP failure, if it sent one."""
+def _http_error_details(response: Any) -> tuple[str | None, str | None]:
+    """Return ``(reason, sanitized message)`` from an HTTP failure body.
+
+    FastAPI wraps errors in ``detail``: a string, or for a request-ID conflict
+    ``{"reason", "request_id", "message"}``.
+    """
     try:
         body = response.json() if response is not None else None
     except Exception:  # noqa: BLE001 — non-JSON bodies carry no structured reason.
-        return None
+        return None, None
     if not isinstance(body, dict):
-        return None
-    return sanitize_server_message(body.get("detail") or body.get("message"))
+        return None, None
+    detail = body.get("detail")
+    if isinstance(detail, dict):
+        reason = detail.get("reason")
+        return (
+            reason if isinstance(reason, str) and len(reason) <= 64 else None,
+            sanitize_server_message(detail.get("message")),
+        )
+    return None, sanitize_server_message(detail or body.get("message"))
 
 
 def _extract_items(response: Any, field: str) -> list[Any]:

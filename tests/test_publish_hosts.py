@@ -24,12 +24,50 @@ class _HookKilled(BaseException):
     """The host killed the publishing process mid-request."""
 
 
-class _Server:
-    """Stores what it accepts; optionally dies once or rejects a poison batch."""
+class _ConflictResponse:
+    status_code = 409
 
-    def __init__(self, *, kill_first: bool = False, poison: str | None = None):
+    def __init__(self, request_id: str) -> None:
+        self.request_id = request_id
+
+    def json(self) -> dict[str, Any]:
+        # reflexio #807: routes/interactions.py raises HTTPException(409, detail=...)
+        return {
+            "detail": {
+                "reason": "request_id_conflict",
+                "request_id": self.request_id,
+                "message": f"request_id {self.request_id!r} already exists for a "
+                "different publish; use a new request_id",
+            }
+        }
+
+
+class _HTTPError(Exception):
+    def __init__(self, response: Any) -> None:
+        super().__init__(f"{response.status_code} Client Error")
+        self.response = response
+
+
+class _Server:
+    """Stores what it accepts; optionally dies once or rejects a poison batch.
+
+    ``shape`` selects the reused-request_id contract: ``legacy`` servers answer
+    200 ``success: false`` "already exists"; ``modern`` ones (reflexio #807)
+    replay an identical retry and answer 409 for different content.
+    """
+
+    def __init__(
+        self,
+        *,
+        kill_first: bool = False,
+        poison: str | None = None,
+        shape: str = "legacy",
+        store_altered: bool = False,
+    ):
         self.kill_first = kill_first
         self.poison = poison
+        self.shape = shape
+        self.store_altered = store_altered
         self.saved: dict[str, dict[str, Any]] = {}
         self.posts: list[dict[str, Any]] = []
 
@@ -48,12 +86,27 @@ class _Server:
             for item in payload["interaction_data_list"]
         ):
             return {"success": False, "message": "interaction rejected"}
-        if payload["request_id"] in self.saved:
+        request_id = payload["request_id"]
+        if request_id in self.saved:
+            if self.shape == "legacy":
+                return {
+                    "success": False,
+                    "message": f"request_id '{request_id}' already exists",
+                }
+            if self.saved[request_id] != payload:
+                raise _HTTPError(_ConflictResponse(request_id))
             return {
-                "success": False,
-                "message": f"request_id '{payload['request_id']}' already exists",
+                "success": True,
+                "replayed": True,
+                "request_id": request_id,
+                "message": "Interaction already published with this request_id; "
+                "nothing new was stored",
             }
-        self.saved[payload["request_id"]] = payload
+        if self.store_altered:
+            # An earlier delivery under this ID carried different content.
+            payload = json.loads(json.dumps(payload))
+            payload["interaction_data_list"][0]["content"] = "something else"
+        self.saved[request_id] = payload
         if self.kill_first:
             self.kill_first = False
             raise _HookKilled
@@ -120,10 +173,15 @@ def _prime_citation(session_id: str) -> str:
     return "Done.\n\n✨ 1 claude-smart learning applied [cs:p1-uuid]"
 
 
+@pytest.mark.parametrize("shape", ["legacy", "modern"])
 @pytest.mark.parametrize("host_env", HOSTS, indirect=True)
-def test_killed_delivery_with_citations_recovers_on_next_stop(host_env, tmp_path):
+def test_killed_delivery_with_citations_recovers_on_next_stop(
+    host_env, tmp_path, shape
+):
+    """Legacy: verified recovery after 200 "already exists". Modern: replayed."""
     host, server = host_env
     server.kill_first = True
+    server.shape = shape
     answer = _prime_citation("s")
 
     with pytest.raises(_HookKilled):
@@ -197,3 +255,58 @@ def test_session_end_drain_is_bounded_by_the_host_budget(session_dir, monkeypatc
     assert session_end._SESSION_END_PUBLISH_BUDGET_SECONDS + 10 <= 60
     # A deferred drain is not a completed session.
     assert finalized == []
+
+
+def _hook_log(tmp_path) -> list[dict[str, Any]]:
+    path = tmp_path / "hook.log"
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+@pytest.mark.parametrize("host_env", HOSTS, indirect=True)
+def test_replayed_success_is_recorded_as_recovered(host_env, tmp_path):
+    host, server = host_env
+    server.kill_first = True
+    server.shape = "modern"
+    with pytest.raises(_HookKilled):
+        _stop(host, tmp_path, "r", "first question", "first answer")
+    _stop(host, tmp_path, "r", "second question", "second answer")
+    results = [r for r in _hook_log(tmp_path) if r["event"] == "publish-result"]
+    assert results[0]["publish_status"] == "recovered"
+    assert results[0]["host"] == host
+    assert state.published_record_offset(state.read_all("r")) > 0
+
+
+@pytest.mark.parametrize("host_env", HOSTS, indirect=True)
+def test_request_id_conflict_parks_the_batch_on_first_occurrence(host_env, tmp_path):
+    host, server = host_env
+    server.kill_first = True
+    server.shape = "modern"
+    server.store_altered = True
+    with pytest.raises(_HookKilled):
+        _stop(host, tmp_path, "c", "first question", "first answer")
+    server.store_altered = False
+
+    _stop(host, tmp_path, "c", "second question", "second answer")
+    records = state.read_all("c")
+    parked = [r["publish_dead_letter"] for r in records if "publish_dead_letter" in r]
+    assert len(parked) == 1
+    assert parked[0]["reason"].startswith("request_id_conflict: ")
+    assert parked[0]["rejections"] == 1
+    failed = [
+        r
+        for r in _hook_log(tmp_path)
+        if r["event"] == "publish-result" and r["publish_status"] == "failed"
+    ]
+    assert failed[-1]["error_type"] == "RequestIdConflict"
+    assert failed[-1]["http_status"] == 409
+    assert failed[-1]["error_reason"] == "request_id_conflict"
+    assert "different publish" in failed[-1]["server_message"]
+
+    # Later turns are no longer blocked behind the conflicting batch.
+    _stop(host, tmp_path, "c", "after conflict", "fine")
+    accepted = [
+        item["content"]
+        for payload in server.saved.values()
+        for item in payload["interaction_data_list"]
+    ]
+    assert "after conflict" in accepted

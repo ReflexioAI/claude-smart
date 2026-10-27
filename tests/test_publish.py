@@ -1327,6 +1327,8 @@ def test_repeated_identical_rejection_parks_batch_and_drains_rest(
     [
         {"error_type": "HTTPError", "http_status": 402, "server_message": "billing"},
         {"error_type": "HTTPError", "http_status": 503, "server_message": "outage"},
+        {"error_type": "HTTPError", "http_status": 422, "server_message": "invalid"},
+        {"error_type": "HTTPError", "http_status": 409, "server_message": "other"},
         {"error_type": "ConnectionError"},
         {"error_type": "ReadTimeout"},
     ],
@@ -1469,3 +1471,27 @@ def test_parking_is_reported_even_when_later_batches_publish(session_dir, monkey
     assert status == "parked"
     assert count == 2
     assert adapter.calls[-1]["interactions"][0]["content"] == "fine"
+
+
+def test_unverified_request_id_conflict_counts_toward_the_slow_breaker(
+    session_dir, monkeypatch
+):
+    """A 409 whose stored-request read failed is not parked at once."""
+    from tests.test_publish_hosts import _ConflictResponse, _HTTPError
+
+    now = _clock(monkeypatch)
+
+    class Client:
+        def _make_request(self, method: str, path: str, **kwargs: Any) -> Any:
+            if path == "/api/get_requests":
+                raise TimeoutError("read outage")
+            raise _HTTPError(_ConflictResponse(kwargs["json"]["request_id"]))
+
+    _poisoned_session("unverified")
+    adapter = Adapter(url="https://example.com")
+    adapter._client = Client()
+    for _ in range(publish.POISON_REJECTION_LIMIT - 1):
+        assert _drain("unverified", adapter) == ("failed", 2)
+        now[0] += publish.POISON_MIN_SPAN_SECONDS
+    assert state.published_record_offset(state.read_all("unverified")) == 0
+    assert _drain("unverified", adapter) == ("parked", 0)
