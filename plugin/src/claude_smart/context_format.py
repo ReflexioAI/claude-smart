@@ -168,9 +168,9 @@ def render_inline_with_registry(
 ) -> tuple[str, list[dict[str, Any]]]:
     """Variant of ``render_inline`` that also returns the citation registry.
 
-    The markdown never exceeds ``INLINE_CONTEXT_BUDGET_CHARS``; the
-    lowest-ranked items are dropped whole until it fits, and the registry
-    lists only the items kept.
+    The markdown never exceeds ``INLINE_CONTEXT_BUDGET_CHARS``; items that
+    do not fit are skipped whole, lower-ranked ones are still tried, and
+    the registry lists only the items kept.
 
     Args:
         project_id (str): Reserved for future use; currently unused.
@@ -227,28 +227,36 @@ def _fit_inline_budget(
     profiles: list[_Item],
     assemble: Callable[[list[_Item], list[_Item]], str],
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Render the most items whose whole output fits the inline budget.
+    """Render every item, in rank order, that still fits the inline budget.
 
-    Items are admitted by rank, alternating sections (skill 1, preference 1,
-    skill 2, ...), and the lowest-ranked are dropped first. Whole items are
-    dropped, never cut, so every ``[cs:…]`` bullet shown is complete and the
-    registry lists exactly the items shown. The output is measured after
-    assembly, so headers and the citation footer count against the budget.
+    Items are tried by rank, alternating sections (skill 1, preference 1,
+    skill 2, ...). Each is kept when the whole output, with it added, stays
+    within the budget; otherwise it is skipped and lower-ranked items are
+    still tried, so one oversized item cannot empty the injection. Items
+    are skipped whole, never cut, so every ``[cs:…]`` bullet shown is
+    complete and the registry lists exactly the items shown. The output is
+    measured after assembly, so headers and the citation footer count
+    against the budget.
 
     Returns:
         tuple[str, list[dict[str, Any]]]: ``(markdown, registry_entries)``,
             or ``("", [])`` when there are no items or none fits; the footer
             is never emitted on its own.
     """
-    order = _interleave_by_rank(len(playbooks), len(profiles))
-    for keep in range(len(order), 0, -1):
-        playbook_count = order[:keep].count("playbook")
-        kept_playbooks = playbooks[:playbook_count]
-        kept_profiles = profiles[: keep - playbook_count]
-        markdown = assemble(kept_playbooks, kept_profiles)
-        if len(markdown) <= INLINE_CONTEXT_BUDGET_CHARS:
-            return markdown, [entry for _, entry in kept_playbooks + kept_profiles]
-    return "", []
+    candidates = {"playbook": iter(playbooks), "profile": iter(profiles)}
+    kept: dict[str, list[_Item]] = {"playbook": [], "profile": []}
+    markdown = ""
+    for kind in _interleave_by_rank(len(playbooks), len(profiles)):
+        item = next(candidates[kind])
+        kept[kind].append(item)
+        trial = assemble(kept["playbook"], kept["profile"])
+        if len(trial) <= INLINE_CONTEXT_BUDGET_CHARS:
+            markdown = trial
+        else:
+            kept[kind].pop()
+    if not markdown:
+        return "", []
+    return markdown, [entry for _, entry in kept["playbook"] + kept["profile"]]
 
 
 def _interleave_by_rank(playbook_count: int, profile_count: int) -> list[str]:

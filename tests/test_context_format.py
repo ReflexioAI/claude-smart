@@ -593,20 +593,63 @@ def test_render_inline_registry_matches_shown_ids_after_trimming() -> None:
     assert all(md.count(f"[cs:{cite_id}] ") == 1 for cite_id in shown_ids)
 
 
-@pytest.mark.parametrize(
+_RENDERERS = pytest.mark.parametrize(
     "renderer",
     [
         context_format.render_inline_with_registry,
         context_format.render_inline_compact_with_registry,
     ],
 )
+
+
+@_RENDERERS
+def test_render_inline_skips_oversized_top_item_and_keeps_lower_ranked(
+    renderer,
+) -> None:
+    """One oversized item must not empty the injection."""
+    md, registry = renderer(
+        project_id="demo",
+        user_playbooks=[
+            {"user_playbook_id": 1, "content": "huge " * 2_000},
+            {"user_playbook_id": 2, "content": "small rule"},
+        ],
+        agent_playbooks=[],
+        profiles=[{"profile_id": "pref", "content": "small preference"}],
+    )
+    assert [entry["id"] for entry in registry] == ["s2-2", "p1-pref"]
+    assert "huge" not in md
+    assert "small rule" in md
+    assert "small preference" in md
+    assert len(md) <= context_format.INLINE_CONTEXT_BUDGET_CHARS
+
+
+@_RENDERERS
+def test_render_inline_skips_mid_rank_item_and_keeps_lower_ranked(renderer) -> None:
+    """A mid-rank item that no longer fits is skipped; later ones still fit."""
+    md, registry = renderer(
+        project_id="demo",
+        user_playbooks=[
+            {"user_playbook_id": 1, "content": "first rule"},
+            {"user_playbook_id": 2, "content": "second rule"},
+        ],
+        agent_playbooks=[],
+        profiles=[{"profile_id": "pref", "content": "wide " * 1_500}],
+    )
+    assert [entry["id"] for entry in registry] == ["s1-1", "s2-2"]
+    assert "wide" not in md
+    assert "first rule" in md
+    assert "second rule" in md
+    assert len(md) <= context_format.INLINE_CONTEXT_BUDGET_CHARS
+
+
+@_RENDERERS
 def test_render_inline_never_emits_footer_alone(renderer) -> None:
-    """When even the top item exceeds the budget, nothing is injected."""
+    """When no item fits, nothing is injected."""
     md, registry = renderer(
         project_id="demo",
         user_playbooks=[{"user_playbook_id": 1, "content": "x " * 6_000}],
         agent_playbooks=[],
-        profiles=[],
+        profiles=[{"profile_id": "pref", "content": "y " * 6_000}],
     )
     assert (md, registry) == ("", [])
 
