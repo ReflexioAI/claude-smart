@@ -558,7 +558,10 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     cache = (
         home / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / version
     )
-    assert (cache / ".venv" / "bin" / "python").is_file()
+    assert (cache / "hooks" / "codex-hooks.json").is_file()
+    assert not (cache / ".venv").exists()
+    runtime = home / ".codex" / "claude-smart" / "runtime" / "plugin"
+    assert (runtime / ".venv" / "bin" / "python").is_file()
     assert (
         home
         / ".claude-smart"

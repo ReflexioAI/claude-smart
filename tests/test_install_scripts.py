@@ -3073,8 +3073,10 @@ def test_node_claude_uninstall_never_leaves_plugin_root_dangling(
         assert not link.is_symlink() and not link.exists()
 
 
+@pytest.mark.parametrize("external_runtime", [False, True])
 def test_node_claude_uninstall_repoints_plugin_root_at_newest_codex(
     tmp_path: Path,
+    external_runtime: bool,
 ) -> None:
     # 0.2.10 is newer than 0.2.9; a lexical sort would pick 0.2.9.
     node = shutil.which("node")
@@ -3090,6 +3092,12 @@ def test_node_claude_uninstall_repoints_plugin_root_at_newest_codex(
         _write_executable(
             root / "scripts" / "backend-service.sh", "#!/bin/sh\nexit 0\n"
         )
+    runtime = tmp_path / ".codex" / "claude-smart" / "runtime" / "plugin"
+    if external_runtime:
+        (runtime / "scripts").mkdir(parents=True)
+        _write_executable(runtime / "scripts/backend-service.sh", "#!/bin/sh\nexit 0\n")
+    config = tmp_path / ".claude-smart" / ".env"
+    config.write_text("CLAUDE_SMART_HOST=claude-code\n")
     link = tmp_path / ".reflexio" / "plugin-root"
     link.parent.mkdir()
     link.symlink_to(claude_root, target_is_directory=True)
@@ -3108,7 +3116,9 @@ def test_node_claude_uninstall_repoints_plugin_root_at_newest_codex(
     )
 
     assert result.returncode == 0, result.stderr
-    assert link.resolve() == (codex_cache / "0.2.10").resolve()
+    expected = runtime if external_runtime else codex_cache / "0.2.10"
+    assert link.resolve() == expected.resolve()
+    assert 'CLAUDE_SMART_HOST="codex"' in config.read_text()
 
 
 def test_node_install_survives_an_invalid_service_port(tmp_path: Path) -> None:

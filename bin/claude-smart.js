@@ -1010,7 +1010,7 @@ function hostForPluginRoot(root) {
   const target = real(root);
   const under = (dir) => target === real(dir) || target.startsWith(`${real(dir)}${sep}`);
   if (under(OPENCODE_LOCAL_PACKAGE_DIR)) return HOST_OPENCODE;
-  if (under(CODEX_PLUGIN_CACHE_DIR) || under(CODEX_MARKETPLACE_DIR)) return HOST_CODEX;
+  if (under(CODEX_RUNTIME_PACKAGE_DIR) || under(CODEX_PLUGIN_CACHE_DIR) || under(CODEX_MARKETPLACE_DIR)) return HOST_CODEX;
   return HOST_CLAUDE_CODE;
 }
 
