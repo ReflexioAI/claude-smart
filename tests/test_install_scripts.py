@@ -7402,13 +7402,20 @@ def test_opencode_fresh_tarball_install_uses_local_file_plugin(
 
     assert result.returncode == 0, result.stderr
     assert "claude-smart OpenCode support is installed." in result.stdout
-    config = json.loads((xdg / "opencode" / "opencode.json").read_text())
-    assert len(config["plugin"]) == 1
-    plugin_spec = config["plugin"][0]
-    assert plugin_spec.startswith("file://")
-    assert plugin_spec != "claude-smart"
+    # One load path: the global loader is written; no config entry is created.
+    assert not (xdg / "opencode" / "opencode.json").exists()
+    loader_text = (xdg / "opencode" / "plugins" / "claude-smart.js").read_text()
+    entry = json.loads(
+        loader_text.splitlines()[2]
+        .removeprefix("export { default } from ")
+        .removesuffix(";")
+    )
+    assert entry.startswith("file://")
+    assert entry != "claude-smart"
 
-    local_package = Path(plugin_spec.removeprefix("file://"))
+    local_package = Path(
+        entry.removeprefix("file://").removesuffix("/plugin/opencode/dist/server.mjs")
+    )
     installed_package = prefix / "lib" / "node_modules" / "claude-smart"
     local_script = local_package / "plugin" / "scripts" / "smart-install.sh"
     assert local_script.exists()
@@ -7433,8 +7440,15 @@ def test_opencode_fresh_tarball_uninstall_removes_plugin_and_keeps_data(
     assert install_result.returncode == 0, install_result.stderr
 
     config_path = xdg / "opencode" / "opencode.json"
-    plugin_spec = json.loads(config_path.read_text())["plugin"][0]
-    local_package = Path(plugin_spec.removeprefix("file://"))
+    loader_path = xdg / "opencode" / "plugins" / "claude-smart.js"
+    entry = json.loads(
+        loader_path.read_text().splitlines()[2]
+        .removeprefix("export { default } from ")
+        .removesuffix(";")
+    )
+    local_package = Path(
+        entry.removeprefix("file://").removesuffix("/plugin/opencode/dist/server.mjs")
+    )
     assert local_package.exists()
 
     session_file = home / ".claude-smart" / "sessions" / "keep.jsonl"
@@ -7443,13 +7457,15 @@ def test_opencode_fresh_tarball_uninstall_removes_plugin_and_keeps_data(
     reflexio_data.parent.mkdir(parents=True)
     session_file.write_text("{}\n")
     reflexio_data.write_text("keep\n")
+    # A legacy config still carries entries the uninstall must clean up.
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
         json.dumps(
             {
                 "plugin": [
                     "other-plugin",
                     "claude-smart",
-                    plugin_spec,
+                    local_package.as_uri(),
                 ],
                 "theme": "system",
             }
@@ -7478,6 +7494,9 @@ def test_opencode_fresh_tarball_uninstall_removes_plugin_and_keeps_data(
         "plugin": ["other-plugin"],
         "theme": "system",
     }
+    # The loader must not stay behind: it re-exports the package just removed,
+    # so leaving it would break every later OpenCode start.
+    assert not loader_path.exists()
     assert not local_package.exists()
     assert not (home / ".claude-smart" / "opencode").exists()
     assert session_file.exists()

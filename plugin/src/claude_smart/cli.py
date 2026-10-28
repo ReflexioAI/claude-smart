@@ -1266,6 +1266,11 @@ def _opencode_plugin_spec(entry: object) -> str | None:
         return entry
     if isinstance(entry, list) and entry and isinstance(entry[0], str):
         return entry[0]
+    # OpenCode also accepts the object form, { package, options }.
+    if isinstance(entry, dict):
+        package = entry.get("package")
+        if isinstance(package, str):
+            return package
     return None
 
 
@@ -1352,6 +1357,114 @@ def _patch_opencode_plugin_config(
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(data, indent=2) + "\n")
     return True, config_path
+
+
+# Plugins-directory loader, mirroring the Node installer byte-for-byte: each
+# side must recognize (and refresh or remove) what the other wrote.
+_OPENCODE_V2_PLUGIN_MARKER = "claude-smart OpenCode V2 loader"
+_OPENCODE_V2_LOADER_COMMENT = (
+    "// OpenCode V2 auto-loads this directory. Reinstall claude-smart to refresh."
+)
+
+
+def _opencode_v2_plugin_file(
+    *, global_config: bool = False, cwd: Path | None = None
+) -> Path:
+    if global_config:
+        return _opencode_global_config_dir() / "plugins" / "claude-smart.js"
+    return (cwd or Path.cwd()) / ".opencode" / "plugins" / "claude-smart.js"
+
+
+def _opencode_v2_plugin_body(
+    package_root: Path = _OPENCODE_LOCAL_PACKAGE_DIR,
+) -> str:
+    root = package_root if package_root.is_absolute() else package_root.resolve(strict=False)
+    entry = (root / "plugin" / "opencode" / "dist" / "server.mjs").as_uri()
+    return "\n".join(
+        [
+            f"// {_OPENCODE_V2_PLUGIN_MARKER}",
+            _OPENCODE_V2_LOADER_COMMENT,
+            f"export {{ default }} from {json.dumps(entry)};",
+            "",
+        ]
+    )
+
+
+def _is_generated_opencode_v2_loader(text: str) -> bool:
+    lines = text.split("\n")
+    if len(lines) != 4 or lines[3] != "":
+        return False
+    if lines[0] != f"// {_OPENCODE_V2_PLUGIN_MARKER}":
+        return False
+    if lines[1] != _OPENCODE_V2_LOADER_COMMENT:
+        return False
+    return re.match(r'^export \{ default \} from "file://.+";$', lines[2]) is not None
+
+
+def _write_opencode_v2_plugin(
+    package_root: Path, *, global_config: bool = False, cwd: Path | None = None
+) -> tuple[Path, str]:
+    target = _opencode_v2_plugin_file(global_config=global_config, cwd=cwd)
+    body = _opencode_v2_plugin_body(package_root)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing: str | None = target.read_text()
+    except OSError:
+        existing = None
+    if (
+        existing is not None
+        and existing != body
+        and not _is_generated_opencode_v2_loader(existing)
+    ):
+        return target, "conflict"
+    if existing != body:
+        target.write_text(body)
+    return target, "unchanged" if existing == body else "wrote"
+
+
+def _remove_opencode_v2_plugin(
+    *, global_config: bool = False, cwd: Path | None = None
+) -> bool:
+    target = _opencode_v2_plugin_file(global_config=global_config, cwd=cwd)
+    try:
+        text = target.read_text()
+    except OSError:
+        return False
+    if not _is_generated_opencode_v2_loader(text):
+        return False
+    target.unlink()
+    return True
+
+
+def _config_lists_claude_smart(config_path: Path) -> bool:
+    try:
+        data = _read_jsonc_object(config_path)
+    except ValueError:
+        return False
+    for key in ("plugin", "plugins"):
+        items = data.get(key)
+        if isinstance(items, list) and any(
+            _is_opencode_claude_smart_spec(_opencode_plugin_spec(item))
+            for item in items
+        ):
+            return True
+    return False
+
+
+def _scope_has_claude_smart(
+    *, global_config: bool = False, cwd: Path | None = None
+) -> bool:
+    if _opencode_v2_plugin_file(global_config=global_config, cwd=cwd).exists():
+        return True
+    # A reference is read-only state, not a choice of one file: check every
+    # candidate config that exists, the way the Node installer does.
+    base = cwd or Path.cwd()
+    roots = [_opencode_global_config_dir()] if global_config else [base, base / ".opencode"]
+    return any(
+        _config_lists_claude_smart(root / name)
+        for root in roots
+        for name in _OPENCODE_CONFIG_NAMES
+    )
 
 
 def _has_extraction_provider() -> bool:
@@ -1575,22 +1688,40 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
         return 1
     package_root = Path(package_root_text)
     plugin_root = package_root / "plugin"
-    plugin_spec = _opencode_local_plugin_spec(package_root)
-    config_path = _opencode_config_path(
-        global_config=bool(getattr(args, "global_config", False))
-    )
+    global_config = bool(getattr(args, "global_config", False))
+    config_path = _opencode_config_path(global_config=global_config)
     try:
-        changed, config_path = _patch_opencode_plugin_config(
-            config_path,
-            install=True,
-            plugin_spec=plugin_spec,
-        )
+        # One load path per scope, matching the Node installer: both OpenCode
+        # lines load the plugins-directory loader (1.x auto-loads
+        # {plugin,plugins}/*.{ts,js} from its config directories; V2 rejects
+        # the old file:// config-entry shape). A config entry beside the
+        # loader is a second load spec — 1.x runs server() twice and V2 lists
+        # the duplicate as a failed "Duplicate plugin ID" — so install removes
+        # any legacy entry instead of writing one.
+        changed, config_path = _patch_opencode_plugin_config(config_path, install=False)
     except ValueError as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 1
-    action = "Updated" if changed else "OpenCode config already includes"
+    loader_path, loader_status = _write_opencode_v2_plugin(
+        package_root, global_config=global_config
+    )
+    if changed:
+        sys.stdout.write(
+            f"Removed the legacy claude-smart plugin entry from {config_path}; "
+            "the loader replaces it.\n"
+        )
+    if loader_status == "conflict":
+        sys.stdout.write(
+            f"Left an existing OpenCode plugin in place at {loader_path}. It is "
+            "not a claude-smart loader; move it aside and reinstall to write "
+            "the loader.\n"
+        )
+    else:
+        sys.stdout.write(
+            f"Wrote the OpenCode loader at {loader_path}; OpenCode 1.x and V2 "
+            "both load the plugin from there.\n"
+        )
     sys.stdout.write(
-        f"{action} `{plugin_spec}` in {config_path}.\n"
         f"Prepared claude-smart runtime at {plugin_root}.\n"
         "Restart OpenCode in your project so it loads the plugin.\n"
     )
@@ -1937,20 +2068,30 @@ def cmd_uninstall_opencode(args: argparse.Namespace) -> int:
     ):
         if script.exists():
             _run_service(script, "stop")
-    config_path = _opencode_config_path(
-        global_config=bool(getattr(args, "global_config", False))
-    )
+    global_config = bool(getattr(args, "global_config", False))
+    config_path = _opencode_config_path(global_config=global_config)
     try:
         changed, config_path = _patch_opencode_plugin_config(config_path, install=False)
     except ValueError as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 1
-    shutil.rmtree(_OPENCODE_LOCAL_PACKAGE_DIR, ignore_errors=True)
-    _repair_plugin_root(_HOST_OPENCODE)
-    try:
-        _OPENCODE_LOCAL_PACKAGE_DIR.parent.rmdir()
-    except OSError:
-        pass
+    # The selected scope only: a --global install is a separate installation
+    # and its loader must survive a project-scoped uninstall. The loader must
+    # not stay behind either — it re-exports the shared package, so leaving it
+    # would break every later OpenCode start that imports the missing target.
+    _remove_opencode_v2_plugin(global_config=global_config)
+    # Both scopes share one package copy and every loader re-exports its
+    # server.mjs, so keep it while the other scope still references it — the
+    # same check the Node installer runs.
+    # shortcut: loaders in other projects are not enumerable, so a --global
+    # uninstall can still strand them; upgrade when installs are tracked machine-wide.
+    if not _scope_has_claude_smart(global_config=not global_config):
+        shutil.rmtree(_OPENCODE_LOCAL_PACKAGE_DIR, ignore_errors=True)
+        _repair_plugin_root(_HOST_OPENCODE)
+        try:
+            _OPENCODE_LOCAL_PACKAGE_DIR.parent.rmdir()
+        except OSError:
+            pass
     if changed:
         sys.stdout.write(
             f"Removed claude-smart OpenCode plugin entries from {config_path}.\n"

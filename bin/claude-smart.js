@@ -1816,10 +1816,11 @@ async function runServiceWithProgress(pluginRoot, scriptName, subcommand, envOve
 
 function installInventory(options = {}) {
   const args = options.global ? ["--global"] : options.local ? ["--local"] : [];
+  // Loader file or a config reference: installs since the plugins-directory
+  // loader write no config entry, so the config alone no longer proves anything.
   let openCodeInstalled = false;
   try {
-    const data = readJsoncObject(opencodeConfigPath(args));
-    openCodeInstalled = ["plugin", "plugins"].some((key) => Array.isArray(data[key]) && data[key].some((entry) => isOpenCodeClaudeSmartSpec(opencodePluginSpec(entry))));
+    openCodeInstalled = scopeHasClaudeSmart(args);
   } catch { /* A missing config is normal. Installation reports malformed configs. */ }
   return [
     { host: HOST_CLAUDE_CODE, available: hasClaudeCli(), installed: existsSync(join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin")) || hostRegistrationExists(HOST_CLAUDE_CODE) },
@@ -2781,10 +2782,9 @@ function printHelp() {
       "",
       "OpenCode install:",
       `  1. Copies this package to ${OPENCODE_LOCAL_PACKAGE_DIR}`,
-      "  2. Adds that local file:// package to OpenCode's plugin list in opencode.json",
-      "  3. Writes an OpenCode V2 loader into the selected scope's plugins directory",
-      "  4. Prepares local services now from the copied plugin runtime",
-      "  5. Restart OpenCode.",
+      "  2. Writes a loader into the selected scope's OpenCode plugins directory; both OpenCode lines load the plugin from there, and any legacy opencode.json entry is removed",
+      "  3. Prepares local services now from the copied plugin runtime",
+      "  4. Restart OpenCode.",
       "",
       "Update:",
       "  npx claude-smart update                        Guided update for selected/saved integrations",
@@ -3600,7 +3600,6 @@ async function runInstallOpenCode(args) {
     process.exit(1);
   }
   const pluginRoot = join(packageRoot, "plugin");
-  const pluginSpec = opencodeLocalPluginSpec(packageRoot);
   let result;
   try {
     await bootstrapPluginRuntime(pluginRoot, { readOnly, patchCodexHooks: false });
@@ -3611,10 +3610,14 @@ async function runInstallOpenCode(args) {
     process.exit(1);
   }
   try {
-    result = patchOpenCodePluginConfig(opencodeConfigPath(args), {
-      install: true,
-      pluginSpec,
-    });
+    // One load path per scope: OpenCode 1.x auto-loads {plugin,plugins}/*.{ts,js}
+    // from its config directories and V2 loads the plugins directory, so the
+    // loader written below is the single entry for both lines. A config entry
+    // beside it is a second load spec — 1.x runs server() twice (its
+    // deduplicatePluginOrigins only drops exact spec matches) and V2 lists the
+    // duplicate as a failed "Duplicate plugin ID". Install therefore removes
+    // any entry left by earlier versions instead of writing one.
+    result = patchOpenCodePluginConfig(opencodeConfigPath(args), { install: false });
   } catch (err) {
     process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
     stopClaudeSmartServices(pluginRoot);
@@ -3632,11 +3635,13 @@ async function runInstallOpenCode(args) {
   process.stdout.write(
     [
       "",
-      `${result.changed ? "Updated" : "OpenCode config already includes"} "${pluginSpec}" in ${result.configPath}.`,
+      ...(result.changed
+        ? [`Removed the legacy claude-smart plugin entry from ${result.configPath}; the loader replaces it.`]
+        : []),
       `Prepared claude-smart OpenCode package at ${packageRoot}.`,
       v2PluginFile.status === "conflict"
-        ? `Left an existing OpenCode plugin in place at ${v2PluginFile.path}. It is not a claude-smart loader; move it aside and reinstall to write the V2 loader.`
-        : `Wrote the OpenCode V2 loader at ${v2PluginFile.path}.`,
+        ? `Left an existing OpenCode plugin in place at ${v2PluginFile.path}. It is not a claude-smart loader; move it aside and reinstall to write the loader.`
+        : `Wrote the OpenCode loader at ${v2PluginFile.path}; OpenCode 1.x and V2 both load the plugin from there.`,
       "claude-smart OpenCode support is installed.",
       "Restart OpenCode in your project so it loads the plugin.",
       "",
