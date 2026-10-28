@@ -251,7 +251,7 @@ the account runtime along with the cache.
 
 **Runtime copy.** The installer copies the active package to `~/.claude-smart/opencode/claude-smart`, prepares that runtime immediately, and writes a `file://` plugin entry so OpenCode reloads the same prepared package after restart. It prepares claude-smart's runtime dependencies but expects the OpenCode CLI to already be installed; it resolves and records the OpenCode executable in `~/.claude-smart/.env` for later backend restarts. Set `CLAUDE_SMART_OPENCODE_PATH` before install if `opencode` is not on `PATH`.
 
-**Model selection.** OpenCode support uses OpenCode's plugin loader to inject relevant learned context before each model request. Learning extraction runs `opencode run` with `OPENCODE_PURE=1` from an isolated temp project, so it uses OpenCode's default model unless you set `CLAUDE_SMART_OPENCODE_MODEL=provider/model`. Set that env var if your normal project config pins a different provider or model.
+**Model selection.** OpenCode support uses OpenCode's plugin loader to inject relevant learned context before each model request. Learning extraction runs `opencode run` with `OPENCODE_PURE=1` (honoured by OpenCode 1.x and 2.1.4+, so 2.0.0–2.1.3 is unsupported) from an isolated temp project, so it uses OpenCode's default model unless you set `CLAUDE_SMART_OPENCODE_MODEL=provider/model`. Set that env var if your normal project config pins a different provider or model.
 
 **Windows.** On native Windows, install Git for Windows and make `bash.exe` available on `PATH` before starting OpenCode, or run OpenCode from WSL. The installer also checks the Windows local embedding runtime and writes actionable setup failures to `~/.claude-smart/install-failed`.
 

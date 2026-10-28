@@ -118,7 +118,7 @@ function runOpenCode({ prompt, model, workDir }) {
 
   // No `--pure` / `--dir`: `opencode run` rejects both (it did on 2.0.23 and
   // 2.0.24). OPENCODE_PURE is the env form of 1.x's --pure (skip external
-  // plugins; documented from 2.1.4, ignored by earlier 2.x) — keep the
+  // plugins; honoured from 2.1.4, which is why engines excludes 2.0.0–2.1.3) — keep the
   // isolation without the rejected flag. Project isolation comes from
   // `cwd: workDir` below, which carries the temp `.opencode/opencode.json`
   // that defines AGENT_NAME.
