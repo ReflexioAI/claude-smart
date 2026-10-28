@@ -1711,16 +1711,18 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
             "the loader replaces it.\n"
         )
     if loader_status == "conflict":
-        sys.stdout.write(
-            f"Left an existing OpenCode plugin in place at {loader_path}. It is "
-            "not a claude-smart loader; move it aside and reinstall to write "
-            "the loader.\n"
+        # The loader is the only load path, so on a conflict nothing loads
+        # claude-smart: fail loudly instead of reporting an installed host.
+        sys.stderr.write(
+            f"error: left an existing OpenCode plugin in place at {loader_path}. "
+            "It is not a claude-smart loader; move it aside and reinstall to "
+            "write the loader. claude-smart OpenCode support is not installed.\n"
         )
-    else:
-        sys.stdout.write(
-            f"Wrote the OpenCode loader at {loader_path}; OpenCode 1.x and V2 "
-            "both load the plugin from there.\n"
-        )
+        return 1
+    sys.stdout.write(
+        f"Wrote the OpenCode loader at {loader_path}; OpenCode 1.x and V2 "
+        "both load the plugin from there.\n"
+    )
     sys.stdout.write(
         f"Prepared claude-smart runtime at {plugin_root}.\n"
         "Restart OpenCode in your project so it loads the plugin.\n"

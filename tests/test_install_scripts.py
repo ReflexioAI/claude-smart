@@ -6910,6 +6910,7 @@ def _npm_install_global_tarball(
 
 def _install_opencode_tarball_fixture(
     tmp_path: Path,
+    foreign_global_loader: str | None = None,
 ) -> tuple[Path, Path, Path, Path, dict[str, str], subprocess.CompletedProcess[str]]:
     if os.name == "nt":
         pytest.skip("tarball smoke uses POSIX npm bin paths")
@@ -6951,6 +6952,11 @@ def _install_opencode_tarball_fixture(
         }
     )
     _npm_install_global_tarball(tarball, prefix=prefix, env=env)
+
+    if foreign_global_loader is not None:
+        loader = xdg / "opencode" / "plugins" / "claude-smart.js"
+        loader.parent.mkdir(parents=True, exist_ok=True)
+        loader.write_text(foreign_global_loader)
 
     result = subprocess.run(
         [
@@ -7429,6 +7435,23 @@ def test_opencode_fresh_tarball_install_uses_local_file_plugin(
     )
     assert not (home / ".claude-smart" / "install-failed").exists()
     assert "uv sync --locked --python 3.12 --quiet" in (home / "uv.log").read_text()
+
+
+def test_opencode_tarball_install_conflict_fails_loudly(
+    tmp_path: Path,
+) -> None:
+    # A hand-written plugin squatting the loader path is a conflict: install
+    # must fail and must not claim the host is installed.
+    foreign = "// hand-written plugin, not a claude-smart loader\nexport default {};\n"
+    _home, _prefix, _project, xdg, _env, result = _install_opencode_tarball_fixture(
+        tmp_path, foreign_global_loader=foreign
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "claude-smart OpenCode support is installed." not in result.stdout
+    assert "not a claude-smart loader" in result.stderr
+    # The squatter is left untouched, not clobbered.
+    assert (xdg / "opencode" / "plugins" / "claude-smart.js").read_text() == foreign
 
 
 def test_opencode_fresh_tarball_uninstall_removes_plugin_and_keeps_data(

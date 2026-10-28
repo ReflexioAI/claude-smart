@@ -771,6 +771,54 @@ def test_opencode_install_from_python_wheel_path_points_to_npm(
     assert "npx claude-smart install --host opencode" in capsys.readouterr().err
 
 
+def test_opencode_python_install_conflict_fails_loudly(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    package_root = tmp_path / "state" / "opencode" / "claude-smart"
+    (package_root / "plugin").mkdir(parents=True)
+    loader_path = tmp_path / "project" / ".opencode" / "plugins" / "claude-smart.js"
+    config_path = tmp_path / "project" / ".opencode" / "opencode.json"
+    monkeypatch.setattr(cli, "_opencode_install_supported_from_this_package", lambda: True)
+    monkeypatch.setattr(cli, "_opencode_prerequisite_error", lambda: None)
+    monkeypatch.setattr(cli, "_configure_reflexio_setup", lambda host: False)
+    monkeypatch.setattr(cli, "_persist_opencode_path", lambda: None)
+    monkeypatch.setattr(cli, "_has_extraction_provider", lambda: True)
+    monkeypatch.setattr(
+        cli, "_bootstrap_opencode_install", lambda read_only: (True, str(package_root))
+    )
+    monkeypatch.setattr(cli, "_opencode_config_path", lambda global_config: str(config_path))
+    monkeypatch.setattr(
+        cli, "_patch_opencode_plugin_config", lambda path, install: (False, path)
+    )
+    monkeypatch.setattr(
+        cli,
+        "_write_opencode_v2_plugin",
+        lambda package_root, global_config: (loader_path, "conflict"),
+    )
+
+    rc = cli.cmd_install_opencode(argparse.Namespace(global_config=False))
+
+    # The loader is the only load path: a conflict must fail, not report an
+    # installed host.
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "not a claude-smart loader" in captured.err
+    assert "Wrote the OpenCode loader" not in captured.out
+    assert "Restart OpenCode" not in captured.out
+
+    # The same flow with a written loader still succeeds.
+    monkeypatch.setattr(
+        cli,
+        "_write_opencode_v2_plugin",
+        lambda package_root, global_config: (loader_path, "written"),
+    )
+    rc = cli.cmd_install_opencode(argparse.Namespace(global_config=False))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Wrote the OpenCode loader" in out
+    assert "Restart OpenCode" in out
+
+
 def test_opencode_bootstrap_guard_rejects_unsupported_package(
     monkeypatch, tmp_path
 ) -> None:

@@ -3628,6 +3628,20 @@ async function runInstallOpenCode(args) {
     process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
   }
   const v2PluginFile = writeOpenCodeV2Plugin(args, packageRoot);
+  if (v2PluginFile.status === "conflict") {
+    // The loader is the only load path, so on a conflict nothing loads
+    // claude-smart: fail loudly instead of reporting an installed host.
+    if (result.backupPath) {
+      process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
+    }
+    process.stderr.write(
+      `error: left an existing OpenCode plugin in place at ${v2PluginFile.path}. ` +
+        "It is not a claude-smart loader; move it aside and reinstall to write " +
+        "the loader. claude-smart OpenCode support is not installed.\n",
+    );
+    stopClaudeSmartServices(pluginRoot);
+    process.exit(1);
+  }
   await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
@@ -3639,9 +3653,7 @@ async function runInstallOpenCode(args) {
         ? [`Removed the legacy claude-smart plugin entry from ${result.configPath}; the loader replaces it.`]
         : []),
       `Prepared claude-smart OpenCode package at ${packageRoot}.`,
-      v2PluginFile.status === "conflict"
-        ? `Left an existing OpenCode plugin in place at ${v2PluginFile.path}. It is not a claude-smart loader; move it aside and reinstall to write the loader.`
-        : `Wrote the OpenCode loader at ${v2PluginFile.path}; OpenCode 1.x and V2 both load the plugin from there.`,
+      `Wrote the OpenCode loader at ${v2PluginFile.path}; OpenCode 1.x and V2 both load the plugin from there.`,
       "claude-smart OpenCode support is installed.",
       "Restart OpenCode in your project so it loads the plugin.",
       "",
