@@ -3623,7 +3623,6 @@ async function runInstallOpenCode(args) {
     stopClaudeSmartServices(pluginRoot);
     process.exit(1);
   }
-  commitLocalPluginPackage(packageRoot);
   if (readOnly) {
     process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
   }
@@ -3643,6 +3642,8 @@ async function runInstallOpenCode(args) {
     // backend and dashboard (e.g. a global install's) running.
     process.exit(1);
   }
+  // Committed only after the loader check, so a conflict exit rolls the package back.
+  commitLocalPluginPackage(packageRoot);
   await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);

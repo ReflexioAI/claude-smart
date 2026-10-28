@@ -1318,6 +1318,42 @@ def test_node_opencode_install_from_npx_root_writes_scoped_loader_only(
     assert not (Path(env["XDG_CONFIG_HOME"]) / "opencode" / "plugins" / "claude-smart.js").exists()
 
 
+def test_node_opencode_loader_conflict_restores_the_previous_package(
+    tmp_path: Path,
+) -> None:
+    node = shutil_which_node()
+    if node is None:
+        pytest.skip("node is not installed")
+    assert node is not None
+    package_root = tmp_path / "_npx" / "abc" / "node_modules" / "claude-smart"
+    _write_minimal_node_package_root(package_root)
+    project = tmp_path / "project"
+    loader = project / ".opencode" / "plugins" / "claude-smart.js"
+    loader.parent.mkdir(parents=True)
+    loader.write_text("// hand-written\n")
+    env = _isolated_installer_env(tmp_path)
+    _seed_private_node_and_uv(env)
+    previous = Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
+    (previous / "plugin").mkdir(parents=True)
+    (previous / "plugin" / "owner").write_text("older\n")
+
+    result = subprocess.run(
+        [node, str(package_root / "bin" / "claude-smart.js"), "install", "--host", "opencode"],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert "not a claude-smart loader" in result.stderr
+    # The conflict exit runs before the commit, so the running runtime is restored.
+    assert (previous / "plugin" / "owner").read_text() == "older\n"
+    assert sorted(p.name for p in previous.parent.iterdir()) == ["claude-smart"]
+    assert loader.read_text() == "// hand-written\n"
+
+
 def test_node_opencode_install_requires_opencode_cli_even_with_api_key(
     tmp_path: Path,
 ) -> None:
