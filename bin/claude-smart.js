@@ -793,6 +793,19 @@ function isOpenCodeLocalPackagePath(packagePath) {
   );
 }
 
+function configListsClaudeSmart(configPath) {
+  try {
+    const data = readJsoncObject(configPath);
+    return ["plugin", "plugins"].some(
+      (key) =>
+        Array.isArray(data[key]) &&
+        data[key].some((entry) => isOpenCodeClaudeSmartSpec(opencodePluginSpec(entry))),
+    );
+  } catch {
+    return false;
+  }
+}
+
 function isOpenCodeClaudeSmartSpec(spec) {
   if (!spec) return false;
   if (spec === OPENCODE_BARE_PLUGIN_SPEC || spec.startsWith(`${OPENCODE_BARE_PLUGIN_SPEC}@`)) {
@@ -3659,12 +3672,21 @@ async function runUninstallOpenCode(args) {
   // The selected scope only: a `--global` install is a separate installation and
   // its loader must survive a project-scoped uninstall.
   removeOpenCodeV2Plugin(args);
-  rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
-  repairPluginRoot(HOST_OPENCODE);
-  try {
-    rmdirSync(dirname(OPENCODE_LOCAL_PACKAGE_DIR));
-  } catch {
-    // Keep the parent when it still contains future OpenCode state.
+  // Both scopes share one package copy and every loader re-exports its
+  // server.mjs, so keep it while the global scope still references it. The
+  // project scope is not enumerable from here.
+  const globalScopeInstalled =
+    !parseGlobalFlag(args) &&
+    (existsSync(opencodeV2PluginFile(["--global"])) ||
+      configListsClaudeSmart(join(opencodeGlobalConfigDir(), "opencode.json")));
+  if (!globalScopeInstalled) {
+    rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
+    repairPluginRoot(HOST_OPENCODE);
+    try {
+      rmdirSync(dirname(OPENCODE_LOCAL_PACKAGE_DIR));
+    } catch {
+      // Keep the parent when it still contains future OpenCode state.
+    }
   }
   process.stdout.write(
     [
