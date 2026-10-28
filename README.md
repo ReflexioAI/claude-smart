@@ -148,7 +148,7 @@ to resume learning. The interactive guide offers both modes for either backend.
 
 Run `/reload-plugins` in your existing Claude Code session, or use the update in your next session.
 Start a new Codex session to load the update; you can finish your existing session first. If hook trust needs review, use `/hooks`.
-Then restart OpenCode in your project so it loads the plugin from `opencode.json`. Add `--global` to install for all OpenCode projects on this machine instead.
+Then restart OpenCode in your project so it loads the plugin. OpenCode V1 reads the `file://` entry in `opencode.json`; OpenCode V2 rejects that shape, so the installer also writes a loader into the same scope's `plugins` directory — the project's `.opencode/plugins/` for a project install. `--global` installs for all OpenCode projects on this machine instead, writing both the config entry and the loader under your user config directory.
 
 ### Check an update
 

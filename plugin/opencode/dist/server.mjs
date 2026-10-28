@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { AssistantBuffer } from "./assistant-buffer.js";
 import { sessionIDFrom } from "./internal.js";
 import { chatMessagePayload, eventPayload, stopPayload, toolAfterPayload } from "./payload.js";
+import { createSetup } from "./v2.js";
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 function homeDir() {
     return process.env.HOME || homedir();
@@ -287,4 +288,6 @@ async function server(input) {
 export default {
     id: "claude-smart",
     server,
+    // V1 calls server(). OpenCode V2 reads setup() and ignores server().
+    setup: createSetup(server),
 };
