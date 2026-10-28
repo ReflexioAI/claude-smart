@@ -477,7 +477,23 @@ def test_explicit_saved_config_upgrade_preserves_original_and_database(
     assert result.returncode == 0, result.stdout + result.stderr
     assert original.read_bytes() == before
     canonical = json.loads(converted.read_text())
-    assert canonical.pop("_reflexio_config_file")["version"] == 2
+    current_format = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-c",
+            "from reflexio.config_file import FILE_FORMAT_VERSION; print(FILE_FORMAT_VERSION)",
+        ],
+        env=_env(tmp_path),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    ).stdout.strip()
+    # The upgrade writes Reflexio's current file format, which Reflexio bumps
+    # when a saved field changes, so compare against the bundled version.
+    assert canonical.pop("_reflexio_config_file")["version"] == int(current_format)
     assert canonical["storage_config"] == {"type": "sqlite", "db_path": None}
     assert {
         key: value for key, value in canonical.items() if key != "storage_config"
