@@ -6911,6 +6911,7 @@ def _npm_install_global_tarball(
 def _install_opencode_tarball_fixture(
     tmp_path: Path,
     foreign_global_loader: str | None = None,
+    log_service_calls: bool = False,
 ) -> tuple[Path, Path, Path, Path, dict[str, str], subprocess.CompletedProcess[str]]:
     if os.name == "nt":
         pytest.skip("tarball smoke uses POSIX npm bin paths")
@@ -6935,6 +6936,18 @@ def _install_opencode_tarball_fixture(
         '#!/bin/sh\nprintf "npm %s\\n" "$*" >> "$HOME/npm.log"\nexit 0\n',
     )
     _write_bootstrap_uv(uv_bin / "uv", mode="fresh")
+    if log_service_calls:
+        # Record service-script calls without running them, so the test never
+        # touches a real backend or dashboard on the host.
+        _write_executable(
+            fake_bin / "bash",
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            '  *-service.sh) printf "%s %s\\n" "$(basename "$1")" "$2" '
+            '>> "$HOME/service-calls.log"; exit 0 ;;\n'
+            "esac\n"
+            'exec /bin/bash "$@"\n',
+        )
 
     env = os.environ.copy()
     test_path = (
@@ -7452,6 +7465,23 @@ def test_opencode_tarball_install_conflict_fails_loudly(
     assert "not a claude-smart loader" in result.stderr
     # The squatter is left untouched, not clobbered.
     assert (xdg / "opencode" / "plugins" / "claude-smart.js").read_text() == foreign
+
+
+def test_opencode_tarball_install_conflict_leaves_shared_services_running(
+    tmp_path: Path,
+) -> None:
+    # The install started and stopped nothing, so a conflict must not stop a
+    # backend or dashboard that a global install is already running.
+    foreign = "// hand-written plugin, not a claude-smart loader\nexport default {};\n"
+    home, _prefix, _project, _xdg, _env, result = _install_opencode_tarball_fixture(
+        tmp_path, foreign_global_loader=foreign, log_service_calls=True
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "not a claude-smart loader" in result.stderr
+    calls = home / "service-calls.log"
+    logged = calls.read_text().splitlines() if calls.exists() else []
+    assert not [line for line in logged if line.endswith(" stop")], logged
 
 
 def test_opencode_fresh_tarball_uninstall_removes_plugin_and_keeps_data(

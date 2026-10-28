@@ -3639,7 +3639,8 @@ async function runInstallOpenCode(args) {
         "It is not a claude-smart loader; move it aside and reinstall to write " +
         "the loader. claude-smart OpenCode support is not installed.\n",
     );
-    stopClaudeSmartServices(pluginRoot);
+    // No services were started or stopped by this install: leave any shared
+    // backend and dashboard (e.g. a global install's) running.
     process.exit(1);
   }
   await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);
