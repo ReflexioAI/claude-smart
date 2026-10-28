@@ -720,8 +720,14 @@ function opencodeLocalPluginSpec(packageRoot = OPENCODE_LOCAL_PACKAGE_DIR) {
 
 const OPENCODE_V2_PLUGIN_MARKER = "claude-smart OpenCode V2 loader";
 
-function opencodeV2PluginFile() {
-  return join(opencodeGlobalConfigDir(), "plugins", "claude-smart.js");
+// OpenCode scans `plugin`/`plugins` in every config root it discovers: the user
+// config directory always, and each project's `.opencode` directory. A project
+// install therefore writes its loader into the project so the default install
+// cannot capture prompts from unrelated projects.
+function opencodeV2PluginFile(args = [], cwd = process.cwd()) {
+  return parseGlobalFlag(args)
+    ? join(opencodeGlobalConfigDir(), "plugins", "claude-smart.js")
+    : join(cwd, ".opencode", "plugins", "claude-smart.js");
 }
 
 function opencodeV2ServerURL(packageRoot = OPENCODE_LOCAL_PACKAGE_DIR) {
@@ -746,8 +752,12 @@ function isGeneratedOpenCodeV2Loader(text) {
   return /^export \{ default \} from "file:\/\/.+";$/.test(lines[2]);
 }
 
-function writeOpenCodeV2Plugin(packageRoot = OPENCODE_LOCAL_PACKAGE_DIR) {
-  const target = opencodeV2PluginFile();
+function writeOpenCodeV2Plugin(
+  args = [],
+  packageRoot = OPENCODE_LOCAL_PACKAGE_DIR,
+  cwd = process.cwd(),
+) {
+  const target = opencodeV2PluginFile(args, cwd);
   const body = opencodeV2PluginBody(packageRoot);
   mkdirSync(dirname(target), { recursive: true });
   let existing = null;
@@ -763,8 +773,8 @@ function writeOpenCodeV2Plugin(packageRoot = OPENCODE_LOCAL_PACKAGE_DIR) {
   return { path: target, status: existing === body ? "unchanged" : "wrote" };
 }
 
-function removeOpenCodeV2Plugin() {
-  const target = opencodeV2PluginFile();
+function removeOpenCodeV2Plugin(args = [], cwd = process.cwd()) {
+  const target = opencodeV2PluginFile(args, cwd);
   let text = "";
   try {
     text = readFileSync(target, "utf8");
@@ -2743,7 +2753,7 @@ function printHelp() {
       "OpenCode install:",
       `  1. Copies this package to ${OPENCODE_LOCAL_PACKAGE_DIR}`,
       "  2. Adds that local file:// package to OpenCode's plugin list in opencode.json",
-      "  3. Writes an OpenCode V2 loader into the OpenCode plugins directory",
+      "  3. Writes an OpenCode V2 loader into the selected scope's plugins directory",
       "  4. Prepares local services now from the copied plugin runtime",
       "  5. Restart OpenCode.",
       "",
@@ -3585,7 +3595,7 @@ async function runInstallOpenCode(args) {
   if (readOnly) {
     process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
   }
-  const v2PluginFile = writeOpenCodeV2Plugin(packageRoot);
+  const v2PluginFile = writeOpenCodeV2Plugin(args, packageRoot);
   await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
@@ -3646,7 +3656,10 @@ async function runUninstallOpenCode(args) {
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
   }
-  removeOpenCodeV2Plugin();
+  // Both scopes: a project-scoped uninstall must not leave an earlier --global
+  // loader behind, or prompt capture stays on for every project.
+  removeOpenCodeV2Plugin(args);
+  removeOpenCodeV2Plugin(["--global"]);
   rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
   repairPluginRoot(HOST_OPENCODE);
   try {

@@ -1144,11 +1144,14 @@ def test_node_opencode_install_from_npx_root_patches_config_to_local_file_packag
     local_package = Path(plugin_spec.removeprefix("file://"))
     assert local_package == Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
     assert (local_package / "plugin" / "scripts" / "smart-install.sh").exists()
-    v2_loader = Path(env["XDG_CONFIG_HOME"]) / "opencode" / "plugins" / "claude-smart.js"
+    v2_loader = project / ".opencode" / "plugins" / "claude-smart.js"
     assert v2_loader.is_file()
     loader_text = v2_loader.read_text()
     assert "claude-smart OpenCode V2 loader" in loader_text
     assert "plugin/opencode/dist/server.mjs" in loader_text
+    # A project install must not write the user-wide loader: OpenCode loads that
+    # directory in every project, which would widen capture beyond this project.
+    assert not (Path(env["XDG_CONFIG_HOME"]) / "opencode" / "plugins" / "claude-smart.js").exists()
 
 
 def test_node_opencode_install_requires_opencode_cli_even_with_api_key(
@@ -2120,22 +2123,32 @@ def test_node_opencode_v2_loader_round_trip(tmp_path: Path) -> None:
     assert node is not None
     package = tmp_path / "pkg"
     package.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
     script = (
         f"process.env.XDG_CONFIG_HOME = {json.dumps(str(tmp_path / 'xdg'))};"
         f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
-        f"const written = installer.writeOpenCodeV2Plugin({json.dumps(str(package))});"
-        "const kept = installer.removeOpenCodeV2Plugin();"
-        "const again = installer.writeOpenCodeV2Plugin(" + json.dumps(str(package)) + ");"
+        f"const project = {json.dumps(str(project))};"
+        f"const written = installer.writeOpenCodeV2Plugin([], {json.dumps(str(package))}, project);"
+        f"const globalWritten = installer.writeOpenCodeV2Plugin(['--global'], {json.dumps(str(package))}, project);"
+        "const kept = installer.removeOpenCodeV2Plugin([], project);"
+        "const keptGlobal = installer.removeOpenCodeV2Plugin(['--global'], project);"
+        "const again = installer.writeOpenCodeV2Plugin([], " + json.dumps(str(package)) + ", project);"
         "require('fs').writeFileSync(written.path, '// claude-smart OpenCode V2 loader\\nuser edit\\n');"
-        "const spared = installer.removeOpenCodeV2Plugin();"
+        "const spared = installer.removeOpenCodeV2Plugin([], project);"
         "require('fs').writeFileSync(written.path, 'other plugin\\n');"
-        "const conflict = installer.writeOpenCodeV2Plugin(" + json.dumps(str(package)) + ");"
-        "process.stdout.write(JSON.stringify({ written: written.path, kept, spared, conflict: conflict.status, still: require('fs').readFileSync(written.path, 'utf8') }));"
+        "const conflict = installer.writeOpenCodeV2Plugin([], " + json.dumps(str(package)) + ", project);"
+        "process.stdout.write(JSON.stringify({ written: written.path, globalWritten: globalWritten.path, kept, keptGlobal, spared, conflict: conflict.status, still: require('fs').readFileSync(written.path, 'utf8') }));"
     )
     result = subprocess.run([node, "-e", script], text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
+    # A project install stays inside the project; only --global writes the user-wide
+    # loader that OpenCode loads in every project.
+    assert Path(parsed["written"]) == project / ".opencode" / "plugins" / "claude-smart.js"
+    assert Path(parsed["globalWritten"]) == tmp_path / "xdg" / "opencode" / "plugins" / "claude-smart.js"
     assert parsed["kept"] is True
+    assert parsed["keptGlobal"] is True
     assert parsed["spared"] is False
     assert parsed["conflict"] == "conflict"
     assert parsed["still"] == "other plugin\n"
@@ -2512,6 +2525,42 @@ def test_node_opencode_server_keeps_multi_segment_assistant_text(
     assert stop_calls == [
         {"session_id": "s-multi", "cwd": "/repo", "last_assistant_message": "first\n\nsecond"}
     ]
+
+
+def test_node_opencode_v2_logs_when_event_stream_ends(tmp_path: Path) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    _write_fake_bash_recorder(tmp_path)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      const warns = [];
+      console.warn = (...args) => {{ warns.push(args.join(" ")); }};
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        const ctx = {{
+          location: {{ directory: "/repo" }},
+          sessionsOutliveDispose: true,
+          session: {{ hook: async () => ({{ dispose() {{}} }}) }},
+          tool: {{ hook: async () => ({{ dispose() {{}} }}) }},
+          event: {{ subscribe: () => (async function* () {{}}()) }},
+        }};
+        await mod.default.setup(ctx);
+        // The subscription ended without an abort; give the loop a tick to notice.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        process.stdout.write(JSON.stringify(warns));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    # A dead stream stops capture for the life of the instance; it must be
+    # reported, not swallowed.
+    ended = [warn for warn in json.loads(result.stdout) if "event stream ended" in warn]
+    assert len(ended) == 1
 
 
 def test_node_opencode_v2_setup_merges_text_events_into_stop(

@@ -236,6 +236,11 @@ export function createSetup(server: ServerFactory) {
             console.warn("[claude-smart] event subscription failed:", message)
           }
         }
+        // Said once, not silently: a stream that ends for good stops every capture
+        // for the life of this instance, and nothing else reports it.
+        if (!controller.signal.aborted) {
+          console.warn("[claude-smart] OpenCode event stream ended; capture is off until the plugin reloads")
+        }
       })()
       disposers.push(() => controller.abort())
     }
