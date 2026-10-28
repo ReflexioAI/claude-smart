@@ -3656,10 +3656,9 @@ async function runUninstallOpenCode(args) {
   if (result.backupPath) {
     process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
   }
-  // Both scopes: a project-scoped uninstall must not leave an earlier --global
-  // loader behind, or prompt capture stays on for every project.
+  // The selected scope only: a `--global` install is a separate installation and
+  // its loader must survive a project-scoped uninstall.
   removeOpenCodeV2Plugin(args);
-  removeOpenCodeV2Plugin(["--global"]);
   rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
   repairPluginRoot(HOST_OPENCODE);
   try {

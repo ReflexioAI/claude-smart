@@ -2742,6 +2742,91 @@ def test_node_opencode_v2_reload_flushes_only_prompted_instance(
     assert parsed["sessionStartCount"] == 1
 
 
+def test_node_opencode_v2_second_setup_for_same_directory_registers_nothing(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    log_path = tmp_path / "calls.jsonl"
+    _write_fake_bash_recorder(tmp_path)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      const fs = require("fs");
+      const readCalls = () =>
+        fs.readFileSync(process.env.CALL_LOG, "utf8").trim()
+          .split("\\n").filter(Boolean).map((line) => JSON.parse(line));
+      const calls = (name) => readCalls().filter((call) => Array.isArray(call.args) && call.args.includes(name));
+      const waitFor = async (name, n) => {{
+        for (let i = 0; i < 200 && calls(name).length < n; i += 1) {{
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }}
+      }};
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        const subscribers = [];
+        const push = (event) => {{ for (const deliver of subscribers) deliver(event); }};
+        const makeSubscribe = () => {{
+          const queue = [];
+          let wake = null;
+          subscribers.push((event) => {{
+            queue.push(event);
+            if (wake) {{ const w = wake; wake = null; w(); }}
+          }});
+          return () => (async function* () {{
+            for (;;) {{
+              if (!queue.length) await new Promise((resolve) => {{ wake = resolve; }});
+              while (queue.length) yield queue.shift();
+            }}
+          }})();
+        }};
+        const makeCtx = () => {{
+          const hooks = {{}};
+          return {{
+            hooks,
+            ctx: {{
+              location: {{ directory: "/repo" }},
+              sessionsOutliveDispose: true,
+              session: {{ hook: async (name, fn) => {{ hooks[name] = fn; return {{ dispose() {{}} }}; }} }},
+              tool: {{ hook: async () => ({{ dispose() {{}} }}) }},
+              event: {{ subscribe: makeSubscribe() }},
+            }},
+          }};
+        }};
+        const first = makeCtx();
+        const second = makeCtx();
+        const firstCleanup = await mod.default.setup(first.ctx);
+        const secondCleanup = await mod.default.setup(second.ctx);
+        const secondHookNames = Object.keys(second.hooks);
+        await first.hooks.prompt({{ sessionID: "s-twice", prompt: {{ text: "loaded twice" }} }});
+        push({{ type: "session.text.ended", data: {{ sessionID: "s-twice", assistantMessageID: "m1", ordinal: 0, text: "Once" }} }});
+        push({{ type: "session.execution.succeeded", data: {{ sessionID: "s-twice" }} }});
+        await waitFor("stop", 1);
+        process.stdout.write(JSON.stringify({{
+          secondHookNames,
+          sameCleanup: firstCleanup === secondCleanup,
+          promptCount: calls("user-prompt").length,
+          stopCount: calls("stop").length,
+        }}));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    # The opencode.json entry and the plugins-directory loader resolve to this
+    # same module, so OpenCode sets it up twice for one project; the second call
+    # must reuse the first registration instead of publishing every turn twice.
+    assert parsed["secondHookNames"] == []
+    assert parsed["sameCleanup"] is True
+    assert parsed["promptCount"] == 1
+    assert parsed["stopCount"] == 1
+
+
 def test_opencode_dist_files_are_packaged() -> None:
     package = _read_json("package.json")
 

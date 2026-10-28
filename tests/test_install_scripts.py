@@ -2756,6 +2756,17 @@ def test_node_opencode_uninstall_hands_the_host_back_to_claude_code(
     project.mkdir()
     (project / "opencode.json").write_text('{"plugin": []}\n')
     env = _isolated_env(tmp_path)
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg")
+    loader_body = (
+        "// claude-smart OpenCode V2 loader\n"
+        "// OpenCode V2 auto-loads this directory. Reinstall claude-smart to refresh.\n"
+        'export { default } from "file:///tmp/claude-smart/plugin/opencode/dist/server.mjs";\n'
+    )
+    project_loader = project / ".opencode" / "plugins" / "claude-smart.js"
+    global_loader = tmp_path / "xdg" / "opencode" / "plugins" / "claude-smart.js"
+    for target in (project_loader, global_loader):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(loader_body)
 
     result = subprocess.run(
         [node, str(NODE_INSTALLER), "uninstall", "--host", "opencode"],
@@ -2769,6 +2780,10 @@ def test_node_opencode_uninstall_hands_the_host_back_to_claude_code(
     assert result.returncode == 0, result.stderr
     assert link.resolve() == claude_root.resolve()
     assert 'CLAUDE_SMART_HOST="claude-code"' in runtime_env.read_text()
+    # Uninstall is scope-consistent: it removes the project loader and leaves a
+    # separate --global installation untouched.
+    assert not project_loader.exists()
+    assert global_loader.exists()
 
 
 def test_windows_interrupt_ends_the_whole_child_tree(tmp_path: Path) -> None:

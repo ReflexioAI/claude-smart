@@ -35,15 +35,25 @@ async function safeRegister(label, fn) {
 // is gated on "this instance received the session's prompt" — the same
 // instance that registered the session with V1 and captured its text — to
 // avoid one publish per live instance. The epoch only elects who runs the
-// final dispose flush. It advances per setup() call, not per module
-// evaluation (one module instance can be set up more than once).
-const EPOCH_KEY = Symbol.for("claude-smart.opencode.epoch");
+// final dispose flush. It advances per setup() call for one directory, not per
+// module evaluation (one module instance can be set up more than once), and it
+// is per directory because one process serves every open location.
+const EPOCH_KEY_PREFIX = "claude-smart.opencode.epoch:";
 const epochStore = globalThis;
+// OpenCode can load this module twice for one project — the `opencode.json`
+// entry and the plugins-directory loader resolve to the same file — and every
+// hook is a list entry, so a second setup would publish each prompt and stop
+// twice. One registration per directory per module evaluation is enough.
+const registrations = new Map();
 export function createSetup(server) {
     return async function setup(ctx = {}) {
-        const myEpoch = (epochStore[EPOCH_KEY] = (epochStore[EPOCH_KEY] || 0) + 1);
-        const isOwner = () => epochStore[EPOCH_KEY] === myEpoch;
         const directory = ctx.location?.directory || process.cwd();
+        const existing = registrations.get(directory);
+        if (existing)
+            return existing;
+        const epochKey = Symbol.for(EPOCH_KEY_PREFIX + directory);
+        const myEpoch = (epochStore[epochKey] = (epochStore[epochKey] || 0) + 1);
+        const isOwner = () => epochStore[epochKey] === myEpoch;
         let v1;
         try {
             v1 = await server({ directory });
@@ -218,7 +228,10 @@ export function createSetup(server) {
             })();
             disposers.push(() => controller.abort());
         }
-        return async () => {
+        const cleanup = async () => {
+            // Free the slot first: a reload can call setup again before this finishes.
+            if (registrations.get(directory) === cleanup)
+                registrations.delete(directory);
             for (const dispose of disposers) {
                 try {
                     await dispose();
@@ -235,5 +248,7 @@ export function createSetup(server) {
                 // unload must not throw
             }
         };
+        registrations.set(directory, cleanup);
+        return cleanup;
     };
 }
