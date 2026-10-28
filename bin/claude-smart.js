@@ -793,6 +793,12 @@ function isOpenCodeLocalPackagePath(packagePath) {
   );
 }
 
+function scopeHasClaudeSmart(args = [], cwd = process.cwd()) {
+  return (
+    existsSync(opencodeV2PluginFile(args, cwd)) || configListsClaudeSmart(opencodeConfigPath(args, cwd))
+  );
+}
+
 function configListsClaudeSmart(configPath) {
   try {
     const data = readJsoncObject(configPath);
@@ -3673,13 +3679,12 @@ async function runUninstallOpenCode(args) {
   // its loader must survive a project-scoped uninstall.
   removeOpenCodeV2Plugin(args);
   // Both scopes share one package copy and every loader re-exports its
-  // server.mjs, so keep it while the global scope still references it. The
-  // project scope is not enumerable from here.
-  const globalScopeInstalled =
-    !parseGlobalFlag(args) &&
-    (existsSync(opencodeV2PluginFile(["--global"])) ||
-      configListsClaudeSmart(join(opencodeGlobalConfigDir(), "opencode.json")));
-  if (!globalScopeInstalled) {
+  // server.mjs, so keep it while any other scope still references it: the global
+  // scope for a project uninstall, and the current project for a --global one.
+  // shortcut: loaders in other projects are not enumerable, so a --global
+  // uninstall can still strand them; upgrade when installs are tracked machine-wide.
+  const otherScopeInstalled = scopeHasClaudeSmart(parseGlobalFlag(args) ? [] : ["--global"]);
+  if (!otherScopeInstalled) {
     rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
     repairPluginRoot(HOST_OPENCODE);
     try {

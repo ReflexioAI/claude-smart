@@ -2822,6 +2822,39 @@ def test_node_opencode_project_uninstall_keeps_the_shared_package(
     assert (package_root / "scripts" / "backend-service.sh").exists()
 
 
+def test_node_opencode_global_uninstall_keeps_the_shared_package(
+    tmp_path: Path,
+) -> None:
+    # The mirror case: a --global uninstall must not delete the package that a
+    # project loader in the same tree still imports.
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for Node installer test")
+    package_root = tmp_path / ".claude-smart" / "opencode" / "claude-smart" / "plugin"
+    (package_root / "scripts").mkdir(parents=True)
+    _write_executable(package_root / "scripts" / "backend-service.sh", "#!/bin/sh\nexit 0\n")
+    project = tmp_path / "project"
+    project.mkdir()
+    project_loader = _seed_opencode_v2_loader(project / ".opencode" / "plugins" / "claude-smart.js")
+    env = _isolated_env(tmp_path)
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg")
+    global_loader = _seed_opencode_v2_loader(tmp_path / "xdg" / "opencode" / "plugins" / "claude-smart.js")
+
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "uninstall", "--host", "opencode", "--global"],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not global_loader.exists()
+    assert project_loader.exists()
+    assert (package_root / "scripts" / "backend-service.sh").exists()
+
+
 def test_windows_interrupt_ends_the_whole_child_tree(tmp_path: Path) -> None:
     # Windows has no process groups; stopping only the direct child would
     # orphan uv/npm grandchildren that keep writing after the rollback.
