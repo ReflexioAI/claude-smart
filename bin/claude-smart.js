@@ -711,6 +711,8 @@ function opencodeConfigPath(args = [], cwd = process.cwd()) {
 function opencodePluginSpec(entry) {
   if (typeof entry === "string") return entry;
   if (Array.isArray(entry) && typeof entry[0] === "string") return entry[0];
+  // OpenCode also accepts the object form, { package, options }.
+  if (entry && typeof entry === "object" && typeof entry.package === "string") return entry.package;
   return null;
 }
 
@@ -794,8 +796,16 @@ function isOpenCodeLocalPackagePath(packagePath) {
 }
 
 function scopeHasClaudeSmart(args = [], cwd = process.cwd()) {
-  return (
-    existsSync(opencodeV2PluginFile(args, cwd)) || configListsClaudeSmart(opencodeConfigPath(args, cwd))
+  if (existsSync(opencodeV2PluginFile(args, cwd))) return true;
+  // A reference is read-only state, not a choice of one file, so check every
+  // candidate config that exists: OpenCode merges several, and picking the
+  // first one here would miss a reference the surviving scope still has.
+  const roots = parseGlobalFlag(args) ? [opencodeGlobalConfigDir()] : [cwd, join(cwd, ".opencode")];
+  return roots.some((root) =>
+    OPENCODE_CONFIG_NAMES.some((name) => {
+      const file = join(root, name);
+      return existsSync(file) && configListsClaudeSmart(file);
+    }),
   );
 }
 
