@@ -2684,24 +2684,31 @@ def test_node_opencode_v2_reload_flushes_only_prompted_instance(
             }}
           }})();
         }};
-        const makeCtx = () => {{
+        let releaseDispose = null;
+        const disposeGate = new Promise((resolve) => {{ releaseDispose = resolve; }});
+        const makeCtx = (holdDispose) => {{
           const hooks = {{}};
           return {{
             hooks,
             ctx: {{
               location: {{ directory: "/repo" }},
               sessionsOutliveDispose: true,
-              session: {{ hook: async (name, fn) => {{ hooks[name] = fn; return {{ dispose() {{}} }}; }} }},
+              session: {{ hook: async (name, fn) => {{ hooks[name] = fn; return {{ dispose: () => (holdDispose ? disposeGate : undefined) }}; }} }},
               tool: {{ hook: async () => ({{ dispose() {{}} }}) }},
               event: {{ subscribe: makeSubscribe() }},
             }},
           }};
         }};
-        const first = makeCtx();
-        const second = makeCtx();
-        await mod.default.setup(first.ctx);
-        await mod.default.setup(second.ctx);
+        const first = makeCtx(true);
+        const second = makeCtx(false);
+        const cleanupFirst = await mod.default.setup(first.ctx);
         await first.hooks.prompt({{ sessionID: "s-reload", prompt: {{ text: "only this instance got the prompt" }} }});
+        // Real reload order: cleanup frees the registration slot synchronously,
+        // then awaits the hook disposers. Hold one disposer open so the old
+        // instance's event loop is still alive while the new instance sets up —
+        // two live instances, only one of which received the prompt.
+        const cleanupDone = cleanupFirst();
+        await mod.default.setup(second.ctx);
         push({{ type: "session.text.ended", data: {{ sessionID: "s-reload", assistantMessageID: "m1", ordinal: 0, text: "Only once" }} }});
         push({{ type: "session.execution.succeeded", data: {{ sessionID: "s-reload" }} }});
         await waitForStops(1);
@@ -2714,7 +2721,10 @@ def test_node_opencode_v2_reload_flushes_only_prompted_instance(
         const sessionStarts = readCalls().filter(
           (call) => Array.isArray(call.args) && call.args.includes("session-start"),
         );
-        process.stdout.write(JSON.stringify({{ stops, promptCount: prompts.length, sessionStartCount: sessionStarts.length }}));
+        const secondHookNames = Object.keys(second.hooks);
+        releaseDispose();
+        await cleanupDone;
+        process.stdout.write(JSON.stringify({{ stops, promptCount: prompts.length, sessionStartCount: sessionStarts.length, secondHookNames }}));
       }}).catch((err) => {{
         console.error(err);
         process.exit(1);
@@ -2740,6 +2750,9 @@ def test_node_opencode_v2_reload_flushes_only_prompted_instance(
     # session.created is broadcast too; only the newest instance may run its
     # session-start hook and service starts.
     assert parsed["sessionStartCount"] == 1
+    # The overlap is real: the new instance registered while the old one was
+    # still disposing.
+    assert parsed["secondHookNames"]
 
 
 def test_node_opencode_v2_second_setup_for_same_directory_registers_nothing(
@@ -2801,6 +2814,13 @@ def test_node_opencode_v2_second_setup_for_same_directory_registers_nothing(
         push({{ type: "session.text.ended", data: {{ sessionID: "s-twice", assistantMessageID: "m1", ordinal: 0, text: "Once" }} }});
         push({{ type: "session.execution.succeeded", data: {{ sessionID: "s-twice" }} }});
         await waitFor("stop", 1);
+        // Disposing the duplicate must be a no-op: handing out the survivor's
+        // cleanup would tear down the surviving hooks and stop capture.
+        await secondCleanup();
+        await first.hooks.prompt({{ sessionID: "s-twice", prompt: {{ text: "still capturing" }} }});
+        push({{ type: "session.text.ended", data: {{ sessionID: "s-twice", assistantMessageID: "m2", ordinal: 0, text: "Twice" }} }});
+        push({{ type: "session.execution.succeeded", data: {{ sessionID: "s-twice" }} }});
+        await waitFor("stop", 2);
         process.stdout.write(JSON.stringify({{
           secondHookNames,
           sameCleanup: firstCleanup === secondCleanup,
@@ -2820,9 +2840,256 @@ def test_node_opencode_v2_second_setup_for_same_directory_registers_nothing(
     parsed = json.loads(result.stdout)
     # The opencode.json entry and the plugins-directory loader resolve to this
     # same module, so OpenCode sets it up twice for one project; the second call
-    # must reuse the first registration instead of publishing every turn twice.
+    # must reuse the first registration instead of publishing every turn twice,
+    # and its cleanup must be a no-op that cannot tear the survivor down.
     assert parsed["secondHookNames"] == []
-    assert parsed["sameCleanup"] is True
+    assert parsed["sameCleanup"] is False
+    assert parsed["promptCount"] == 2
+    assert parsed["stopCount"] == 2
+
+
+def test_node_opencode_v2_double_module_load_registers_once(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    log_path = tmp_path / "calls.jsonl"
+    _write_fake_bash_recorder(tmp_path)
+    copy_root = tmp_path / "copy-root"
+    _write_minimal_plugin_root(copy_root)
+    copy_server = _copy_opencode_dist(copy_root)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      delete process.env.CLAUDE_SMART_PLUGIN_ROOT;
+      const fs = require("fs");
+      const readCalls = () =>
+        fs.readFileSync(process.env.CALL_LOG, "utf8").trim()
+          .split("\\n").filter(Boolean).map((line) => JSON.parse(line));
+      const calls = (name) => readCalls().filter((call) => Array.isArray(call.args) && call.args.includes(name));
+      const waitFor = async (name, n) => {{
+        for (let i = 0; i < 200 && calls(name).length < n; i += 1) {{
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }}
+      }};
+      Promise.all([
+        import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}),
+        import({json.dumps(str(copy_server))}),
+      ]).then(async ([modA, modB]) => {{
+        const subscribers = [];
+        const push = (event) => {{ for (const deliver of subscribers) deliver(event); }};
+        const makeSubscribe = () => {{
+          const queue = [];
+          let wake = null;
+          subscribers.push((event) => {{
+            queue.push(event);
+            if (wake) {{ const w = wake; wake = null; w(); }}
+          }});
+          return () => (async function* () {{
+            for (;;) {{
+              if (!queue.length) await new Promise((resolve) => {{ wake = resolve; }});
+              while (queue.length) yield queue.shift();
+            }}
+          }})();
+        }};
+        const makeCtx = () => {{
+          const hooks = {{}};
+          return {{
+            hooks,
+            ctx: {{
+              location: {{ directory: "/repo" }},
+              sessionsOutliveDispose: true,
+              session: {{ hook: async (name, fn) => {{ hooks[name] = fn; return {{ dispose() {{}} }}; }} }},
+              tool: {{ hook: async () => ({{ dispose() {{}} }}) }},
+              event: {{ subscribe: makeSubscribe() }},
+            }},
+          }};
+        }};
+        const a = makeCtx();
+        const b = makeCtx();
+        const cleanupA = await modA.default.setup(a.ctx);
+        const cleanupB = await modB.default.setup(b.ctx);
+        await a.hooks.prompt({{ sessionID: "s-dup", prompt: {{ text: "loaded through two specs" }} }});
+        push({{ type: "session.text.ended", data: {{ sessionID: "s-dup", assistantMessageID: "m1", ordinal: 0, text: "Once" }} }});
+        push({{ type: "session.execution.succeeded", data: {{ sessionID: "s-dup" }} }});
+        await waitFor("stop", 1);
+        // Disposing the duplicate must not remove the survivor's hooks.
+        await cleanupB();
+        await a.hooks.prompt({{ sessionID: "s-dup", prompt: {{ text: "still live" }} }});
+        push({{ type: "session.text.ended", data: {{ sessionID: "s-dup", assistantMessageID: "m2", ordinal: 0, text: "Twice" }} }});
+        push({{ type: "session.execution.succeeded", data: {{ sessionID: "s-dup" }} }});
+        await waitFor("stop", 2);
+        process.stdout.write(JSON.stringify({{
+          secondHookNames: Object.keys(b.hooks),
+          sameCleanup: cleanupA === cleanupB,
+          promptCount: calls("user-prompt").length,
+          stopCount: calls("stop").length,
+        }}));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    # Bun loads each entry spec as a separate module instance, so the
+    # opencode.json entry and the plugins-directory loader each get their own
+    # module state; the dedupe has to live on globalThis to span both, and the
+    # duplicate's cleanup must be a no-op.
+    assert parsed["secondHookNames"] == []
+    assert parsed["sameCleanup"] is False
+    assert parsed["promptCount"] == 2
+    assert parsed["stopCount"] == 2
+
+
+def test_node_opencode_v1_double_server_publishes_once(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    log_path = tmp_path / "calls.jsonl"
+    _write_fake_bash_recorder(tmp_path)
+    copy_root = tmp_path / "copy-root"
+    _write_minimal_plugin_root(copy_root)
+    copy_server = _copy_opencode_dist(copy_root)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      delete process.env.CLAUDE_SMART_PLUGIN_ROOT;
+      const fs = require("fs");
+      const readCalls = () =>
+        fs.readFileSync(process.env.CALL_LOG, "utf8").trim()
+          .split("\\n").filter(Boolean).map((line) => JSON.parse(line));
+      const calls = (name) => readCalls().filter((call) => Array.isArray(call.args) && call.args.includes(name));
+      Promise.all([
+        import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}),
+        import({json.dumps(str(copy_server))}),
+      ]).then(async ([modA, modB]) => {{
+        // OpenCode 1.x auto-loads the plugins directory too, and its
+        // deduplicatePluginOrigins only drops exact spec matches, so the
+        // config entry and the loader yield two server() instances whose
+        // hooks all run and whose events are all delivered.
+        const pluginA = await modA.default.server({{ directory: "/repo" }});
+        const pluginB = await modB.default.server({{ directory: "/repo" }});
+        const created = {{ type: "session.created", properties: {{ sessionID: "s-v1", info: {{ directory: "/repo" }} }} }};
+        await pluginA.event({{ event: created }});
+        await pluginB.event({{ event: created }});
+        await pluginA["chat.message"]({{ sessionID: "s-v1" }}, {{ message: {{ content: "double load" }} }});
+        await pluginB["chat.message"]({{ sessionID: "s-v1" }}, {{ message: {{ content: "double load" }} }});
+        const idle = {{ type: "session.idle", properties: {{ sessionID: "s-v1" }} }};
+        await pluginA.event({{ event: idle }});
+        await pluginB.event({{ event: idle }});
+        // The superseded instance's dispose must not stop services the
+        // surviving instance still needs; the survivor's dispose runs in full.
+        await pluginA.dispose();
+        await pluginB.dispose();
+        process.stdout.write(JSON.stringify({{
+          sessionStarts: calls("session-start").length,
+          prompts: calls("user-prompt").length,
+          stops: calls("stop").length,
+          sessionEnds: calls("session-end").length,
+        }}));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    # One publish per turn: the newest server() instance per directory wins
+    # and earlier instances go inert, including on dispose.
+    assert json.loads(result.stdout) == {
+        "sessionStarts": 1,
+        "prompts": 1,
+        "stops": 1,
+        "sessionEnds": 2,
+    }
+
+
+def test_node_opencode_v2_concurrent_setups_register_once(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    log_path = tmp_path / "calls.jsonl"
+    _write_fake_bash_recorder(tmp_path)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      const fs = require("fs");
+      const readCalls = () =>
+        fs.readFileSync(process.env.CALL_LOG, "utf8").trim()
+          .split("\\n").filter(Boolean).map((line) => JSON.parse(line));
+      const calls = (name) => readCalls().filter((call) => Array.isArray(call.args) && call.args.includes(name));
+      const waitFor = async (name, n) => {{
+        for (let i = 0; i < 200 && calls(name).length < n; i += 1) {{
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }}
+      }};
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        const subscribers = [];
+        const push = (event) => {{ for (const deliver of subscribers) deliver(event); }};
+        const makeSubscribe = () => {{
+          const queue = [];
+          let wake = null;
+          subscribers.push((event) => {{
+            queue.push(event);
+            if (wake) {{ const w = wake; wake = null; w(); }}
+          }});
+          return () => (async function* () {{
+            for (;;) {{
+              if (!queue.length) await new Promise((resolve) => {{ wake = resolve; }});
+              while (queue.length) yield queue.shift();
+            }}
+          }})();
+        }};
+        const makeCtx = () => {{
+          const hooks = {{}};
+          return {{
+            hooks,
+            ctx: {{
+              location: {{ directory: "/repo" }},
+              sessionsOutliveDispose: true,
+              session: {{ hook: async (name, fn) => {{ hooks[name] = fn; return {{ dispose() {{}} }}; }} }},
+              tool: {{ hook: async () => ({{ dispose() {{}} }}) }},
+              event: {{ subscribe: makeSubscribe() }},
+            }},
+          }};
+        }};
+        const a = makeCtx();
+        const b = makeCtx();
+        // Two setups racing before the first one finishes must not both
+        // register: the slot is claimed synchronously, before any await.
+        await Promise.all([mod.default.setup(a.ctx), mod.default.setup(b.ctx)]);
+        const registered = [a, b].filter((inst) => Object.keys(inst.hooks).length > 0);
+        await registered[0].hooks.prompt({{ sessionID: "s-race", prompt: {{ text: "raced" }} }});
+        push({{ type: "session.text.ended", data: {{ sessionID: "s-race", assistantMessageID: "m1", ordinal: 0, text: "Raced" }} }});
+        push({{ type: "session.execution.succeeded", data: {{ sessionID: "s-race" }} }});
+        await waitFor("stop", 1);
+        process.stdout.write(JSON.stringify({{
+          registeredCount: registered.length,
+          promptCount: calls("user-prompt").length,
+          stopCount: calls("stop").length,
+        }}));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert parsed["registeredCount"] == 1
     assert parsed["promptCount"] == 1
     assert parsed["stopCount"] == 1
 

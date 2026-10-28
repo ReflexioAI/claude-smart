@@ -143,6 +143,21 @@ function bashPath() {
     ]);
 }
 const RESOLVED_BASH = bashPath();
+// V1 hook entries are list entries: when OpenCode loads this module twice for
+// one directory (a config entry and a plugins-directory loader are two load
+// specs, and 1.x auto-loads the plugins directory as well), every instance's
+// hooks run and each turn publishes once per instance. The newest instance per
+// directory wins and earlier ones go inert — including on dispose, so a
+// superseded unload cannot stop services the survivor needs. The registry is
+// process-global because each load spec gets its own module instance.
+const LIVE_SERVERS_KEY = Symbol.for("claude-smart.opencode.live-servers");
+function liveServerTokens() {
+    const store = globalThis;
+    let tokens = store[LIVE_SERVERS_KEY];
+    if (!tokens)
+        tokens = store[LIVE_SERVERS_KEY] = new Map();
+    return tokens;
+}
 function contextFrom(result) {
     const hookOutput = result.hookSpecificOutput;
     if (!hookOutput || typeof hookOutput !== "object")
@@ -216,6 +231,10 @@ async function server(input) {
     const completedAssistantText = new Map();
     const assistant = new AssistantBuffer();
     const cwd = input.directory;
+    const tokens = liveServerTokens();
+    const token = Symbol("claude-smart-server");
+    tokens.set(cwd, token);
+    const isLive = () => tokens.get(cwd) === token;
     async function flushStop(sessionID) {
         if (!sessionID || !activeSessions.has(sessionID))
             return;
@@ -228,8 +247,14 @@ async function server(input) {
     return {
         event: async ({ event }) => {
             const type = event.type;
+            // Capture stays live for superseded instances: their buffers and
+            // activeSessions only ever hold sessions they admitted themselves, so
+            // flushStop publishes nothing for anyone else's sessions, while a V2
+            // reload overlap still lets the old instance finish its ongoing turn.
             assistant.update(event);
             if (type === "session.created") {
+                if (!isLive())
+                    return;
                 const payload = eventPayload(event, cwd);
                 const sessionID = String(payload.session_id || "");
                 if (!sessionID)
@@ -250,6 +275,8 @@ async function server(input) {
             }
         },
         "chat.message": async (hookInput, output) => {
+            if (!isLive())
+                return;
             const payload = chatMessagePayload(hookInput, output, cwd);
             if (!payload.session_id || !payload.prompt)
                 return;
@@ -269,6 +296,11 @@ async function server(input) {
             const payload = toolAfterPayload(hookInput, output, cwd);
             if (!payload.session_id || !payload.tool_name)
                 return;
+            // A superseded instance keeps serving only the sessions it admitted
+            // (a V2 reload hands the slot to a new instance mid-turn); a plain
+            // double load never admitted any, so it stays silent.
+            if (!isLive() && !activeSessions.has(String(payload.session_id)))
+                return;
             await runScript(HOOK_ENTRY, ["opencode", "post-tool"], payload);
         },
         "experimental.text.complete": async (hookInput, output) => {
@@ -279,9 +311,16 @@ async function server(input) {
                 completedAssistantText.set(sessionID, output.text);
         },
         dispose: async () => {
+            // Flush in-flight sessions even when superseded (a reload hands the slot
+            // over mid-turn), but leave the services to the live instance.
             await Promise.all([...activeSessions].map((sessionID) => flushStop(sessionID)));
+            if (!isLive())
+                return;
             await runService(DASHBOARD_SERVICE, "session-end");
             await runService(BACKEND_SERVICE, "session-end");
+            // Re-check: a newer instance may have taken the slot mid-dispose.
+            if (isLive())
+                tokens.delete(cwd);
         },
     };
 }

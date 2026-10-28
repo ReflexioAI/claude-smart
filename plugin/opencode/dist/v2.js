@@ -40,17 +40,34 @@ async function safeRegister(label, fn) {
 // is per directory because one process serves every open location.
 const EPOCH_KEY_PREFIX = "claude-smart.opencode.epoch:";
 const epochStore = globalThis;
-// OpenCode can load this module twice for one project — the `opencode.json`
-// entry and the plugins-directory loader resolve to the same file — and every
-// hook is a list entry, so a second setup would publish each prompt and stop
-// twice. One registration per directory per module evaluation is enough.
-const registrations = new Map();
+const REGISTRATIONS_KEY = Symbol.for("claude-smart.opencode.registrations");
+function registrationStore() {
+    const store = globalThis;
+    let registrations = store[REGISTRATIONS_KEY];
+    if (!registrations)
+        registrations = store[REGISTRATIONS_KEY] = new Map();
+    return registrations;
+}
 export function createSetup(server) {
     return async function setup(ctx = {}) {
         const directory = ctx.location?.directory || process.cwd();
-        const existing = registrations.get(directory);
-        if (existing)
-            return existing;
+        const registrations = registrationStore();
+        if (registrations.has(directory)) {
+            // A duplicate must never receive the survivor's cleanup: disposing the
+            // duplicate would then remove the surviving registration's hooks too and
+            // capture would stop silently. Its cleanup is a no-op.
+            return async () => { };
+        }
+        // Claim the slot synchronously, before any await: two setup calls racing
+        // here must not both register. The wrapper keeps a stable identity while
+        // the real cleanup is still being built.
+        let cleanup = async () => { };
+        const slot = async () => cleanup();
+        registrations.set(directory, slot);
+        const releaseSlot = () => {
+            if (registrations.get(directory) === slot)
+                registrations.delete(directory);
+        };
         const epochKey = Symbol.for(EPOCH_KEY_PREFIX + directory);
         const myEpoch = (epochStore[epochKey] = (epochStore[epochKey] || 0) + 1);
         const isOwner = () => epochStore[epochKey] === myEpoch;
@@ -59,12 +76,15 @@ export function createSetup(server) {
             v1 = await server({ directory });
         }
         catch (err) {
+            releaseSlot();
             const message = err instanceof Error ? err.message : err;
             console.warn("[claude-smart] disabled — OpenCode factory failed:", message);
             return;
         }
-        if (!v1)
+        if (!v1) {
+            releaseSlot();
             return;
+        }
         const disposers = [];
         const onDispose = (maybe) => {
             if (maybe && typeof maybe.dispose === "function")
@@ -101,16 +121,11 @@ export function createSetup(server) {
                         const system = Array.isArray(event.system) ? event.system : [];
                         const before = system.map((part) => (typeof part === "string" ? part : part && part.text || ""));
                         // V1 mutates the array it is handed. Hand it a copy, then append
-                        // additions at the END.
-                        //
-                        // Cache compatibility: opencode's Anthropic Messages provider adds
-                        // cache breakpoints on system[0] and system[last] and treats the
-                        // parts between them as one cached block. The injected rules are
-                        // relevance-gated and change between turns, so inserting them at
-                        // index 1 would shift the cached prefix and throw away prompt-cache
-                        // hits on the stable system body. Appending keeps the whole stable
-                        // prefix byte-identical across turns; only the small rules tail is
-                        // re-sent. This matches the V1 native code (output.system.push).
+                        // additions at the END, matching the V1 native code
+                        // (output.system.push). Appending leaves the stable system parts
+                        // byte-identical across turns; it does not preserve prompt-cache
+                        // hits by itself — the provider places its breakpoints per request,
+                        // and a changing rules tail misses wherever it sits.
                         const output = { system: before.slice() };
                         await v1["experimental.chat.system.transform"]({ sessionID: event.sessionID }, output);
                         if (!Array.isArray(output.system))
@@ -178,9 +193,9 @@ export function createSetup(server) {
                                 }
                             }
                             // A turn ends with session.execution.succeeded ({ sessionID });
-                            // OpenCode V2 has no session.idle event, so map it to the V1
-                            // idle flush. session.idle is kept for earlier V2 builds.
-                            const turnEnded = record.type === "session.execution.succeeded" || record.type === "session.idle";
+                            // OpenCode V2 publishes no session.idle event, so map it to the
+                            // V1 idle flush.
+                            const turnEnded = record.type === "session.execution.succeeded";
                             const turnSessionID = typeof data.sessionID === "string" ? data.sessionID : "";
                             if (turnEnded) {
                                 lastText.delete(turnSessionID);
@@ -200,10 +215,7 @@ export function createSetup(server) {
                             if (record.type !== "session.created" || isOwner()) {
                                 await v1.event({ event: normalized });
                             }
-                            if (turnEnded &&
-                                turnSessionID &&
-                                record.type !== "session.idle" &&
-                                prompted.has(turnSessionID)) {
+                            if (turnEnded && turnSessionID && prompted.has(turnSessionID)) {
                                 await v1.event({
                                     event: { type: "session.idle", properties: { sessionID: turnSessionID } },
                                 });
@@ -228,10 +240,9 @@ export function createSetup(server) {
             })();
             disposers.push(() => controller.abort());
         }
-        const cleanup = async () => {
+        cleanup = async () => {
             // Free the slot first: a reload can call setup again before this finishes.
-            if (registrations.get(directory) === cleanup)
-                registrations.delete(directory);
+            releaseSlot();
             for (const dispose of disposers) {
                 try {
                     await dispose();
@@ -248,7 +259,6 @@ export function createSetup(server) {
                 // unload must not throw
             }
         };
-        registrations.set(directory, cleanup);
-        return cleanup;
+        return slot;
     };
 }
