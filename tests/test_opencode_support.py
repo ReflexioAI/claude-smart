@@ -2082,14 +2082,19 @@ def test_node_opencode_v2_setup_registers_prompt_and_keeps_cache_header(
           }},
           event: {{ async *subscribe() {{}} }},
         }});
-        const system = [{{ type: "text", text: "cache-header" }}];
+        const system = [
+          {{ type: "text", text: "cache-header" }},
+          {{ type: "text", text: "stable system body" }},
+        ];
         await hooks.prompt({{ sessionID: "s1", prompt: {{ text: "remember" }} }});
         await hooks.context({{ sessionID: "s1", system }});
         if (typeof dispose === "function") await dispose();
         process.stdout.write(JSON.stringify({{
           registered: Object.keys(hooks).sort(),
           header: system[0].text,
-          injected: system.slice(1).map((part) => part.text),
+          body: system[1].text,
+          injected: system.slice(2).map((part) => part.text),
+          injectedLast: system[system.length - 1].text,
         }}));
       }}).catch((err) => {{
         console.error(err);
@@ -2103,7 +2108,9 @@ def test_node_opencode_v2_setup_registers_prompt_and_keeps_cache_header(
     parsed = json.loads(result.stdout)
     assert parsed["registered"] == ["context", "execute.after", "prompt"]
     assert parsed["header"] == "cache-header"
+    assert parsed["body"] == "stable system body"
     assert parsed["injected"] == ["learned context"]
+    assert parsed["injectedLast"] == "learned context"
 
 
 def test_node_opencode_v2_loader_round_trip(tmp_path: Path) -> None:
