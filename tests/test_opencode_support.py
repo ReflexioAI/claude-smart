@@ -787,13 +787,14 @@ def test_opencode_python_install_conflict_fails_loudly(
         cli, "_bootstrap_opencode_install", lambda read_only: (True, str(package_root))
     )
     monkeypatch.setattr(cli, "_opencode_config_path", lambda global_config: str(config_path))
-    monkeypatch.setattr(
-        cli, "_patch_opencode_plugin_config", lambda path, install: (False, path)
-    )
+    patched: list[str] = []
     monkeypatch.setattr(
         cli,
-        "_write_opencode_v2_plugin",
-        lambda package_root, global_config: (loader_path, "conflict"),
+        "_patch_opencode_plugin_config",
+        lambda path, install: (patched.append(path), (False, path))[1],
+    )
+    monkeypatch.setattr(
+        cli, "_opencode_v2_loader_conflicts", lambda global_config: loader_path
     )
 
     rc = cli.cmd_install_opencode(argparse.Namespace(global_config=False))
@@ -805,8 +806,11 @@ def test_opencode_python_install_conflict_fails_loudly(
     assert "not a claude-smart loader" in captured.err
     assert "Wrote the OpenCode loader" not in captured.out
     assert "Restart OpenCode" not in captured.out
+    # The conflict is found before the config is touched, so nothing needs restoring.
+    assert patched == []
 
     # The same flow with a written loader still succeeds.
+    monkeypatch.setattr(cli, "_opencode_v2_loader_conflicts", lambda global_config: None)
     monkeypatch.setattr(
         cli,
         "_write_opencode_v2_plugin",
@@ -1331,6 +1335,10 @@ def test_node_opencode_loader_conflict_restores_the_previous_package(
     loader = project / ".opencode" / "plugins" / "claude-smart.js"
     loader.parent.mkdir(parents=True)
     loader.write_text("// hand-written\n")
+    # A plain-JSON legacy entry gets no backup, so the config must not be touched at all.
+    config = project / "opencode.json"
+    config_text = json.dumps({"plugin": ["claude-smart", "other-plugin"]}) + "\n"
+    config.write_text(config_text)
     env = _isolated_installer_env(tmp_path)
     _seed_private_node_and_uv(env)
     previous = Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
@@ -1352,6 +1360,7 @@ def test_node_opencode_loader_conflict_restores_the_previous_package(
     assert (previous / "plugin" / "owner").read_text() == "older\n"
     assert sorted(p.name for p in previous.parent.iterdir()) == ["claude-smart"]
     assert loader.read_text() == "// hand-written\n"
+    assert config.read_text() == config_text
 
 
 def test_node_opencode_install_requires_opencode_cli_even_with_api_key(

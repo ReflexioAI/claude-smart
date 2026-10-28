@@ -754,6 +754,20 @@ function isGeneratedOpenCodeV2Loader(text) {
   return /^export \{ default \} from "file:\/\/.+";$/.test(lines[2]);
 }
 
+function readOpenCodeV2Loader(target) {
+  try {
+    return readFileSync(target, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// A foreign file at the loader path blocks the install; checked before any config change.
+function openCodeV2LoaderConflicts(args = [], cwd = process.cwd()) {
+  const existing = readOpenCodeV2Loader(opencodeV2PluginFile(args, cwd));
+  return existing !== null && !isGeneratedOpenCodeV2Loader(existing);
+}
+
 function writeOpenCodeV2Plugin(
   args = [],
   packageRoot = OPENCODE_LOCAL_PACKAGE_DIR,
@@ -761,16 +775,11 @@ function writeOpenCodeV2Plugin(
 ) {
   const target = opencodeV2PluginFile(args, cwd);
   const body = opencodeV2PluginBody(packageRoot);
-  mkdirSync(dirname(target), { recursive: true });
-  let existing = null;
-  try {
-    existing = readFileSync(target, "utf8");
-  } catch {
-    existing = null;
-  }
+  const existing = readOpenCodeV2Loader(target);
   if (existing !== null && existing !== body && !isGeneratedOpenCodeV2Loader(existing)) {
     return { path: target, status: "conflict" };
   }
+  mkdirSync(dirname(target), { recursive: true });
   if (existing !== body) writeFileSync(target, body);
   return { path: target, status: existing === body ? "unchanged" : "wrote" };
 }
@@ -3609,6 +3618,18 @@ async function runInstallOpenCode(args) {
     );
     process.exit(1);
   }
+  if (openCodeV2LoaderConflicts(args)) {
+    // The loader is the only load path, so on a conflict nothing loads
+    // claude-smart: fail loudly, before the config is touched.
+    process.stderr.write(
+      `error: left an existing OpenCode plugin in place at ${opencodeV2PluginFile(args)}. ` +
+        "It is not a claude-smart loader; move it aside and reinstall to write " +
+        "the loader. claude-smart OpenCode support is not installed.\n",
+    );
+    // No services were started or stopped by this install: leave any shared
+    // backend and dashboard (e.g. a global install's) running.
+    process.exit(1);
+  }
   try {
     // One load path per scope: OpenCode 1.x auto-loads {plugin,plugins}/*.{ts,js}
     // from its config directories and V2 loads the plugins directory, so the
@@ -3627,21 +3648,6 @@ async function runInstallOpenCode(args) {
     process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
   }
   const v2PluginFile = writeOpenCodeV2Plugin(args, packageRoot);
-  if (v2PluginFile.status === "conflict") {
-    // The loader is the only load path, so on a conflict nothing loads
-    // claude-smart: fail loudly instead of reporting an installed host.
-    if (result.backupPath) {
-      process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
-    }
-    process.stderr.write(
-      `error: left an existing OpenCode plugin in place at ${v2PluginFile.path}. ` +
-        "It is not a claude-smart loader; move it aside and reinstall to write " +
-        "the loader. claude-smart OpenCode support is not installed.\n",
-    );
-    // No services were started or stopped by this install: leave any shared
-    // backend and dashboard (e.g. a global install's) running.
-    process.exit(1);
-  }
   // Committed only after the loader check, so a conflict exit rolls the package back.
   commitLocalPluginPackage(packageRoot);
   await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);

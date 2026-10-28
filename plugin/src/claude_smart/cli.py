@@ -1401,22 +1401,35 @@ def _is_generated_opencode_v2_loader(text: str) -> bool:
     return re.match(r'^export \{ default \} from "file://.+";$', lines[2]) is not None
 
 
+def _read_opencode_v2_loader(target: Path) -> str | None:
+    try:
+        return target.read_text()
+    except OSError:
+        return None
+
+
+def _opencode_v2_loader_conflicts(*, global_config: bool = False) -> Path | None:
+    """Return the loader path when a foreign file blocks it; checked before any config change."""
+    target = _opencode_v2_plugin_file(global_config=global_config)
+    existing = _read_opencode_v2_loader(target)
+    if existing is not None and not _is_generated_opencode_v2_loader(existing):
+        return target
+    return None
+
+
 def _write_opencode_v2_plugin(
     package_root: Path, *, global_config: bool = False, cwd: Path | None = None
 ) -> tuple[Path, str]:
     target = _opencode_v2_plugin_file(global_config=global_config, cwd=cwd)
     body = _opencode_v2_plugin_body(package_root)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        existing: str | None = target.read_text()
-    except OSError:
-        existing = None
+    existing = _read_opencode_v2_loader(target)
     if (
         existing is not None
         and existing != body
         and not _is_generated_opencode_v2_loader(existing)
     ):
         return target, "conflict"
+    target.parent.mkdir(parents=True, exist_ok=True)
     if existing != body:
         target.write_text(body)
     return target, "unchanged" if existing == body else "wrote"
@@ -1690,6 +1703,16 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
     plugin_root = package_root / "plugin"
     global_config = bool(getattr(args, "global_config", False))
     config_path = _opencode_config_path(global_config=global_config)
+    conflict_path = _opencode_v2_loader_conflicts(global_config=global_config)
+    if conflict_path is not None:
+        # The loader is the only load path, so on a conflict nothing loads
+        # claude-smart: fail loudly, before the config is touched.
+        sys.stderr.write(
+            f"error: left an existing OpenCode plugin in place at {conflict_path}. "
+            "It is not a claude-smart loader; move it aside and reinstall to "
+            "write the loader. claude-smart OpenCode support is not installed.\n"
+        )
+        return 1
     try:
         # One load path per scope, matching the Node installer: both OpenCode
         # lines load the plugins-directory loader (1.x auto-loads
@@ -1710,15 +1733,6 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
             f"Removed the legacy claude-smart plugin entry from {config_path}; "
             "the loader replaces it.\n"
         )
-    if loader_status == "conflict":
-        # The loader is the only load path, so on a conflict nothing loads
-        # claude-smart: fail loudly instead of reporting an installed host.
-        sys.stderr.write(
-            f"error: left an existing OpenCode plugin in place at {loader_path}. "
-            "It is not a claude-smart loader; move it aside and reinstall to "
-            "write the loader. claude-smart OpenCode support is not installed.\n"
-        )
-        return 1
     sys.stdout.write(
         f"Wrote the OpenCode loader at {loader_path}; OpenCode 1.x and V2 "
         "both load the plugin from there.\n"
