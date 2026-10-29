@@ -238,10 +238,12 @@ function errorEventMessage(stdout) {
 }
 
 // The stdout fallback is diagnostics only: drop text events (model output)
-// and lines that start like JSON but do not parse (a text event cut off by
-// the exit), keep plain lines and other events.
+// and lines that start like a JSON event but do not parse (a text event cut
+// off by the exit). Plain lines, including "[ERROR] ..." prefixes, go ahead of
+// other events so a long step_start cannot push them past the length limit.
 function stdoutDiagnostic(stdout) {
-  const kept = [];
+  const plain = [];
+  const events = [];
   for (const line of String(stdout || "").split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -249,14 +251,18 @@ function stdoutDiagnostic(stdout) {
     try {
       event = JSON.parse(trimmed);
     } catch {
-      if (!/^[[{]/.test(trimmed)) kept.push(trimmed);
+      if (!/^(\{"|\[[{["])/.test(trimmed)) plain.push(trimmed);
       continue;
     }
-    const part = event && typeof event === "object" ? event.part : null;
-    if (event && (event.type === "text" || (part && part.type === "text"))) continue;
-    kept.push(trimmed);
+    if (!event || typeof event !== "object") {
+      plain.push(trimmed);
+      continue;
+    }
+    const part = event.part;
+    if (event.type === "text" || (part && part.type === "text")) continue;
+    events.push(trimmed);
   }
-  return kept.join("\n").slice(0, 300);
+  return [...plain, ...events].join("\n").slice(0, 300);
 }
 
 function stripOuterMarkdownFence(content) {

@@ -1046,6 +1046,20 @@ def test_opencode_cli_bridge_failure_surfaces_error_event(tmp_path: Path) -> Non
     assert "plain diagnostic line" in result.stderr
     assert "SECRET" not in result.stderr
 
+    # A bracketed log prefix is a diagnostic, not cut-off JSON, and a long
+    # non-text event ahead of it must not push it past the length limit.
+    fake_opencode.write_text(
+        "#!/usr/bin/env node\n"
+        f"process.stdout.write({json.dumps(padding)} + '\\n');\n"
+        "process.stdout.write('[ERROR] Provider unavailable\\n');\n"
+        "process.stdout.write('[{\"type\":\"text\",\"part\":{\"text\":\"SECRET-CUT');\n"
+        "process.exit(1);\n"
+    )
+    result = run_bridge()
+    assert result.returncode == 1
+    assert "[ERROR] Provider unavailable" in result.stderr
+    assert "SECRET" not in result.stderr
+
 
 def test_node_installer_accepts_opencode_only_extraction_provider(tmp_path: Path) -> None:
     if shutil_which_node() is None:
