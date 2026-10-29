@@ -1031,6 +1031,21 @@ def test_opencode_cli_bridge_failure_surfaces_error_event(tmp_path: Path) -> Non
     assert result.returncode == 1
     assert "Invalid API key" in result.stderr
 
+    # No error event: the stdout fallback carries diagnostics, never model text
+    # (a complete text event, or one cut off mid-line by the exit).
+    fake_opencode.write_text(
+        "#!/usr/bin/env node\n"
+        "process.stdout.write(JSON.stringify({ type: 'text',"
+        " part: { type: 'text', text: 'SECRET-MODEL-TEXT' } }) + '\\n');\n"
+        "process.stdout.write('plain diagnostic line\\n');\n"
+        "process.stdout.write('{\"type\":\"text\",\"part\":{\"text\":\"SECRET-CUT');\n"
+        "process.exit(1);\n"
+    )
+    result = run_bridge()
+    assert result.returncode == 1
+    assert "plain diagnostic line" in result.stderr
+    assert "SECRET" not in result.stderr
+
 
 def test_node_installer_accepts_opencode_only_extraction_provider(tmp_path: Path) -> None:
     if shutil_which_node() is None:

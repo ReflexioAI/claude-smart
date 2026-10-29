@@ -169,7 +169,7 @@ function runOpenCode({ prompt, model, workDir }) {
     // a nonempty warning-only stderr — can hide it. Read the error event first.
     const eventMessage = errorEventMessage(proc.stdout);
     const stderr = String(proc.stderr || "").trim().slice(0, 300);
-    const stdout = String(proc.stdout || "").trim().slice(0, 300);
+    const stdout = stdoutDiagnostic(proc.stdout);
     throw new Error(
       `opencode CLI exited ${proc.status}: ${eventMessage || stderr || stdout}`,
     );
@@ -235,6 +235,28 @@ function errorEventMessage(stdout) {
     if (message) messages.push(message);
   }
   return messages.join("; ").slice(0, 300);
+}
+
+// The stdout fallback is diagnostics only: drop text events (model output)
+// and lines that start like JSON but do not parse (a text event cut off by
+// the exit), keep plain lines and other events.
+function stdoutDiagnostic(stdout) {
+  const kept = [];
+  for (const line of String(stdout || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let event;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      if (!/^[[{]/.test(trimmed)) kept.push(trimmed);
+      continue;
+    }
+    const part = event && typeof event === "object" ? event.part : null;
+    if (event && (event.type === "text" || (part && part.type === "text"))) continue;
+    kept.push(trimmed);
+  }
+  return kept.join("\n").slice(0, 300);
 }
 
 function stripOuterMarkdownFence(content) {
