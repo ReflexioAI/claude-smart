@@ -116,10 +116,10 @@ function runOpenCode({ prompt, model, workDir }) {
     throw new Error("opencode CLI not found on PATH");
   }
 
-  // No `--pure` / `--dir`: `opencode run` rejects both (it did on 2.0.23 and
-  // 2.0.24). OPENCODE_PURE is the env form of 1.x's --pure (skip external
-  // plugins; honoured from 2.1.4, which is why engines excludes 2.0.0–2.1.3) — keep the
-  // isolation without the rejected flag. Project isolation comes from
+  // No `--pure` / `--dir`: V2's `opencode run` rejects both. OPENCODE_PURE=1
+  // is 1.x's --pure in env form (skip external plugins); V2 has no pure mode
+  // and ignores it, so on V2 the extraction run loads the user's global
+  // plugins. Project isolation comes from
   // `cwd: workDir` below, which carries the temp `.opencode/opencode.json`
   // that defines AGENT_NAME.
   const args = [

@@ -129,7 +129,7 @@ def test_package_exposes_opencode_server_entrypoint() -> None:
     assert "build:opencode" in package["scripts"]
     assert "opencode" in package["keywords"]
     assert "opencode-plugin" in package["keywords"]
-    assert package["engines"]["opencode"] == ">=1.17.0 <2.0.0 || >=2.1.4"
+    assert package["engines"]["opencode"] == ">=1.17.0"
     assert package["description"].startswith("Self-improving Claude Code, Codex, and OpenCode")
     assert package["oc-plugin"] == ["server"]
 
