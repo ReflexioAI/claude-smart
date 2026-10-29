@@ -31,6 +31,62 @@ def test_resolve_uses_git_toplevel_basename(tmp_path, monkeypatch) -> None:
     assert ids.resolve_project_id(subdir) == tmp_path.name
 
 
+def test_resolve_maps_linked_worktree_to_main_repo(tmp_path, monkeypatch) -> None:
+    _isolate_git_env(monkeypatch)
+    main = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(main)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(main),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+        check=True,
+    )
+    worktree = main / ".claude" / "worktrees" / "feature-x"
+    subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", "-q", str(worktree)],
+        check=True,
+    )
+    (worktree / "src").mkdir()
+    assert ids.resolve_project_id(worktree) == "repo"
+    assert ids.resolve_project_id(worktree / "src") == "repo"
+
+
+def test_resolve_uses_toplevel_when_common_dir_is_not_dot_git(monkeypatch) -> None:
+    # Submodules keep their git dir under the superproject's .git/modules/.
+    def _git(*_a, **_kw):
+        return subprocess.CompletedProcess(
+            args=["git", "rev-parse"],
+            returncode=0,
+            stdout="/work/super/.git/modules/lib\n/work/super/lib\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _git)
+    assert ids.resolve_project_id("/work/super/lib/src") == "lib"
+
+
+def test_resolve_maps_windows_linked_worktree_to_main_repo(monkeypatch) -> None:
+    def _git(*_a, **_kw):
+        return subprocess.CompletedProcess(
+            args=["git", "rev-parse"],
+            returncode=0,
+            stdout="C:/Users/Alice/repo/.git\nC:/Users/Alice/repo/.claude/worktrees/x\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _git)
+    assert ids.resolve_project_id(r"C:\Users\Alice\repo\.claude\worktrees\x") == "repo"
+
+
 def test_resolve_falls_back_to_cwd_basename_outside_git(tmp_path, monkeypatch) -> None:
     _isolate_git_env(monkeypatch)
     # tmp_path from pytest is not inside a git repo.
