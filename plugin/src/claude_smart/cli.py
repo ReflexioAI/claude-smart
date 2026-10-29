@@ -270,7 +270,9 @@ def _force_plugin_root(plugin_root: Path) -> None:
     except OSError:
         if link.exists():
             raise
-        (_REFLEXIO_DIR / "plugin-root.txt").write_text(f"{plugin_root}\n")
+        (_REFLEXIO_DIR / "plugin-root.txt").write_text(
+            f"{plugin_root}\n", encoding="utf-8"
+        )
 
 
 def _active_plugin_root() -> Path | None:
@@ -280,7 +282,9 @@ def _active_plugin_root() -> Path | None:
     except OSError:
         # _force_plugin_root falls back to plugin-root.txt where symlinks fail.
         try:
-            text = (_REFLEXIO_DIR / "plugin-root.txt").read_text().strip()
+            text = (
+                (_REFLEXIO_DIR / "plugin-root.txt").read_text(encoding="utf-8").strip()
+            )
         except OSError:
             return None
         root = Path(text) if text else None
@@ -300,7 +304,7 @@ def _plugin_root_is_broken() -> bool:
         except OSError:
             return True
     try:
-        text = (_REFLEXIO_DIR / "plugin-root.txt").read_text().strip()
+        text = (_REFLEXIO_DIR / "plugin-root.txt").read_text(encoding="utf-8").strip()
     except OSError:
         return False
     return bool(text) and not has_runtime(Path(text))

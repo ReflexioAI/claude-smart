@@ -50,10 +50,12 @@ if args[:1] != ["app-server"]:
     sys.stderr.write(os.environ.get("FAKE_CODEX_STDERR", ""))
     sys.exit(code)
 
-if mode == "exit":
-    sys.exit(3)
-if mode == "exit_after_output":
-    emit({"method": "log"})
+if mode in ("exit", "exit_after_output"):
+    # Consume the initialize request first so the parent's write cannot hit
+    # a closed pipe; the test then exercises stdout EOF deterministically.
+    sys.stdin.readline()
+    if mode == "exit_after_output":
+        emit({"method": "log"})
     sys.exit(3)
 
 for line in sys.stdin:
