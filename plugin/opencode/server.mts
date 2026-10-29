@@ -5,7 +5,7 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:pa
 import { fileURLToPath } from "node:url"
 
 import { AssistantBuffer } from "./assistant-buffer.js"
-import { sessionIDFrom } from "./internal.js"
+import { eventProperties, sessionIDFrom } from "./internal.js"
 import { chatMessagePayload, eventPayload, stopPayload, toolAfterPayload } from "./payload.js"
 import { createSetup } from "./v2.js"
 
@@ -256,6 +256,9 @@ async function server(input: PluginInput) {
   const token = Symbol("claude-smart-server")
   tokens.set(cwd, token)
   const isLive = () => tokens.get(cwd) === token
+  // A superseded instance only serves sessions it admitted; anything else it
+  // would buffer but never flush or clear.
+  const serves = (sessionID: string) => isLive() || activeSessions.has(sessionID)
 
   async function flushStop(sessionID: string): Promise<void> {
     if (!sessionID || !activeSessions.has(sessionID)) return
@@ -273,11 +276,10 @@ async function server(input: PluginInput) {
   return {
     event: async ({ event }: EventInput) => {
       const type = event.type
-      // Capture stays live for superseded instances: their buffers and
-      // activeSessions only ever hold sessions they admitted themselves, so
-      // flushStop publishes nothing for anyone else's sessions, while a V2
-      // reload overlap still lets the old instance finish its ongoing turn.
-      assistant.update(event)
+      // Capture stays live for superseded instances, but only for sessions
+      // they admitted, so a V2 reload overlap still lets the old instance
+      // finish its ongoing turn.
+      if (serves(sessionIDFrom(eventProperties(event)))) assistant.update(event)
       if (type === "session.created") {
         if (!isLive()) return
         const payload = eventPayload(event, cwd)
@@ -326,7 +328,7 @@ async function server(input: PluginInput) {
       output: { text?: string },
     ) => {
       const sessionID = typeof hookInput.sessionID === "string" ? hookInput.sessionID : ""
-      if (!sessionID) return
+      if (!sessionID || !serves(sessionID)) return
       if (typeof output.text === "string") completedAssistantText.set(sessionID, output.text)
     },
     dispose: async () => {

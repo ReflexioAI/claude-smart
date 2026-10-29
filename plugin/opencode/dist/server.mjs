@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AssistantBuffer } from "./assistant-buffer.js";
-import { sessionIDFrom } from "./internal.js";
+import { eventProperties, sessionIDFrom } from "./internal.js";
 import { chatMessagePayload, eventPayload, stopPayload, toolAfterPayload } from "./payload.js";
 import { createSetup } from "./v2.js";
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
@@ -235,6 +235,9 @@ async function server(input) {
     const token = Symbol("claude-smart-server");
     tokens.set(cwd, token);
     const isLive = () => tokens.get(cwd) === token;
+    // A superseded instance only serves sessions it admitted; anything else it
+    // would buffer but never flush or clear.
+    const serves = (sessionID) => isLive() || activeSessions.has(sessionID);
     async function flushStop(sessionID) {
         if (!sessionID || !activeSessions.has(sessionID))
             return;
@@ -247,11 +250,11 @@ async function server(input) {
     return {
         event: async ({ event }) => {
             const type = event.type;
-            // Capture stays live for superseded instances: their buffers and
-            // activeSessions only ever hold sessions they admitted themselves, so
-            // flushStop publishes nothing for anyone else's sessions, while a V2
-            // reload overlap still lets the old instance finish its ongoing turn.
-            assistant.update(event);
+            // Capture stays live for superseded instances, but only for sessions
+            // they admitted, so a V2 reload overlap still lets the old instance
+            // finish its ongoing turn.
+            if (serves(sessionIDFrom(eventProperties(event))))
+                assistant.update(event);
             if (type === "session.created") {
                 if (!isLive())
                     return;
@@ -305,7 +308,7 @@ async function server(input) {
         },
         "experimental.text.complete": async (hookInput, output) => {
             const sessionID = typeof hookInput.sessionID === "string" ? hookInput.sessionID : "";
-            if (!sessionID)
+            if (!sessionID || !serves(sessionID))
                 return;
             if (typeof output.text === "string")
                 completedAssistantText.set(sessionID, output.text);

@@ -3,7 +3,15 @@
 // Fail-soft: capture must never break a turn.
 // experimental.text.complete has no V2 hook; session.text.ended carries the
 // completed assistant text parts (merged per assistant message below), and
-// session.execution.succeeded ends the turn where V1 expects session.idle.
+// a terminal session.execution.* event ends the turn where V1 expects
+// session.idle.
+
+// packages/schema/src/session-event.ts: the terminal execution events.
+const TURN_END_EVENTS = new Set([
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.execution.interrupted",
+])
 
 type V1Hooks = {
   event?: (input: { event: Record<string, unknown> }) => Promise<void>
@@ -223,10 +231,10 @@ export function createSetup(server: ServerFactory) {
                   await v1["experimental.text.complete"]({ sessionID }, { text: merged })
                 }
               }
-              // A turn ends with session.execution.succeeded ({ sessionID });
-              // OpenCode V2 publishes no session.idle event, so map it to the
-              // V1 idle flush.
-              const turnEnded = record.type === "session.execution.succeeded"
+              // A turn ends with session.execution.succeeded, .failed or
+              // .interrupted ({ sessionID }); OpenCode V2 publishes no
+              // session.idle event, so map all three to the V1 idle flush.
+              const turnEnded = typeof record.type === "string" && TURN_END_EVENTS.has(record.type)
               const turnSessionID = typeof data.sessionID === "string" ? data.sessionID : ""
               if (turnEnded) {
                 lastText.delete(turnSessionID)

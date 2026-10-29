@@ -2865,6 +2865,82 @@ def test_node_opencode_v2_setup_merges_text_events_into_stop(
     ]
 
 
+def test_node_opencode_v2_failed_and_interrupted_turns_flush_once(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    log_path = tmp_path / "calls.jsonl"
+    _write_fake_bash_recorder(tmp_path)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      const fs = require("fs");
+      const readCalls = () =>
+        fs.readFileSync(process.env.CALL_LOG, "utf8").trim()
+          .split("\\n").filter(Boolean).map((line) => JSON.parse(line));
+      const stopPayloads = () =>
+        readCalls()
+          .filter((call) => Array.isArray(call.args) && call.args.includes("stop"))
+          .map((call) => JSON.parse(call.payload));
+      const waitForStops = async (n) => {{
+        for (let i = 0; i < 200 && stopPayloads().length < n; i += 1) {{
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }}
+      }};
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        const queue = [];
+        let wake = null;
+        const push = (event) => {{
+          queue.push(event);
+          if (wake) {{ const w = wake; wake = null; w(); }}
+        }};
+        const hooks = {{}};
+        const ctx = {{
+          location: {{ directory: "/repo" }},
+          sessionsOutliveDispose: true,
+          session: {{ hook: async (name, fn) => {{ hooks[name] = fn; return {{ dispose() {{}} }}; }} }},
+          tool: {{ hook: async () => ({{ dispose() {{}} }}) }},
+          event: {{
+            subscribe: () => (async function* () {{
+              for (;;) {{
+                if (!queue.length) await new Promise((resolve) => {{ wake = resolve; }});
+                while (queue.length) yield queue.shift();
+              }}
+            }})(),
+          }},
+        }};
+        const dispose = await mod.default.setup(ctx);
+        // Same assistantMessageID across turns: text left in the buffer by
+        // the first turn would be merged into the second.
+        await hooks.prompt({{ sessionID: "s-end", prompt: {{ text: "fails" }} }});
+        push({{ type: "session.text.ended", data: {{ sessionID: "s-end", assistantMessageID: "m1", ordinal: 0, text: "Partial" }} }});
+        push({{ type: "session.execution.failed", data: {{ sessionID: "s-end" }} }});
+        await waitForStops(1);
+        await hooks.prompt({{ sessionID: "s-end", prompt: {{ text: "cancelled" }} }});
+        push({{ type: "session.text.ended", data: {{ sessionID: "s-end", assistantMessageID: "m1", ordinal: 0, text: "Cut short" }} }});
+        push({{ type: "session.execution.interrupted", data: {{ sessionID: "s-end" }} }});
+        await waitForStops(2);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const stops = stopPayloads();
+        await dispose();
+        process.stdout.write(JSON.stringify(stops));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [
+        {"session_id": "s-end", "cwd": "/repo", "last_assistant_message": "Partial"},
+        {"session_id": "s-end", "cwd": "/repo", "last_assistant_message": "Cut short"},
+    ]
+
+
 def test_node_opencode_v2_reload_flushes_only_prompted_instance(
     tmp_path: Path,
 ) -> None:
@@ -3232,6 +3308,49 @@ def test_node_opencode_v1_double_server_publishes_once(
         "stops": 1,
         "sessionEnds": 2,
     }
+
+
+def test_node_opencode_v1_superseded_server_buffers_nothing(
+    tmp_path: Path,
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    log_path = tmp_path / "calls.jsonl"
+    _write_fake_bash_recorder(tmp_path)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        const first = await mod.default.server({{ directory: "/repo" }});
+        const second = await mod.default.server({{ directory: "/repo" }});
+        // The buffers are private, so count every Map write keyed by the
+        // session while only the superseded instance handles a full turn.
+        const realSet = Map.prototype.set;
+        let writes = 0;
+        Map.prototype.set = function (key, value) {{
+          if (key === "s-aside") writes += 1;
+          return realSet.call(this, key, value);
+        }};
+        await first["chat.message"]({{ sessionID: "s-aside" }}, {{ message: {{ content: "not mine" }} }});
+        await first.event({{ event: {{ type: "message.updated", properties: {{ sessionID: "s-aside", info: {{ id: "m1", role: "assistant" }} }} }} }});
+        await first.event({{ event: {{ type: "message.part.updated", properties: {{ sessionID: "s-aside", part: {{ id: "p1", messageID: "m1", type: "text", text: "leak" }} }} }} }});
+        await first["experimental.text.complete"]({{ sessionID: "s-aside" }}, {{ text: "leak" }});
+        await first.event({{ event: {{ type: "session.idle", properties: {{ sessionID: "s-aside" }} }} }});
+        Map.prototype.set = realSet;
+        await first.dispose();
+        await second.dispose();
+        process.stdout.write(JSON.stringify({{ writes }}));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"writes": 0}
 
 
 def test_node_opencode_v2_concurrent_setups_register_once(
