@@ -71,7 +71,16 @@ include = [
 [tool.pytest.ini_options]
 testpaths = ["../tests"]
 
+[tool.coverage.run]
+source = ["claude_smart"]
+branch = true
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pytest-cov>=7.0.0",
 ]
