@@ -41,6 +41,13 @@ def _no_symlinks(monkeypatch) -> None:
     monkeypatch.setattr(Path, "symlink_to", refuse)
 
 
+def _symlink(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+
+
 def test_force_plugin_root_falls_back_to_text_pointer(monkeypatch, homes) -> None:
     root = _runtime(homes / "plugin")
     _no_symlinks(monkeypatch)
@@ -56,16 +63,6 @@ def test_force_plugin_root_falls_back_to_text_pointer(monkeypatch, homes) -> Non
     assert cli._plugin_root_is_broken()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "known bug: _active_plugin_root returns None whenever plugin-root is "
-        "not a symlink, so it never reads the plugin-root.txt fallback that "
-        "_force_plugin_root writes; bin/claude-smart.js activePluginRoot does "
-        "read it. On symlink-less filesystems _repair_plugin_root therefore "
-        "never hands CLAUDE_SMART_HOST to the remaining runtime."
-    ),
-)
 def test_active_plugin_root_reads_text_pointer_like_node(monkeypatch, homes) -> None:
     root = _runtime(homes / "plugin")
     _no_symlinks(monkeypatch)
@@ -81,7 +78,8 @@ def test_force_plugin_root_replaces_a_stale_file_pointer(homes) -> None:
 
     cli._force_plugin_root(root)
 
-    assert (homes / ".reflexio" / "plugin-root").resolve() == root
+    # A symlink, or the plugin-root.txt pointer where symlinks are unavailable.
+    assert cli._active_plugin_root() == root
 
 
 def test_active_plugin_root_without_any_pointer(homes) -> None:
@@ -98,7 +96,7 @@ def test_dangling_symlink_counts_as_broken_and_falls_back_to_text(homes) -> None
     fallback = _runtime(homes / "fallback")
     reflexio = homes / ".reflexio"
     reflexio.mkdir()
-    (reflexio / "plugin-root").symlink_to(gone, target_is_directory=True)
+    _symlink(reflexio / "plugin-root", gone)
     (reflexio / "plugin-root.txt").write_text(str(fallback))
 
     assert cli._plugin_root_is_broken()
@@ -109,7 +107,7 @@ def test_symlink_to_root_without_runtime_is_broken(homes) -> None:
     hollow = homes / "hollow"
     hollow.mkdir()
     (homes / ".reflexio").mkdir()
-    (homes / ".reflexio" / "plugin-root").symlink_to(hollow, target_is_directory=True)
+    _symlink(homes / ".reflexio" / "plugin-root", hollow)
 
     assert cli._plugin_root_is_broken()
 
@@ -125,13 +123,33 @@ def test_repair_removes_text_pointer_when_nothing_is_left(monkeypatch, homes) ->
     assert not (reflexio / "plugin-root.txt").exists()
 
 
+def test_repair_hands_host_to_remaining_runtime_without_symlinks(
+    monkeypatch, homes
+) -> None:
+    _no_symlinks(monkeypatch)
+    opencode_root = _runtime(homes / ".claude-smart" / "opencode" / "cs" / "plugin")
+    reflexio = homes / ".reflexio"
+    reflexio.mkdir()
+    (reflexio / "plugin-root.txt").write_text(str(homes / "deleted-codex-root"))
+    env = homes / ".claude-smart" / ".env"
+    env.write_text("CLAUDE_SMART_HOST=codex\n")
+
+    cli._repair_plugin_root(cli._HOST_CODEX)
+
+    assert (reflexio / "plugin-root.txt").read_text() == f"{opencode_root}\n"
+    assert cli.env_config.parse_env_line(env.read_text().strip()) == (
+        "CLAUDE_SMART_HOST",
+        "opencode",
+    )
+
+
 def test_repair_keeps_host_when_a_different_host_was_removed(homes) -> None:
     claude_root = _runtime(
         homes / ".claude-smart" / "claude-code" / "claude-smart" / "plugin"
     )
     reflexio = homes / ".reflexio"
     reflexio.mkdir()
-    (reflexio / "plugin-root").symlink_to(claude_root, target_is_directory=True)
+    _symlink(reflexio / "plugin-root", claude_root)
     env = homes / ".claude-smart" / ".env"
     env.write_text("CLAUDE_SMART_HOST=opencode\n")
 
@@ -144,7 +162,7 @@ def test_repair_keeps_host_when_a_different_host_was_removed(homes) -> None:
 def test_repair_without_env_file_leaves_link_alone(homes) -> None:
     root = _runtime(homes / "root")
     (homes / ".reflexio").mkdir()
-    (homes / ".reflexio" / "plugin-root").symlink_to(root, target_is_directory=True)
+    _symlink(homes / ".reflexio" / "plugin-root", root)
 
     cli._repair_plugin_root(cli._HOST_CODEX)
 

@@ -161,7 +161,12 @@ def test_bootstrap_runs_smart_install_and_prunes_publish_hooks_when_read_only(
     assert message == str(opencode_home)
     plugin_root = opencode_home / "plugin"
     assert (tmp_path / "bootstrap-ran").read_text().strip() == str(plugin_root)
-    assert (tmp_path / ".reflexio" / "plugin-root").resolve() == plugin_root
+    link = tmp_path / ".reflexio" / "plugin-root"
+    if link.is_symlink():
+        assert link.resolve() == plugin_root
+    else:  # _force_plugin_root's fallback where symlinks are unavailable
+        pointer = tmp_path / ".reflexio" / "plugin-root.txt"
+        assert Path(pointer.read_text().strip()) == plugin_root
     hooks = json.loads((plugin_root / "hooks" / "hooks.json").read_text())["hooks"]
     commands = [
         hook["command"]

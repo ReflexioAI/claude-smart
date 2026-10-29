@@ -25,11 +25,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import re
-import select
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -273,16 +274,19 @@ def _force_plugin_root(plugin_root: Path) -> None:
 
 
 def _active_plugin_root() -> Path | None:
-    link = _REFLEXIO_DIR / "plugin-root"
+    """Mirror ``activePluginRoot`` in bin/claude-smart.js."""
     try:
-        return link.resolve(strict=True) if link.is_symlink() else None
+        root: Path | None = (_REFLEXIO_DIR / "plugin-root").resolve(strict=True)
     except OSError:
-        pass
-    try:
-        text = (_REFLEXIO_DIR / "plugin-root.txt").read_text().strip()
-    except OSError:
+        # _force_plugin_root falls back to plugin-root.txt where symlinks fail.
+        try:
+            text = (_REFLEXIO_DIR / "plugin-root.txt").read_text().strip()
+        except OSError:
+            return None
+        root = Path(text) if text else None
+    if root is None or not (root / "scripts" / "backend-service.sh").is_file():
         return None
-    return Path(text) if text else None
+    return root
 
 
 def _plugin_root_is_broken() -> bool:
@@ -727,26 +731,48 @@ def _set_codex_hook_states(path: Path, states: dict[str, str]) -> bool:
     return True
 
 
+def _codex_stdout_lines(proc: subprocess.Popen[str]) -> queue.Queue[str | None]:
+    """Pump ``proc.stdout`` lines into a queue from a daemon thread.
+
+    A thread rather than ``select()``: select cannot see lines already held in
+    the TextIOWrapper buffer, and does not support pipes on Windows. ``None``
+    marks EOF, i.e. the child closed stdout or exited.
+    """
+    stdout = proc.stdout
+    if stdout is None:
+        raise RuntimeError("Codex app-server stdout pipe is not available")
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def pump() -> None:
+        try:
+            for line in stdout:
+                lines.put(line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            lines.put(None)
+
+    threading.Thread(target=pump, name="codex-app-server-stdout", daemon=True).start()
+    return lines
+
+
 def _read_codex_app_server_response(
-    proc: subprocess.Popen[str], response_id: int, deadline: float
+    lines: queue.Queue[str | None], response_id: int, deadline: float
 ) -> dict[str, object]:
-    """Read JSON-RPC lines from ``proc.stdout`` until ``response_id`` arrives.
+    """Read JSON-RPC lines from ``lines`` until ``response_id`` arrives.
 
     Skips unrelated notifications and non-JSON output. Raises ``RuntimeError``
     if the child exits, ``TimeoutError`` once ``deadline`` is reached, or
     re-raises Codex's own error payload as ``RuntimeError``.
     """
-    if proc.stdout is None:
-        raise RuntimeError("Codex app-server stdout pipe is not available")
-    while time.monotonic() < deadline:
-        ready, _, _ = select.select([proc.stdout], [], [], 0.2)
-        if not ready:
-            if proc.poll() is not None:
-                raise RuntimeError("Codex app-server exited before responding")
-            continue
-        line = proc.stdout.readline()
-        if not line:
-            continue
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            line = lines.get(timeout=remaining)
+        except queue.Empty:
+            break
+        if line is None:
+            lines.put(None)  # keep EOF visible to any later read
+            raise RuntimeError("Codex app-server exited before responding")
         try:
             message = json.loads(line)
         except json.JSONDecodeError:
@@ -760,6 +786,7 @@ def _read_codex_app_server_response(
 
 def _codex_app_server_request(
     proc: subprocess.Popen[str],
+    lines: queue.Queue[str | None],
     response_id: int,
     method: str,
     params: dict[str, object],
@@ -773,7 +800,7 @@ def _codex_app_server_request(
     )
     proc.stdin.write("\n")
     proc.stdin.flush()
-    return _read_codex_app_server_response(proc, response_id, deadline)
+    return _read_codex_app_server_response(lines, response_id, deadline)
 
 
 def _list_codex_plugin_hooks(cwd: Path) -> tuple[bool, list[dict[str, object]], str]:
@@ -792,8 +819,10 @@ def _list_codex_plugin_hooks(cwd: Path) -> tuple[bool, list[dict[str, object]], 
     proc = popen
     try:
         deadline = time.monotonic() + _CODEX_CLI_TIMEOUT_SECONDS
+        lines = _codex_stdout_lines(proc)
         _codex_app_server_request(
             proc,
+            lines,
             1,
             "initialize",
             {
@@ -812,6 +841,7 @@ def _list_codex_plugin_hooks(cwd: Path) -> tuple[bool, list[dict[str, object]], 
         proc.stdin.flush()
         response = _codex_app_server_request(
             proc,
+            lines,
             2,
             "hooks/list",
             {"cwds": [str(cwd)]},

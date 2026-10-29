@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import stat
 import sys
+import time
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,6 +52,9 @@ if args[:1] != ["app-server"]:
 
 if mode == "exit":
     sys.exit(3)
+if mode == "exit_after_output":
+    emit({"method": "log"})
+    sys.exit(3)
 
 for line in sys.stdin:
     request = json.loads(line)
@@ -59,8 +64,8 @@ for line in sys.stdin:
     method = request.get("method")
     if method == "initialize":
         if mode == "burst":
-            # Noise, a notification and the reply in ONE write: the shape the
-            # select()+buffered-readline reader cannot see past (see xfail).
+            # Noise, a notification and the reply in ONE write: the reply
+            # lands in the reader's buffer behind the earlier lines.
             sys.stdout.write(
                 "starting codex app-server\n"
                 + json.dumps({"method": "log"}) + "\n"
@@ -86,6 +91,8 @@ for line in sys.stdin:
 @pytest.fixture
 def fake_codex(tmp_path, monkeypatch):
     """Install a fake ``codex`` on PATH; returns a reader for its call log."""
+    if os.name == "nt":
+        pytest.skip("Executable POSIX fake CLI fixture")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     script = bin_dir / "codex"
@@ -190,14 +197,6 @@ def test_list_codex_plugin_hooks_reports_app_server_failures(
     assert expected in message
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "known bug: _read_codex_app_server_response select()s the raw fd but "
-        "readline()s a buffered TextIOWrapper, so a reply written in the same "
-        "burst as earlier output stays in the buffer until the deadline"
-    ),
-)
 def test_list_codex_plugin_hooks_sees_reply_written_with_other_output(
     fake_codex, monkeypatch, tmp_path
 ) -> None:
@@ -206,19 +205,10 @@ def test_list_codex_plugin_hooks_sees_reply_written_with_other_output(
 
     ok, _hooks, message = cli._list_codex_plugin_hooks(tmp_path)
 
-    # Initialize must succeed; hooks/list then reports the empty fake list.
-    assert message != "Codex app-server did not respond in time"
-    assert not ok
+    # Initialize succeeds; hooks/list then reports the empty fake list.
+    assert (ok, message) == (True, "found 0 claude-smart hooks")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "known bug: on child exit EOF keeps select() ready and readline() "
-        "returns '', so the loop never reaches proc.poll() and reports a "
-        "timeout instead of the exit"
-    ),
-)
 def test_list_codex_plugin_hooks_reports_early_exit_promptly(
     fake_codex, monkeypatch, tmp_path
 ) -> None:
@@ -229,6 +219,19 @@ def test_list_codex_plugin_hooks_reports_early_exit_promptly(
 
     assert not ok
     assert message == "Codex app-server exited before responding"
+
+
+def test_list_codex_plugin_hooks_reports_exit_after_output_without_waiting(
+    fake_codex, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("FAKE_CODEX_MODE", "exit_after_output")
+    monkeypatch.setattr(cli, "_CODEX_CLI_TIMEOUT_SECONDS", 30)
+
+    started = time.monotonic()
+    ok, _hooks, message = cli._list_codex_plugin_hooks(tmp_path)
+
+    assert (ok, message) == (False, "Codex app-server exited before responding")
+    assert time.monotonic() - started < 10
 
 
 def test_list_codex_plugin_hooks_times_out_on_a_silent_app_server(
@@ -259,9 +262,9 @@ def test_app_server_helpers_reject_missing_pipes() -> None:
     no_stdin = SimpleNamespace(stdin=None)
 
     with pytest.raises(RuntimeError, match="stdout pipe is not available"):
-        cli._read_codex_app_server_response(no_stdout, 1, 0.0)  # type: ignore[arg-type]
+        cli._codex_stdout_lines(no_stdout)  # type: ignore[arg-type]
     with pytest.raises(RuntimeError, match="stdin pipe is not available"):
-        cli._codex_app_server_request(no_stdin, 1, "x", {}, 0.0)  # type: ignore[arg-type]
+        cli._codex_app_server_request(no_stdin, queue.Queue(), 1, "x", {}, 0.0)  # type: ignore[arg-type]
 
 
 def test_trust_codex_plugin_hooks_requires_hashes(
