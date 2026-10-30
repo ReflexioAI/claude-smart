@@ -2252,8 +2252,8 @@ def cmd_load(args: argparse.Namespace) -> int:
         )
         return 1
     sys.stdout.write(context_format.render_loaded_item(entry))
-    # The unpublished turn that injected this learning reports it as
-    # ``loaded``; a load of an already-published turn stays local. Recording
+    # The open turn that injected this learning reports it as ``loaded`` when
+    # both land in one publish batch; any other load stays local. Recording
     # is best effort: the agent already has the text it asked for.
     try:
         sent = state.append_loaded(session_id, entry)

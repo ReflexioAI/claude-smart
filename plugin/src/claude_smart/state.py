@@ -13,11 +13,12 @@ Each Claude Code session gets one file at
 - ``{"retrieved_learning_refs": [...]}`` — identity pairs shown to the agent,
   attached by event order to the next Assistant turn
 - ``{"loaded_learning_refs": [...], "target": ...}`` — identity pairs whose
-  full text the agent loaded with ``cli.sh load``. The unpublished turn that
-  injected the learning reports it as ``loaded: true``; a load whose injecting
-  turn was already published stays local (``target: "published"``) and is
-  never sent, because a new ``retrieved_learnings`` entry would read as an
-  exposure in a turn that did not retrieve it
+  full text the agent loaded with ``cli.sh load``. When the load lands in the
+  same publish batch as the open turn that injected the learning, that turn
+  reports it as ``loaded: true``. Otherwise (an earlier response, a published
+  or frozen batch) it stays local (``target: "published"``) and is never sent:
+  a new ``retrieved_learnings`` entry would read as an exposure in a turn
+  that did not retrieve it, and a frozen retry must stay byte-identical
 - ``{"publish_attempt": {"start": N, "end": M}}`` — frozen retry boundary for
   one in-flight publish
 - ``{"publish_request": {"start": N, "request_id": "..."}}`` — response
@@ -198,10 +199,11 @@ def append_loaded(session_id: str, entry: dict[str, Any]) -> bool | None:
     """Record that the agent loaded one injected item's full text.
 
     The entry comes from this session's citation registry, so it was injected
-    here. The record says whether the injecting turn is still unpublished
-    (so the load will be sent as ``loaded: true`` on that turn's entry) or
-    already published (kept locally only). Publishing decides again from
-    buffer order; ``target`` is the local tally.
+    here. The record says whether the load will reach the server: only when
+    it falls in the same publish batch as the open turn that injected it (see
+    ``_batch_boundaries``). Otherwise it is kept locally only. Publishing
+    decides again from buffer order with the same rule; ``target`` is the
+    local tally.
 
     Args:
         session_id (str): Session whose ordered buffer receives the record.
@@ -531,31 +533,29 @@ def _identity(ref: dict[str, Any]) -> tuple[str, str]:
     return ref["kind"], ref["learning_id"]
 
 
-def _mark_load_target(
-    identity: tuple[str, str],
-    pending_refs: list[dict[str, str]],
-    pending_loaded: set[tuple[str, str]],
-    turn_retrieved: dict[tuple[str, str], list[dict[str, Any]]],
-) -> bool:
-    """Flag the unpublished turn that most recently injected ``identity``.
+def _batch_boundaries(buffered: list[dict[str, Any]], published: int) -> set[int]:
+    """Positions where a publish batch can end, under ``publish``'s rules.
 
-    The open turn (refs not yet attached to an Assistant) wins over earlier
-    turns. Entries are only ever flagged, never added, so a load cannot
-    create an exposure in a turn that did not retrieve the learning.
-
-    Returns:
-        bool: False when no unpublished turn injected it (local only).
+    ``_prepare_publish_batch`` ends a batch at the current frozen attempt's
+    end (its payload must stay byte-identical on retry) or at the next
+    reserved response start. Records on either side of one of these never
+    share a request.
     """
-    if any(_identity(ref) == identity for ref in pending_refs):
-        pending_loaded.add(identity)
-        return True
-    entries = turn_retrieved.get(identity)
-    if entries is None:
-        return False
-    for entry in entries:
-        if _identity(entry) == identity:
-            entry["loaded"] = True
-    return True
+    boundaries = {
+        start
+        for start, _, _ in reserved_publish_requests(buffered)
+        if start > published
+    }
+    for record in buffered[published:]:
+        attempt = record.get("publish_attempt")
+        if (
+            isinstance(attempt, dict)
+            and attempt.get("start") == published
+            and type(attempt.get("end")) is int
+            and attempt["end"] > published
+        ):
+            boundaries.add(attempt["end"])
+    return boundaries
 
 
 def unpublished_slice(
@@ -580,7 +580,7 @@ def unpublished_slice(
     turns, _, local_only = _slice(buffered, published)
     if local_only:
         _LOGGER.debug(
-            "Kept %d loads local: their injecting turns were already published",
+            "Kept %d loads local: their retrieval is in another publish batch",
             local_only,
         )
     return published, turns
@@ -598,13 +598,20 @@ def _slice(
     pending_tools: list[dict[str, Any]] = []
     pending_refs: list[dict[str, str]] = []
     pending_loaded: set[tuple[str, str]] = set()
-    turn_retrieved: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    # Batch of the latest open-turn injection of each learning. A load is sent
+    # only when it shares that batch: an entry is flagged, never added, so a
+    # load cannot create an exposure in a turn that did not retrieve it.
+    pending_batch: dict[tuple[str, str], int] = {}
+    boundaries = _batch_boundaries(buffered, published)
+    batch = 0
     turns: list[dict[str, Any]] = []
     attached_total = skipped = truncated = sent_loads = local_only = 0
 
     for index, record in enumerate(buffered):
         if index < published:
             continue
+        if index in boundaries:
+            batch += 1
 
         refs = record.get("retrieved_learning_refs")
         if "role" not in record and isinstance(refs, list):
@@ -613,6 +620,7 @@ def _slice(
             ]
             skipped += len(refs) - len(valid_refs)
             pending_refs.extend(valid_refs)
+            pending_batch.update((_identity(ref), batch) for ref in valid_refs)
             continue
         loaded = record.get("loaded_learning_refs")
         if "role" not in record and isinstance(loaded, list):
@@ -623,9 +631,8 @@ def _slice(
             ]
             skipped += len(loaded) - len(valid_loaded)
             for ref in valid_loaded:
-                if _mark_load_target(
-                    _identity(ref), pending_refs, pending_loaded, turn_retrieved
-                ):
+                if pending_batch.get(_identity(ref)) == batch:
+                    pending_loaded.add(_identity(ref))
                     sent_loads += 1
                 else:
                     local_only += 1
@@ -701,8 +708,8 @@ def _slice(
                 identity = _identity(entry)
                 if identity in pending_loaded:
                     entry["loaded"] = True
-                turn_retrieved[identity] = retrieved
             pending_loaded = set()
+            pending_batch = {}
             if retrieved:
                 turn["retrieved_learnings"] = retrieved
         turns.append(turn)

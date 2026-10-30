@@ -615,18 +615,88 @@ def test_loaded_learning_is_marked_once_in_the_next_turn(session_dir) -> None:
     ]
 
 
-def test_load_marks_the_earlier_unpublished_turn_that_injected_it(
-    session_dir,
-) -> None:
+def _drain_batches(session_id: str) -> list[list[dict]]:
+    """Run the real publish batching and return each batch's interactions."""
+    from claude_smart import publish
+
+    batches = []
+    while (batch := publish._prepare_publish_batch(session_id)) is not None:
+        _, end, interactions = batch
+        batches.append(interactions)
+        state.append(session_id, {"published_up_to": end})
+    return batches
+
+
+def _sent_loaded(batches: list[list[dict]]) -> list[tuple[str, str]]:
+    return [
+        (ref["kind"], ref["learning_id"])
+        for batch in batches
+        for turn in batch
+        for ref in turn.get("retrieved_learnings", [])
+        if ref.get("loaded")
+    ]
+
+
+def test_load_in_the_injecting_response_is_sent(session_dir) -> None:
+    state.append("s1", {"role": "User", "content": "q"})
+    state.reserve_publish_request_id("s1")
     state.append_injected("s1", [_PB_11])
-    state.append("s1", {"role": "Assistant", "content": "a"})
     assert state.append_loaded("s1", _PB_11) is True
+    state.append("s1", {"role": "Assistant", "content": "a"})
+
+    assert _sent_loaded(_drain_batches("s1")) == [("user_playbook", "11")]
+
+
+def test_load_in_a_later_response_is_local_only(session_dir) -> None:
+    """Codex P2: the earlier response is unpublished when a later one loads."""
+    state.append("s1", {"role": "User", "content": "q1"})
+    state.reserve_publish_request_id("s1")
+    state.append_injected("s1", [_PB_11])
+    state.append("s1", {"role": "Assistant", "content": "a1"})
+    state.append("s1", {"role": "User", "content": "q2"})
+    state.reserve_publish_request_id("s1")
+    assert state.append_loaded("s1", _PB_11) is False
     state.append("s1", {"role": "Assistant", "content": "a2"})
 
-    assert _assistant_refs("s1") == [
-        [{"kind": "user_playbook", "learning_id": "11", "loaded": True}],
-        [],
-    ]
+    batches = _drain_batches("s1")
+
+    assert len(batches) == 2
+    assert _sent_loaded(batches) == []
+    assert state.local_only_load_count("s1") == 1
+
+
+def test_load_across_a_cancelled_response_boundary_is_local_only(
+    session_dir,
+) -> None:
+    """A new prompt closes an unanswered one; its retrievals stay with it."""
+    state.append("s1", {"role": "User", "content": "q1"})
+    state.reserve_publish_request_id("s1")
+    state.append_injected("s1", [_PB_11])
+    state.append("s1", {"role": "User", "content": "q2"})
+    state.reserve_publish_request_id("s1")
+    assert state.append_loaded("s1", _PB_11) is False
+    state.append("s1", {"role": "Assistant", "content": "a2"})
+
+    assert _sent_loaded(_drain_batches("s1")) == []
+
+
+def test_load_after_a_frozen_retry_boundary_is_local_and_keeps_payload(
+    session_dir,
+) -> None:
+    state.append("s1", {"role": "User", "content": "q1"})
+    state.append_injected("s1", [_PB_11])
+    state.append("s1", {"role": "User", "content": "q2"})
+    end = len(state.read_all("s1"))
+    state.append("s1", {"publish_attempt": {"start": 0, "end": end}})
+    assert state.pending_publish_end(state.read_all("s1"), 0) == end
+    frozen = state.unpublished_slice(state.read_all("s1")[:end], published_override=0)
+
+    assert state.append_loaded("s1", _PB_11) is False
+    state.append("s1", {"role": "Assistant", "content": "a"})
+
+    records = state.read_all("s1")
+    assert state.unpublished_slice(records[:end], published_override=0) == frozen
+    assert _sent_loaded(_drain_batches("s1")) == []
 
 
 def test_load_never_creates_an_exposure_in_a_turn_that_did_not_retrieve(
@@ -642,20 +712,6 @@ def test_load_never_creates_an_exposure_in_a_turn_that_did_not_retrieve(
 
     assert _assistant_refs("s1") == [[{"kind": "profile", "learning_id": "p1"}]]
     assert state.local_only_load_count("s1") == 1
-
-
-def test_load_after_last_turn_still_marks_that_unpublished_turn(session_dir) -> None:
-    state.append("s1", {"role": "User", "content": "q"})
-    state.append_injected("s1", [_PB_11])
-    state.append("s1", {"role": "Assistant", "content": "a"})
-    state.append_loaded("s1", _PB_11)
-    records = state.read_all("s1")
-
-    assert state.safe_publish_end(records, 0) == len(records)
-    assert _assistant_refs("s1") == [
-        [{"kind": "user_playbook", "learning_id": "11", "loaded": True}]
-    ]
-    assert state.local_only_load_count("s1") == 0
 
 
 def test_loaded_marks_every_retrieved_receipt_of_the_learning(session_dir) -> None:
