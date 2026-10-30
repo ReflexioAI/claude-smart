@@ -615,18 +615,47 @@ def test_loaded_learning_is_marked_once_in_the_next_turn(session_dir) -> None:
     ]
 
 
-def test_load_of_item_injected_in_earlier_turn_is_reported_with_loaded(
+def test_load_marks_the_earlier_unpublished_turn_that_injected_it(
     session_dir,
 ) -> None:
     state.append_injected("s1", [_PB_11])
     state.append("s1", {"role": "Assistant", "content": "a"})
-    state.append_loaded("s1", _PB_11)
+    assert state.append_loaded("s1", _PB_11) is True
     state.append("s1", {"role": "Assistant", "content": "a2"})
 
     assert _assistant_refs("s1") == [
-        [{"kind": "user_playbook", "learning_id": "11"}],
         [{"kind": "user_playbook", "learning_id": "11", "loaded": True}],
+        [],
     ]
+
+
+def test_load_never_creates_an_exposure_in_a_turn_that_did_not_retrieve(
+    session_dir,
+) -> None:
+    """The tuner reads every retrieved_learnings entry as an exposure."""
+    state.append_injected("s1", [_PB_11])
+    state.append("s1", {"role": "Assistant", "content": "a"})
+    state.mark_all_published("s1")
+    state.append_injected("s1", [_PROFILE_P1])
+    assert state.append_loaded("s1", _PB_11) is False
+    state.append("s1", {"role": "Assistant", "content": "a2"})
+
+    assert _assistant_refs("s1") == [[{"kind": "profile", "learning_id": "p1"}]]
+    assert state.local_only_load_count("s1") == 1
+
+
+def test_load_after_last_turn_still_marks_that_unpublished_turn(session_dir) -> None:
+    state.append("s1", {"role": "User", "content": "q"})
+    state.append_injected("s1", [_PB_11])
+    state.append("s1", {"role": "Assistant", "content": "a"})
+    state.append_loaded("s1", _PB_11)
+    records = state.read_all("s1")
+
+    assert state.safe_publish_end(records, 0) == len(records)
+    assert _assistant_refs("s1") == [
+        [{"kind": "user_playbook", "learning_id": "11", "loaded": True}]
+    ]
+    assert state.local_only_load_count("s1") == 0
 
 
 def test_loaded_marks_every_retrieved_receipt_of_the_learning(session_dir) -> None:
@@ -658,27 +687,8 @@ def test_loaded_marks_every_retrieved_receipt_of_the_learning(session_dir) -> No
 def test_append_loaded_without_publishable_identity_records_nothing(
     session_dir,
 ) -> None:
-    assert state.append_loaded("s1", {"id": "s1-x", "kind": "playbook"}) is False
+    assert state.append_loaded("s1", {"id": "s1-x", "kind": "playbook"}) is None
     assert state.read_all("s1") == []
-
-
-def test_unmatched_loaded_record_holds_back_the_publish_end(session_dir) -> None:
-    """A load after the last Assistant waits for its turn instead of being lost."""
-    state.append("s1", {"role": "User", "content": "q"})
-    state.append("s1", {"role": "Assistant", "content": "a"})
-    state.append_loaded("s1", _PB_11)
-    records = state.read_all("s1")
-
-    assert state.safe_publish_end(records, 0) == 2
-
-
-def test_loaded_refs_respect_the_publish_cap(session_dir, monkeypatch) -> None:
-    monkeypatch.setattr(state, "_RETRIEVED_LEARNINGS_PUBLISH_CAP", 1)
-    state.append_injected("s1", [_PROFILE_P1])
-    state.append_loaded("s1", _PB_11)
-    state.append("s1", {"role": "Assistant", "content": "a"})
-
-    assert _assistant_refs("s1") == [[{"kind": "profile", "learning_id": "p1"}]]
 
 
 def test_search_reset_marker_is_claimed_once(session_dir) -> None:

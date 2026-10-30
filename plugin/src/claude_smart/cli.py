@@ -45,6 +45,7 @@ from claude_smart import (
     context_format,
     cs_cite,
     env_config,
+    hook_log,
     ids,
     publish,
     runtime,
@@ -2251,10 +2252,21 @@ def cmd_load(args: argparse.Namespace) -> int:
         )
         return 1
     sys.stdout.write(context_format.render_loaded_item(entry))
-    # The next published turn reports this learning as ``loaded``. Recording
+    # The unpublished turn that injected this learning reports it as
+    # ``loaded``; a load of an already-published turn stays local. Recording
     # is best effort: the agent already has the text it asked for.
     try:
-        state.append_loaded(session_id, entry)
+        sent = state.append_loaded(session_id, entry)
+        if sent is not None:
+            hook_log.log_event(
+                event="load",
+                host=runtime.host(),
+                session_id=session_id,
+                extra={
+                    "load_sent": sent,
+                    "local_only_loads": state.local_only_load_count(session_id),
+                },
+            )
     except Exception as exc:  # noqa: BLE001 — never fail a successful load.
         _LOGGER.debug("could not record load of %s: %s", item_id, exc)
     return 0
