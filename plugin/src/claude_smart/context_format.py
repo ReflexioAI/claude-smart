@@ -191,7 +191,6 @@ def render_inline_with_registry(
     profiles: Iterable[Any],
     session_id: str = "",
     budget_chars: int = INLINE_CONTEXT_BUDGET_CHARS,
-    max_items: int | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Render the mid-session index block and its citation registry.
 
@@ -210,8 +209,6 @@ def render_inline_with_registry(
             Omitted from the load command when empty.
         budget_chars (int): Size cap for the whole block; see
             ``inline_budget_chars``.
-        max_items (int | None): Cap on index lines; the lowest-ranked lines
-            beyond it are dropped. ``None`` keeps every line that fits.
 
     Returns:
         tuple[str, list[dict[str, Any]]]: ``(markdown, registry_entries)``.
@@ -228,7 +225,6 @@ def render_inline_with_registry(
         profile_entries,
         lambda playbooks, prefs: _assemble_index(playbooks, prefs, session_id),
         budget_chars,
-        max_items,
     )
 
 
@@ -240,7 +236,6 @@ def render_inline_compact_with_registry(
     profiles: Iterable[Any],
     session_id: str = "",
     budget_chars: int = CODEX_INLINE_CONTEXT_BUDGET_CHARS,
-    max_items: int | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Render the same index as one logical line, for Codex.
 
@@ -257,7 +252,6 @@ def render_inline_compact_with_registry(
         profile_entries,
         lambda playbooks, prefs: _assemble_compact(playbooks, prefs, session_id),
         budget_chars,
-        max_items,
     )
 
 
@@ -289,15 +283,13 @@ def _fit_inline_budget(
     profiles: list[dict[str, Any]],
     assemble: Callable[[list[dict[str, Any]], list[dict[str, Any]]], str],
     budget_chars: int,
-    max_items: int | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Keep the highest-ranked index lines whose whole block fits the budget.
 
     Lines are admitted by rank, alternating sections (skill 1, preference 1,
-    skill 2, ...), until ``max_items`` lines are kept or the next one would
-    push the assembled block, header and footer included, past
-    ``budget_chars``. Every line is bounded, so only the lowest-ranked lines
-    are ever dropped.
+    skill 2, ...), until the next one would push the assembled block, header
+    and footer included, past ``budget_chars``. Every line is
+    bounded, so only the lowest-ranked lines are ever dropped.
 
     Returns:
         tuple[str, list[dict[str, Any]]]: ``(text, registry_entries)`` for
@@ -305,8 +297,6 @@ def _fit_inline_budget(
             fits; the header and footer are never emitted on their own.
     """
     order = _interleave_by_rank(len(playbooks), len(profiles))
-    if max_items is not None:
-        order = order[: max(max_items, 0)]
     text = ""
     kept_playbooks = kept_profiles = 0
     for keep in range(1, len(order) + 1):

@@ -1059,8 +1059,8 @@ def test_user_prompt_injects_context_when_hits_present(
     # Prompt text is passed verbatim as the search query.
     assert calls[0]["project_id"] == "demo"
     assert calls[0]["query"] == "edit pyproject.toml"
-    # Five hits per collection: index lines are bounded, so 15 fit the budget.
-    assert calls[0]["top_k"] == 5
+    # The default cap of 6 results across three collections: 2 per collection.
+    assert calls[0]["top_k"] == 2
     # Session id scopes server-side injection dedup.
     assert calls[0]["session_id"] == "s1"
     # The prompt is still buffered for downstream extraction.
@@ -1727,7 +1727,7 @@ def test_pre_tool_injects_context_when_hits_present(session_dir, monkeypatch) ->
     # Composed query must reach the adapter scoped to the project.
     assert calls[0]["project_id"] == "demo"
     assert "pyproject.toml" in calls[0]["query"]
-    assert calls[0]["top_k"] == 5
+    assert calls[0]["top_k"] == 2
     # Session id scopes server-side injection dedup.
     assert calls[0]["session_id"] == "s1"
 
@@ -2176,43 +2176,78 @@ def test_compaction_reset_is_per_session(session_dir) -> None:
     assert state.take_search_reset("other") is True
 
 
+class _ServerLikeSearch(_SearchRecorder):
+    """Returns at most ``top_k`` hits per collection, as the server does."""
+
+    def __init__(self, per_type: int = 5):
+        hits = {
+            "playbooks": [
+                {"user_playbook_id": f"u{i}", "content": f"user skill {i}"}
+                for i in range(1, per_type + 1)
+            ],
+            "agent_playbooks": [
+                {"agent_playbook_id": f"a{i}", "content": f"shared skill {i}"}
+                for i in range(1, per_type + 1)
+            ],
+            "profiles": [
+                {"profile_id": f"p{i}", "content": f"preference {i}"}
+                for i in range(1, per_type + 1)
+            ],
+        }
+        super().__init__(hits)
+        self.returned: list[str] = []
+
+    def search_all(self, **kwargs):
+        self.calls.append(kwargs)
+        top_k = kwargs["top_k"]
+        result = tuple(
+            list(self._hits[key][:top_k])
+            for key in ("playbooks", "agent_playbooks", "profiles")
+        )
+        self.returned = [
+            str(
+                item.get("user_playbook_id")
+                or item.get("agent_playbook_id")
+                or item.get("profile_id")
+            )
+            for group in result
+            for item in group
+        ]
+        return result
+
+
 @pytest.mark.parametrize(
-    ("raw", "expected_lines"),
-    [(None, 6), ("", 6), ("bogus", 6), ("-3", 6), ("2", 2), ("0", 15)],
+    ("raw", "top_k", "total"),
+    [
+        (None, 2, 6),
+        ("", 2, 6),
+        ("bogus", 2, 6),
+        ("-3", 2, 6),
+        ("9", 3, 9),
+        ("7", 2, 6),
+        ("2", 1, 3),
+        ("0", 5, 15),
+    ],
 )
-def test_hook_injects_at_most_the_configured_number_of_items(
-    session_dir, monkeypatch, raw: str | None, expected_lines: int
+def test_item_cap_asks_the_server_for_fewer_results(
+    session_dir, monkeypatch, raw: str | None, top_k: int, total: int
 ) -> None:
+    """Everything the server returns (and marks served) is injected."""
     if raw is None:
         monkeypatch.delenv("CLAUDE_SMART_MAX_INJECTED_ITEMS", raising=False)
     else:
         monkeypatch.setenv("CLAUDE_SMART_MAX_INJECTED_ITEMS", raw)
-    hits = {
-        "playbooks": [
-            {"user_playbook_id": f"u{i}", "content": f"user skill {i}"}
-            for i in range(1, 6)
-        ],
-        "agent_playbooks": [
-            {"agent_playbook_id": f"a{i}", "content": f"shared skill {i}"}
-            for i in range(1, 6)
-        ],
-        "profiles": [
-            {"profile_id": f"p{i}", "content": f"preference {i}"} for i in range(1, 6)
-        ],
-    }
-    adapter = _SearchRecorder(hits)
+    adapter = _ServerLikeSearch()
 
     out = _emit(adapter)
 
+    assert adapter.calls[0]["top_k"] == top_k
+    assert len(adapter.returned) == total
     context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
     shown = _INDEX_ID_RE.findall(context)
-    assert len(shown) == expected_lines
-    assert set(state.read_injected("s1")) == set(shown)
-    assert adapter.calls[0]["top_k"] == min(5, expected_lines)
-    if raw is None:
-        # Highest-ranked first, alternating skills and preferences.
-        assert "shared skill 1" in context and "preference 3" in context
-        assert "preference 4" not in context and "shared skill 4" not in context
+    assert len(shown) == total
+    injected = {entry["real_id"] for entry in state.read_injected("s1").values()}
+    assert injected == set(adapter.returned)
 
 
 @pytest.mark.parametrize(

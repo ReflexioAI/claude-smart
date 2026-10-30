@@ -23,14 +23,16 @@ import sys
 import time
 
 from claude_smart import context_format, state
-from claude_smart.reflexio_adapter import Adapter
+from claude_smart.reflexio_adapter import SEARCHED_ENTITY_TYPE_COUNT, Adapter
 
 _LOGGER = logging.getLogger(__name__)
 
-# Total index lines one hook firing may inject, across all collections.
-# Hooks fire on every prompt and mutating tool call, and server-side dedup
+# Total results one hook firing may request, across all collections. Hooks
+# fire on every prompt and mutating tool call, and server-side dedup
 # backfills next-best matches each time, so the low-ranked tail is the least
-# likely to apply. See ``max_injected_items``.
+# likely to apply. Enforced by asking the server for fewer results, never by
+# dropping returned ones: the server marks every result it returns as served
+# for the session, so a dropped result would stay hidden until a reset.
 DEFAULT_MAX_INJECTED_ITEMS = 6
 _MAX_ITEMS_ENV = "CLAUDE_SMART_MAX_INJECTED_ITEMS"
 _THRESHOLD_ENV = "CLAUDE_SMART_SEARCH_THRESHOLD"
@@ -41,7 +43,8 @@ def max_injected_items() -> int | None:
 
     Reads ``CLAUDE_SMART_MAX_INJECTED_ITEMS``: a positive integer sets the
     cap, ``0`` removes it, and an unset, empty or invalid value uses
-    ``DEFAULT_MAX_INJECTED_ITEMS``.
+    ``DEFAULT_MAX_INJECTED_ITEMS``. See ``per_type_top_k`` for how it is
+    enforced.
 
     Returns:
         int | None: The cap, or ``None`` for no cap.
@@ -57,6 +60,26 @@ def max_injected_items() -> int | None:
     if value < 0:
         return DEFAULT_MAX_INJECTED_ITEMS
     return value or None
+
+
+def per_type_top_k(top_k: int, max_items: int | None) -> int:
+    """Return the per-collection ``top_k`` that keeps a search within the cap.
+
+    One search returns up to ``top_k`` results for each searched collection,
+    so the total never exceeds ``max_items`` when ``top_k`` is
+    ``max_items // collections``. The server requires at least one result per
+    collection, so caps below the collection count act as one per collection.
+
+    Args:
+        top_k (int): The hook's own per-collection limit.
+        max_items (int | None): Total cap, or ``None`` for none.
+
+    Returns:
+        int: The ``top_k`` to request, at least 1.
+    """
+    if max_items is None:
+        return top_k
+    return max(1, min(top_k, max_items // SEARCHED_ENTITY_TYPE_COUNT))
 
 
 def search_threshold() -> float | None:
@@ -103,8 +126,8 @@ def emit_context(
         hook_event_name (str): ``"PreToolUse"`` or ``"UserPromptSubmit"``;
             echoed verbatim in the hook envelope so Claude Code attributes
             the context to the right event.
-        top_k (int): Cap on hits per collection; also bounded by the total
-            per-hook cap (``max_injected_items``).
+        top_k (int): Cap on hits per collection; lowered so the total
+            requested stays within ``max_injected_items`` (``per_type_top_k``).
         adapter (Adapter | None): Injection seam for tests. A fresh
             ``Adapter()`` is used when ``None``.
 
@@ -113,14 +136,13 @@ def emit_context(
             when the search returned nothing to inject.
     """
     adapter = adapter or Adapter()
-    max_items = max_injected_items()
     # Set by SessionStart after a compaction; claimed by exactly one search.
     reset_seen = bool(session_id) and state.take_search_reset(session_id)
     errors_before = len(getattr(adapter, "read_errors", ()))
     user_playbooks, agent_playbooks, profiles = adapter.search_all(
         project_id=project_id,
         query=query,
-        top_k=top_k if max_items is None else max(1, min(top_k, max_items)),
+        top_k=per_type_top_k(top_k, max_injected_items()),
         # Scopes server-side dedup: rules already injected into this session
         # are not returned again; next-best matches backfill instead.
         session_id=session_id or None,
@@ -144,7 +166,6 @@ def emit_context(
         profiles=profiles,
         session_id=session_id,
         budget_chars=context_format.inline_budget_chars(host),
-        max_items=max_items,
     )
     if not markdown:
         return False
@@ -168,4 +189,9 @@ def emit_context(
     return True
 
 
-__all__ = ["emit_context", "max_injected_items", "search_threshold"]
+__all__ = [
+    "emit_context",
+    "max_injected_items",
+    "per_type_top_k",
+    "search_threshold",
+]

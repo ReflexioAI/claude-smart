@@ -257,7 +257,7 @@ def run_host_learning_happy_path(
             {
                 "project_id": project.name,
                 "query": prompt,
-                "top_k": 5,
+                "top_k": 2,  # default cap: 6 results over 3 collections
                 "session_id": session_id,
                 "host": host,
                 "request_id": fake_reflexio.publish_calls[0]["request_id"],

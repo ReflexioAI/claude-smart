@@ -51,6 +51,8 @@ _REQUEST_ID_CONFLICT = "request_id_conflict"
 _SEARCH_MODE_HYBRID = "hybrid"  # reflexio.models.config_schema.SearchMode.HYBRID
 _SOURCE = "claude-smart"
 _UNIFIED_ENTITY_TYPES = ("profiles", "user_playbooks", "agent_playbooks")
+# ``search_all`` returns up to ``top_k`` results for each of these.
+SEARCHED_ENTITY_TYPE_COUNT = len(_UNIFIED_ENTITY_TYPES)
 _AGENT_PLAYBOOK_APPROVAL_STATUSES = ("pending", "approved")
 _REJECTED_AGENT_PLAYBOOK_STATUS = "rejected"
 _LOCAL_8071_URLS = {
