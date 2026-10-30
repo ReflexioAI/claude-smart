@@ -689,23 +689,12 @@ function opencodeGlobalConfigDir() {
   return join(base, "opencode");
 }
 
-function opencodeConfigPath(args = [], cwd = process.cwd()) {
-  if (parseGlobalFlag(args)) {
-    const configDir = opencodeGlobalConfigDir();
-    for (const name of OPENCODE_CONFIG_NAMES) {
-      const candidate = join(configDir, name);
-      if (existsSync(candidate)) return candidate;
-    }
-    return join(configDir, "opencode.json");
-  }
-  const candidates = [
-    ...OPENCODE_CONFIG_NAMES.map((name) => join(cwd, name)),
-    ...OPENCODE_CONFIG_NAMES.map((name) => join(cwd, ".opencode", name)),
-  ];
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return join(cwd, "opencode.json");
+// Every config file OpenCode reads for the selected scope, existing or not.
+// OpenCode merges all of them rather than picking one, so a claude-smart entry
+// in any of them is loaded. Mirrors the Python CLI's _opencode_scope_config_paths.
+function opencodeScopeConfigPaths(args = [], cwd = process.cwd()) {
+  const roots = parseGlobalFlag(args) ? [opencodeGlobalConfigDir()] : [cwd, join(cwd, ".opencode")];
+  return roots.flatMap((root) => OPENCODE_CONFIG_NAMES.map((name) => join(root, name)));
 }
 
 function opencodePluginSpec(entry) {
@@ -754,18 +743,30 @@ function isGeneratedOpenCodeV2Loader(text) {
   return /^export \{ default \} from "file:\/\/.+";$/.test(lines[2]);
 }
 
+// null only when nothing is at the path: a directory or unreadable file throws,
+// so callers treat it as occupied. "utf8" replaces undecodable bytes, so a
+// foreign file is read (and never equals the generated body).
 function readOpenCodeV2Loader(target) {
   try {
     return readFileSync(target, "utf8");
-  } catch {
-    return null;
+  } catch (err) {
+    if (err && err.code === "ENOENT") return null;
+    throw err;
   }
 }
 
-// A foreign file at the loader path blocks the install; checked before any config change.
+// Why a foreign file or directory blocks the loader path, or null when it is
+// free; checked before any config change.
 function openCodeV2LoaderConflicts(args = [], cwd = process.cwd()) {
-  const existing = readOpenCodeV2Loader(opencodeV2PluginFile(args, cwd));
-  return existing !== null && !isGeneratedOpenCodeV2Loader(existing);
+  let existing;
+  try {
+    existing = readOpenCodeV2Loader(opencodeV2PluginFile(args, cwd));
+  } catch (err) {
+    return `It cannot be read as a file (${(err && (err.code || err.message)) || err})`;
+  }
+  return existing !== null && !isGeneratedOpenCodeV2Loader(existing)
+    ? "It is not a claude-smart loader"
+    : null;
 }
 
 function writeOpenCodeV2Plugin(
@@ -775,7 +776,12 @@ function writeOpenCodeV2Plugin(
 ) {
   const target = opencodeV2PluginFile(args, cwd);
   const body = opencodeV2PluginBody(packageRoot);
-  const existing = readOpenCodeV2Loader(target);
+  let existing;
+  try {
+    existing = readOpenCodeV2Loader(target);
+  } catch {
+    return { path: target, status: "conflict" };
+  }
   if (existing !== null && existing !== body && !isGeneratedOpenCodeV2Loader(existing)) {
     return { path: target, status: "conflict" };
   }
@@ -806,15 +812,8 @@ function isOpenCodeLocalPackagePath(packagePath) {
 
 function scopeHasClaudeSmart(args = [], cwd = process.cwd()) {
   if (existsSync(opencodeV2PluginFile(args, cwd))) return true;
-  // A reference is read-only state, not a choice of one file, so check every
-  // candidate config that exists: OpenCode merges several, and picking the
-  // first one here would miss a reference the surviving scope still has.
-  const roots = parseGlobalFlag(args) ? [opencodeGlobalConfigDir()] : [cwd, join(cwd, ".opencode")];
-  return roots.some((root) =>
-    OPENCODE_CONFIG_NAMES.some((name) => {
-      const file = join(root, name);
-      return existsSync(file) && configListsClaudeSmart(file);
-    }),
+  return opencodeScopeConfigPaths(args, cwd).some(
+    (file) => existsSync(file) && configListsClaudeSmart(file),
   );
 }
 
@@ -853,14 +852,19 @@ function isOpenCodeClaudeSmartSpec(spec) {
   return false;
 }
 
-function patchOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
-  const resolvedPluginSpec = install ? (pluginSpec || opencodeLocalPluginSpec()) : pluginSpec;
+function readOpenCodePluginConfig(configPath) {
   const data = readJsoncObject(configPath);
   for (const field of ["plugins", "plugin"]) {
     if (data[field] !== undefined && !Array.isArray(data[field])) {
       throw new Error(`OpenCode config ${configPath} field "${field}" must be a JSON array`);
     }
   }
+  return data;
+}
+
+function patchOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
+  const resolvedPluginSpec = install ? (pluginSpec || opencodeLocalPluginSpec()) : pluginSpec;
+  const data = readOpenCodePluginConfig(configPath);
   const current = [
     ...(Array.isArray(data.plugin) ? data.plugin : []),
     ...(Array.isArray(data.plugins) ? data.plugins : []),
@@ -886,6 +890,17 @@ function patchOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify(data, null, 2) + "\n");
   return { changed: true, configPath, backupPath };
+}
+
+// Removes claude-smart entries from every config the scope loads. Every existing
+// config is validated before any is rewritten, so a malformed one fails the
+// command without a partial edit. Returns the rewritten configs.
+function removeOpenCodeLegacyEntries(args = [], cwd = process.cwd()) {
+  const existing = opencodeScopeConfigPaths(args, cwd).filter((file) => existsSync(file));
+  for (const file of existing) readOpenCodePluginConfig(file);
+  return existing
+    .map((file) => patchOpenCodePluginConfig(file, { install: false }))
+    .filter((result) => result.changed);
 }
 
 function hasExtractionProvider() {
@@ -3609,7 +3624,7 @@ async function runInstallOpenCode(args) {
     process.exit(1);
   }
   const pluginRoot = join(packageRoot, "plugin");
-  let result;
+  let results;
   try {
     await bootstrapPluginRuntime(pluginRoot, { readOnly, patchCodexHooks: false });
   } catch (err) {
@@ -3618,12 +3633,13 @@ async function runInstallOpenCode(args) {
     );
     process.exit(1);
   }
-  if (openCodeV2LoaderConflicts(args)) {
+  const conflictReason = openCodeV2LoaderConflicts(args);
+  if (conflictReason !== null) {
     // The loader is the only load path, so on a conflict nothing loads
     // claude-smart: fail loudly, before the config is touched.
     process.stderr.write(
       `error: left an existing OpenCode plugin in place at ${opencodeV2PluginFile(args)}. ` +
-        "It is not a claude-smart loader; move it aside and reinstall to write " +
+        `${conflictReason}; move it aside and reinstall to write ` +
         "the loader. claude-smart OpenCode support is not installed.\n",
     );
     // No services were started or stopped by this install: leave any shared
@@ -3637,8 +3653,9 @@ async function runInstallOpenCode(args) {
     // beside it is a second load spec — 1.x runs server() twice (its
     // deduplicatePluginOrigins only drops exact spec matches) and V2 lists the
     // duplicate as a failed "Duplicate plugin ID". Install therefore removes
-    // any entry left by earlier versions instead of writing one.
-    result = patchOpenCodePluginConfig(opencodeConfigPath(args), { install: false });
+    // any entry left by earlier versions, from every config the scope loads,
+    // instead of writing one.
+    results = removeOpenCodeLegacyEntries(args);
   } catch (err) {
     process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
     stopClaudeSmartServices(pluginRoot);
@@ -3651,15 +3668,13 @@ async function runInstallOpenCode(args) {
   // Committed only after the loader check, so a conflict exit rolls the package back.
   commitLocalPluginPackage(packageRoot);
   await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);
-  if (result.backupPath) {
-    process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
-  }
+  reportOpenCodeConfigBackups(results);
   process.stdout.write(
     [
       "",
-      ...(result.changed
-        ? [`Removed the legacy claude-smart plugin entry from ${result.configPath}; the loader replaces it.`]
-        : []),
+      ...results.map(
+        (result) => `Removed the legacy claude-smart plugin entry from ${result.configPath}; the loader replaces it.`,
+      ),
       `Prepared claude-smart OpenCode package at ${packageRoot}.`,
       `Wrote the OpenCode loader at ${v2PluginFile.path}; OpenCode 1.x and V2 both load the plugin from there.`,
       "claude-smart OpenCode support is installed.",
@@ -3697,19 +3712,25 @@ async function runUninstallCodex() {
   );
 }
 
+function reportOpenCodeConfigBackups(results) {
+  for (const result of results) {
+    if (result.backupPath) {
+      process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
+    }
+  }
+}
+
 async function runUninstallOpenCode(args) {
   stopClaudeSmartServices(join(PACKAGE_ROOT, "plugin"));
   stopClaudeSmartServices(join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"));
-  let result;
+  let results;
   try {
-    result = patchOpenCodePluginConfig(opencodeConfigPath(args), { install: false });
+    results = removeOpenCodeLegacyEntries(args);
   } catch (err) {
     process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
     process.exit(1);
   }
-  if (result.backupPath) {
-    process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
-  }
+  reportOpenCodeConfigBackups(results);
   // The selected scope only: a `--global` install is a separate installation and
   // its loader must survive a project-scoped uninstall.
   removeOpenCodeV2Plugin(args);
@@ -3731,9 +3752,9 @@ async function runUninstallOpenCode(args) {
   process.stdout.write(
     [
       "",
-      result.changed
-        ? `Removed claude-smart OpenCode plugin entries from ${result.configPath}.`
-        : "OpenCode config did not include claude-smart.",
+      ...(results.length
+        ? results.map((result) => `Removed claude-smart OpenCode plugin entries from ${result.configPath}.`)
+        : ["OpenCode config did not include claude-smart."]),
       "Restart OpenCode to apply.",
       ...LOCAL_DATA_NOTICE,
       "",
@@ -3964,7 +3985,9 @@ module.exports = {
   ensureUv,
   configureReflexioSetup,
   patchCodexHooksForNode,
-  opencodeConfigPath,
+  opencodeScopeConfigPaths,
+  removeOpenCodeLegacyEntries,
+  openCodeV2LoaderConflicts,
   opencodeLocalPluginSpec,
   writeOpenCodeV2Plugin,
   removeOpenCodeV2Plugin,

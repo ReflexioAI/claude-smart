@@ -1263,9 +1263,9 @@ def _strip_jsonc(text: str) -> str:
 
 def _read_jsonc_object(path: Path) -> dict[str, object]:
     try:
-        text = path.read_text() if path.exists() else "{}"
+        text = path.read_text(encoding="utf-8") if path.exists() else "{}"
         parsed = json.loads(_strip_jsonc(text or "{}"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"could not parse OpenCode config {path}: {exc}") from exc
     if not isinstance(parsed, dict):
         raise ValueError(f"OpenCode config {path} must be a JSON object")
@@ -1278,25 +1278,20 @@ def _opencode_global_config_dir() -> Path:
     return base / "opencode"
 
 
-def _opencode_config_path(
+def _opencode_scope_config_paths(
     *, global_config: bool = False, cwd: Path | None = None
-) -> Path:
-    if global_config:
-        config_dir = _opencode_global_config_dir()
-        for name in _OPENCODE_CONFIG_NAMES:
-            candidate = config_dir / name
-            if candidate.exists():
-                return candidate
-        return config_dir / "opencode.json"
+) -> list[Path]:
+    """Every config file OpenCode reads for the selected scope, existing or not.
+
+    OpenCode merges all of them rather than picking one, so a claude-smart
+    entry in any of them is loaded. Mirrors the Node installer's
+    ``opencodeScopeConfigPaths``.
+    """
     base = cwd or Path.cwd()
-    candidates = [
-        *(base / name for name in _OPENCODE_CONFIG_NAMES),
-        *(base / ".opencode" / name for name in _OPENCODE_CONFIG_NAMES),
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return base / "opencode.json"
+    roots = (
+        [_opencode_global_config_dir()] if global_config else [base, base / ".opencode"]
+    )
+    return [root / name for root in roots for name in _OPENCODE_CONFIG_NAMES]
 
 
 def _opencode_plugin_spec(entry: object) -> str | None:
@@ -1351,11 +1346,7 @@ def _is_opencode_claude_smart_spec(spec: str | None) -> bool:
     return False
 
 
-def _patch_opencode_plugin_config(
-    config_path: Path, *, install: bool, plugin_spec: str | None = None
-) -> tuple[bool, Path]:
-    if install and plugin_spec is None:
-        plugin_spec = _opencode_local_plugin_spec()
+def _read_opencode_plugin_config(config_path: Path) -> dict[str, object]:
     data = _read_jsonc_object(config_path)
     for field in ("plugins", "plugin"):
         value = data.get(field)
@@ -1363,6 +1354,15 @@ def _patch_opencode_plugin_config(
             raise ValueError(
                 f'OpenCode config {config_path} field "{field}" must be a JSON array'
             )
+    return data
+
+
+def _patch_opencode_plugin_config(
+    config_path: Path, *, install: bool, plugin_spec: str | None = None
+) -> tuple[bool, Path]:
+    if install and plugin_spec is None:
+        plugin_spec = _opencode_local_plugin_spec()
+    data = _read_opencode_plugin_config(config_path)
     current_plugin = data.get("plugin")
     plugins: list[object] = []
     if isinstance(current_plugin, list):
@@ -1387,14 +1387,39 @@ def _patch_opencode_plugin_config(
     if not changed:
         return False, config_path
     if config_path.exists():
-        original = config_path.read_text()
+        original = config_path.read_text(encoding="utf-8")
         if original.strip() and original != _strip_jsonc(original):
-            config_path.with_suffix(config_path.suffix + ".bak").write_text(original)
+            config_path.with_suffix(config_path.suffix + ".bak").write_text(
+                original, encoding="utf-8"
+            )
     data["plugin"] = next_plugins
     data.pop("plugins", None)
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(data, indent=2) + "\n")
+    config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return True, config_path
+
+
+def _remove_opencode_legacy_entries(
+    *, global_config: bool = False, cwd: Path | None = None
+) -> list[Path]:
+    """Remove claude-smart entries from every config the scope loads.
+
+    Every existing config is validated before any is rewritten, so a malformed
+    one fails the command without a partial edit.
+
+    Returns:
+        list[Path]: The configs that were rewritten.
+    """
+    existing = [
+        path
+        for path in _opencode_scope_config_paths(global_config=global_config, cwd=cwd)
+        if path.exists()
+    ]
+    for path in existing:
+        _read_opencode_plugin_config(path)
+    return [
+        path for path in existing if _patch_opencode_plugin_config(path, install=False)[0]
+    ]
 
 
 # Plugins-directory loader, mirroring the Node installer byte-for-byte: each
@@ -1440,18 +1465,29 @@ def _is_generated_opencode_v2_loader(text: str) -> bool:
 
 
 def _read_opencode_v2_loader(target: Path) -> str | None:
+    """Read the loader path; ``None`` only when nothing is there.
+
+    A directory or unreadable file raises ``OSError`` so callers treat it as
+    occupied. Undecodable bytes are replaced, so a foreign file is read (and
+    never equals the generated body) instead of crashing the installer.
+    """
     try:
-        return target.read_text()
-    except OSError:
+        return target.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
         return None
 
 
-def _opencode_v2_loader_conflicts(*, global_config: bool = False) -> Path | None:
-    """Return the loader path when a foreign file blocks it; checked before any config change."""
+def _opencode_v2_loader_conflicts(
+    *, global_config: bool = False
+) -> tuple[Path, str] | None:
+    """Return the loader path and why it is blocked; checked before any config change."""
     target = _opencode_v2_plugin_file(global_config=global_config)
-    existing = _read_opencode_v2_loader(target)
+    try:
+        existing = _read_opencode_v2_loader(target)
+    except OSError as exc:
+        return target, f"It cannot be read as a file ({exc.strerror or exc})"
     if existing is not None and not _is_generated_opencode_v2_loader(existing):
-        return target
+        return target, "It is not a claude-smart loader"
     return None
 
 
@@ -1460,7 +1496,10 @@ def _write_opencode_v2_plugin(
 ) -> tuple[Path, str]:
     target = _opencode_v2_plugin_file(global_config=global_config, cwd=cwd)
     body = _opencode_v2_plugin_body(package_root)
-    existing = _read_opencode_v2_loader(target)
+    try:
+        existing = _read_opencode_v2_loader(target)
+    except OSError:
+        return target, "conflict"
     if (
         existing is not None
         and existing != body
@@ -1469,7 +1508,8 @@ def _write_opencode_v2_plugin(
         return target, "conflict"
     target.parent.mkdir(parents=True, exist_ok=True)
     if existing != body:
-        target.write_text(body)
+        # newline="": the bytes must match the Node installer's on Windows too.
+        target.write_text(body, encoding="utf-8", newline="")
     return target, "unchanged" if existing == body else "wrote"
 
 
@@ -1478,7 +1518,7 @@ def _remove_opencode_v2_plugin(
 ) -> bool:
     target = _opencode_v2_plugin_file(global_config=global_config, cwd=cwd)
     try:
-        text = target.read_text()
+        text = target.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
     if not _is_generated_opencode_v2_loader(text):
@@ -1507,14 +1547,9 @@ def _scope_has_claude_smart(
 ) -> bool:
     if _opencode_v2_plugin_file(global_config=global_config, cwd=cwd).exists():
         return True
-    # A reference is read-only state, not a choice of one file: check every
-    # candidate config that exists, the way the Node installer does.
-    base = cwd or Path.cwd()
-    roots = [_opencode_global_config_dir()] if global_config else [base, base / ".opencode"]
     return any(
-        _config_lists_claude_smart(root / name)
-        for root in roots
-        for name in _OPENCODE_CONFIG_NAMES
+        _config_lists_claude_smart(path)
+        for path in _opencode_scope_config_paths(global_config=global_config, cwd=cwd)
     )
 
 
@@ -1740,15 +1775,15 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
     package_root = Path(package_root_text)
     plugin_root = package_root / "plugin"
     global_config = bool(getattr(args, "global_config", False))
-    config_path = _opencode_config_path(global_config=global_config)
-    conflict_path = _opencode_v2_loader_conflicts(global_config=global_config)
-    if conflict_path is not None:
+    conflict = _opencode_v2_loader_conflicts(global_config=global_config)
+    if conflict is not None:
         # The loader is the only load path, so on a conflict nothing loads
         # claude-smart: fail loudly, before the config is touched.
+        conflict_path, reason = conflict
         sys.stderr.write(
             f"error: left an existing OpenCode plugin in place at {conflict_path}. "
-            "It is not a claude-smart loader; move it aside and reinstall to "
-            "write the loader. claude-smart OpenCode support is not installed.\n"
+            f"{reason}; move it aside and reinstall to write the loader. "
+            "claude-smart OpenCode support is not installed.\n"
         )
         return 1
     try:
@@ -1758,15 +1793,16 @@ def cmd_install_opencode(args: argparse.Namespace) -> int:
         # the old file:// config-entry shape). A config entry beside the
         # loader is a second load spec — 1.x runs server() twice and V2 lists
         # the duplicate as a failed "Duplicate plugin ID" — so install removes
-        # any legacy entry instead of writing one.
-        changed, config_path = _patch_opencode_plugin_config(config_path, install=False)
+        # any legacy entry, from every config the scope loads, instead of
+        # writing one.
+        changed_paths = _remove_opencode_legacy_entries(global_config=global_config)
     except ValueError as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 1
     loader_path, loader_status = _write_opencode_v2_plugin(
         package_root, global_config=global_config
     )
-    if changed:
+    for config_path in changed_paths:
         sys.stdout.write(
             f"Removed the legacy claude-smart plugin entry from {config_path}; "
             "the loader replaces it.\n"
@@ -2123,9 +2159,8 @@ def cmd_uninstall_opencode(args: argparse.Namespace) -> int:
         if script.exists():
             _run_service(script, "stop")
     global_config = bool(getattr(args, "global_config", False))
-    config_path = _opencode_config_path(global_config=global_config)
     try:
-        changed, config_path = _patch_opencode_plugin_config(config_path, install=False)
+        changed_paths = _remove_opencode_legacy_entries(global_config=global_config)
     except ValueError as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 1
@@ -2146,11 +2181,11 @@ def cmd_uninstall_opencode(args: argparse.Namespace) -> int:
             _OPENCODE_LOCAL_PACKAGE_DIR.parent.rmdir()
         except OSError:
             pass
-    if changed:
+    for config_path in changed_paths:
         sys.stdout.write(
             f"Removed claude-smart OpenCode plugin entries from {config_path}.\n"
         )
-    else:
+    if not changed_paths:
         sys.stdout.write("OpenCode config did not include claude-smart.\n")
     sys.stdout.write(f"Restart OpenCode to apply. {_LOCAL_DATA_NOTICE}")
     return 0
