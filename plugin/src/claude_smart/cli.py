@@ -2247,22 +2247,29 @@ _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 def cmd_load(args: argparse.Namespace) -> int:
-    """Print the full text of one injected ``[cs:ID]`` item.
+    """Print the full text of one or more injected ``[cs:ID]`` items.
 
     Reads the session's citation registry, which already holds each shown
     item's content, trigger and rationale, so loading needs no backend call
     and works offline, in managed mode, and after the item is edited
     server-side (it prints what was retrieved for this session).
 
+    Items are printed in the order requested; a repeated id is printed once.
+    An unknown id is reported on stderr and does not stop the others.
+
     Args:
-        args (argparse.Namespace): ``args.id`` is the item id, with or
-            without the ``cs:`` prefix or brackets; ``args.session`` overrides
-            the session (defaults to the most recently injected one).
+        args (argparse.Namespace): ``args.ids`` are the item ids, each with
+            or without the ``cs:`` prefix or brackets; ``args.session``
+            overrides the session (defaults to the most recently injected
+            one).
 
     Returns:
-        int: 0 when the item was printed, 1 for an unknown id or session.
+        int: 0 when every requested item was printed, 1 when any id is
+            unknown or the session is missing or invalid.
     """
-    item_id = args.id.strip().strip("[]").removeprefix("cs:")
+    item_ids = list(
+        dict.fromkeys(raw.strip().strip("[]").removeprefix("cs:") for raw in args.ids)
+    )
     session_id = (
         args.session if args.session is not None else _latest_injected_session_id()
     )
@@ -2275,15 +2282,19 @@ def cmd_load(args: argparse.Namespace) -> int:
             "pass --session <id> from the injected load command.\n"
         )
         return 1
-    entry = state.read_injected(session_id).get(item_id)
-    if entry is None:
-        sys.stderr.write(
-            f"error: unknown id {item_id!r} in session {session_id}. Use an id "
-            "from a [cs:…] line injected in this session.\n"
-        )
-        return 1
-    sys.stdout.write(context_format.render_loaded_item(entry))
-    return 0
+    registry = state.read_injected(session_id)
+    status = 0
+    for item_id in item_ids:
+        entry = registry.get(item_id)
+        if entry is None:
+            sys.stderr.write(
+                f"error: unknown id {item_id!r} in session {session_id}. Use an id "
+                "from a [cs:…] line injected in this session.\n"
+            )
+            status = 1
+            continue
+        sys.stdout.write(context_format.render_loaded_item(entry))
+    return status
 
 
 def _latest_injected_session_id() -> str | None:
@@ -3086,9 +3097,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ld = sub.add_parser(
         "load",
-        help="Print the full text of an injected [cs:ID] learning",
+        help="Print the full text of injected [cs:ID] learnings",
     )
-    ld.add_argument("id", help="Injected item id, e.g. s1-ab12")
+    ld.add_argument("ids", nargs="+", help="One or more injected item ids")
     ld.add_argument(
         "--session", help="Session id (defaults to the latest injected session)"
     )
