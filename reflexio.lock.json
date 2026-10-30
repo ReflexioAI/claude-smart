@@ -1,10 +1,9 @@
 {
   "package": "reflexio-ai",
   "repo": "https://github.com/ReflexioAI/reflexio.git",
-  "version": "0.2.32",
-  "commit": "7229c3cedc6ab7dfd2b788576a5acc8d35d97355",
-  "dependency": "reflexio-ai>=0.2.32",
-  "source": "vendor",
-  "vendor_path": "plugin/vendor/reflexio",
-  "updated_at": "2026-10-28T00:19:29Z"
+  "version": "0.2.34",
+  "commit": "49659ebc9bd0525a0cfe81cc59a938e8545499e7",
+  "dependency": "reflexio-ai>=0.2.34",
+  "source": "pypi",
+  "updated_at": "2026-10-30T05:25:20Z"
 }

@@ -485,7 +485,7 @@ requires-dist = [
     { name = "einops", specifier = ">=0.8.0" },
     { name = "filelock", specifier = ">=3.20.3" },
     { name = "litellm", specifier = ">=1.103.1,<2" },
-    { name = "reflexio-ai", specifier = ">=0.2.32" },
+    { name = "reflexio-ai", specifier = ">=0.2.34" },
     { name = "simplejson", specifier = ">=4.2.0" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },
 ]
@@ -2257,7 +2257,7 @@ wheels = [
 
 [[package]]
 name = "reflexio-ai"
-version = "0.2.32"
+version = "0.2.34"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -2269,6 +2269,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "einops" },
     { name = "fastapi" },
+    { name = "filelock" },
     { name = "gepa" },
     { name = "gitpython" },
     { name = "hdbscan" },
@@ -2287,10 +2288,12 @@ dependencies = [
     { name = "requests" },
     { name = "rich" },
     { name = "sentence-transformers" },
+    { name = "simplejson" },
     { name = "slowapi" },
     { name = "sqlite-vec" },
     { name = "starlette" },
     { name = "tenacity" },
+    { name = "threadpoolctl" },
     { name = "tiktoken" },
     { name = "tokenizers" },
     { name = "transformers" },
@@ -2300,9 +2303,9 @@ dependencies = [
     { name = "websocket-client" },
     { name = "xlsxwriter" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ea/f1/9e7b50925fb0326247239a065bcf09c15d61a920c546992bf19c03c225d9/reflexio_ai-0.2.32.tar.gz", hash = "sha256:90c1396f64d122f12cc52cfe98e3c242774b1bdd8a63a91f59549af2a78238fd", size = 1796662, upload-time = "2026-10-16T06:41:26.112Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b9/ab/035f3d319b32c915ce10482ca829ed3911edb326075c9eb1499cb0c8c967/reflexio_ai-0.2.34.tar.gz", hash = "sha256:a43332d0f60ac48c38badc78307cf37a9e84da8bb8d3e63abb74574ee7e8fc87", size = 1647649, upload-time = "2026-10-30T05:24:11.846Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/8a/da81344bd09b992e8a0815eba687effbb4f08747caafacc44baec900ed16/reflexio_ai-0.2.32-py3-none-any.whl", hash = "sha256:b20c2c5dd53f4ded40f0dc6f5c6ddaf3f57f4179d24198ab222e638fcde80402", size = 2362343, upload-time = "2026-10-16T06:41:24.206Z" },
+    { url = "https://files.pythonhosted.org/packages/28/56/82964763728eb7f932000d1c22d5ca44a5271dbb2c4d2e111ceeb2e54cb1/reflexio_ai-0.2.34-py3-none-any.whl", hash = "sha256:6e80edc747b87ea4a1e87e72c6358a78bcd9255b6ef9d504bb3136236dd6fb3c", size = 2179663, upload-time = "2026-10-30T05:24:09.557Z" },
 ]
 
 [[package]]

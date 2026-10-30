@@ -30,7 +30,7 @@ dependencies = [
     # normal installs; vendor releases may override it after uv sync by
     # installing plugin/vendor/reflexio. Keep in sync via
     # scripts/sync-reflexio-dep.py.
-    "reflexio-ai>=0.2.32",
+    "reflexio-ai>=0.2.34",
     # Keep both the PyPI baseline and vendored runtime above the security floor.
     "litellm>=1.103.1,<2",
     # The pinned vendor uses strict JSON decoding beyond the PyPI baseline.
