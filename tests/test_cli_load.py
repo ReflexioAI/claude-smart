@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -10,7 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from claude_smart import cli, context_format, hook_log, state
+from claude_smart import cli, context_format, state
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -157,51 +156,38 @@ def test_injected_loader_command_runs_from_each_host_shell(
     assert result.stdout == _EXPECTED
 
 
-def test_load_records_loaded_learning_for_next_turn(session_dir, capsys) -> None:
+def _published_turns(session_id: str) -> list[dict]:
+    """Run the real publish batching and return every interaction it sends."""
+    from claude_smart import publish
+
+    turns: list[dict] = []
+    while (batch := publish._prepare_publish_batch(session_id)) is not None:
+        _, end, interactions = batch
+        turns.extend(interactions)
+        state.append(session_id, {"published_up_to": end})
+    return turns
+
+
+def test_published_turn_never_reports_a_load(session_dir, capsys) -> None:
+    """``loaded`` is not part of the publish contract.
+
+    A load is visible on the server only as the shell tool call that ran it.
+    """
     _inject("sess-1")
     state.append("sess-1", {"role": "User", "content": "q"})
+    before = state.read_all("sess-1")
 
     assert cli.main(["load", "s1-17", "--session", "sess-1"]) == 0
     assert cli.main(["load", "s1-17", "--session", "sess-1"]) == 0
+
+    assert capsys.readouterr().out == _EXPECTED * 2
+    assert state.read_all("sess-1") == before
     state.append("sess-1", {"role": "Assistant", "content": "a"})
-
-    _, turns = state.unpublished_slice(state.read_all("sess-1"))
-    assistant = [t for t in turns if t["role"] == "Assistant"]
-    assert assistant[0]["retrieved_learnings"] == [
-        {"kind": "user_playbook", "learning_id": "17", "loaded": True},
+    (assistant,) = [t for t in _published_turns("sess-1") if t["role"] == "Assistant"]
+    assert assistant["retrieved_learnings"] == [
+        {"kind": "user_playbook", "learning_id": "17"},
         {"kind": "profile", "learning_id": "pref"},
     ]
-    assert capsys.readouterr().out == _EXPECTED * 2
-    events = [
-        json.loads(line)
-        for line in hook_log._LOG_PATH.read_text().splitlines()
-        if json.loads(line).get("event") == "load"
-    ]
-    assert [(e["load_sent"], e["local_only_loads"]) for e in events] == [
-        (True, 0),
-        (True, 0),
-    ]
-
-
-def test_load_of_published_turn_is_counted_locally_and_not_sent(
-    session_dir, capsys
-) -> None:
-    _inject("sess-1")
-    state.append("sess-1", {"role": "Assistant", "content": "a"})
-    state.mark_all_published("sess-1")
-
-    assert cli.main(["load", "s1-17", "--session", "sess-1"]) == 0
-    state.append("sess-1", {"role": "Assistant", "content": "a2"})
-
-    _, turns = state.unpublished_slice(state.read_all("sess-1"))
-    assert [t.get("retrieved_learnings") for t in turns] == [None]
-    (event,) = [
-        json.loads(line)
-        for line in hook_log._LOG_PATH.read_text().splitlines()
-        if json.loads(line).get("event") == "load"
-    ]
-    assert event["load_sent"] is False
-    assert event["local_only_loads"] == 1
 
 
 def test_load_of_id_not_injected_in_session_records_nothing(
@@ -214,17 +200,3 @@ def test_load_of_id_not_injected_in_session_records_nothing(
 
     assert state.read_all("sess-1") == before
     assert "unknown id" in capsys.readouterr().err
-
-
-def test_load_still_prints_when_recording_fails(
-    session_dir, capsys, monkeypatch
-) -> None:
-    _inject("sess-1")
-
-    def broken(*_args, **_kwargs):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(state, "append_loaded", broken)
-
-    assert cli.main(["load", "s1-17", "--session", "sess-1"]) == 0
-    assert capsys.readouterr().out == _EXPECTED
