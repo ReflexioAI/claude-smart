@@ -3741,6 +3741,63 @@ async function runUninstallOpenCode(args) {
   );
 }
 
+// Read-only: lists claude-smart hook keys that Codex records as disabled in
+// config.toml (`[hooks.state."<key>"]` with `enabled = false`, or the inline
+// `"<key>" = { enabled = false }` form under `[hooks.state]`). A disabled hook
+// silently stops capture or injection, and nothing else reports it.
+function disabledCodexHooks(configPath = CODEX_CONFIG_PATH) {
+  let text;
+  try {
+    text = readFileSync(configPath, "utf8");
+  } catch {
+    return [];
+  }
+  const prefix = `${CODEX_PLUGIN_ID}:`;
+  const unquote = (value) => value.replace(/\\(["\\])/g, "$1");
+  const disabled = new Set();
+  let section = null;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const header = line.match(/^\[\s*hooks\.state\.\s*"((?:[^"\\]|\\.)*)"\s*\]\s*(?:#.*)?$/);
+    if (header) {
+      section = unquote(header[1]);
+      continue;
+    }
+    if (/^\[/.test(line)) {
+      section = /^\[\s*hooks\.state\s*\]/.test(line) ? "" : null;
+      continue;
+    }
+    if (section === null) continue;
+    if (section) {
+      if (section.startsWith(prefix) && /^enabled\s*=\s*false\b/.test(line)) disabled.add(section);
+      continue;
+    }
+    const inline = line.match(/^"((?:[^"\\]|\\.)*)"\s*=\s*\{(.*)\}\s*(?:#.*)?$/);
+    if (inline && unquote(inline[1]).startsWith(prefix) && /(?:^|[,{\s])enabled\s*=\s*false\b/.test(inline[2])) {
+      disabled.add(unquote(inline[1]));
+    }
+  }
+  return [...disabled].sort();
+}
+
+function writeDisabledCodexHookWarnings(configPath = CODEX_CONFIG_PATH) {
+  const disabled = disabledCodexHooks(configPath);
+  if (!disabled.length) return;
+  process.stdout.write(
+    `Warning: ${disabled.length} claude-smart Codex hook${disabled.length === 1 ? " is" : "s are"} ` +
+      `disabled in ${configPath}; learning capture or context injection is skipped for ${disabled.length === 1 ? "it" : "them"}:\n`,
+  );
+  for (const key of disabled) {
+    const event = key.slice(CODEX_PLUGIN_ID.length + 1).split(":")[1] || "unknown event";
+    process.stdout.write(`  ${key} (${event})\n`);
+  }
+  process.stdout.write(
+    "  Re-enable in Codex with /hooks, or set `enabled = true` in that hook's " +
+      "[hooks.state.\"<key>\"] section, then start a new Codex session. " +
+      "Rerunning `npx claude-smart install --host codex` also re-enables them.\n",
+  );
+}
+
 function runStatus(args) {
   const host = parseHost(args);
   let installed = null;
@@ -3793,6 +3850,7 @@ function runStatus(args) {
     process.stdout.write(`${versionLabel}: ${version}\n`);
     if (installed?.enabled === false) process.stdout.write("Plugin is disabled in the host.\n");
   }
+  if (host === HOST_CODEX) writeDisabledCodexHookWarnings();
 
   // Match only this host and account. The shared log is bounded by hook_log;
   // read its last 5 MiB even if an older writer left a larger file behind.
@@ -3901,6 +3959,7 @@ module.exports = {
   bootstrapPluginRuntime,
   codexMarketplacePluginRoot,
   copyCodexMarketplace,
+  disabledCodexHooks,
   ensurePrivateNode,
   ensureUv,
   configureReflexioSetup,

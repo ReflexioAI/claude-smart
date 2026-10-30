@@ -157,7 +157,7 @@ npx claude-smart status
 npx claude-smart status --host codex
 ```
 
-Shows the installed version and the version each recent session last used in a hook. Historical observations do not confirm that a session is still active. Codex uses `CODEX_HOME` when set; run installation and status with the same account home as your session.
+Shows the installed version and the version each recent session last used in a hook. Historical observations do not confirm that a session is still active. Codex uses `CODEX_HOME` when set; run installation and status with the same account home as your session. `status --host codex` also warns when a claude-smart hook is disabled in Codex's `config.toml` and says how to re-enable it; it never edits that file.
 
 ### Uninstall
 

@@ -8961,6 +8961,107 @@ def test_status_distinguishes_install_from_account_scoped_observations(
     assert "active version is unknown" in result.stdout
 
 
+_DISABLED_HOOK_CONFIG = """\
+model = "gpt-6"
+
+[hooks.state]
+
+[hooks.state."claude-smart@reflexioai:hooks/codex-hooks.json:session_start:0:3"]
+enabled = true
+trusted_hash = "sha256:aaa"
+
+[hooks.state."claude-smart@reflexioai:hooks/codex-hooks.json:user_prompt_submit:0:0"]
+enabled = false
+trusted_hash = "sha256:bbb"
+
+[hooks.state."other@market:hooks/hooks.json:stop:0:0"]
+enabled = false
+
+[hooks.state.inline]
+"claude-smart@reflexioai:hooks/codex-hooks.json:pre_tool_use:0:0" = { enabled = false }
+
+[features]
+enabled = false
+"""
+
+
+def test_codex_status_warns_about_disabled_claude_smart_hooks_read_only(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(fake_bin / "codex", "#!/bin/sh\nexit 1\n")
+    account = tmp_path / "account home"
+    account.mkdir()
+    config = account / "config.toml"
+    config.write_text(_DISABLED_HOOK_CONFIG)
+    before = config.read_bytes()
+    env = _isolated_env(tmp_path)
+    env.update(CODEX_HOME=str(account))
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    def status() -> str:
+        result = subprocess.run(
+            [node, str(NODE_INSTALLER), "status", "--host", "codex"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=40,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    out = status()
+
+    assert config.read_bytes() == before
+    assert "1 claude-smart Codex hook is disabled" in out
+    assert (
+        "claude-smart@reflexioai:hooks/codex-hooks.json:user_prompt_submit:0:0 "
+        "(user_prompt_submit)"
+    ) in out
+    assert "session_start" not in out
+    assert "other@market" not in out
+    assert "/hooks" in out and "enabled = true" in out
+
+    config.write_text(
+        _DISABLED_HOOK_CONFIG.replace("enabled = false", "enabled = true")
+    )
+    assert "disabled" not in status()
+    config.unlink()
+    assert "disabled" not in status()
+
+
+def test_disabled_codex_hooks_reads_section_and_inline_forms(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required")
+    config = tmp_path / "config.toml"
+    config.write_text(
+        _DISABLED_HOOK_CONFIG.replace("[hooks.state.inline]\n", "[hooks.state]\n")
+    )
+    script = (
+        "const m = require(process.argv[1]);"
+        "process.stdout.write(JSON.stringify(m.disabledCodexHooks(process.argv[2])));"
+    )
+    result = subprocess.run(
+        [node, "-e", script, str(NODE_INSTALLER), str(config)],
+        env=_isolated_env(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=40,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [
+        "claude-smart@reflexioai:hooks/codex-hooks.json:pre_tool_use:0:0",
+        "claude-smart@reflexioai:hooks/codex-hooks.json:user_prompt_submit:0:0",
+    ]
+
+
 def test_python_installer_uses_codex_account_home(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path)
     env["CODEX_HOME"] = str(tmp_path / "account home")
