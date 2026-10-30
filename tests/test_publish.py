@@ -1514,9 +1514,9 @@ def test_lost_ack_recovery_with_loaded_learning(session_dir, server):
                 response = _stored_request_response(self.saved)
                 stored = response["sessions"][0]["requests"][0]["interactions"][-1]
                 refs = stored["retrieved_learnings"]
-                # The installed (pre-``loaded``) models strip the flag, which is
-                # exactly what an old server stores.
-                assert all("loaded" not in ref for ref in refs)
+                # A pre-``loaded`` server stores the reference without the flag.
+                for ref in refs:
+                    ref.pop("loaded", None)
                 if server == "stores_loaded":
                     refs[0]["loaded"] = True
                 elif server == "differs":

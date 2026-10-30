@@ -554,7 +554,10 @@ def test_normal_runner_upgrades_agent_policy_before_pinning_owned_database(
     optimizer = current["playbook_optimizer_config"]
     assert optimizer["agent_playbooks_enabled"] is adopt
     assert optimizer["user_playbooks_enabled"] is True
-    assert optimizer["max_metric_calls"] == 7
+    # reflexio-ai 0.2.34 converts the old enable flag and limit into one budget.
+    assert optimizer["metric_call_budget"] == 7
+    assert "max_metric_calls" not in optimizer
+    assert "enabled" not in optimizer
     assert "optimize_agent_playbooks" not in optimizer
     assert "auto_update_pending_agent_playbooks" not in optimizer
     assert current["opaque"] == {"preserve": "extension"}

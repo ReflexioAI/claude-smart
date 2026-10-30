@@ -9,11 +9,18 @@ import re
 import shlex
 import subprocess
 import sys
+import tomllib
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "plugin" / "scripts"
+
+
+def _locked_reflexio_version() -> str:
+    lock = tomllib.loads((ROOT / "plugin" / "uv.lock").read_text())
+    (version,) = {p["version"] for p in lock["package"] if p["name"] == "reflexio-ai"}
+    return version
 
 
 def _functions() -> str:
@@ -121,7 +128,13 @@ def _run_checks(
         "Materialize the selected SDK before this gate"
     )
     if installed:
-        assert not (vendor / "reflexio" / "removed_env.py").exists(), (
+        # Identity, not a file probe: the PyPI baseline may ship any module the
+        # vendor has, so check that the locked release came from the index.
+        dist = distribution("reflexio-ai")
+        assert (
+            dist.read_text("direct_url.json") is None
+            and dist.version == _locked_reflexio_version()
+        ), (
             "Baseline compatibility requires the locked PyPI SDK, not an installed "
             "vendor; run uv sync --project plugin --locked before this gate"
         )
