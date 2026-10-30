@@ -463,7 +463,7 @@ wheels = [
 
 [[package]]
 name = "claude-smart"
-version = "0.3.16"
+version = "0.3.17"
 source = { editable = "." }
 dependencies = [
     { name = "einops" },

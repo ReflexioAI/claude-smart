@@ -4,6 +4,7 @@
   "version": "0.2.34",
   "commit": "49659ebc9bd0525a0cfe81cc59a938e8545499e7",
   "dependency": "reflexio-ai>=0.2.34",
-  "source": "pypi",
-  "updated_at": "2026-10-30T05:25:20Z"
+  "source": "vendor",
+  "vendor_path": "plugin/vendor/reflexio",
+  "updated_at": "2026-10-30T06:45:12Z"
 }
