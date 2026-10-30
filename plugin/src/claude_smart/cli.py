@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 import queue
 import re
@@ -45,15 +44,12 @@ from claude_smart import (
     context_format,
     cs_cite,
     env_config,
-    hook_log,
     ids,
     publish,
     runtime,
     state,
 )
 from claude_smart.reflexio_adapter import Adapter
-
-_LOGGER = logging.getLogger(__name__)
 
 _HOST_CLAUDE_CODE = runtime.HOST_CLAUDE_CODE
 _HOST_CODEX = runtime.HOST_CODEX
@@ -2287,23 +2283,6 @@ def cmd_load(args: argparse.Namespace) -> int:
         )
         return 1
     sys.stdout.write(context_format.render_loaded_item(entry))
-    # The open turn that injected this learning reports it as ``loaded`` when
-    # both land in one publish batch; any other load stays local. Recording
-    # is best effort: the agent already has the text it asked for.
-    try:
-        sent = state.append_loaded(session_id, entry)
-        if sent is not None:
-            hook_log.log_event(
-                event="load",
-                host=runtime.host(),
-                session_id=session_id,
-                extra={
-                    "load_sent": sent,
-                    "local_only_loads": state.local_only_load_count(session_id),
-                },
-            )
-    except Exception as exc:  # noqa: BLE001 — never fail a successful load.
-        _LOGGER.debug("could not record load of %s: %s", item_id, exc)
     return 0
 
 
