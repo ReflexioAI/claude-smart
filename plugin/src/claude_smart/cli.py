@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import queue
 import re
@@ -50,6 +51,8 @@ from claude_smart import (
     state,
 )
 from claude_smart.reflexio_adapter import Adapter
+
+_LOGGER = logging.getLogger(__name__)
 
 _HOST_CLAUDE_CODE = runtime.HOST_CLAUDE_CODE
 _HOST_CODEX = runtime.HOST_CODEX
@@ -2248,6 +2251,12 @@ def cmd_load(args: argparse.Namespace) -> int:
         )
         return 1
     sys.stdout.write(context_format.render_loaded_item(entry))
+    # The next published turn reports this learning as ``loaded``. Recording
+    # is best effort: the agent already has the text it asked for.
+    try:
+        state.append_loaded(session_id, entry)
+    except Exception as exc:  # noqa: BLE001 — never fail a successful load.
+        _LOGGER.debug("could not record load of %s: %s", item_id, exc)
     return 0
 
 

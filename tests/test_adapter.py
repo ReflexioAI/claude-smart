@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import sys
 import threading
@@ -1719,3 +1720,89 @@ def test_failed_publish_logs_request_id_and_sanitized_server_message(
         "sk-live-secret",
     ):
         assert secret not in data
+
+
+def _empty_unified() -> SimpleNamespace:
+    return SimpleNamespace(user_playbooks=[], agent_playbooks=[], profiles=[])
+
+
+def test_search_all_omits_optional_fields_by_default() -> None:
+    client = _RecordingClient(unified_resp=_empty_unified())
+
+    _adapter_with(client).search_all(project_id="p", query="q", session_id="s")
+
+    assert "threshold" not in client.search_kwargs
+    assert "reset_session_seen" not in client.search_kwargs
+
+
+def test_search_all_passes_configured_threshold() -> None:
+    client = _RecordingClient(unified_resp=_empty_unified())
+
+    _adapter_with(client).search_all(project_id="p", query="q", threshold=0.4)
+
+    assert client.search_kwargs["threshold"] == 0.4
+
+
+def test_search_all_sends_reset_when_client_accepts_it() -> None:
+    client = _RecordingClient(unified_resp=_empty_unified())
+
+    _adapter_with(client).search_all(
+        project_id="p", query="q", session_id="s", reset_session_seen=True
+    )
+
+    assert client.search_kwargs["reset_session_seen"] is True
+
+
+def test_search_all_never_sends_reset_without_session() -> None:
+    client = _RecordingClient(unified_resp=_empty_unified())
+
+    _adapter_with(client).search_all(project_id="p", query="q", reset_session_seen=True)
+
+    assert "reset_session_seen" not in client.search_kwargs
+
+
+def test_search_all_skips_reset_on_client_that_predates_it() -> None:
+    """Released clients validate search keywords locally; do not break search."""
+
+    class OldClient:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, Any] = {}
+
+        def search(
+            self,
+            request=None,
+            *,
+            query=None,
+            top_k=None,
+            threshold=None,
+            agent_version=None,
+            user_id=None,
+            entity_types=None,
+            agent_playbook_status_filter=None,
+            enable_agent_answer=None,
+            search_mode=None,
+            request_id=None,
+            session_id=None,
+        ):
+            self.kwargs = {"query": query, "session_id": session_id}
+            return _empty_unified()
+
+    client = OldClient()
+    adapter = _adapter_with(client)
+
+    assert adapter.search_all(
+        project_id="p", query="q", session_id="s", reset_session_seen=True
+    ) == ([], [], [])
+    assert adapter.read_errors == []
+    assert client.kwargs == {"query": "q", "session_id": "s"}
+
+
+def test_installed_client_search_signature_is_probed_not_assumed() -> None:
+    """Pins the gate to the real SDK: it accepts the kwarg iff it declares it."""
+    from reflexio import ReflexioClient
+
+    client = ReflexioClient(url_endpoint="http://127.0.0.1:9")
+    declared = "reset_session_seen" in inspect.signature(client.search).parameters
+    assert reflexio_adapter._client_accepts(client.search, "reset_session_seen") is (
+        declared
+    )

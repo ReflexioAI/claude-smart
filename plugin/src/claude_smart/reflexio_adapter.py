@@ -7,6 +7,7 @@ Exists so hook handlers (a) don't import reflexio directly at module scope
 from __future__ import annotations
 
 import hashlib
+import inspect
 import logging
 import os
 import re
@@ -38,6 +39,11 @@ PUBLISH_ATTEMPT_SECONDS = 2 * _HTTP_TIMEOUT_SECONDS
 PUBLISH_RESERVE_SECONDS = PUBLISH_ATTEMPT_SECONDS + 2
 # GetRequests does not return these fields, so a replay cannot compare them.
 _UNVERIFIABLE_FIELDS = ("citations", "image_encoding")
+# Wire keys of one ``retrieved_learnings`` entry. ``loaded`` is optional;
+# servers that predate it accept and discard it (``CapturesUnknownFields``).
+_RETRIEVED_REF_KEYS = frozenset(
+    {"kind", "learning_id", "exposure_receipt", "exposure_receipt_digest", "loaded"}
+)
 _SERVER_MESSAGE_LIMIT = 200
 # Reflexio >= #807 answers a reused request_id naming different content with
 # HTTP 409 and this reason; an identical retry succeeds with ``replayed``.
@@ -584,6 +590,8 @@ class Adapter:
         top_k: int = 5,
         session_id: str | None = None,
         request_id: str | None = None,
+        threshold: float | None = None,
+        reset_session_seen: bool = False,
     ) -> tuple[list[Any], list[Any], list[Any]]:
         """Unified hybrid search → ``(user_playbooks, agent_playbooks, preferences)``.
 
@@ -603,6 +611,12 @@ class Adapter:
                 within one session stop re-injecting the same rules.
             request_id (str | None): Durable identity reserved for the response
                 that will publish this retrieved context.
+            threshold (float | None): Similarity threshold. Sent only when
+                set; otherwise the server's embedding default applies.
+            reset_session_seen (bool): Ask the server to forget what it
+                already served ``session_id`` before dedup (after the host
+                compacted the conversation). Sent only when True and the
+                installed client accepts it; see ``_client_accepts``.
 
         Returns:
             tuple[list[Any], list[Any], list[Any]]: ``(user_playbooks,
@@ -613,6 +627,16 @@ class Adapter:
         client = self._get_client()
         if client is None:
             return [], [], []
+        optional: dict[str, Any] = {}
+        if threshold is not None:
+            optional["threshold"] = threshold
+        if reset_session_seen and session_id:
+            if _client_accepts(client.search, "reset_session_seen"):
+                optional["reset_session_seen"] = True
+            else:
+                _LOGGER.debug(
+                    "installed reflexio client cannot send reset_session_seen"
+                )
         try:
             response = client.search(
                 query=query,
@@ -625,6 +649,7 @@ class Adapter:
                 search_mode=_SEARCH_MODE_HYBRID,
                 session_id=session_id,
                 request_id=request_id,
+                **optional,
             )
         except Exception as exc:  # noqa: BLE001
             self._record_read_error("unified search", exc)
@@ -676,6 +701,31 @@ class Adapter:
         message = f"{operation}: {exc}"
         self.read_errors.append(message)
         _LOGGER.debug("%s failed: %s", operation, exc)
+
+
+def _client_accepts(method: Any, parameter: str) -> bool:
+    """Return whether a client method takes ``parameter`` as a keyword.
+
+    ``ReflexioClient.search`` validates its keywords into a local request
+    model before sending, so a field the installed SDK predates cannot be
+    passed through it at all. Servers ignore unknown search fields
+    (``UnifiedSearchRequest`` keeps pydantic's default ``extra="ignore"``),
+    so the installed client is the only gate needed.
+
+    Args:
+        method (Any): The bound client method.
+        parameter (str): Keyword name to look for.
+
+    Returns:
+        bool: True when the signature names ``parameter`` or takes ``**kwargs``.
+    """
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+    return parameter in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
 
 
 def _log_publish_warnings(response: Any) -> None:
@@ -796,6 +846,7 @@ def _stored_publish_matches(
     unverified = tuple(
         key for key in _UNVERIFIABLE_FIELDS if any(item.get(key) for item in expected)
     )
+    unverified_loaded = False
     for item in expected:
         unverifiable = (
             bool(
@@ -807,8 +858,7 @@ def _stored_publish_matches(
                 for tool in item.get("tools_used", [])
             )
             or any(
-                set(ref)
-                - {"kind", "learning_id", "exposure_receipt", "exposure_receipt_digest"}
+                set(ref) - _RETRIEVED_REF_KEYS
                 for ref in item.get("retrieved_learnings", [])
             )
         )
@@ -843,13 +893,8 @@ def _stored_publish_matches(
                 if (
                     not isinstance(ref, dict)
                     or not {"kind", "learning_id"}.issubset(ref)
-                    or set(ref)
-                    - {
-                        "kind",
-                        "learning_id",
-                        "exposure_receipt",
-                        "exposure_receipt_digest",
-                    }
+                    or set(ref) - _RETRIEVED_REF_KEYS
+                    or not isinstance(ref.get("loaded", False), bool)
                     or ref["kind"] not in {"profile", "user_playbook", "agent_playbook"}
                     or not isinstance(ref["learning_id"], str)
                     or not ref["learning_id"]
@@ -861,6 +906,8 @@ def _stored_publish_matches(
             target["retrieved_learnings"] = [
                 _canonical_learning_reference(ref) for ref in refs
             ]
+        if _drop_unstored_loaded_flags(observed, normalized):
+            unverified_loaded = True
         # Some installed SDKs predate ToolUsed.status even when the backend
         # exposes it. Compare raw View status using the pinned backend's coercion;
         # a legacy View that omits status cannot verify that unsupported field.
@@ -886,6 +933,8 @@ def _stored_publish_matches(
             raise _StoredPublishMismatch(
                 "Stored publish interaction payload does not match"
             )
+    if unverified_loaded:
+        unverified += ("retrieved_learnings.loaded",)
     if unverified:
         _LOGGER.warning(
             "Recovered stored publish %s without verifying %s; the read API "
@@ -894,6 +943,31 @@ def _stored_publish_matches(
             ", ".join(unverified),
         )
     return _StoredPublish(unverified)
+
+
+def _drop_unstored_loaded_flags(
+    observed: dict[str, Any], expected: dict[str, Any]
+) -> bool:
+    """Compare ``loaded`` only when the server stored it.
+
+    A server that predates ``RetrievedLearning.loaded`` accepts and discards
+    it, so its stored refs never carry the key. Dropping the flag from the
+    expected refs then lets an otherwise identical delivery confirm, instead
+    of wedging every later turn behind a request the server already stored.
+
+    Args:
+        observed (dict[str, Any]): Normalized stored interaction (mutated).
+        expected (dict[str, Any]): Normalized buffered interaction (mutated).
+
+    Returns:
+        bool: True when a set ``loaded`` flag could not be verified.
+    """
+    if any("loaded" in ref for ref in observed.get("retrieved_learnings", [])):
+        return False
+    dropped = False
+    for ref in expected.get("retrieved_learnings", []):
+        dropped = bool(ref.pop("loaded", None)) or dropped
+    return dropped
 
 
 def _escape_nulls(value: Any) -> Any:

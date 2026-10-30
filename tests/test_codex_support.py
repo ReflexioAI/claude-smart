@@ -188,8 +188,13 @@ def test_codex_hooks_use_expected_events_and_marketplace_fallback() -> None:
     backend_service = (
         REPO_ROOT / "plugin" / "scripts" / "backend-service.sh"
     ).read_text()
-    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"}
-    assert "PreToolUse" not in hooks
+    assert set(hooks) == {
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Stop",
+    }
     assert 'CLAUDE_SMART_HOST="codex"' in codex_env
     assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"' in (
         backend_service
@@ -228,28 +233,71 @@ def test_hook_main_accepts_legacy_and_host_argv(monkeypatch) -> None:
     assert calls == [("claude-code", "stop"), ("codex", "stop")]
 
 
-def test_codex_pre_tool_does_not_inject_context(monkeypatch) -> None:
+def test_codex_pre_tool_is_registered_for_bash_only() -> None:
+    """Codex PreToolUse additionalContext reaches the model; shell is ``Bash``."""
+    blocks = _read_json("plugin/hooks/codex-hooks.json")["hooks"]["PreToolUse"]
+    assert [block["matcher"] for block in blocks] == ["Bash"]
+    (hook_def,) = blocks[0]["hooks"]
+    assert hook_def["command"].endswith('hook_entry.sh" codex pre-tool')
+    # Within the 12-second Python budget codex-hook.js gives pre-tool.
+    assert 12 < hook_def["timeout"] <= 15
+
+
+def test_codex_session_start_runs_handler_after_compaction() -> None:
+    """Codex fires SessionStart with source "compact" before the next request."""
+    blocks = _read_json("plugin/hooks/codex-hooks.json")["hooks"]["SessionStart"]
+    # Existing trust keys index blocks; the compact block is appended.
+    assert blocks[0]["matcher"] == "startup|resume"
+    compact = [block for block in blocks if block["matcher"] == "compact"]
+    assert len(compact) == 1 and blocks[-1] is compact[0]
+    (hook_def,) = compact[0]["hooks"]
+    assert hook_def["command"].endswith('hook_entry.sh" codex session-start')
+    assert hook_def["timeout"] > 24  # codex-hook.js session-start budget
+
+
+def test_codex_pre_tool_injects_context(monkeypatch) -> None:
     runtime.set_host(runtime.HOST_CODEX)
-    called = False
+    calls: list[dict[str, Any]] = []
 
-    def fail_emit(**_kwargs):
-        nonlocal called
-        called = True
+    def fake_emit(**kwargs):
+        calls.append(kwargs)
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "additionalContext": "ctx",
+                    }
+                }
+            )
+            + "\n"
+        )
+        return True
 
-    monkeypatch.setattr(pre_tool.context_inject, "emit_context", fail_emit)
+    monkeypatch.setattr(pre_tool.context_inject, "emit_context", fake_emit)
+    monkeypatch.setattr(pre_tool.ids, "resolve_user_id", lambda _cwd: "proj")
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
 
     pre_tool.handle(
         {
             "session_id": "s1",
+            "turn_id": "t1",
+            "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
+            "tool_use_id": "call-1",
             "tool_input": {"command": "uv run pytest"},
+            "cwd": "/repo",
         }
     )
 
-    assert called is False
-    assert json.loads(buf.getvalue()) == {"continue": True}
+    assert [call["query"] for call in calls] == ["uv run pytest"]
+    assert calls[0]["hook_event_name"] == "PreToolUse"
+    assert calls[0]["session_id"] == "s1"
+    output = json.loads(buf.getvalue())
+    assert output["hookSpecificOutput"]["additionalContext"] == "ctx"
+    # Codex fails a PreToolUse run that returns suppressOutput.
+    assert "suppressOutput" not in output
 
 
 def test_codex_citation_instruction_uses_text_marker_not_tool_call() -> None:

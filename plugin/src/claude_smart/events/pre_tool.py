@@ -1,7 +1,9 @@
 """PreToolUse hook — just-in-time skill + preference inject before a mutating tool.
 
-Fires only for tools listed in ``hooks.json``'s PreToolUse matcher
-(Edit/Write/NotebookEdit/Bash). Composes a query from the tool call and
+Fires only for tools listed in the PreToolUse matcher: Edit/Write/NotebookEdit/
+Bash in ``hooks.json``, Bash in ``codex-hooks.json`` (Codex adds a PreToolUse
+``hookSpecificOutput.additionalContext`` to the model's context and reports the
+shell tool as ``Bash`` with ``tool_input.command``). Composes a query from the tool call and
 delegates to ``context_inject.emit_context`` for the shared
 search-render-emit pipeline, falling back to ``hook.emit_continue`` when
 there is nothing to inject or the search raises.
@@ -12,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from claude_smart import context_inject, hook, ids, query_compose, runtime
+from claude_smart import context_inject, hook, ids, query_compose
 
 _LOGGER = logging.getLogger(__name__)
 # Hits per collection. Each is one bounded index line, so 5 x 3 collections
@@ -22,10 +24,6 @@ _TOP_K = 5
 
 def handle(payload: dict[str, Any]) -> None:
     """PreToolUse dispatcher — never raises; degrades to ``emit_continue``."""
-    if runtime.is_codex():
-        hook.emit_continue()
-        return
-
     session_id = payload.get("session_id")
     tool_name = payload.get("tool_name")
     tool_input = payload.get("tool_input") or {}

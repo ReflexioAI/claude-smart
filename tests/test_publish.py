@@ -1495,3 +1495,59 @@ def test_unverified_request_id_conflict_counts_toward_the_slow_breaker(
         now[0] += publish.POISON_MIN_SPAN_SECONDS
     assert state.published_record_offset(state.read_all("unverified")) == 0
     assert _drain("unverified", adapter) == ("parked", 0)
+
+
+@pytest.mark.parametrize("server", ["predates_loaded", "stores_loaded", "differs"])
+def test_lost_ack_recovery_with_loaded_learning(session_dir, server):
+    """A server that discards ``loaded`` must not wedge lost-ack recovery."""
+
+    class Client:
+        def __init__(self):
+            self.saved = None
+            self.sent = []
+
+        def _make_request(self, method, path, **kwargs):
+            payload = kwargs["json"]
+            if path == "/api/get_requests":
+                if self.saved is None:
+                    return {"success": True, "sessions": []}
+                response = _stored_request_response(self.saved)
+                stored = response["sessions"][0]["requests"][0]["interactions"][-1]
+                refs = stored["retrieved_learnings"]
+                # The installed (pre-``loaded``) models strip the flag, which is
+                # exactly what an old server stores.
+                assert all("loaded" not in ref for ref in refs)
+                if server == "stores_loaded":
+                    refs[0]["loaded"] = True
+                elif server == "differs":
+                    refs[0]["loaded"] = False
+                return response
+            self.sent.append(payload)
+            if self.saved is not None:
+                return {"success": False, "message": "Request already exists"}
+            self.saved = payload
+            raise TimeoutError("committed acknowledgement lost")
+
+    _append_user("loaded", 1, "question")
+    _inject_profile("loaded", "profile-id", 2)
+    state.append_loaded("loaded", {"kind": "profile", "real_id": "profile-id"})
+    _append_assistant("loaded", 3, "answer")
+    client = Client()
+    adapter = Adapter(url="https://example.com")
+    adapter._client = client
+    kwargs: dict[str, Any] = {
+        "session_id": "loaded",
+        "project_id": "project",
+        "force_extraction": False,
+        "skip_aggregation": False,
+        "adapter": adapter,
+    }
+
+    expected = "failed" if server == "differs" else "recovered"
+    assert publish.publish_unpublished(**kwargs) == (expected, 2)
+    assert client.sent[0]["interaction_data_list"][-1]["retrieved_learnings"] == [
+        {"kind": "profile", "learning_id": "profile-id", "loaded": True}
+    ]
+    offset = state.published_record_offset(state.read_all("loaded"))
+    # A stored flag that contradicts the buffer is a real mismatch.
+    assert (offset == 0) is (server == "differs")

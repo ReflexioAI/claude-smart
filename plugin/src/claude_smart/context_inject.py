@@ -17,12 +17,68 @@ turn) — see the two call sites for the small policy differences.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import time
 
 from claude_smart import context_format, state
 from claude_smart.reflexio_adapter import Adapter
+
+_LOGGER = logging.getLogger(__name__)
+
+# Total index lines one hook firing may inject, across all collections.
+# Hooks fire on every prompt and mutating tool call, and server-side dedup
+# backfills next-best matches each time, so the low-ranked tail is the least
+# likely to apply. See ``max_injected_items``.
+DEFAULT_MAX_INJECTED_ITEMS = 6
+_MAX_ITEMS_ENV = "CLAUDE_SMART_MAX_INJECTED_ITEMS"
+_THRESHOLD_ENV = "CLAUDE_SMART_SEARCH_THRESHOLD"
+
+
+def max_injected_items() -> int | None:
+    """Return the per-hook cap on injected items.
+
+    Reads ``CLAUDE_SMART_MAX_INJECTED_ITEMS``: a positive integer sets the
+    cap, ``0`` removes it, and an unset, empty or invalid value uses
+    ``DEFAULT_MAX_INJECTED_ITEMS``.
+
+    Returns:
+        int | None: The cap, or ``None`` for no cap.
+    """
+    raw = os.environ.get(_MAX_ITEMS_ENV, "").strip()
+    if not raw:
+        return DEFAULT_MAX_INJECTED_ITEMS
+    try:
+        value = int(raw)
+    except ValueError:
+        _LOGGER.debug("ignoring invalid %s=%r", _MAX_ITEMS_ENV, raw)
+        return DEFAULT_MAX_INJECTED_ITEMS
+    if value < 0:
+        return DEFAULT_MAX_INJECTED_ITEMS
+    return value or None
+
+
+def search_threshold() -> float | None:
+    """Return the configured search similarity threshold, if any.
+
+    Reads ``CLAUDE_SMART_SEARCH_THRESHOLD``, a number from 0 to 1. Unset,
+    empty or invalid means no threshold is sent and the server default applies.
+
+    Returns:
+        float | None: The threshold, or ``None`` to omit it.
+    """
+    raw = os.environ.get(_THRESHOLD_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        value = -1.0
+    if not 0.0 <= value <= 1.0:
+        _LOGGER.debug("ignoring invalid %s=%r", _THRESHOLD_ENV, raw)
+        return None
+    return value
 
 
 def emit_context(
@@ -47,7 +103,8 @@ def emit_context(
         hook_event_name (str): ``"PreToolUse"`` or ``"UserPromptSubmit"``;
             echoed verbatim in the hook envelope so Claude Code attributes
             the context to the right event.
-        top_k (int): Cap on hits per collection.
+        top_k (int): Cap on hits per collection; also bounded by the total
+            per-hook cap (``max_injected_items``).
         adapter (Adapter | None): Injection seam for tests. A fresh
             ``Adapter()`` is used when ``None``.
 
@@ -55,15 +112,25 @@ def emit_context(
         bool: ``True`` when markdown was emitted to stdout; ``False``
             when the search returned nothing to inject.
     """
-    user_playbooks, agent_playbooks, profiles = (adapter or Adapter()).search_all(
+    adapter = adapter or Adapter()
+    max_items = max_injected_items()
+    # Set by SessionStart after a compaction; claimed by exactly one search.
+    reset_seen = bool(session_id) and state.take_search_reset(session_id)
+    errors_before = len(getattr(adapter, "read_errors", ()))
+    user_playbooks, agent_playbooks, profiles = adapter.search_all(
         project_id=project_id,
         query=query,
-        top_k=top_k,
+        top_k=top_k if max_items is None else max(1, min(top_k, max_items)),
         # Scopes server-side dedup: rules already injected into this session
         # are not returned again; next-best matches backfill instead.
         session_id=session_id or None,
         request_id=state.reserve_publish_request_id(session_id) if session_id else None,
+        threshold=search_threshold(),
+        reset_session_seen=reset_seen,
     )
+    if reset_seen and len(getattr(adapter, "read_errors", ())) > errors_before:
+        # The search never reached the server; keep the reset for the next one.
+        state.request_search_reset(session_id)
     host = os.environ.get("CLAUDE_SMART_HOST", "")
     renderer = (
         context_format.render_inline_compact_with_registry
@@ -77,6 +144,7 @@ def emit_context(
         profiles=profiles,
         session_id=session_id,
         budget_chars=context_format.inline_budget_chars(host),
+        max_items=max_items,
     )
     if not markdown:
         return False
@@ -100,4 +168,4 @@ def emit_context(
     return True
 
 
-__all__ = ["emit_context"]
+__all__ = ["emit_context", "max_injected_items", "search_threshold"]

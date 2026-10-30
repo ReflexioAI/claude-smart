@@ -12,6 +12,9 @@ Each Claude Code session gets one file at
   request ID preserves local learning lineage for the dashboard when available
 - ``{"retrieved_learning_refs": [...]}`` — identity pairs shown to the agent,
   attached by event order to the next Assistant turn
+- ``{"loaded_learning_refs": [...]}`` — identity pairs whose full text the
+  agent loaded with ``cli.sh load``; the next Assistant turn reports each as
+  ``loaded: true`` in its ``retrieved_learnings``
 - ``{"publish_attempt": {"start": N, "end": M}}`` — frozen retry boundary for
   one in-flight publish
 - ``{"publish_request": {"start": N, "request_id": "..."}}`` — response
@@ -83,6 +86,8 @@ _VALID_CITATION_KINDS = frozenset(
 _VALID_RETRIEVED_PLAYBOOK_KINDS = frozenset({"user_playbook", "agent_playbook"})
 _VALID_RETRIEVED_KINDS = _VALID_RETRIEVED_PLAYBOOK_KINDS | {"profile"}
 _RETRIEVED_LEARNINGS_PUBLISH_CAP = 1000
+# Buffer records whose identity refs attach to the next Assistant turn.
+_REF_RECORD_KEYS = ("retrieved_learning_refs", "loaded_learning_refs")
 
 
 def _truncate_tool_data_field(value: Any) -> Any:
@@ -186,6 +191,54 @@ def append_injected(session_id: str, entries: Iterable[dict[str, Any]]) -> None:
         refs.append(ref)
     if refs:
         append(session_id, {"retrieved_learning_refs": refs})
+
+
+def append_loaded(session_id: str, entry: dict[str, Any]) -> bool:
+    """Record that the agent loaded one injected item's full text.
+
+    The entry comes from this session's citation registry, so it was injected
+    here. Entries without a publishable identity record nothing.
+
+    Args:
+        session_id (str): Session whose ordered buffer receives the record.
+        entry (dict[str, Any]): The citation-registry entry that was loaded.
+
+    Returns:
+        bool: True when a ``loaded_learning_refs`` record was appended.
+    """
+    ref = _normalize_registry_ref(entry)
+    if ref is None:
+        return False
+    append(session_id, {"loaded_learning_refs": [ref]})
+    return True
+
+
+def search_reset_path(session_id: str) -> Path:
+    """Return the marker path requesting a session-seen reset on next search."""
+    return state_dir() / f"{session_id}.reset-seen"
+
+
+def request_search_reset(session_id: str) -> None:
+    """Ask the next hook search in this session to reset server-side dedup.
+
+    Set after the host compacts the conversation: rules injected before the
+    compaction may no longer be in the model's context.
+    """
+    path = search_reset_path(session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+
+
+def take_search_reset(session_id: str) -> bool:
+    """Consume the reset marker; return whether it was set.
+
+    Removal is the claim, so two concurrent searches cannot both send it.
+    """
+    try:
+        search_reset_path(session_id).unlink()
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def read_injected(session_id: str) -> dict[str, dict[str, Any]]:
@@ -434,16 +487,60 @@ def safe_publish_end(records: list[dict[str, Any]], published: int) -> int:
 
     unmatched_start: int | None = None
     for index, record in enumerate(records[published:], start=published):
-        refs = record.get("retrieved_learning_refs")
-        if (
-            unmatched_start is None
-            and isinstance(refs, list)
+        if unmatched_start is None and any(
+            isinstance(refs := record.get(key), list)
             and any(_wire_retrieved_ref(value) is not None for value in refs)
+            for key in _REF_RECORD_KEYS
         ):
             unmatched_start = index
         if record.get("role") == "Assistant":
             unmatched_start = None
     return len(records) if unmatched_start is None else unmatched_start
+
+
+def _mark_loaded(
+    retrieved: list[dict[str, Any]],
+    loaded: Iterable[dict[str, str]],
+    *,
+    room: int,
+) -> tuple[int, int]:
+    """Flag loaded learnings in one turn's ``retrieved_learnings``, in place.
+
+    A load matches retrieved entries by ``(kind, learning_id)``; loading the
+    same item twice marks it once. A loaded item injected in an earlier turn
+    is not in this turn's list, so it is appended (with ``loaded: true``) while
+    the request cap leaves room: its full text is in this turn's context.
+
+    Args:
+        retrieved (list[dict[str, Any]]): The turn's deduplicated refs.
+        loaded (Iterable[dict[str, str]]): Refs loaded since the last turn.
+        room (int): How many more refs the publish request cap admits.
+
+    Returns:
+        tuple[int, int]: ``(appended, dropped_at_cap)`` counts.
+    """
+    appended = dropped = 0
+    marked: set[tuple[str, str]] = set()
+    for ref in loaded:
+        identity = (ref["kind"], ref["learning_id"])
+        if identity in marked:
+            continue
+        marked.add(identity)
+        matches = [
+            entry
+            for entry in retrieved
+            if (entry["kind"], entry["learning_id"]) == identity
+        ]
+        for entry in matches:
+            entry["loaded"] = True
+        if matches:
+            continue
+        if appended >= room:
+            dropped += 1
+            continue
+        retrieved.append({**ref, "loaded": True})
+        appended += 1
+    return appended, dropped
 
 
 def unpublished_slice(
@@ -467,6 +564,7 @@ def unpublished_slice(
         raise ValueError("published_override is outside the supplied record range")
     pending_tools: list[dict[str, Any]] = []
     pending_refs: list[dict[str, str]] = []
+    pending_loaded: list[dict[str, str]] = []
     turns: list[dict[str, Any]] = []
     attached_total = skipped = truncated = 0
 
@@ -481,6 +579,16 @@ def unpublished_slice(
             ]
             skipped += len(refs) - len(valid_refs)
             pending_refs.extend(valid_refs)
+            continue
+        loaded = record.get("loaded_learning_refs")
+        if "role" not in record and isinstance(loaded, list):
+            valid_loaded = [
+                ref
+                for value in loaded
+                if (ref := _wire_retrieved_ref(value)) is not None
+            ]
+            skipped += len(loaded) - len(valid_loaded)
+            pending_loaded.extend(valid_loaded)
             continue
 
         role = record.get("role")
@@ -536,7 +644,7 @@ def unpublished_slice(
                 turn["tools_used"] = pending_tools
                 pending_tools = []
 
-            retrieved: list[dict[str, str]] = []
+            retrieved: list[dict[str, Any]] = []
             seen: set[tuple[str, str, str | None]] = set()
             for ref in pending_refs:
                 key = (ref["kind"], ref["learning_id"], ref.get("exposure_receipt"))
@@ -549,6 +657,14 @@ def unpublished_slice(
                 retrieved.append(ref)
                 attached_total += 1
             pending_refs = []
+            appended, dropped = _mark_loaded(
+                retrieved,
+                pending_loaded,
+                room=_RETRIEVED_LEARNINGS_PUBLISH_CAP - attached_total,
+            )
+            attached_total += appended
+            truncated += dropped
+            pending_loaded = []
             if retrieved:
                 turn["retrieved_learnings"] = retrieved
         turns.append(turn)

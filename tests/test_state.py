@@ -576,3 +576,114 @@ class TestWirePayloadContract:
             [{"ts": 1700000000, "role": "User", "content": "x", "user_id": "p"}]
         )
         assert "created_at" not in turns[0], turns[0]
+
+
+# ---------------------------------------------------------------------------
+# loaded learnings
+# ---------------------------------------------------------------------------
+
+_PB_11 = {
+    "id": "s1-ab12",
+    "kind": "playbook",
+    "source_kind": "user_playbook",
+    "real_id": "11",
+    "content": "c1",
+}
+_PROFILE_P1 = {"id": "p1-cd34", "kind": "profile", "real_id": "p1", "content": "c2"}
+
+
+def _assistant_refs(session_id: str) -> list[list[dict]]:
+    _, turns = state.unpublished_slice(state.read_all(session_id))
+    return [t.get("retrieved_learnings", []) for t in turns if t["role"] == "Assistant"]
+
+
+def test_loaded_learning_is_marked_once_in_the_next_turn(session_dir) -> None:
+    state.append("s1", {"role": "User", "content": "q"})
+    state.append_injected("s1", [_PB_11, _PROFILE_P1])
+    assert state.append_loaded("s1", _PB_11) is True
+    assert state.append_loaded("s1", _PB_11) is True  # loaded twice
+    state.append("s1", {"role": "Assistant", "content": "a"})
+    state.append("s1", {"role": "User", "content": "q2"})
+    state.append("s1", {"role": "Assistant", "content": "a2"})
+
+    assert _assistant_refs("s1") == [
+        [
+            {"kind": "user_playbook", "learning_id": "11", "loaded": True},
+            {"kind": "profile", "learning_id": "p1"},
+        ],
+        [],
+    ]
+
+
+def test_load_of_item_injected_in_earlier_turn_is_reported_with_loaded(
+    session_dir,
+) -> None:
+    state.append_injected("s1", [_PB_11])
+    state.append("s1", {"role": "Assistant", "content": "a"})
+    state.append_loaded("s1", _PB_11)
+    state.append("s1", {"role": "Assistant", "content": "a2"})
+
+    assert _assistant_refs("s1") == [
+        [{"kind": "user_playbook", "learning_id": "11"}],
+        [{"kind": "user_playbook", "learning_id": "11", "loaded": True}],
+    ]
+
+
+def test_loaded_marks_every_retrieved_receipt_of_the_learning(session_dir) -> None:
+    state.append_injected(
+        "s1",
+        [{**_PB_11, "exposure_receipt": "r1"}, {**_PB_11, "exposure_receipt": "r2"}],
+    )
+    state.append_loaded("s1", {**_PB_11, "exposure_receipt": "r2"})
+    state.append("s1", {"role": "Assistant", "content": "a"})
+
+    assert _assistant_refs("s1") == [
+        [
+            {
+                "kind": "user_playbook",
+                "learning_id": "11",
+                "exposure_receipt": "r1",
+                "loaded": True,
+            },
+            {
+                "kind": "user_playbook",
+                "learning_id": "11",
+                "exposure_receipt": "r2",
+                "loaded": True,
+            },
+        ]
+    ]
+
+
+def test_append_loaded_without_publishable_identity_records_nothing(
+    session_dir,
+) -> None:
+    assert state.append_loaded("s1", {"id": "s1-x", "kind": "playbook"}) is False
+    assert state.read_all("s1") == []
+
+
+def test_unmatched_loaded_record_holds_back_the_publish_end(session_dir) -> None:
+    """A load after the last Assistant waits for its turn instead of being lost."""
+    state.append("s1", {"role": "User", "content": "q"})
+    state.append("s1", {"role": "Assistant", "content": "a"})
+    state.append_loaded("s1", _PB_11)
+    records = state.read_all("s1")
+
+    assert state.safe_publish_end(records, 0) == 2
+
+
+def test_loaded_refs_respect_the_publish_cap(session_dir, monkeypatch) -> None:
+    monkeypatch.setattr(state, "_RETRIEVED_LEARNINGS_PUBLISH_CAP", 1)
+    state.append_injected("s1", [_PROFILE_P1])
+    state.append_loaded("s1", _PB_11)
+    state.append("s1", {"role": "Assistant", "content": "a"})
+
+    assert _assistant_refs("s1") == [[{"kind": "profile", "learning_id": "p1"}]]
+
+
+def test_search_reset_marker_is_claimed_once(session_dir) -> None:
+    assert state.take_search_reset("s1") is False
+    state.request_search_reset("s1")
+    state.request_search_reset("s1")
+    assert state.take_search_reset("s1") is True
+    assert state.take_search_reset("s1") is False

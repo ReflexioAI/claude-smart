@@ -154,3 +154,46 @@ def test_injected_loader_command_runs_from_each_host_shell(
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == _EXPECTED
+
+
+def test_load_records_loaded_learning_for_next_turn(session_dir, capsys) -> None:
+    _inject("sess-1")
+    state.append("sess-1", {"role": "User", "content": "q"})
+
+    assert cli.main(["load", "s1-17", "--session", "sess-1"]) == 0
+    assert cli.main(["load", "s1-17", "--session", "sess-1"]) == 0
+    state.append("sess-1", {"role": "Assistant", "content": "a"})
+
+    _, turns = state.unpublished_slice(state.read_all("sess-1"))
+    assistant = [t for t in turns if t["role"] == "Assistant"]
+    assert assistant[0]["retrieved_learnings"] == [
+        {"kind": "user_playbook", "learning_id": "17", "loaded": True},
+        {"kind": "profile", "learning_id": "pref"},
+    ]
+    assert capsys.readouterr().out == _EXPECTED * 2
+
+
+def test_load_of_id_not_injected_in_session_records_nothing(
+    session_dir, capsys
+) -> None:
+    _inject("other")
+    before = state.read_all("sess-1")
+
+    assert cli.main(["load", "s1-17", "--session", "sess-1"]) == 1
+
+    assert state.read_all("sess-1") == before
+    assert "unknown id" in capsys.readouterr().err
+
+
+def test_load_still_prints_when_recording_fails(
+    session_dir, capsys, monkeypatch
+) -> None:
+    _inject("sess-1")
+
+    def broken(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(state, "append_loaded", broken)
+
+    assert cli.main(["load", "s1-17", "--session", "sess-1"]) == 0
+    assert capsys.readouterr().out == _EXPECTED

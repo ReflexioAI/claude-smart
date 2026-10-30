@@ -7,7 +7,7 @@ import sys
 from contextlib import suppress
 from typing import Any
 
-from claude_smart import hook, publish_outbox, runtime
+from claude_smart import hook, publish_outbox, runtime, state
 from claude_smart.reflexio_adapter import Adapter
 from claude_smart.stall_banner import render_banner
 
@@ -59,12 +59,24 @@ def _stall_banner(adapter: Any) -> str:
 
 
 def handle(payload: dict[str, Any]) -> None:
+    """SessionStart dispatcher: stall banner, plus a reset after compaction.
+
+    Args:
+        payload (dict[str, Any]): Host hook payload; ``source`` is
+            ``"compact"`` when Claude Code or Codex just compacted the chat.
+    """
     if runtime.is_codex():
         publish_outbox.kick()
     session_id = payload.get("session_id")
     if not session_id:
         hook.emit_continue()
         return
+
+    if payload.get("source") == "compact":
+        # Compaction keeps the session id, so the server's per-session dedup
+        # would keep withholding rules that just left the model's context.
+        with suppress(Exception):
+            state.request_search_reset(session_id)
 
     adapter = _adapter()
 

@@ -32,6 +32,8 @@ class FakeReflexioAdapter:
         top_k: int,
         session_id: str | None = None,
         request_id: str | None = None,
+        threshold: float | None = None,
+        reset_session_seen: bool = False,
     ) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
         from claude_smart import runtime
 
