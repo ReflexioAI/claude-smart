@@ -32,10 +32,85 @@ BACKEND_SERVICE = REPO_ROOT / "plugin" / "scripts" / "backend-service.sh"
 VENDOR = REPO_ROOT / "plugin" / "vendor" / "reflexio"
 ORG = "claude-smart"
 
+
 requires_vendor = pytest.mark.skipif(
     not (VENDOR / "reflexio" / "server").is_dir(),
     reason="plugin/vendor/reflexio is a pack-time artifact; vendor it to run",
 )
+
+
+@requires_vendor
+@pytest.mark.parametrize("both_files", [True, False])
+def test_undrained_selected_database_refuses_before_incompatible_config_publication(
+    tmp_path, both_files
+):
+    reader = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-c",
+            "from reflexio.config_file import FILE_FORMAT_VERSION;print(FILE_FORMAT_VERSION)",
+        ],
+        env=_env(tmp_path),
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert reader.returncode == 0, reader.stderr
+    if int(reader.stdout.strip().splitlines()[-1]) < 11:
+        pytest.skip("Release bundle predates generation-11 storage admission")
+    legacy = tmp_path / "data" / "reflexio.db"
+    legacy.parent.mkdir()
+    with sqlite3.connect(legacy) as conn:
+        conn.execute(
+            "CREATE TABLE _agent_runs(id TEXT PRIMARY KEY,org_id TEXT,status TEXT,committed_output TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE _agent_run_finalization_receipts(run_id TEXT PRIMARY KEY)"
+        )
+        conn.execute(
+            "INSERT INTO _agent_runs VALUES('old-run',?,'failed','{}')",
+            (ORG if both_files else "foreign-org",),
+        )
+    if both_files:
+        with sqlite3.connect(legacy.with_name(f"reflexio_{ORG}.db")):
+            pass
+    path = _config_file(tmp_path)
+    path.parent.mkdir(parents=True)
+    original = json.dumps(
+        {
+            "_reflexio_config_file": {"version": 10},
+            "storage_config": {"type": "sqlite", "db_path": None},
+            "pending_tool_call_config": {
+                "enabled": False,
+                "resume_claim_ttl_seconds": 1800,
+            },
+        }
+    ).encode()
+    path.write_bytes(original)
+    result = _run_runner(tmp_path, "--claude-smart-backend=1")
+    assert result.returncode != 0
+    assert "startup stopped to preserve database identity" in result.stderr
+    assert path.read_bytes() == original
+    assert not (path.parent / ".config-migrations").exists()
+    with sqlite3.connect(legacy) as conn:
+        assert conn.execute(
+            "SELECT status,committed_output FROM _agent_runs WHERE id='old-run'"
+        ).fetchone() == ("failed", "{}")
+        assert (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='_agent_output_receipts'"
+            ).fetchone()
+            is None
+        )
+        # A real old writer's completed state, never repaired by admission.
+        conn.execute("UPDATE _agent_runs SET status='finalized' WHERE id='old-run'")
+    result = _run_runner(tmp_path, "--claude-smart-backend=1")
+    assert result.returncode == 0, result.stderr
+    document = json.loads(path.read_bytes())
+    assert document["_reflexio_config_file"]["version"] == 11
+    assert document["storage_config"]["db_path"] == str(legacy)
 
 
 def _env(home: Path) -> dict[str, str]:
@@ -622,7 +697,7 @@ def test_failed_identity_pin_never_delegates_to_cli_or_selects_another_database(
         f"spec = importlib.util.spec_from_file_location('runner', {str(RUNNER)!r})\n"
         "runner = importlib.util.module_from_spec(spec); spec.loader.exec_module(runner)\n"
         "sys.argv = ['runner', '--claude-smart-backend=1', '--', 'services', 'start', '--only', 'backend']\n"
-        "with patch('reflexio.config_file.LocalConfigFile.edit_document', side_effect=OSError('private-marker')), patch.object(runner.runpy, 'run_module', side_effect=AssertionError('CLI must not run')):\n"
+        "with patch('reflexio.config_file.LocalConfigFile.prepare', side_effect=OSError('private-marker')), patch.object(runner.runpy, 'run_module', side_effect=AssertionError('CLI must not run')):\n"
         "    runner.main()\n"
     )
     result = subprocess.run(
