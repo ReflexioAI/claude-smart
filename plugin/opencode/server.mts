@@ -331,10 +331,15 @@ async function server(input: PluginInput) {
       if (!sessionID || !serves(sessionID)) return
       if (typeof output.text === "string") completedAssistantText.set(sessionID, output.text)
     },
-    dispose: async () => {
+    dispose: async (options?: { keep?: ReadonlySet<string> }) => {
       // Flush in-flight sessions even when superseded (a reload hands the slot
-      // over mid-turn), but leave the services to the live instance.
-      await Promise.all([...activeSessions].map((sessionID) => flushStop(sessionID)))
+      // over mid-turn), but leave the services to the live instance. `keep`
+      // names turns the V2 bridge handed to a reloaded instance, which
+      // publishes them at their terminal event through these same hooks.
+      const keep = options?.keep
+      await Promise.all(
+        [...activeSessions].filter((sessionID) => !keep?.has(sessionID)).map((sessionID) => flushStop(sessionID)),
+      )
       if (!isLive()) return
       await runService(DASHBOARD_SERVICE, "session-end")
       await runService(BACKEND_SERVICE, "session-end")
