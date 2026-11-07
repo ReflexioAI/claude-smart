@@ -35,6 +35,8 @@ dependencies = [
     # scripts/check-vendor-requirements.py enforces that at release and in CI.
     "reflexio-ai>=0.2.34",
     "filelock>=3.20.3",
+    # The vendored SDK requires process inspection; the PyPI baseline does not.
+    "psutil>=7.2.2",
 ]
 
 # claude-smart is distributed via npm only (see bin/claude-smart.js); it is not

@@ -151,6 +151,23 @@ def test_requirement_for_no_supported_target_is_ignored(tmp_path: Path) -> None:
     assert ok, message
 
 
+def test_single_resolution_excluding_target_is_not_installed(tmp_path: Path) -> None:
+    vendor = _vendor(tmp_path, ["plain"])
+    lock = _lock(tmp_path)
+    lock.write_text(
+        LOCK.replace(
+            'name = "plain"\nversion = "1.0.0"',
+            'name = "plain"\nversion = "1.0.0"\n'
+            "resolution-markers = [\"sys_platform == 'linux'\"]",
+        )
+    )
+    ok, message = check_vendor_requirements.check(vendor, lock)
+    assert not ok
+    assert "macos-arm64" in message
+    assert "windows-x64" in message
+    assert "linux-x86_64" not in message
+
+
 def test_passes_trivially_without_vendor(tmp_path: Path) -> None:
     ok, message = check_vendor_requirements.check(tmp_path / "missing", _lock(tmp_path))
     assert ok
