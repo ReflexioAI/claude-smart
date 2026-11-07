@@ -466,12 +466,8 @@ name = "claude-smart"
 version = "0.3.17"
 source = { editable = "." }
 dependencies = [
-    { name = "einops" },
     { name = "filelock" },
-    { name = "litellm" },
     { name = "reflexio-ai" },
-    { name = "simplejson" },
-    { name = "sqlite-vec" },
 ]
 
 [package.dev-dependencies]
@@ -482,12 +478,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "einops", specifier = ">=0.8.0" },
     { name = "filelock", specifier = ">=3.20.3" },
-    { name = "litellm", specifier = ">=1.103.1,<2" },
     { name = "reflexio-ai", specifier = ">=0.2.34" },
-    { name = "simplejson", specifier = ">=4.2.0" },
-    { name = "sqlite-vec", specifier = ">=0.1.6" },
 ]
 
 [package.metadata.requires-dev]

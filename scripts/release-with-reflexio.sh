@@ -87,6 +87,8 @@ case "$REFLEXIO_RELEASE_SOURCE" in
       exit 1
     fi
     uv pip install --project plugin --python "$PLUGIN_PYTHON" --reinstall --no-deps plugin/vendor/reflexio
+    # --no-deps skipped the vendored requirements; prove the locked env has them.
+    uv pip check --python "$PLUGIN_PYTHON"
     ;;
   pypi)
     COMMIT_FILES=(plugin/pyproject.toml plugin/uv.lock reflexio.lock.json)
@@ -105,6 +107,9 @@ case "$REFLEXIO_RELEASE_SOURCE" in
     ;;
 esac
 
+# Every requirement of the vendored Reflexio must be installed by plugin/uv.lock
+# on each supported platform (passes trivially when nothing is vendored).
+uv run --no-project --with packaging python scripts/check-vendor-requirements.py
 (cd plugin && uv run --project . --no-sync pytest --rootdir .. -o addopts= ../tests -q)
 if [ "$REFLEXIO_RELEASE_SOURCE" = "vendor" ]; then
   verify_vendor_in_npm_pack

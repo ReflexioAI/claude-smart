@@ -2667,6 +2667,33 @@ async function installVendoredReflexio(pluginRoot, uv, env) {
     );
   }
   if (code !== 0) throw new Error(`vendored Reflexio install failed in ${pluginRoot}`);
+  verifyVendoredReflexioRequirements(pluginRoot, uv, pythonPath, env);
+}
+
+// --no-deps skips the bundled Reflexio's own requirements, so a requirement
+// plugin/uv.lock does not install would only surface later as an import error
+// in the backend. Abort the install instead, naming the missing package.
+function verifyVendoredReflexioRequirements(pluginRoot, uv, pythonPath, env) {
+  const result = spawnSync(uv, ["pip", "check", "--python", pythonPath], {
+    cwd: pluginRoot,
+    env,
+    encoding: "utf8",
+    shell: isWindows() && /\.(?:cmd|bat)$/i.test(uv),
+    windowsHide: true,
+  });
+  if (!result.error && !result.signal && result.status === 0) return;
+  const report = `${result.stdout || ""}${result.stderr || ""}`.trim();
+  if (report) process.stderr.write(`${report}\n`);
+  const problems = report
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("The package"))
+    .join("; ");
+  const detail = problems || (result.error ? result.error.message : "uv pip check failed");
+  throw new Error(
+    `bundled Reflexio dependency check failed in ${pluginRoot}: ${detail}. ` +
+      "This claude-smart package is missing a dependency of its bundled Reflexio; " +
+      "update with 'npx claude-smart update' or report it at https://github.com/ReflexioAI/claude-smart/issues",
+  );
 }
 
 async function syncPluginPythonEnv(pluginRoot, uv, env) {
@@ -2758,8 +2785,9 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
       process.stdout.write("Dashboard build inputs unchanged; reusing prepared build.\n");
       return;
     }
-    let code = await runChecked(nodeRuntime.npm, ["ci"], { cwd: dashboardDir, env });
-    if (code !== 0) throw new Error(`npm ci failed in ${dashboardDir}`);
+    // Building needs only dependencies; devDependencies (eslint) are developer tools.
+    let code = await runChecked(nodeRuntime.npm, ["ci", "--omit=dev"], { cwd: dashboardDir, env });
+    if (code !== 0) throw new Error(`npm ci --omit=dev failed in ${dashboardDir}`);
     code = await runChecked(nodeRuntime.npm, ["run", "build"], { cwd: dashboardDir, env });
     if (code !== 0) throw new Error(`npm run build failed in ${dashboardDir}`);
     if (cache && nodeVersion && existsSync(join(dashboardDir, ".next", "BUILD_ID"))) cache.record(dashboardDir, nodeVersion);
@@ -3978,6 +4006,7 @@ module.exports = {
   learningProviderVersion,
   assertSupportedRuntimePlatform,
   bootstrapPluginRuntime,
+  installVendoredReflexio,
   codexMarketplacePluginRoot,
   copyCodexMarketplace,
   disabledCodexHooks,

@@ -2743,9 +2743,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
             next_bin = _DASHBOARD_DIR / "node_modules" / ".bin" / "next"
             if not next_bin.exists():
                 install_cmd = (
-                    [npm, "ci", "--no-audit", "--no-fund"]
+                    [npm, "ci", "--omit=dev", "--no-audit", "--no-fund"]
                     if (_DASHBOARD_DIR / "package-lock.json").exists()
-                    else [npm, "install", "--no-audit", "--no-fund"]
+                    else [npm, "install", "--omit=dev", "--no-audit", "--no-fund"]
                 )
                 install_label = " ".join(install_cmd)
                 sys.stdout.write(
