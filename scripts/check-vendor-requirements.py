@@ -9,6 +9,9 @@ provides it. This check reads the vendored ``pyproject.toml``
 ``[project].dependencies`` and, for each supported install target, walks the
 locked dependency graph from ``claude-smart`` to confirm every requirement
 (name, version specifier and requested extras) is installed by the lock.
+This static assessment uses CPython 3.12.0 for each target. It does not qualify
+every 3.12 patch release; installers separately run ``uv pip check`` against
+the actual interpreter after overlaying the vendor bundle.
 
 With no vendor bundle present (a PyPI-only release, or a source checkout), the
 installed ``reflexio-ai`` is the locked one, whose dependencies uv resolves
@@ -99,7 +102,7 @@ def select_entry(
         markers = entry.get("resolution-markers")
         if not markers or any(marker_applies(marker, env) for marker in markers):
             return entry
-    return entries[0] if len(entries) == 1 else None
+    return None
 
 
 def installed_versions(
@@ -184,7 +187,8 @@ def check(vendor_path: Path, lock_path: Path) -> tuple[bool, str]:
     if not problems:
         return True, (
             f"OK: plugin/uv.lock installs all {len(requirements)} runtime requirements "
-            f"of the vendored Reflexio on {', '.join(t.label for t in TARGETS)}."
+            f"of the vendored Reflexio on {', '.join(t.label for t in TARGETS)} "
+            f"at CPython {PYTHON_FULL_VERSION}."
         )
     lines = [
         "error: the vendored Reflexio is installed with --no-deps, so these",
