@@ -188,12 +188,33 @@ Bash-compatible `bash` for the bundled shell scripts. The installers bootstrap
 claude-smart-owned runtime dependencies, but do not install host CLIs (`claude`,
 `codex`, `opencode`) or Git Bash.
 
+### Vendored Reflexio requirements
+
+Installs run `uv sync --locked` (the PyPI `reflexio-ai` baseline and its
+dependencies), then install the generated `plugin/vendor/reflexio` over it with
+`--no-deps`. A requirement the vendored Reflexio adds or raises beyond the PyPI
+baseline is therefore installed only if `plugin/uv.lock` already provides it.
+Two checks cover every requirement, so `plugin/pyproject.toml` lists only what
+claude-smart itself imports:
+
+- `make check-vendor-requirements` (`scripts/check-vendor-requirements.py`)
+  reads the vendored `pyproject.toml` `[project].dependencies` and walks the
+  locked graph for Linux x86_64/aarch64, macOS arm64 and Windows x64 on Python
+  3.12. It runs in CI after vendoring, in `scripts/release-with-reflexio.sh`,
+  and in `make release-npm` / `publish-npm`. With no vendor bundle it passes and
+  says so. On failure, add the named requirement to `plugin/pyproject.toml` and
+  run `make relock`.
+- After each `--no-deps` install (`smart-install.sh`, `backend-service.sh`,
+  `bin/claude-smart.js`), `uv pip check --python <plugin python>` must pass;
+  otherwise the install aborts naming the missing package.
+
 When changing dependencies, verify:
 
 ```bash
 uv sync --project plugin --locked --dry-run --python 3.12 --python-platform x86_64-pc-windows-msvc
 uv sync --project plugin --locked --dry-run --python 3.12
-cd plugin/dashboard && npm ci && npm run build
+make check-vendor-requirements
+cd plugin/dashboard && npm ci --omit=dev && npm run build   # what user installs run
 ```
 
 Also check the published package surface:
@@ -314,6 +335,21 @@ npm run dev     # http://localhost:3001
 npm run build
 npm run lint
 ```
+
+User installs run `npm ci --omit=dev` before `npm run build`, so everything
+`next build` needs belongs in `dependencies`, including `tailwindcss`,
+`typescript`, `@types/react` and `@types/node` (with `tsconfig.json` present,
+`next build` would otherwise install a missing one over the network).
+`devDependencies` hold developer-only tools (`eslint`, `eslint-config-next`,
+`@types/react-dom`). The shadcn CLI is not a dependency: `app/shadcn.css` is a
+copy of the `shadcn/tailwind.css` export; its header names the source version.
+
+The `postcss` override in `package.json` came from the npm audit fix in PR #42:
+Next.js declares an exact older internal PostCSS (`8.4.31` for Next 16.2.6), and
+the override replaces it with `8.5.10`. As of 2026-11-07, `npm audit` without
+the override also reports PostCSS advisories up to `<=8.5.22`, so `8.5.10` no
+longer clears them; raising or removing the override (or the Next.js upgrade
+that makes it unnecessary) needs an owner decision.
 
 **Next.js 16 caveat** — the same one reflexio/docs flags: APIs and
 conventions differ from anything pre-16. Before touching route handlers or
@@ -462,14 +498,17 @@ left-to-right) and aborts on the first failure:
 6. `check-reflexio-pin` — the vendored reflexio version exists on PyPI.
 7. `check-vendor-reflexio` — the vendor bundle is present and its version matches
    the lock.
-8. `bump` — rewrites release metadata (and regenerates the standalone `plugin/uv.lock`).
-9. `check-locked-project-version` — `plugin/uv.lock`'s claude-smart version matches
+8. `check-vendor-requirements` — `plugin/uv.lock` installs every runtime
+   requirement of the vendor bundle (see "Vendored Reflexio requirements").
+9. `bump` — rewrites release metadata (and regenerates the standalone `plugin/uv.lock`).
+10. `check-locked-project-version` — `plugin/uv.lock`'s claude-smart version matches
    `plugin/pyproject.toml`.
-10. `git add` (`VERSION_FILES` + `LOCK_FILES`, which includes the refreshed
+11. `git add` (`VERSION_FILES` + `LOCK_FILES`, which includes the refreshed
     `reflexio.lock.json`) + `git commit -m "Release v$VERSION"`.
-11. `git tag -a v$VERSION`.
-12. `publish-npm` → `npm run build:opencode` + `npm publish --access public`.
-13. `git push --follow-tags`.
+12. `git tag -a v$VERSION`.
+13. `publish-npm` → reruns the vendor checks, then `npm run build:opencode` +
+    `npm publish --access public`.
+14. `git push --follow-tags`.
 
 ### Vendor mode: unpublished Reflexio update
 

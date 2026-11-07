@@ -20,7 +20,8 @@ DASHBOARD_PACKAGE = DASHBOARD_ROOT / "package.json"
     ("package_name", "reference_path", "reference_text"),
     [
         ("@tailwindcss/postcss", "postcss.config.mjs", '"@tailwindcss/postcss"'),
-        ("shadcn", "app/globals.css", '@import "shadcn/tailwind.css"'),
+        ("tailwindcss", "app/globals.css", '@import "tailwindcss"'),
+        ("tw-animate-css", "app/globals.css", '@import "tw-animate-css"'),
     ],
 )
 def test_dashboard_build_packages_are_production_dependencies(
@@ -31,6 +32,33 @@ def test_dashboard_build_packages_are_production_dependencies(
     assert reference_text in (DASHBOARD_ROOT / reference_path).read_text()
     assert package_name in package.get("dependencies", {})
     assert package_name not in package.get("devDependencies", {})
+
+
+@pytest.mark.parametrize("package_name", ["typescript", "@types/react", "@types/node"])
+def test_next_typescript_packages_are_production_dependencies(
+    package_name: str,
+) -> None:
+    # User installs run `npm ci --omit=dev`. With tsconfig.json present,
+    # `next build` installs any of these that is missing over the network
+    # (with every devDependency) instead of failing, so they must ship.
+    package = json.loads(DASHBOARD_PACKAGE.read_text())
+
+    assert (DASHBOARD_ROOT / "tsconfig.json").is_file()
+    assert package_name in package.get("dependencies", {})
+    assert package_name not in package.get("devDependencies", {})
+
+
+def test_shadcn_styles_are_vendored_not_installed() -> None:
+    package = json.loads(DASHBOARD_PACKAGE.read_text())
+    globals_css = (DASHBOARD_ROOT / "app" / "globals.css").read_text()
+
+    assert "shadcn" not in package.get("dependencies", {})
+    assert '@import "./shadcn.css"' in globals_css
+    assert "shadcn/tailwind.css" not in globals_css
+    assert (
+        "@custom-variant data-open"
+        in (DASHBOARD_ROOT / "app" / "shadcn.css").read_text()
+    )
 
 
 def test_dashboard_build_starts_the_dashboard_when_a_fresh_build_completes(
@@ -91,8 +119,9 @@ def dashboard_modules() -> Path:
     if not (modules / "@tailwindcss" / "postcss").is_dir():
         # The standard CI job installs root Node dependencies only. Install the
         # locked dashboard dependencies here so this regression cannot skip CI.
+        # --omit=dev matches what user installs receive.
         subprocess.run(
-            ["npm", "ci", "--ignore-scripts", "--no-fund", "--no-audit"],
+            ["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-fund", "--no-audit"],
             cwd=DASHBOARD_ROOT,
             check=True,
             capture_output=True,
@@ -199,7 +228,7 @@ def test_dashboard_content_cache_precedes_fresh_package_mtimes(
     )
     calls = tmp_path / "npm-calls"
     if changed_source:
-        assert "ci --ignore-scripts" in calls.read_text()
+        assert "ci --omit=dev --ignore-scripts" in calls.read_text()
         assert "run build" in calls.read_text()
     else:
         assert not calls.exists()
