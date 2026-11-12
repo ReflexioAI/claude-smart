@@ -86,6 +86,65 @@ def test_load_unknown_id_fails_clearly(session_dir, capsys) -> None:
     assert "unknown id 's9-zzzz' in session sess-1" in captured.err
 
 
+def _inject_three(session_id: str) -> dict[str, str]:
+    """Inject two skills and one preference; return each id's printed text."""
+    _, registry = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=[_ITEM, {"user_playbook_id": 23, "content": "Pin uv."}],
+        agent_playbooks=[],
+        profiles=[{"profile_id": "pref", "content": "prefers concise answers"}],
+        session_id=session_id,
+    )
+    state.append_injected(session_id, registry)
+    return {e["id"]: context_format.render_loaded_item(e) for e in registry}
+
+
+def test_load_prints_several_ids_in_request_order(session_dir, capsys) -> None:
+    text = _inject_three("sess-1")
+    assert sorted(text) == ["p1-pref", "s1-17", "s2-23"]
+
+    args = ["load", "--session", "sess-1", "cs:s2-23", "[cs:p1-pref]", "s1-17"]
+    assert cli.main(args) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == text["s2-23"] + text["p1-pref"] + _EXPECTED
+    assert captured.err == ""
+
+
+def test_load_prints_known_ids_and_reports_each_unknown(session_dir, capsys) -> None:
+    text = _inject_three("sess-1")
+
+    args = ["load", "s9-zzzz", "s1-17", "p9-nope", "p1-pref", "--session", "sess-1"]
+    assert cli.main(args) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == _EXPECTED + text["p1-pref"]
+    assert captured.err.splitlines() == [
+        f"error: unknown id {item!r} in session sess-1. Use an id from a "
+        "[cs:…] line injected in this session."
+        for item in ("s9-zzzz", "p9-nope")
+    ]
+
+
+def test_load_prints_a_repeated_id_once(session_dir, capsys) -> None:
+    _inject("sess-1")
+
+    args = ["load", "s1-17", "cs:s1-17", "[cs:s1-17]", "--session", "sess-1"]
+    assert cli.main(args) == 0
+
+    assert capsys.readouterr().out == _EXPECTED
+
+
+def test_load_session_errors_print_nothing_for_several_ids(session_dir, capsys) -> None:
+    _inject("sess-1")
+
+    assert cli.main(["load", "s1-17", "p1-pref", "--session", "../etc"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "invalid session id" in captured.err
+
+
 def test_load_without_any_injected_session_fails_clearly(session_dir, capsys) -> None:
     assert cli.main(["load", "s1-17"]) == 1
 
