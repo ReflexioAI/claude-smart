@@ -21,7 +21,7 @@
 .PHONY: help bump release release-npm publish publish-npm publish-dry package package-desktop \
         vendor-release \
         check-version check-clean check-npm-auth check-reflexio-pin check-reflexio-lock \
-        check-vendor-reflexio \
+        check-vendor-reflexio check-vendor-requirements \
         check-locked-project-version check-standalone-lock relock unskip-worktree
 
 # .claude-plugin/marketplace.json is intentionally absent: it is generated at
@@ -65,6 +65,9 @@ check-reflexio-lock: ## Verify plugin/pyproject.toml matches reflexio.lock.json
 
 check-vendor-reflexio: ## Verify generated Reflexio vendor bundle exists when the lock requires it
 	@python3 scripts/check-reflexio-lock.py --check-vendor
+
+check-vendor-requirements: ## Verify plugin/uv.lock installs every runtime requirement of the vendored Reflexio
+	@uv run --no-project --with packaging python scripts/check-vendor-requirements.py
 
 vendor-release: unskip-worktree ## Re-vendor the current (clean) reflexio submodule + refresh reflexio.lock.json
 	@echo "→ vendoring reflexio submodule (must be clean) into plugin/vendor/reflexio"
@@ -122,12 +125,12 @@ bump: check-version unskip-worktree ## Rewrite version in all release manifests
 	@echo "→ resulting versions:"
 	@grep -HE '("version"|^version)' $(VERSION_FILES)
 
-publish-npm: check-vendor-reflexio check-locked-project-version check-standalone-lock ## Publish the current version to npm
+publish-npm: check-vendor-reflexio check-vendor-requirements check-locked-project-version check-standalone-lock ## Publish the current version to npm
 	@echo "→ npm publish"
 	npm run build:opencode
 	npm publish --access public
 
-publish-dry: unskip-worktree check-vendor-reflexio check-locked-project-version check-standalone-lock ## Show what would be published without uploading
+publish-dry: unskip-worktree check-vendor-reflexio check-vendor-requirements check-locked-project-version check-standalone-lock ## Show what would be published without uploading
 	@echo "→ npm publish --dry-run"
 	@npm run build:opencode
 	@npm publish --dry-run
@@ -158,7 +161,7 @@ publish: publish-npm ## Publish the current version to npm (claude-smart is npm-
 release: ## Alias for release-npm — claude-smart is distributed via npm only
 	@$(MAKE) release-npm VERSION=$(VERSION)
 
-release-npm: check-version check-clean check-npm-auth vendor-release check-reflexio-lock check-reflexio-pin check-vendor-reflexio bump check-locked-project-version ## Re-vendor + bump + commit + tag + publish npm
+release-npm: check-version check-clean check-npm-auth vendor-release check-reflexio-lock check-reflexio-pin check-vendor-reflexio check-vendor-requirements bump check-locked-project-version ## Re-vendor + bump + commit + tag + publish npm
 	@echo "→ committing npm release v$(VERSION)"
 	git add $(VERSION_FILES) $(LOCK_FILES)
 	git commit -m "Release v$(VERSION)"

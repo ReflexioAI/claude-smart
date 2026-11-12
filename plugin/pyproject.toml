@@ -30,18 +30,13 @@ dependencies = [
     # normal installs; vendor releases may override it after uv sync by
     # installing plugin/vendor/reflexio. Keep in sync via
     # scripts/sync-reflexio-dep.py.
+    # The vendored runtime is installed with --no-deps, so plugin/uv.lock must
+    # already install every requirement it declares;
+    # scripts/check-vendor-requirements.py enforces that at release and in CI.
     "reflexio-ai>=0.2.34",
-    # Keep both the PyPI baseline and vendored runtime above the security floor.
-    "litellm>=1.103.1,<2",
-    # The pinned vendor uses strict JSON decoding beyond the PyPI baseline.
-    # Vendor installation uses --no-deps, so keep its requirement in the lock.
-    "simplejson>=4.2.0",
-    "einops>=0.8.0",
-    # Native SQLite vector KNN for local storage. Reflexio can fall back to
-    # Python ranking without this, but installed claude-smart should include
-    # the accelerator by default.
-    "sqlite-vec>=0.1.6",
     "filelock>=3.20.3",
+    # The vendored SDK requires process inspection; the PyPI baseline does not.
+    "psutil>=7.2.2",
 ]
 
 # claude-smart is distributed via npm only (see bin/claude-smart.js); it is not

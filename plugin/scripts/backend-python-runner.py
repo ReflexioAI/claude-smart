@@ -48,10 +48,9 @@ def pin_legacy_sqlite_db_path(
         from reflexio.cli.env_loader import block_implicit_dotenv_walkup
 
         block_implicit_dotenv_walkup()
-        from reflexio.cli.config_upgrade import prepare_local_config
         from reflexio.cli.run_services import DEFAULT_OSS_PORTS, get_env_port
         from reflexio.cli.utils import ensure_requested_ports_available
-        from reflexio.config_file import LocalConfigFile
+        from reflexio.config_file import FILE_FORMAT_VERSION, LocalConfigFile
         from reflexio.models.config_schema import (
             StorageConfigSQLite,
             validate_stored_config,
@@ -77,34 +76,56 @@ def pin_legacy_sqlite_db_path(
             or "127.0.0.1"
         )
         ensure_requested_ports_available({"backend": port}, host=host)
-        prepare_local_config(org_id=org_id)
         storage = LocalFileConfigStorage(org_id=org_id)
-        storage.load_config()  # Initialize only an absent file.
+        root = Path(LOCAL_STORAGE_PATH)
+        legacy = root / LEGACY_DB_FILENAME
+        derived = derive_db_path(root, org_id)
+        target = derived if derived.exists() and not legacy.exists() else legacy
+        warn_legacy = target == legacy and derived.exists()
+        pinned_legacy = False
 
-        def pin(document):
+        def pin(document, _version):
+            nonlocal pinned_legacy
             storage_config = validate_stored_config(document).storage_config
             if (
                 not isinstance(storage_config, StorageConfigSQLite)
                 or storage_config.db_path is not None
             ):
                 return
-            root = Path(LOCAL_STORAGE_PATH)
-            legacy = root / LEGACY_DB_FILENAME
-            derived = derive_db_path(root, org_id)
-            target = derived if derived.exists() and not legacy.exists() else legacy
-            if target == legacy and derived.exists():
-                print(
-                    f"[claude-smart] using {legacy}; memories written by 0.3.0 "
-                    f"remain in {derived} and are not merged",
-                    file=sys.stderr,
-                )
+            pinned_legacy = warn_legacy
             document["storage_config"] = {
                 **document.get("storage_config", {}),
                 "type": "sqlite",
                 "db_path": str(target),
             }
 
-        LocalConfigFile(storage.config_file).edit_document(pin)
+        # New readers couple data admission and the selected path to the same
+        # generation publication. Preserve the original startup API for older
+        # bundles; generation 11 is the protocol floor requiring data admission.
+        prepare = getattr(storage, "prepare_for_startup", None)
+        if prepare is None:
+            if FILE_FORMAT_VERSION >= 11:
+                raise RuntimeError("Required storage admission API is unavailable")
+            from reflexio.cli.config_upgrade import prepare_local_config
+
+            prepare_local_config(org_id=org_id)
+            storage.load_config()
+            LocalConfigFile(storage.config_file).edit_document(
+                lambda document: pin(document, FILE_FORMAT_VERSION)
+            )
+        else:
+            initial = (
+                storage.get_default_config().model_dump(mode="json")
+                if not Path(storage.config_file).exists()
+                else None
+            )
+            prepare(edit=pin, initial_document=initial)
+        if pinned_legacy:
+            print(
+                f"[claude-smart] using {legacy}; memories written by 0.3.0 "
+                f"remain in {derived} and are not merged",
+                file=sys.stderr,
+            )
     except Exception:
         raise RuntimeError(
             "Could not prepare the local configuration and pin SQLite db_path; "

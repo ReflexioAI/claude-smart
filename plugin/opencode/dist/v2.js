@@ -55,6 +55,14 @@ function registrationStore() {
         registrations = store[REGISTRATIONS_KEY] = new Map();
     return registrations;
 }
+const HANDOFF_KEY = Symbol.for("claude-smart.opencode.handoff");
+function handoffStore() {
+    const store = globalThis;
+    let handoff = store[HANDOFF_KEY];
+    if (!handoff)
+        handoff = store[HANDOFF_KEY] = new Map();
+    return handoff;
+}
 export function createSetup(server) {
     return async function setup(ctx = {}) {
         const directory = ctx.location?.directory || process.cwd();
@@ -93,15 +101,20 @@ export function createSetup(server) {
             return;
         }
         const disposers = [];
+        let stopEvents = () => { };
         const onDispose = (maybe) => {
             if (maybe && typeof maybe.dispose === "function")
                 disposers.push(() => maybe.dispose());
         };
-        // Sessions this instance received a prompt for. Events are broadcast to
-        // every live instance, but only the prompt-receiving instance registered
-        // the session with V1 and holds its captured text, so only it may flush
-        // the turn — otherwise every instance would publish the same turn.
+        // Sessions with an open turn this instance received the prompt for.
+        // Events are broadcast to every live instance, but only the
+        // prompt-receiving instance registered the session with V1 and holds its
+        // captured text, so only it may flush the turn — otherwise every instance
+        // would publish the same turn. A session leaves the set when its turn ends.
         const prompted = new Set();
+        // Open turns adopted from a reloaded instance, published through the V1
+        // hooks that captured them.
+        const adopted = new Map();
         // Assistant text parts per session, merged per assistant message.
         const lastText = new Map();
         if (v1["chat.message"] && ctx.session && typeof ctx.session.hook === "function") {
@@ -112,6 +125,15 @@ export function createSetup(server) {
                         const sessionID = event && event.sessionID;
                         if (typeof text !== "string" || !text.length || !sessionID)
                             return;
+                        // A prompt for an adopted turn starts a new registration with this
+                        // instance's V1 hooks; publish the adopted turn first, with the
+                        // text it has, so the session is never published twice.
+                        const parcel = adopted.get(sessionID);
+                        if (parcel) {
+                            adopted.delete(sessionID);
+                            lastText.delete(sessionID);
+                            await parcel.v1.event?.({ event: { type: "session.idle", properties: { sessionID } } });
+                        }
                         await v1["chat.message"]({ sessionID }, { parts: [{ type: "text", text }] });
                         prompted.add(sessionID);
                     }
@@ -168,6 +190,15 @@ export function createSetup(server) {
             });
         }
         if (v1.event && ctx.event && typeof ctx.event.subscribe === "function") {
+            const parked = handoffStore().get(directory);
+            if (parked) {
+                handoffStore().delete(directory);
+                for (const [sessionID, parcel] of parked) {
+                    adopted.set(sessionID, parcel);
+                    if (parcel.text)
+                        lastText.set(sessionID, parcel.text);
+                }
+            }
             const controller = new AbortController();
             // OpenCode V2 publishes completed text parts as `session.text.ended`
             // ({ sessionID, assistantMessageID, ordinal, text }) and does not emit
@@ -184,8 +215,16 @@ export function createSetup(server) {
                         try {
                             const record = event;
                             const data = record.data && typeof record.data === "object" ? record.data : {};
-                            if (record.type === "session.text.ended" && v1["experimental.text.complete"]) {
-                                const sessionID = typeof data.sessionID === "string" ? data.sessionID : "";
+                            const eventSessionID = typeof data.sessionID === "string" ? data.sessionID : "";
+                            // Decide the flush before any await: cleanup can interleave at
+                            // an await and must not park a turn this loop is publishing.
+                            const turnEnded = typeof record.type === "string" && TURN_END_EVENTS.has(record.type);
+                            const parcel = eventSessionID ? adopted.get(eventSessionID) : undefined;
+                            const hooks = parcel ? parcel.v1 : v1;
+                            const flushParcel = turnEnded && parcel !== undefined && adopted.delete(eventSessionID);
+                            const flushOwn = turnEnded && prompted.delete(eventSessionID);
+                            if (record.type === "session.text.ended" && hooks["experimental.text.complete"]) {
+                                const sessionID = eventSessionID;
                                 const messageID = typeof data.assistantMessageID === "string" ? data.assistantMessageID : "";
                                 const text = typeof data.text === "string" ? data.text : "";
                                 if (sessionID && text) {
@@ -196,16 +235,14 @@ export function createSetup(server) {
                                             : text
                                         : text;
                                     lastText.set(sessionID, { messageID, text: merged });
-                                    await v1["experimental.text.complete"]({ sessionID }, { text: merged });
+                                    await hooks["experimental.text.complete"]({ sessionID }, { text: merged });
                                 }
                             }
                             // A turn ends with session.execution.succeeded, .failed or
                             // .interrupted ({ sessionID }); OpenCode V2 publishes no
                             // session.idle event, so map all three to the V1 idle flush.
-                            const turnEnded = typeof record.type === "string" && TURN_END_EVENTS.has(record.type);
-                            const turnSessionID = typeof data.sessionID === "string" ? data.sessionID : "";
                             if (turnEnded) {
-                                lastText.delete(turnSessionID);
+                                lastText.delete(eventSessionID);
                             }
                             // V1 reads events in the legacy shape (`properties` or the event
                             // root). OpenCode V2 carries the payload under `data`, so mirror
@@ -220,11 +257,11 @@ export function createSetup(server) {
                             // instances flush only sessions they received prompts for, and
                             // chat.message registers those without session.created.
                             if (record.type !== "session.created" || isOwner()) {
-                                await v1.event({ event: normalized });
+                                await hooks.event?.({ event: normalized });
                             }
-                            if (turnEnded && turnSessionID && prompted.has(turnSessionID)) {
-                                await v1.event({
-                                    event: { type: "session.idle", properties: { sessionID: turnSessionID } },
+                            if (flushParcel || flushOwn) {
+                                await hooks.event?.({
+                                    event: { type: "session.idle", properties: { sessionID: eventSessionID } },
                                 });
                             }
                         }
@@ -245,11 +282,25 @@ export function createSetup(server) {
                     console.warn("[claude-smart] OpenCode event stream ended; capture is off until the plugin reloads");
                 }
             })();
-            disposers.push(() => controller.abort());
+            stopEvents = () => controller.abort();
         }
         cleanup = async () => {
             // Free the slot first: a reload can call setup again before this finishes.
             releaseSlot();
+            // Stop the event loop before parking, so the adopter is the only one
+            // left to publish a parked turn.
+            stopEvents();
+            const parcels = new Map();
+            for (const [sessionID, parcel] of adopted)
+                parcels.set(sessionID, { v1: parcel.v1, text: lastText.get(sessionID) });
+            for (const sessionID of prompted)
+                parcels.set(sessionID, { v1, text: lastText.get(sessionID) });
+            adopted.clear();
+            prompted.clear();
+            if (parcels.size) {
+                const store = handoffStore();
+                store.set(directory, new Map([...(store.get(directory) ?? []), ...parcels]));
+            }
             for (const dispose of disposers) {
                 try {
                     await dispose();
@@ -259,8 +310,10 @@ export function createSetup(server) {
             if (ctx.sessionsOutliveDispose || !isOwner())
                 return;
             try {
+                // Parked turns belong to the adopter now; flushing them here would
+                // publish them truncated and then again at their terminal event.
                 if (typeof v1.dispose === "function")
-                    await v1.dispose();
+                    await v1.dispose({ keep: new Set(parcels.keys()) });
             }
             catch {
                 // unload must not throw

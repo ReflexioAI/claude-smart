@@ -188,12 +188,33 @@ Bash-compatible `bash` for the bundled shell scripts. The installers bootstrap
 claude-smart-owned runtime dependencies, but do not install host CLIs (`claude`,
 `codex`, `opencode`) or Git Bash.
 
+### Vendored Reflexio requirements
+
+Installs run `uv sync --locked` (the PyPI `reflexio-ai` baseline and its
+dependencies), then install the generated `plugin/vendor/reflexio` over it with
+`--no-deps`. A requirement the vendored Reflexio adds or raises beyond the PyPI
+baseline is therefore installed only if `plugin/uv.lock` already provides it.
+Two checks cover every requirement, so `plugin/pyproject.toml` lists only what
+claude-smart itself imports:
+
+- `make check-vendor-requirements` (`scripts/check-vendor-requirements.py`)
+  reads the vendored `pyproject.toml` `[project].dependencies` and walks the
+  locked graph for Linux x86_64/aarch64, macOS arm64 and Windows x64 on Python
+  3.12. It runs in CI after vendoring, in `scripts/release-with-reflexio.sh`,
+  and in `make release-npm` / `publish-npm`. With no vendor bundle it passes and
+  says so. On failure, add the named requirement to `plugin/pyproject.toml` and
+  run `make relock`.
+- After each `--no-deps` install (`smart-install.sh`, `backend-service.sh`,
+  `bin/claude-smart.js`), `uv pip check --python <plugin python>` must pass;
+  otherwise the install aborts naming the missing package.
+
 When changing dependencies, verify:
 
 ```bash
 uv sync --project plugin --locked --dry-run --python 3.12 --python-platform x86_64-pc-windows-msvc
 uv sync --project plugin --locked --dry-run --python 3.12
-cd plugin/dashboard && npm ci && npm run build
+make check-vendor-requirements
+cd plugin/dashboard && npm ci --omit=dev && npm run build   # what user installs run
 ```
 
 Also check the published package surface:
@@ -253,7 +274,17 @@ the account runtime along with the cache.
 
 **Runtime copy.** The installer copies the active package to `~/.claude-smart/opencode/claude-smart`, prepares that runtime immediately, and writes a `file://` plugin entry so OpenCode reloads the same prepared package after restart. It prepares claude-smart's runtime dependencies but expects the OpenCode CLI to already be installed; it resolves and records the OpenCode executable in `~/.claude-smart/.env` for later backend restarts. Set `CLAUDE_SMART_OPENCODE_PATH` before install if `opencode` is not on `PATH`.
 
-**Model selection.** OpenCode support uses OpenCode's plugin loader to inject relevant learned context before each model request. Learning extraction runs `opencode run` with `OPENCODE_PURE=1` from an isolated temp project. On OpenCode 1.x that skips external plugins; V2 has no pure mode, so there the extraction run loads the user's global plugins. Extraction uses OpenCode's default model unless you set `CLAUDE_SMART_OPENCODE_MODEL=provider/model`. Set that env var if your normal project config pins a different provider or model.
+**Model selection.** OpenCode support uses OpenCode's plugin loader to inject relevant learned context into the system prompt of the first model request after each prompt. Learning extraction runs `opencode run` with `OPENCODE_PURE=1` from an isolated temp project. On OpenCode 1.x that skips external plugins; V2 has no pure mode, so there the extraction run loads the user's global plugins. Extraction uses OpenCode's default model unless you set `CLAUDE_SMART_OPENCODE_MODEL=provider/model`. Set that env var if your normal project config pins a different provider or model.
+
+**V2 plugin reload mid-turn.** OpenCode closes the old plugin instance, awaiting its cleanup and then closing its event streams, before it loads the new instance, and it holds plugin readiness until the swap is done. The old event stream therefore cannot run until the turn ends. Instead, cleanup in `plugin/opencode/v2.ts` hands each open turn, with the V1 hooks that captured it, to the next `setup()` for the same directory. That instance publishes the turn once, at its `session.execution.*` event. Events published during the swap reach no instance. If the terminal event is lost that way, the turn is published when the session's next prompt arrives. A turn that no new instance takes over is not published.
+
+**Context injection: `session.instructions` is not used (decision for #216).** OpenCode V2 (2.2.0 and later) lets plugins attach keyed, per-session context entries with `ctx.session.instructions.entry.put`. It is an API, not a hook: OpenCode reads the entries at every step boundary and renders them as `<context key="...">` blocks after its own instruction sources, ordered by key. The first read goes into the system prompt. Later changes become durable transcript messages ("The context under … changed and supersedes the previous value"), and forks copy the entries. The bridge keeps using the `prompt` hook to search and the `context` hook to inject, for these reasons:
+- The API is new and experimental. Plugins gained it on 2026-10-21, and its client methods moved under `client.experimental` a week later. OpenCode 2.1.x, which the bridge supports, does not have it.
+- It would change what claude-smart stores. Today, injected learnings reach one model call and are never persisted ("Changes affect only the outgoing model call, not persisted history"). Entries are written to OpenCode's session database and transcript, and copied into forks.
+- Its semantics conflict with per-search results. With one key, each new search "supersedes" the previous one and tells the model to drop learnings the server will not serve again, because of its per-session dedup. With a key per prompt, the entries grow for the life of the session. The #213 cap limits each search, not that total.
+- Ordering does not decide it. Entries render after OpenCode's instruction sources, and every plugin's `context` hook runs after that, in registration order. The current append lands at the end in either case.
+
+The `context` hook runs for every model call in a turn, but the V1 server drops a session's pending context after the first call. So tool-driven continuations, and later prompts whose learnings the server's per-session dedup suppresses, run without them. Instruction entries would close that gap. Revisit them once the API is stable and you can check on a real V2 host how they interact with compaction and session sharing.
 
 **Windows.** On native Windows, install Git for Windows and make `bash.exe` available on `PATH` before starting OpenCode, or run OpenCode from WSL. The installer also checks the Windows local embedding runtime and writes actionable setup failures to `~/.claude-smart/install-failed`.
 
@@ -304,6 +335,21 @@ npm run dev     # http://localhost:3001
 npm run build
 npm run lint
 ```
+
+User installs run `npm ci --omit=dev` before `npm run build`, so everything
+`next build` needs belongs in `dependencies`, including `tailwindcss`,
+`typescript`, `@types/react` and `@types/node` (with `tsconfig.json` present,
+`next build` would otherwise install a missing one over the network).
+`devDependencies` hold developer-only tools (`eslint`, `eslint-config-next`,
+`@types/react-dom`). The shadcn CLI is not a dependency: `app/shadcn.css` is a
+copy of the `shadcn/tailwind.css` export; its header names the source version.
+
+The `postcss` override in `package.json` came from the npm audit fix in PR #42:
+Next.js declares an exact older internal PostCSS (`8.4.31` for Next 16.2.6), and
+the override replaces it with `8.5.10`. As of 2026-11-07, `npm audit` without
+the override also reports PostCSS advisories up to `<=8.5.22`, so `8.5.10` no
+longer clears them; raising or removing the override (or the Next.js upgrade
+that makes it unnecessary) needs an owner decision.
 
 **Next.js 16 caveat** — the same one reflexio/docs flags: APIs and
 conventions differ from anything pre-16. Before touching route handlers or
@@ -452,14 +498,17 @@ left-to-right) and aborts on the first failure:
 6. `check-reflexio-pin` — the vendored reflexio version exists on PyPI.
 7. `check-vendor-reflexio` — the vendor bundle is present and its version matches
    the lock.
-8. `bump` — rewrites release metadata (and regenerates the standalone `plugin/uv.lock`).
-9. `check-locked-project-version` — `plugin/uv.lock`'s claude-smart version matches
+8. `check-vendor-requirements` — `plugin/uv.lock` installs every runtime
+   requirement of the vendor bundle (see "Vendored Reflexio requirements").
+9. `bump` — rewrites release metadata (and regenerates the standalone `plugin/uv.lock`).
+10. `check-locked-project-version` — `plugin/uv.lock`'s claude-smart version matches
    `plugin/pyproject.toml`.
-10. `git add` (`VERSION_FILES` + `LOCK_FILES`, which includes the refreshed
+11. `git add` (`VERSION_FILES` + `LOCK_FILES`, which includes the refreshed
     `reflexio.lock.json`) + `git commit -m "Release v$VERSION"`.
-11. `git tag -a v$VERSION`.
-12. `publish-npm` → `npm run build:opencode` + `npm publish --access public`.
-13. `git push --follow-tags`.
+12. `git tag -a v$VERSION`.
+13. `publish-npm` → reruns the vendor checks, then `npm run build:opencode` +
+    `npm publish --access public`.
+14. `git push --follow-tags`.
 
 ### Vendor mode: unpublished Reflexio update
 
