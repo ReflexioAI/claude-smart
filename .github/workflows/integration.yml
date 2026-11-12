@@ -67,6 +67,11 @@ jobs:
           python3 scripts/vendor-reflexio.py \
             --reflexio-path "$RUNNER_TEMP/reflexio-src" --bundle-only --write
 
+      # The vendored runtime installs with --no-deps, so plugin/uv.lock must
+      # already install every requirement it declares.
+      - name: Check vendored Reflexio requirements are locked
+        run: make check-vendor-requirements
+
       - name: Run pytest suite
         run: uv --project plugin run pytest tests -q
 
@@ -117,7 +122,8 @@ jobs:
         shell: bash
         run: |
           cd plugin/dashboard
-          npm ci
+          # The user install path: build with production dependencies only.
+          npm ci --omit=dev
           npm run build
 
       - name: Check cross-process search identity on the native host

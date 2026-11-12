@@ -488,6 +488,7 @@ def test_backend_service_uses_prepared_venv_reflexio_cli() -> None:
         'uv pip install --project "$PLUGIN_ROOT" --python "$plugin_python" '
         '--quiet --reinstall --no-deps "$vendor"'
     ) in service
+    assert 'uv pip check --python "$plugin_python"' in service
     assert 'vendor_pythonpath="$plugin_root/vendor/reflexio"' in LIB.read_text()
     assert 'verify_bundled_reflexio_import "$backend_python"' in service
     assert 'PYTHONPATH="$backend_pythonpath"' in service
@@ -4040,6 +4041,8 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     assert '"$PYTHON_BIN" scripts/vendor-reflexio.py' in release_script
     assert "uv pip install --project plugin --python" in release_script
     assert "--reinstall --no-deps plugin/vendor/reflexio" in release_script
+    assert 'uv pip check --python "$PLUGIN_PYTHON"' in release_script
+    assert "scripts/check-vendor-requirements.py" in release_script
     assert "OK: npm tarball includes vendored Reflexio files" in release_script
     assert "Keep generated plugin/vendor/reflexio in place" in release_script
     assert "make release-npm VERSION=<new-claude-smart-version>" in release_script
@@ -4053,12 +4056,14 @@ def test_reflexio_vendor_release_uses_generated_bundle() -> None:
     assert "installVendoredReflexio(pluginRoot, uv, env)" in installer
     assert 'join(pluginRoot, "vendor", "reflexio")' in installer
     assert '"pip", "install", "--project", pluginRoot' in installer
+    assert '["pip", "check", "--python", pythonPath]' in installer
     assert 'VENDORED_REFLEXIO="$PLUGIN_ROOT/vendor/reflexio"' in smart_install
     assert (
         'uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" '
         '--quiet --reinstall --no-deps "$VENDORED_REFLEXIO"'
     ) in smart_install
     assert "vendored Reflexio install failed" in smart_install
+    assert 'uv pip check --python "$python_bin"' in smart_install
     assert "install_vendored_reflexio" in smart_install
     assert "vendor_reflexio_pyproject" in lib
     assert "/plugin/vendor/" in gitignore
@@ -4349,6 +4354,109 @@ def test_smart_install_installs_vendored_reflexio(tmp_path: Path) -> None:
     assert "sync --locked --python 3.12 --quiet" in uv_log
     assert f"pip install --project {plugin_root}" in uv_log
     assert f"--reinstall --no-deps {vendor}" in uv_log
+    assert f"pip check --python {plugin_root}/.venv/bin/python" in uv_log
+
+
+# A uv whose `pip check` reports a vendored requirement --no-deps skipped.
+_UV_PIP_CHECK_FAILS = r"""#!/bin/sh
+printf "%s\n" "$*" >> "$HOME/uv.log"
+if [ "$1" = "sync" ]; then
+  mkdir -p "$PWD/.venv/bin"
+  printf '#!/bin/sh\nexit 0\n' > "$PWD/.venv/bin/python"
+  chmod +x "$PWD/.venv/bin/python"
+fi
+if [ "$1" = "python" ] && [ "$2" = "find" ]; then
+  printf "%s\n" "$PWD/.venv/bin/python"
+fi
+if [ "$1" = "pip" ] && [ "$2" = "check" ]; then
+  cat <<'REPORT'
+Found 1 incompatibility
+The package `reflexio-ai` requires `brand-new-dep>=1.0`, but it's not installed
+REPORT
+  exit 1
+fi
+exit 0
+"""
+
+
+def test_smart_install_fails_when_vendored_requirement_is_missing(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "plugin"
+    scripts = plugin_root / "scripts"
+    vendor = plugin_root / "vendor" / "reflexio"
+    fake_bin = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    vendor.mkdir(parents=True)
+    fake_bin.mkdir()
+    shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(
+        REPO_ROOT / "plugin" / "scripts" / "ensure-plugin-root.sh",
+        scripts / "ensure-plugin-root.sh",
+    )
+    (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    (plugin_root / "uv.lock").write_text("")
+    (vendor / "pyproject.toml").write_text("[project]\nname='reflexio-ai'\n")
+    _write_executable(fake_bin / "uv", _UV_PIP_CHECK_FAILS)
+
+    env = _isolated_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(scripts / "smart-install.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    failure = tmp_path / ".claude-smart" / "install-failed"
+    reason = failure.read_text().splitlines()[0]
+    assert "bundled Reflexio dependency check failed" in reason
+    assert "brand-new-dep>=1.0" in reason
+    assert not (tmp_path / ".claude-smart" / "install-complete").exists()
+    assert f"pip check --python {plugin_root}/.venv/bin/python" in (
+        tmp_path / "uv.log"
+    ).read_text()
+
+
+def test_node_installer_aborts_when_vendored_requirement_is_missing(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the installer test")
+    plugin_root = tmp_path / "plugin"
+    vendor = plugin_root / "vendor" / "reflexio"
+    vendor.mkdir(parents=True)
+    (vendor / "pyproject.toml").write_text("[project]\nname='reflexio-ai'\n")
+    for python in ("bin/python", "Scripts/python.exe"):
+        (plugin_root / ".venv" / python).parent.mkdir(parents=True, exist_ok=True)
+        _write_executable(plugin_root / ".venv" / python, "#!/bin/sh\nexit 0\n")
+    uv = tmp_path / "bin" / "uv"
+    uv.parent.mkdir()
+    _write_executable(uv, _UV_PIP_CHECK_FAILS)
+    script = (
+        f"const {{ installVendoredReflexio }} = require({json.dumps(str(NODE_INSTALLER))});\n"
+        f"installVendoredReflexio({json.dumps(str(plugin_root))}, {json.dumps(str(uv))}, process.env)"
+        ".then(() => console.log('installed'), (err) => console.log('ERR ' + err.message));\n"
+    )
+    result = subprocess.run(
+        [node, "-e", script],
+        env=_isolated_env(tmp_path),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ERR bundled Reflexio dependency check failed" in result.stdout
+    assert "brand-new-dep>=1.0" in result.stdout
+    uv_log = (tmp_path / "uv.log").read_text()
+    assert "--reinstall --no-deps" in uv_log
+    assert "pip check --python" in uv_log
 
 
 def _managed_claude_code_plugin_root(tmp_path: Path) -> Path:
@@ -7684,7 +7792,7 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
     assert "done" in result.stdout
     assert "uv sync --locked --python 3.12 --quiet" in (home / "uv.log").read_text()
     npm_log = (home / "npm.log").read_text()
-    assert "npm ci" in npm_log
+    assert "npm ci --omit=dev" in npm_log
     assert "npm run build" in npm_log
     parsed = json.loads((hooks / "codex-hooks.json").read_text())
     session_hooks = parsed["hooks"]["SessionStart"][0]["hooks"]

@@ -276,5 +276,11 @@ def test_restart_uses_npm_ci_when_lockfile_exists(fake_services) -> None:
     (cli._DASHBOARD_DIR / "package-lock.json").write_text("{}\n")
     rc = cli.cmd_restart(_make_args())
     assert rc == 0
-    assert build_calls[0] == ["/usr/bin/npm", "ci", "--no-audit", "--no-fund"]
+    assert build_calls[0] == [
+        "/usr/bin/npm",
+        "ci",
+        "--omit=dev",
+        "--no-audit",
+        "--no-fund",
+    ]
     assert build_calls[1] == ["/usr/bin/npm", "run", "build"]

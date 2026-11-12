@@ -174,7 +174,9 @@ if [ "$needs_install" = "1" ]; then
   # unlisted install scripts; this makes that behaviour explicit and portable.
   # No --silent: on failure npm's real error must land in $LOG_FILE, otherwise
   # the dashboard-unavailable reason is useless and the failure is undiagnosable.
-  if ! "$NPM_BIN" "$install_cmd" --ignore-scripts --no-fund --no-audit >>"$LOG_FILE" 2>&1; then
+  # --omit=dev: building needs only dependencies; devDependencies hold
+  # developer tools (eslint) that users never run.
+  if ! "$NPM_BIN" "$install_cmd" --omit=dev --ignore-scripts --no-fund --no-audit >>"$LOG_FILE" 2>&1; then
     rm -rf "$DASHBOARD_DIR/node_modules"
     reason="npm $install_cmd failed; removed partial node_modules; see $LOG_FILE"
     log "dashboard build: $reason"

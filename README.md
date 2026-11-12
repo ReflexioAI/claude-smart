@@ -304,6 +304,12 @@ Advanced users can tune claude-smart via environment variables — see [DEVELOPE
 | `~/.claude-smart/node/current/` | Private Node.js/npm runtime used by hooks and the dashboard after install. |
 | `~/.cache/chroma/onnx_models/all-MiniLM-L6-v2/` | Cached ONNX weights (~86 MB, downloaded once). Delete to force a re-download. |
 
+Backends that require publication admission select their database in the same
+atomic operation as a saved-configuration upgrade. If legacy work must drain,
+refusal preserves the original configuration so the old writer can still open
+it. Complete that work with the matching old backend before retrying; startup
+does not discard history, switch to an empty database, or acknowledge charges.
+
 Upgrading from `CLAUDE_SMART_USE_LOCAL_EMBEDDING` requires removing the retired
 assignment after preserving the effective model, endpoint and timeout policy.
 See the [embedding upgrade guide](https://github.com/ReflexioAI/claude-smart/blob/main/DEVELOPER.md#upgrade-from-the-old-embedding-flag), including the case where an old local default shadowed a written `off`.

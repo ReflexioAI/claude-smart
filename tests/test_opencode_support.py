@@ -3332,6 +3332,131 @@ def test_node_opencode_v2_reload_flushes_only_prompted_instance(
     assert parsed["secondHookNames"]
 
 
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    [
+        # The turn is open across the reload: the reloaded instance adopts it
+        # and publishes it once, complete, at its terminal event.
+        ("mid_turn", ["Before reload\n\nAfter reload"]),
+        # Two reloads inside one turn: the adopter parks the turn again.
+        ("mid_turn_twice", ["Before reload\n\nAfter reload"]),
+        # A prompt reaching the new instance for an adopted session publishes
+        # the adopted turn first; the new turn publishes at its own end.
+        ("prompt_after_reload", ["Before reload", "After reload"]),
+        # No turn open at the reload: nothing is parked or republished.
+        ("idle", ["Before reload"]),
+        # Control: the same events with no reload at all.
+        ("no_reload", ["Before reload\n\nAfter reload"]),
+    ],
+)
+def test_node_opencode_v2_reload_mid_turn_publishes_once(
+    tmp_path: Path, scenario: str, expected: list[str]
+) -> None:
+    if shutil_which_node() is None:
+        pytest.skip("node is not installed")
+    log_path = tmp_path / "calls.jsonl"
+    _write_fake_bash_recorder(tmp_path)
+    script = f"""
+      process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CALL_LOG = {json.dumps(str(log_path))};
+      const scenario = {json.dumps(scenario)};
+      const fs = require("fs");
+      const readCalls = () =>
+        fs.existsSync(process.env.CALL_LOG)
+          ? fs.readFileSync(process.env.CALL_LOG, "utf8").trim()
+              .split("\\n").filter(Boolean).map((line) => JSON.parse(line))
+          : [];
+      const stopPayloads = () =>
+        readCalls()
+          .filter((call) => Array.isArray(call.args) && call.args.includes("stop"))
+          .map((call) => JSON.parse(call.payload));
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const waitForStops = async (n) => {{
+        for (let i = 0; i < 200 && stopPayloads().length < n; i += 1) await sleep(25);
+      }};
+      import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
+        const subscribers = new Set();
+        const push = (event) => {{ for (const deliver of subscribers) deliver(event); }};
+        // OpenCode closes a plugin's event iterators when its scope closes,
+        // right after awaiting the cleanup, and loads the new instance only
+        // then: the old stream never sees an event published after cleanup.
+        const subscribe = ({{ signal }}) => (async function* () {{
+          const queue = [];
+          let wake = null;
+          const deliver = (event) => {{
+            queue.push(event);
+            if (wake) {{ const w = wake; wake = null; w(); }}
+          }};
+          subscribers.add(deliver);
+          const closed = new Promise((resolve) => signal.addEventListener("abort", () => resolve("closed"), {{ once: true }}));
+          try {{
+            for (;;) {{
+              if (!queue.length && (await Promise.race([new Promise((resolve) => {{ wake = resolve; }}), closed])) === "closed") return;
+              while (queue.length) yield queue.shift();
+            }}
+          }} finally {{
+            subscribers.delete(deliver);
+          }}
+        }})();
+        const makeCtx = () => {{
+          const hooks = {{}};
+          return {{
+            hooks,
+            ctx: {{
+              location: {{ directory: "/repo" }},
+              session: {{ hook: async (name, fn) => {{ hooks[name] = fn; return {{ dispose() {{}} }}; }} }},
+              tool: {{ hook: async () => ({{ dispose() {{}} }}) }},
+              event: {{ subscribe }},
+            }},
+          }};
+        }};
+        let current = makeCtx();
+        let cleanup = await mod.default.setup(current.ctx);
+        const reload = async () => {{
+          await cleanup();
+          current = makeCtx();
+          cleanup = await mod.default.setup(current.ctx);
+        }};
+        const text = (ordinal, value) =>
+          push({{ type: "session.text.ended", data: {{ sessionID: "s-r", assistantMessageID: "m1", ordinal, text: value }} }});
+        const end = () => push({{ type: "session.execution.succeeded", data: {{ sessionID: "s-r" }} }});
+        await current.hooks.prompt({{ sessionID: "s-r", prompt: {{ text: "first" }} }});
+        text(0, "Before reload");
+        if (scenario === "idle") {{
+          end();
+          await waitForStops(1);
+        }}
+        await sleep(150);
+        if (scenario !== "no_reload") await reload();
+        if (scenario === "mid_turn_twice") await reload();
+        if (scenario === "prompt_after_reload") {{
+          await current.hooks.prompt({{ sessionID: "s-r", prompt: {{ text: "second" }} }});
+          push({{ type: "session.text.ended", data: {{ sessionID: "s-r", assistantMessageID: "m2", ordinal: 0, text: "After reload" }} }});
+        }} else if (scenario !== "idle") {{
+          text(1, "After reload");
+        }}
+        // A stray terminal event in the idle case must not publish anything.
+        end();
+        await waitForStops({len(expected)});
+        await sleep(300);
+        await cleanup();
+        process.stdout.write(JSON.stringify(stopPayloads()));
+      }}).catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+
+    result = _run_node_script(script)
+    assert result is not None
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [
+        {"session_id": "s-r", "cwd": "/repo", "last_assistant_message": text}
+        for text in expected
+    ]
+
+
 def test_node_opencode_v2_second_setup_for_same_directory_registers_nothing(
     tmp_path: Path,
 ) -> None:

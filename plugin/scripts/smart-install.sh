@@ -201,14 +201,27 @@ install_vendored_reflexio() {
   fi
 
   echo "[claude-smart] installing bundled Reflexio source from $VENDORED_REFLEXIO" >&2
-  if uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" --quiet --reinstall --no-deps "$VENDORED_REFLEXIO" >&2; then
+  if ! uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" --quiet --reinstall --no-deps "$VENDORED_REFLEXIO" >&2; then
+    echo "[claude-smart] warning: quiet vendored Reflexio install failed in $PLUGIN_ROOT; retrying with full output." >&2
+    if ! uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" --reinstall --no-deps "$VENDORED_REFLEXIO" >&2; then
+      write_failure "vendored Reflexio install failed in $PLUGIN_ROOT"
+    fi
+  fi
+  verify_vendored_reflexio_requirements "$PLUGIN_PYTHON"
+}
+
+# --no-deps skips the bundled Reflexio's own requirements, so a requirement
+# plugin/uv.lock does not install would otherwise surface only as an import
+# error in the backend. Fail the install instead, naming the missing package.
+verify_vendored_reflexio_requirements() {
+  local python_bin report problems
+  python_bin="$1"
+  if report="$(uv pip check --python "$python_bin" 2>&1)"; then
     return 0
   fi
-
-  echo "[claude-smart] warning: quiet vendored Reflexio install failed in $PLUGIN_ROOT; retrying with full output." >&2
-  if ! uv pip install --project "$PLUGIN_ROOT" --python "$PLUGIN_PYTHON" --reinstall --no-deps "$VENDORED_REFLEXIO" >&2; then
-    write_failure "vendored Reflexio install failed in $PLUGIN_ROOT"
-  fi
+  printf '%s\n' "$report" >&2
+  problems="$(printf '%s\n' "$report" | grep -E '^The package' | tr '\n' ';' | sed 's/;$//' || true)"
+  write_failure "bundled Reflexio dependency check failed in $PLUGIN_ROOT/.venv: ${problems:-uv pip check failed} — this claude-smart package is missing a dependency of its bundled Reflexio; update with 'npx claude-smart update' or report it at https://github.com/ReflexioAI/claude-smart/issues"
 }
 
 write_success_marker() {

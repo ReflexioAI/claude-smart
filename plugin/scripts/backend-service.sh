@@ -831,7 +831,14 @@ PY
   fi
   claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
     "[claude-smart] backend: repairing vendored Reflexio install before start"
-  uv pip install --project "$PLUGIN_ROOT" --python "$plugin_python" --quiet --reinstall --no-deps "$vendor" >&2
+  uv pip install --project "$PLUGIN_ROOT" --python "$plugin_python" --quiet --reinstall --no-deps "$vendor" >&2 || return 1
+  # --no-deps skips the bundled Reflexio's own requirements; refuse to start on
+  # a runtime missing one rather than fail later on an import.
+  if ! report="$(uv pip check --python "$plugin_python" 2>&1)"; then
+    claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
+      "[claude-smart] backend: bundled Reflexio dependency check failed: $report"
+    return 1
+  fi
 }
 
 # Full shutdown: kill the recorded process group (if any) then sweep stale
