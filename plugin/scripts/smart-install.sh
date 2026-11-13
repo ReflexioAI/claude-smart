@@ -272,7 +272,7 @@ install_private_node() {
 
   NODE_MIN_MAJOR=20
   NODE_MIN_MINOR=9
-  NODE_LTS_MAJOR="${CLAUDE_SMART_NODE_LTS_MAJOR:-22}"
+  NODE_LTS_MAJOR="${CLAUDE_SMART_NODE_LTS_MAJOR:-26}"
 
   if claude_smart_node_satisfies "$NODE_MIN_MAJOR" "$NODE_MIN_MINOR" \
     && claude_smart_npm_available; then

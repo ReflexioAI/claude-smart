@@ -61,7 +61,7 @@ bundle and deliberately leaves your running services alone rather than stopping
 a backend it cannot replace. Use `npx claude-smart update`.
 
 **Where are private install tools stored?**
-`uv` is installed into the standard Astral locations (`~/.local/bin` or `~/.cargo/bin`). The private dashboard runtime is at `~/.claude-smart/node/current`. Set `CLAUDE_SMART_NODE_LTS_MAJOR=22` to choose the Node LTS major used by the private bootstrap.
+`uv` is installed into the standard Astral locations (`~/.local/bin` or `~/.cargo/bin`). The private dashboard runtime is at `~/.claude-smart/node/current`. Set `CLAUDE_SMART_NODE_LTS_MAJOR` (default `26`) to choose the Node LTS major used by the private bootstrap.
 
 **A different LLM is being used.**
 Reflexio's provider priority is `claude-code > local > anthropic > gemini > ... > openai`. If you have `CLAUDE_SMART_USE_LOCAL_CLI=1` *and* an Anthropic key set, claude-code still wins for generation; `local` sits above openai/gemini for embeddings. Check the startup log line `Primary provider for generation: <name>` and `Embedding provider: <name>` to confirm.
