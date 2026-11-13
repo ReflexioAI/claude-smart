@@ -2355,7 +2355,7 @@ async function ensurePrivateNode() {
   if (existing && existingNpm) return { node: existing, npm: existingNpm };
 
   assertSupportedRuntimePlatform();
-  const major = process.env.CLAUDE_SMART_NODE_LTS_MAJOR || "22";
+  const major = process.env.CLAUDE_SMART_NODE_LTS_MAJOR || "26";
   const { nodeOs, nodeArch, archiveExt } = nodeArchiveSpec();
   const baseUrl = process.env.CLAUDE_SMART_NODE_BASE_URL || `https://nodejs.org/dist/latest-v${major}.x`;
   const nodeRoot = join(homedir(), ".claude-smart", "node");
