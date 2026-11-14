@@ -1,457 +1,271 @@
-"""Tests for the Reflexio LocalScriptAssistant bridge."""
+"""Prompt compilation and the retained OpenCode compatibility path."""
+
+# ruff: noqa: S101 -- pytest assertions are the test interface.
 
 from __future__ import annotations
 
 import io
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+import time
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
+from unittest.mock import Mock
 
 import pytest
-
 from claude_smart import optimizer_assistant, runtime
 
 
-def _run_main(monkeypatch, payload):
-    stdout = io.StringIO()
-    stderr = io.StringIO()
+@pytest.fixture(autouse=True)
+def _invocation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "_REFLEXIO_ASSISTANT_INVOCATION",
+        json.dumps(
+            {"protocol": "native-cli/v1", "deadline_monotonic": time.monotonic() + 30}
+        ),
+    )
+    monkeypatch.setenv("CLAUDE_SMART_HOST", runtime.HOST_CLAUDE_CODE)
+    monkeypatch.delenv("CLAUDE_SMART_LEARNING_PROVIDER", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_LEARNING_MODEL", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+
+def _run_main(
+    monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any] | str
+) -> tuple[int, str, str]:
+    out, err = io.StringIO(), io.StringIO()
     raw = payload if isinstance(payload, str) else json.dumps(payload)
     monkeypatch.setattr(sys, "stdin", io.StringIO(raw))
-    monkeypatch.setattr(sys, "stdout", stdout)
-    monkeypatch.setattr(sys, "stderr", stderr)
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
     rc = optimizer_assistant.main()
-    return rc, stdout.getvalue(), stderr.getvalue()
+    return rc, out.getvalue(), err.getvalue()
 
 
-@pytest.mark.parametrize("host", [runtime.HOST_CLAUDE_CODE, runtime.HOST_CODEX])
+def _payload() -> dict[str, Any]:
+    return {
+        "messages": [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "seen"},
+            {"role": "user", "content": "answer now"},
+        ],
+        "playbooks": [{"id": 1, "content": "Be concise.", "trigger": "summaries"}],
+    }
+
+
+@pytest.mark.parametrize("provider", ["claude-code", "codex"])
+@pytest.mark.parametrize("override", [None, "missing-custom-cli"])
+def test_unresolved_bare_cli_never_selects_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, override: str | None
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_PROVIDER", provider)
+    if override:
+        monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", override)
+    name = override or ("claude" if provider == "claude-code" else "codex")
+    (tmp_path / name).write_text("untrusted working-directory program")
+    monkeypatch.setattr(optimizer_assistant.shutil, "which", lambda _: None)
+    launch = Mock(side_effect=AssertionError("untrusted program launched"))
+    monkeypatch.setattr(optimizer_assistant.subprocess, "run", launch)
+    rc, out, err = _run_main(monkeypatch, _payload())
+    assert rc == 1 and out == "" and "not found on PATH" in err
+    launch.assert_not_called()
+
+
 @pytest.mark.parametrize(
-    ("provider", "cli_path", "expected_prefix"),
+    "host", [runtime.HOST_CLAUDE_CODE, runtime.HOST_CODEX, runtime.HOST_OPENCODE]
+)
+@pytest.mark.parametrize(
+    "provider,override,protocol,executable",
     [
-        ("claude-code", "/bin/claude", ["/bin/claude", "-p"]),
-        ("codex", "", ["/bin/codex", "exec"]),
-        (
-            "opencode",
-            "/plugin/opencode-claude-compat",
-            ["/plugin/opencode-claude-compat", "-p"],
-        ),
-        ("codex", "/opt/custom-router", ["/opt/custom-router", "-p"]),
+        ("claude-code", "", "claude-json", "/bin/claude"),
+        ("codex", "", "codex", "/bin/codex"),
+        ("codex", "/opt/custom-router", "claude-json", "/opt/custom-router"),
     ],
 )
-def test_optimizer_uses_saved_provider_independently_of_hook_host(
-    monkeypatch, tmp_path, host, provider, cli_path, expected_prefix
+def test_optimizer_compiles_saved_provider_independently_of_hook_host(
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    provider: str,
+    override: str,
+    protocol: str,
+    executable: str,
 ) -> None:
     runtime.set_host(host)
     monkeypatch.setenv("CLAUDE_SMART_LEARNING_PROVIDER", provider)
-    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", cli_path)
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", override)
     monkeypatch.setattr(
-        optimizer_assistant.shutil, "which", lambda name: f"/bin/{name}"
+        optimizer_assistant.shutil,
+        "which",
+        lambda name: {"claude": "/bin/claude", "codex": "/bin/codex"}.get(name),
     )
-    output_path = tmp_path / "last-message.txt"
-    monkeypatch.setattr(
-        optimizer_assistant, "_temporary_output_path", lambda: output_path
-    )
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
-        output_path.write_text("assistant reply")
-        return SimpleNamespace(
-            returncode=0, stdout=json.dumps({"result": "assistant reply"}), stderr=""
-        )
-
-    monkeypatch.setattr(optimizer_assistant.subprocess, "run", fake_run)
-    rc, stdout, stderr = _run_main(
-        monkeypatch,
-        {"messages": [{"role": "user", "content": "answer now"}], "playbooks": []},
-    )
-    assert rc == 0
-    assert stderr == ""
-    assert json.loads(stdout) == {"content": "assistant reply"}
-    cmd, kwargs = calls[0]
-    assert cmd[:2] == expected_prefix
-    expected_child_host = runtime.HOST_CODEX if cmd[1] == "exec" else host
-    assert kwargs["env"]["CLAUDE_SMART_HOST"] == expected_child_host
-    assert kwargs["env"]["CLAUDE_SMART_INTERNAL"] == "1"
-
-
-@pytest.mark.parametrize("key", ["result", "response"])
-def test_optimizer_assistant_invokes_claude_and_emits_content(monkeypatch, key) -> None:
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps({key: "assistant reply"}),
-            stderr="",
-        )
-
-    monkeypatch.setattr(
-        "claude_smart.optimizer_assistant.shutil.which", lambda _: "/bin/claude"
-    )
-    monkeypatch.setattr("claude_smart.optimizer_assistant.subprocess.run", fake_run)
-
-    rc, stdout, stderr = _run_main(
-        monkeypatch,
-        {
-            "messages": [
-                {"role": "user", "content": "first"},
-                {"role": "assistant", "content": "seen"},
-                {"role": "user", "content": "answer now"},
-            ],
-            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": "summaries"}],
-        },
-    )
-
-    assert rc == 0
-    assert stderr == ""
-    assert json.loads(stdout) == {"content": "assistant reply"}
-    cmd, kwargs = calls[0]
-    assert cmd[:3] == ["/bin/claude", "-p", "--output-format"]
-    assert cmd[cmd.index("--model") + 1] == "sonnet"
-    assert cmd[cmd.index("--permission-mode") + 1] == "plan"
-    assert cmd[cmd.index("--tools") + 1] == "Read,Grep,Glob,LS"
+    launch = Mock(side_effect=AssertionError("compiler launched model"))
+    monkeypatch.setattr(optimizer_assistant.subprocess, "run", launch)
+    rc, out, err = _run_main(monkeypatch, _payload())
+    assert rc == 0 and err == ""
+    request = json.loads(out)["native_cli_v1"]
+    assert request["protocol"] == protocol and request["executable"] == executable
+    assert request["dialogue"] == "answer now"
+    assert "Be concise." in request["system_prompt"]
     assert (
-        cmd[cmd.index("--disallowedTools") + 1]
-        == "Bash,Edit,Write,MultiEdit,NotebookEdit"
+        "User: first" in request["system_prompt"]
+        and "Assistant: seen" in request["system_prompt"]
     )
-    assert "--no-session-persistence" in cmd
-    assert cmd[cmd.index("--mcp-config") + 1] == '{"mcpServers": {}}'
-    assert "--strict-mcp-config" in cmd
-    assert "--dangerously-skip-permissions" not in cmd
-    assert "--allow-dangerously-skip-permissions" not in cmd
-    assert kwargs["input"] == "answer now"
-    assert kwargs["env"]["CLAUDE_SMART_INTERNAL"] == "1"
-    assert kwargs["env"]["CLAUDE_CODE_ENTRYPOINT"] == "optimizer"
-    system_prompt = cmd[cmd.index("--append-system-prompt") + 1]
-    assert "Be concise." in system_prompt
-    assert "User: first" in system_prompt
-    assert "Assistant: seen" in system_prompt
+    assert "timeout" not in request and "permissions" not in request
+    launch.assert_not_called()
 
 
-def test_optimizer_assistant_invokes_codex_for_codex_host(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("model", [None, "sonnet", "chosen-model"])
+@pytest.mark.parametrize("provider", ["claude-code", "codex"])
+def test_optimizer_preserves_model_and_native_defaults(
+    monkeypatch: pytest.MonkeyPatch, model: str | None, provider: str
 ) -> None:
-    runtime.set_host(runtime.HOST_CODEX)
-    calls = []
-    output_path = tmp_path / "last-message.txt"
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_PROVIDER", provider)
+    monkeypatch.setenv("CLAUDE_SMART_CLI_MODEL", "unused-generation-model")
+    if model is not None:
+        monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", model)
+    monkeypatch.setattr(
+        optimizer_assistant.shutil, "which", lambda name: "/bin/" + name
+    )
+    rc, out, err = _run_main(monkeypatch, _payload())
+    assert rc == 0 and err == ""
+    assert json.loads(out)["native_cli_v1"]["model"] == (
+        model or ("sonnet" if provider == "claude-code" else None)
+    )
 
-    def fake_run(cmd, **kwargs):
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{not-json",
+        {},
+        {"messages": [], "playbooks": []},
+        {"messages": [{"content": 42}], "playbooks": []},
+    ],
+)
+def test_optimizer_rejects_invalid_payload_without_execution(
+    monkeypatch: pytest.MonkeyPatch, payload: Any
+) -> None:
+    launch = Mock(side_effect=AssertionError("invalid input dispatched"))
+    monkeypatch.setattr(optimizer_assistant.subprocess, "run", launch)
+    rc, out, _err = _run_main(monkeypatch, payload)
+    assert rc == 1 and out == ""
+    launch.assert_not_called()
+
+
+@pytest.mark.parametrize("response", ["result", "response"])
+def test_optimizer_legacy_opencode_retains_wire_model_variant_and_budget(
+    monkeypatch: pytest.MonkeyPatch, response: str
+) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_PROVIDER", "opencode")
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/plugin/opencode-claude-compat")
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", "provider/model")
+    monkeypatch.setenv("CLAUDE_SMART_OPENCODE_VARIANT", "high")
+    monkeypatch.setenv(
+        "_REFLEXIO_ASSISTANT_INVOCATION",
+        json.dumps(
+            {"protocol": "native-cli/v1", "deadline_monotonic": time.monotonic() + 600}
+        ),
+    )
+    calls = []
+
+    def run(cmd: list[str], **kwargs: Any) -> SimpleNamespace:
         calls.append((cmd, kwargs))
-        output_path.write_text("codex reply")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(
-        optimizer_assistant, "_temporary_output_path", lambda: output_path
-    )
-    monkeypatch.setattr(
-        "claude_smart.optimizer_assistant.shutil.which",
-        lambda name: "/bin/codex" if name == "codex" else None,
-    )
-    monkeypatch.setattr("claude_smart.optimizer_assistant.subprocess.run", fake_run)
-    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
-
-    rc, stdout, stderr = _run_main(
-        monkeypatch,
-        {
-            "messages": [
-                {"role": "user", "content": "first"},
-                {"role": "assistant", "content": "seen"},
-                {"role": "user", "content": "answer now"},
-            ],
-            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": "summaries"}],
-        },
-    )
-
-    assert rc == 0
-    assert stderr == ""
-    assert json.loads(stdout) == {"content": "codex reply"}
-    cmd, kwargs = calls[0]
-    assert cmd[:2] == ["/bin/codex", "exec"]
-    assert "--output-last-message" in cmd
-    assert cmd[cmd.index("--sandbox") + 1] == "read-only"
-    assert "--ask-for-approval" not in cmd
-    assert "--skip-git-repo-check" in cmd
-    assert "--ephemeral" in cmd
-    assert "--ignore-rules" in cmd
-    assert kwargs["input"].endswith("## Task\nanswer now")
-    assert "Be concise." in kwargs["input"]
-    assert "Assistant: seen" in kwargs["input"]
-    assert kwargs["env"]["CLAUDE_SMART_HOST"] == "codex"
-    assert kwargs["env"]["CLAUDE_SMART_INTERNAL"] == "1"
-    assert kwargs["env"]["CLAUDE_CODE_ENTRYPOINT"] == "optimizer"
-
-
-def test_optimizer_assistant_rejects_invalid_stdin(monkeypatch) -> None:
-    rc, stdout, stderr = _run_main(monkeypatch, "{not json")
-
-    assert rc == 1
-    assert stdout == ""
-    assert "stdin must be a JSON object" in stderr
-
-
-def test_optimizer_assistant_returns_nonzero_on_claude_failure(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "claude_smart.optimizer_assistant.shutil.which", lambda _: "claude"
-    )
-    monkeypatch.setattr(
-        "claude_smart.optimizer_assistant.subprocess.run",
-        lambda *_a, **_kw: SimpleNamespace(
-            returncode=2,
-            stdout="",
-            stderr="boom",
-        ),
-    )
-
-    rc, stdout, stderr = _run_main(
-        monkeypatch,
-        {
-            "messages": [{"role": "user", "content": "hi"}],
-            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": None}],
-        },
-    )
-
-    assert rc == 1
-    assert stdout == ""
-    assert "claude CLI exited 2" in stderr
-
-
-def test_optimizer_assistant_returns_nonzero_on_malformed_claude_json(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        "claude_smart.optimizer_assistant.shutil.which", lambda _: "claude"
-    )
-    monkeypatch.setattr(
-        "claude_smart.optimizer_assistant.subprocess.run",
-        lambda *_a, **_kw: SimpleNamespace(
-            returncode=0,
-            stdout="not json",
-            stderr="",
-        ),
-    )
-
-    rc, stdout, stderr = _run_main(
-        monkeypatch,
-        {
-            "messages": [{"role": "user", "content": "hi"}],
-            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": None}],
-        },
-    )
-
-    assert rc == 1
-    assert stdout == ""
-    assert "claude CLI returned non-JSON output" in stderr
-
-
-def test_optimizer_assistant_returns_nonzero_on_timeout(monkeypatch) -> None:
-    def fake_run(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired(cmd="claude", timeout=300)
-
-    monkeypatch.setattr(
-        "claude_smart.optimizer_assistant.shutil.which", lambda _: "claude"
-    )
-    monkeypatch.setattr("claude_smart.optimizer_assistant.subprocess.run", fake_run)
-
-    rc, stdout, stderr = _run_main(
-        monkeypatch,
-        {
-            "messages": [{"role": "user", "content": "hi"}],
-            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": None}],
-        },
-    )
-
-    assert rc == 1
-    assert stdout == ""
-    assert "claude CLI timed out after 300s" in stderr
-
-
-def test_optimizer_assistant_prefers_claude_smart_cli_path(monkeypatch) -> None:
-    """When ``CLAUDE_SMART_CLI_PATH`` is set, the optimizer assistant must
-    invoke the override (e.g. ``opencode-claude-compat``) instead of the real
-    ``claude`` binary. backend-service.sh writes this override for the
-    OpenCode and Codex hosts so generation routes through the same host-aware
-    bridge the reflexio ``claude-code`` provider uses.
-    """
-    seen_cmds = []
-
-    def fake_run(cmd, **kwargs):
-        seen_cmds.append(cmd[0])
         return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps({"result": "router reply"}),
-            stderr="",
+            returncode=0, stdout=json.dumps({response: "owned reply"}), stderr=""
         )
-
-    monkeypatch.setattr(
-        "claude_smart.optimizer_assistant.shutil.which", lambda _: "/bin/claude"
-    )
-    monkeypatch.setattr("claude_smart.optimizer_assistant.subprocess.run", fake_run)
-    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/opt/router")
-
-    rc, stdout, _stderr = _run_main(
-        monkeypatch,
-        {
-            "messages": [
-                {"role": "user", "content": "first"},
-                {"role": "assistant", "content": "seen"},
-                {"role": "user", "content": "answer now"},
-            ],
-            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": "summaries"}],
-        },
-    )
-
-    assert rc == 0
-    assert json.loads(stdout) == {"content": "router reply"}
-    # shutil.which was registered but the override path must be the one
-    # actually spawned, because the override is an explicit operator signal.
-    assert seen_cmds == ["/opt/router"]
-    assert "/bin/claude" not in seen_cmds
-
-
-def test_optimizer_assistant_opencode_bridge_accepts_optimizer_args(
-    monkeypatch, tmp_path
-) -> None:
-    """Run through the real OpenCode bridge parser so optimizer-only Claude flags
-    cannot be reintroduced for host compatibility bridges.
-    """
-    if os.name == "nt":
-        pytest.skip("POSIX bridge wrapper exercised on non-Windows hosts")
-
-    repo_root = Path(__file__).resolve().parents[1]
-    bridge = repo_root / "plugin" / "scripts" / "opencode-claude-compat"
-    fake_opencode = tmp_path / "opencode"
-    fake_opencode.write_text(
-        '#!/bin/sh\nprintf \'%s\\n\' \'{"type":"result","result":"bridge reply"}\'\n'
-    )
-    fake_opencode.chmod(0o755)
-
-    runtime.set_host(runtime.HOST_OPENCODE)
-    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(bridge))
-    monkeypatch.setenv("CLAUDE_SMART_OPENCODE_PATH", str(fake_opencode))
-
-    rc, stdout, stderr = _run_main(
-        monkeypatch,
-        {
-            "messages": [
-                {"role": "system", "content": "System note."},
-                {"role": "user", "content": "hello"},
-            ],
-            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": None}],
-        },
-    )
-
-    assert rc == 0, stderr
-    assert stderr == ""
-    assert json.loads(stdout) == {"content": "bridge reply"}
-
-
-def test_optimizer_assistant_override_missing_path_fails_loud(
-    monkeypatch, tmp_path
-) -> None:
-    """An override path that doesn't exist must surface a clear ``FileNotFoundError``
-    rather than silently fall back to ``shutil.which("claude")`` (which would
-    re-introduce the original CC-quota bug for misconfigured bridges). The
-    ``OptimizerAssistantError`` wrapper reports this as
-    ``"claude CLI not found on PATH"`` so misconfiguration is diagnosable from
-    reflexio's optimizer error surface.
-    """
-    missing = tmp_path / "does-not-exist.sh"
-    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(missing))
-
-    def fake_run(cmd, **_kwargs):
-        raise FileNotFoundError(2, "No such file", str(missing))
-
-    monkeypatch.setattr("claude_smart.optimizer_assistant.subprocess.run", fake_run)
-
-    rc, stdout, stderr = _run_main(
-        monkeypatch,
-        {
-            "messages": [{"role": "user", "content": "hi"}],
-            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": None}],
-        },
-    )
-
-    assert rc == 1
-    assert stdout == ""
-    assert "claude CLI not found on PATH" in stderr
-
-
-def test_optimizer_assistant_falls_back_to_shutil_which_without_override(
-    monkeypatch,
-) -> None:
-    """Without ``CLAUDE_SMART_CLI_PATH``, the legacy Claude Code host path
-    continues to use ``shutil.which("claude")`` so non-OpenCode installs keep
-    working.
-    """
-    seen = []
-
-    def fake_run(cmd, **_kwargs):
-        seen.append(cmd[0])
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps({"result": "ok"}),
-            stderr="",
-        )
-
-    monkeypatch.setattr(
-        "claude_smart.optimizer_assistant.shutil.which", lambda _: "/usr/bin/claude"
-    )
-    monkeypatch.setattr("claude_smart.optimizer_assistant.subprocess.run", fake_run)
-    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
-
-    rc, stdout, _stderr = _run_main(
-        monkeypatch,
-        {
-            "messages": [{"role": "user", "content": "hello"}],
-            "playbooks": [{"id": 1, "content": "Be concise.", "trigger": None}],
-        },
-    )
-
-    assert rc == 0
-    assert json.loads(stdout) == {"content": "ok"}
-    assert seen == ["/usr/bin/claude"]
-
-
-def test_optimizer_assistant_resolve_helpers(monkeypatch) -> None:
-    """The resolver ignores empty overrides and falls through to shutil."""
-    monkeypatch.setattr(
-        "claude_smart.optimizer_assistant.shutil.which",
-        lambda _: "/usr/local/bin/claude",
-    )
-
-    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
-    assert optimizer_assistant._resolve_claude_cli_path() == "/usr/local/bin/claude"
-
-    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "")
-    assert optimizer_assistant._resolve_claude_cli_path() == "/usr/local/bin/claude"
-
-    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/bridge/claude")
-    assert optimizer_assistant._resolve_claude_cli_path() == "/bridge/claude"
-
-
-@pytest.mark.parametrize("model", ["sonnet", "chosen-model"])
-def test_optimizer_preserves_explicit_learning_model(monkeypatch, model):
-    monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", model)
-    monkeypatch.setattr(optimizer_assistant.shutil, "which", lambda _: "/bin/claude")
-    calls = []
-
-    def run(cmd, **_kwargs):
-        calls.append(cmd)
-        return SimpleNamespace(returncode=0, stdout='{"result":"reply"}', stderr="")
 
     monkeypatch.setattr(optimizer_assistant.subprocess, "run", run)
-    assert optimizer_assistant._run_claude(prompt="test", system_prompt="") == "reply"
-    assert calls[0][calls[0].index("--model") + 1] == model
+    rc, out, err = _run_main(monkeypatch, _payload())
+    assert rc == 0 and err == "" and json.loads(out) == {"content": "owned reply"}
+    cmd, kwargs = calls[0]
+    assert cmd[:4] == [
+        "/plugin/opencode-claude-compat",
+        "-p",
+        "--output-format",
+        "json",
+    ]
+    assert cmd[cmd.index("--model") + 1] == "provider/model"
+    assert "--permission-mode" not in cmd and "--tools" not in cmd
+    assert kwargs["env"]["CLAUDE_SMART_OPENCODE_VARIANT"] == "high"
+    assert kwargs["env"]["CLAUDE_SMART_INTERNAL"] == "1"
+    assert kwargs["env"]["CLAUDE_CODE_ENTRYPOINT"] == "optimizer"
+    assert 300 < kwargs["timeout"] <= 600
+
+
+@pytest.mark.parametrize(
+    "body,code",
+    [("private-invalid", 0), ("[]", 0), ("{}", 0), ('{"result":"private-output"}', 2)],
+)
+def test_legacy_bridge_failure_is_single_attempt_and_private(
+    monkeypatch: pytest.MonkeyPatch, body: str, code: int
+) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/plugin/opencode-claude-compat")
+    launch = Mock(
+        return_value=SimpleNamespace(
+            returncode=code, stdout=body, stderr="private-error"
+        )
+    )
+    monkeypatch.setattr(optimizer_assistant.subprocess, "run", launch)
+    rc, out, err = _run_main(monkeypatch, _payload())
+    assert rc == 1 and out == "" and "private" not in err
+    assert launch.call_count == 1
+
+
+def test_expired_invocation_never_launches_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/plugin/opencode-claude-compat")
+    monkeypatch.setenv(
+        "_REFLEXIO_ASSISTANT_INVOCATION",
+        json.dumps(
+            {"protocol": "native-cli/v1", "deadline_monotonic": time.monotonic() - 1}
+        ),
+    )
+    launch = Mock()
+    monkeypatch.setattr(optimizer_assistant.subprocess, "run", launch)
+    rc, out, err = _run_main(monkeypatch, _payload())
+    assert rc == 1 and out == "" and "deadline expired" in err
+    launch.assert_not_called()
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_override_missing_path_does_not_choose_another_cli(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, relative: bool
+) -> None:
+    selected = str(tmp_path / "missing-cli")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(
+        "CLAUDE_SMART_CLI_PATH", "./missing-cli" if relative else selected
+    )
+    lookups = []
+
+    def which(name: str) -> str | None:
+        lookups.append(name)
+        return None
+
+    monkeypatch.setattr(optimizer_assistant.shutil, "which", which)
+    rc, out, err = _run_main(monkeypatch, _payload())
+    assert rc == 0 and err == ""
+    assert json.loads(out)["native_cli_v1"]["executable"] == selected
+    assert "claude" not in lookups
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX plugin-root symlink layout")
-def test_installed_optimizer_helper_survives_plugin_root_refresh(tmp_path):
+def test_installed_optimizer_helper_survives_plugin_root_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """An explicit stable backend path follows an install's refreshed root link."""
     import shutil
+
+    from reflexio.server.services.playbook_optimizer.assistant_webhook import (
+        LocalScriptAssistant,
+    )
+    from reflexio.server.services.playbook_optimizer.models import ChatMessage
 
     root = Path(__file__).resolve().parents[1]
     helper = Path(sys.executable).parent / "claude-smart-optimizer-assistant"
@@ -478,6 +292,8 @@ def test_installed_optimizer_helper_survives_plugin_root_refresh(tmp_path):
     saved_binding = (
         home / ".reflexio/plugin-root/.venv/bin/claude-smart-optimizer-assistant"
     )
+    bash = shutil.which("bash")
+    assert bash is not None
     old_install = None
     for version in ("1.0.0", "2.0.0"):
         install = home / ".claude/plugins/cache/reflexioai/claude-smart" / version
@@ -486,8 +302,8 @@ def test_installed_optimizer_helper_survives_plugin_root_refresh(tmp_path):
             (root / "plugin/pyproject.toml").read_text()
         )
         (install / ".venv").symlink_to(helper.parent.parent, target_is_directory=True)
-        subprocess.run(
-            ["bash", str(root / "plugin/scripts/ensure-plugin-root.sh"), str(install)],
+        subprocess.run(  # noqa: S603 -- owned test installer script and temporary home.
+            [bash, str(root / "plugin/scripts/ensure-plugin-root.sh"), str(install)],
             env=env,
             capture_output=True,
             text=True,
@@ -497,19 +313,10 @@ def test_installed_optimizer_helper_survives_plugin_root_refresh(tmp_path):
         assert (home / ".reflexio/plugin-root").resolve() == install
         if old_install is not None:
             shutil.rmtree(old_install)
-        result = subprocess.run(
-            [str(saved_binding)],
-            input=json.dumps(
-                {
-                    "messages": [{"role": "user", "content": "synthetic"}],
-                    "playbooks": [],
-                }
-            ),
-            text=True,
-            capture_output=True,
-            env=env,
-            check=True,
-            timeout=15,
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        caller = LocalScriptAssistant(str(saved_binding), [], 15)
+        assert (
+            caller([ChatMessage(role="user", content="synthetic")], []) == "owned reply"
         )
-        assert json.loads(result.stdout) == {"content": "owned reply"}
         old_install = install
