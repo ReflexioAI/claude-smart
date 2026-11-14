@@ -105,6 +105,16 @@ jobs:
           PYTHONPATH: plugin/src
         run: uv run --no-project --with pytest --with 'filelock>=3.20.3' python -m pytest tests/test_cli_restart.py -k 'resolve_bash or resolve_npm or windows' -q -o addopts=
 
+      - name: Check native dotenv transactions at minimum and locked filelock
+        shell: bash
+        env:
+          PYTHONPATH: plugin/src
+        run: |
+          locked_filelock=$(python -c 'import tomllib; p=tomllib.load(open("plugin/uv.lock", "rb")); print(next(x["version"] for x in p["package"] if x["name"] == "filelock"))')
+          for filelock_version in 3.20.3 "$locked_filelock"; do
+            uv run --no-project --with pytest --with "filelock==$filelock_version" python -m pytest tests/test_env_transactions.py -q -o addopts=
+          done
+
       - name: Check Python dependency lock
         shell: bash
         run: |

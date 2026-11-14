@@ -9,6 +9,7 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 |------|---------|
 | `hook.py` | Hook dispatcher. Parses the stdin JSON payload and routes each event (Setup, SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd) to its handler in `events/`. |
 | `cli.py` | `claude-smart` CLI: `install`, `uninstall`, `show`, `learn`, `restart`, `dashboard`, `clear-all`. |
+| `env_config.py` | Dotenv parsing and Python helper transactions: native OS lock, complete private temporary write, atomic publication. Node, dashboard and shell writers are not yet participants. |
 | `state.py` | Per-session JSONL buffer at `~/.claude-smart/sessions/{session_id}.jsonl`; high-water mark for idempotent publish retries. |
 | `publish.py` | Drains the session buffer, calls the Reflexio adapter, and stamps the watermark. Used by Stop, SessionEnd, and `learn`. |
 | `publish_outbox.py` | Private, destination-bound Codex publish intents and one detached worker; reuses the existing publisher and recovers on startup/Stop. |
@@ -57,3 +58,22 @@ UserPromptSubmit / PreToolUse -> context_inject pulls relevant learnings back in
 - **Backend lives at `http://localhost:8071`**, dashboard at `http://localhost:3001`; both are long-lived across sessions (no hard shutdown on SessionEnd by default).
 - **`CLAUDE_SMART_READ_ONLY`** skips publishing entirely — respect it in any new publish path.
 - **Keep handlers fast** — tool-use hooks run on a 10–15s timeout; heavy work belongs in the backend, not the hook.
+
+### Python settings publication
+
+`set_env_vars` and `ensure_local_env_defaults` own their full read/transform/write
+under an adjacent `.env.lock`. A competing Python helper fails immediately with
+an actionable busy error. Native locking must be available: there is no soft-lock
+fallback or application-side stale-marker deletion. Failed writes before atomic
+replacement preserve the old settings. Original settings and lock paths must be
+regular files without symlinks or hard links; invalid UTF-8 is rejected rather
+than treated as an empty configuration. POSIX temporary files are private before
+content is written. Unexpected process death releases the OS lock, but can leave
+a private temporary file; the original remains intact if replacement had not
+committed.
+
+This boundary covers each Python helper operation, not an entire installation.
+Higher-level decisions and the Node/dashboard/shell writers still need migration;
+concurrent external editors do not acquire this lock. No power-loss durability or
+rollback after a committed replacement is promised. Settings names, defaults and
+SDK pin are unchanged.

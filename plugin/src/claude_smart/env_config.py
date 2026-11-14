@@ -12,7 +12,12 @@ from __future__ import annotations
 
 import os
 import re
+import stat
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
+
+from filelock import Timeout, UnixFileLock, WindowsFileLock
 
 from claude_smart import runtime
 
@@ -112,13 +117,18 @@ def load_reflexio_env(path: Path | None = None) -> None:
 
 
 def set_env_vars(path: Path, values: dict[str, str]) -> list[str]:
-    """Upsert dotenv keys while preserving comments and unrelated entries."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        existing = path.read_text()
-    except OSError:
-        existing = ""
+    """Upsert dotenv keys in one private, serialized publication."""
+    # Validate before creating even the parent directory; never interpolate
+    # caller-supplied newlines into extra settings.
+    for key, value in values.items():
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None or any(
+            char in value for char in "\r\n\0"
+        ):
+            raise ValueError("Invalid environment assignment")
+    return _edit_env_file(path, lambda text: _upsert_env(text, values))
 
+
+def _upsert_env(existing: str, values: dict[str, str]) -> tuple[str, list[str]]:
     lines = existing.splitlines()
     seen: set[str] = set()
     out: list[str] = []
@@ -142,16 +152,7 @@ def set_env_vars(path: Path, values: dict[str, str]) -> list[str]:
         added.append(key)
 
     content = "\n".join(out)
-    _write_private(path, content + ("\n" if content else ""))
-    return added
-
-
-def _write_private(path: Path, content: str) -> None:
-    """Write the env file, which holds the managed API key, as 0600 from the
-    start, so no other account can read it between the write and a chmod."""
-    path.touch(mode=0o600, exist_ok=True)
-    path.chmod(0o600)
-    path.write_text(content, encoding="utf-8")
+    return content + ("\n" if content else ""), added
 
 
 def ensure_local_env_defaults(
@@ -167,14 +168,21 @@ def ensure_local_env_defaults(
     This repairs first installs and deleted env files without clobbering
     explicit user overrides such as ``CLAUDE_SMART_READ_ONLY=1``.
     """
-    install_host = host
-    path = path or CLAUDE_SMART_ENV_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        existing = path.read_text()
-    except OSError:
-        existing = ""
+    if host not in {
+        runtime.HOST_CLAUDE_CODE,
+        runtime.HOST_CODEX,
+        runtime.HOST_OPENCODE,
+    }:
+        raise ValueError("Invalid integration host")
+    return _edit_env_file(
+        path or CLAUDE_SMART_ENV_PATH,
+        lambda text: _local_env_defaults(text, host, prune=prune),
+    )
 
+
+def _local_env_defaults(
+    existing: str, install_host: str, *, prune: bool
+) -> tuple[str, list[str]]:
     present: set[str] = set()
     kept_lines: list[str] = []
     pruned = False
@@ -223,11 +231,81 @@ def ensure_local_env_defaults(
             prefix = "" if not content or content.endswith("\n") else "\n"
             content = content + prefix + "\n".join(additions)
         content = content + ("\n" if content else "")
-        _write_private(path, content)
-    elif not path.exists():
-        path.touch()
-    path.chmod(0o600)
-    return added_keys
+        return content, added_keys
+    return existing, added_keys
+
+
+def _regular_env_file(path: Path) -> bool:
+    """Reject special files and links instead of replacing their destinations."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise ValueError(
+            "Environment settings and lock must be regular, unlinked files"
+        )
+    return True
+
+
+def _edit_env_file[Result](
+    path: Path, edit: Callable[[str], tuple[str, Result]]
+) -> Result:
+    """Own one helper's read/transform/publication, not an entire installation.
+
+    Only participating writers serialize. There is no retry, soft-lock fallback,
+    or stale-marker deletion. os.replace is the commit point; directory/power-loss
+    durability and compensation after a lost acknowledgement are not promised.
+    """
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    _regular_env_file(lock_path)
+    native_lock = WindowsFileLock if os.name == "nt" else UnixFileLock
+    # filelock 3.20.3's native implementations fail closed on unsupported locks
+    # and filter unknown optional kwargs. 4.x needs fallback explicitly disabled;
+    # retaining its marker avoids a second lock inode during release.
+    lock = native_lock(
+        lock_path,
+        timeout=0,
+        mode=0o600,
+        **{"fallback_to_soft": False, "preserve_lock_file": True},
+    )
+    try:
+        with lock:
+            exists = _regular_env_file(path)
+            if exists:
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK
+                with os.fdopen(os.open(path, flags), "rb") as source:
+                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                        raise ValueError("Environment settings must be a regular file")
+                    try:
+                        original = source.read().decode("utf-8")
+                    except UnicodeDecodeError:
+                        raise ValueError(
+                            "Environment settings must be valid UTF-8"
+                        ) from None
+            else:
+                original = ""
+            content, result = edit(original)
+            # No-op operations still repair the original private mode, as before.
+            if exists and content == original:
+                path.chmod(0o600)
+                return result
+            fd, temporary_name = tempfile.mkstemp(prefix=".env-", dir=path.parent)
+            temporary = Path(temporary_name)
+            try:
+                with os.fdopen(fd, "wb") as target:
+                    target.write(content.encode("utf-8"))
+                    target.flush()
+                    os.fsync(target.fileno())
+                temporary.replace(path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            return result
+    except Timeout:
+        raise RuntimeError(
+            "Environment settings are busy; retry after the other save finishes"
+        ) from None
 
 
 def _resolve_local_env_default(key: str, fallback: str, install_host: str) -> str:
@@ -236,6 +314,8 @@ def _resolve_local_env_default(key: str, fallback: str, install_host: str) -> st
     if key in _ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS:
         explicit = os.environ.get(key, "").strip()
         if explicit:
+            if any(char in explicit for char in "\r\n\0"):
+                raise ValueError("Invalid local environment default")
             return explicit
     return fallback
 

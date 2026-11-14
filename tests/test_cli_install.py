@@ -569,14 +569,14 @@ def test_env_writes_are_private_before_content_lands(
     env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     modes: list[int] = []
-    real_write_text = Path.write_text
+    real_replace = Path.replace
 
-    def recording_write_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
-        if self == env_path:
+    def recording_replace(self: Path, target: Path):
+        if target == env_path:
             modes.append(self.stat().st_mode & 0o777)
-        return real_write_text(self, *args, **kwargs)
+        return real_replace(self, target)
 
-    monkeypatch.setattr(Path, "write_text", recording_write_text)
+    monkeypatch.setattr(Path, "replace", recording_replace)
     old_umask = os.umask(0o022)
     try:
         env_config.set_env_vars(env_path, {"REFLEXIO_API_KEY": "rflx-secret"})
