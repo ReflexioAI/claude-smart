@@ -962,5 +962,9 @@ through the existing CLI model setting. Explicit generation executable overrides
 remain authoritative; custom optimizer executables retain their Claude protocol.
 OpenCode continues to use its existing bridge, including model/variant selection.
 
-This migration does not retire SDK settings yet. The separate duplicate Codex-path
-retirement must reject active obsolete configuration safely before changing a target.
+The bundled SDK no longer uses `CLAUDE_SMART_CODEX_PATH` or plugin roots to
+select a Codex executable. Use `CLAUDE_SMART_CLI_PATH` or PATH. A nonblank old
+path assignment without a valid canonical override refuses when Codex learning
+is reached; move its intended path to the canonical setting before removing it.
+An existing valid canonical override keeps precedence over that unused old key.
+The guard does not print the old value or start a model call.
