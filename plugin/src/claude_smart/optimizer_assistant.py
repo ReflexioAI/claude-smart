@@ -1,9 +1,9 @@
 """Local-script assistant backend for Reflexio playbook optimization.
 
 Reflexio's ``LocalScriptAssistant`` sends one JSON payload on stdin and expects
-one JSON object on stdout. This module bridges that protocol to a guarded
-local CLI subprocess so candidate playbooks can be evaluated against the active
-host without re-entering claude-smart/reflexio hooks.
+one JSON object on stdout. This module compiles native Claude/Codex requests
+for the SDK to execute, or runs the remaining OpenCode compatibility bridge.
+Candidate playbooks are evaluated without re-entering claude-smart hooks.
 
 Host CLI resolution: the saved learning provider selects native Codex when no
 custom executable is configured. Explicit custom optimizer executables retain
@@ -14,19 +14,18 @@ and optimizer both use the user's authenticated CLI rather than a cloud key.
 from __future__ import annotations
 
 import json
+import math
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
+import time
+from pathlib import Path
 from typing import Any
 
 from claude_smart import internal_call, runtime
 
-_CLI_TIMEOUT_SECONDS = 300
-_READ_ONLY_TOOLS = "Read,Grep,Glob,LS"
-_MUTATING_TOOLS = "Bash,Edit,Write,MultiEdit,NotebookEdit"
+_INVOCATION_ENV = "_REFLEXIO_ASSISTANT_INVOCATION"
 # Mirrors ``reflexio.server.llm.providers.claude_code_provider._ENV_CLI_PATH``
 # for explicit custom optimizer executables and the remaining OpenCode bridge.
 _ENV_CLI_PATH = "CLAUDE_SMART_CLI_PATH"
@@ -46,16 +45,19 @@ class OptimizerAssistantError(Exception):
 def main() -> int:
     """Console-script entrypoint for ``claude-smart-optimizer-assistant``."""
     try:
+        deadline = _invocation_deadline()
         payload = _read_payload()
         messages = _validated_list(payload, "messages")
         playbooks = _validated_list(payload, "playbooks")
         prompt, system_prompt = _build_prompt(messages, playbooks)
-        content = _run_local_cli(prompt=prompt, system_prompt=system_prompt)
+        result = _prepare_result(
+            prompt=prompt, system_prompt=system_prompt, deadline=deadline
+        )
     except Exception as exc:  # noqa: BLE001 - script errors become LocalScript failures.
         sys.stderr.write(f"{type(exc).__name__}: {exc}\n")
         return 1
 
-    json.dump({"content": content}, sys.stdout, ensure_ascii=False)
+    json.dump(result, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")
     return 0
 
@@ -151,18 +153,79 @@ def _render_transcript(messages: list[dict[str, str]]) -> str:
     )
 
 
-def _run_local_cli(*, prompt: str, system_prompt: str) -> str:
-    provider = os.environ.get("CLAUDE_SMART_LEARNING_PROVIDER")
-    if provider:
-        override = os.environ.get(_ENV_CLI_PATH)
-        if provider == "codex" and (
-            not override or _is_claude_smart_compat_bridge(override)
+def _invocation_deadline() -> float:
+    """Accept caller-owned IPC facts, never a configurable helper timeout."""
+    try:
+        invocation = json.loads(os.environ.get(_INVOCATION_ENV, "null"))
+        if (
+            not isinstance(invocation, dict)
+            or invocation.get("protocol") != "native-cli/v1"
         ):
-            return _run_codex(prompt=prompt, system_prompt=system_prompt)
-        return _run_claude(prompt=prompt, system_prompt=system_prompt)
-    if runtime.is_codex():
-        return _run_codex(prompt=prompt, system_prompt=system_prompt)
-    return _run_claude(prompt=prompt, system_prompt=system_prompt)
+            raise ValueError("unsupported invocation")
+        value = invocation["deadline_monotonic"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("invalid invocation deadline")
+        deadline = float(value)
+        if not math.isfinite(deadline):
+            raise ValueError("invalid invocation deadline")
+    except (ValueError, TypeError, KeyError, OverflowError):
+        raise OptimizerAssistantError(
+            "Upgrade the calling server SDK to native-cli/v1 before using this helper"
+        ) from None
+    _remaining(deadline)
+    return deadline
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise OptimizerAssistantError("assistant invocation deadline expired")
+    return remaining
+
+
+def _prepare_result(
+    *, prompt: str, system_prompt: str, deadline: float
+) -> dict[str, Any]:
+    """Compile Claude/Codex calls; retain the explicitly legacy bridge path."""
+    provider = os.environ.get("CLAUDE_SMART_LEARNING_PROVIDER")
+    override = os.environ.get(_ENV_CLI_PATH)
+    codex = (
+        provider == "codex"
+        and (not override or _is_claude_smart_compat_bridge(override))
+    ) or (not provider and runtime.is_codex())
+    model = os.environ.get("CLAUDE_SMART_LEARNING_MODEL")
+    if codex:
+        protocol = "codex"
+        executable = shutil.which("codex") or "codex"
+    else:
+        executable = _resolve_claude_cli_path()
+        if _is_claude_smart_compat_bridge(executable):
+            return {
+                "content": _run_compat_bridge(
+                    cli_path=executable,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    model=model,
+                    deadline=deadline,
+                )
+            }
+        protocol = "claude-json"
+        if (
+            not model
+            and not override
+            and os.environ.get("CLAUDE_SMART_USE_LOCAL_CLI") != "0"
+        ):
+            model = "sonnet"
+    _remaining(deadline)
+    return {
+        "native_cli_v1": {
+            "protocol": protocol,
+            "executable": str(Path(shutil.which(executable) or executable).absolute()),
+            "model": model or None,
+            "dialogue": prompt,
+            "system_prompt": system_prompt,
+        }
+    }
 
 
 def _resolve_claude_cli_path() -> str:
@@ -185,157 +248,54 @@ def _is_claude_smart_compat_bridge(cli_path: str) -> bool:
     return Path(cli_path).name.lower() in _CLAUDE_SMART_COMPAT_BRIDGE_NAMES
 
 
-def _run_claude(*, prompt: str, system_prompt: str) -> str:
-    cli_path = _resolve_claude_cli_path()
-    cmd = [
-        cli_path,
-        "-p",
-        "--output-format",
-        "json",
-    ]
-    model = os.environ.get("CLAUDE_SMART_LEARNING_MODEL")
-    if (
-        not model
-        and not os.environ.get(_ENV_CLI_PATH)
-        and os.environ.get("CLAUDE_SMART_USE_LOCAL_CLI") != "0"
-    ):
-        model = "sonnet"
+def _run_compat_bridge(
+    *,
+    cli_path: str,
+    prompt: str,
+    system_prompt: str,
+    model: str | None,
+    deadline: float,
+) -> str:
+    """Legacy OpenCode wrapper contract; no native descendant-ownership claim."""
+    cmd = [cli_path, "-p", "--output-format", "json"]
     if model:
         cmd.extend(["--model", model])
-    if not _is_claude_smart_compat_bridge(cli_path):
-        # This is an evaluation rollout, not a real user session: allow local
-        # inspection, but prevent filesystem, shell, MCP, and session mutations.
-        cmd.extend(
-            [
-                "--permission-mode",
-                "plan",
-                "--tools",
-                _READ_ONLY_TOOLS,
-                "--disallowedTools",
-                _MUTATING_TOOLS,
-                "--no-session-persistence",
-                "--mcp-config",
-                '{"mcpServers": {}}',
-                "--strict-mcp-config",
-            ]
-        )
     if system_prompt:
         cmd.extend(["--append-system-prompt", system_prompt])
-
     env = os.environ.copy()
     env[runtime.INTERNAL_ENV] = "1"
     env[internal_call._ENTRYPOINT_VAR] = "optimizer"  # noqa: SLF001
-
     try:
-        proc = subprocess.run(  # noqa: S603 - command is fixed plus resolved executable.
+        proc = subprocess.run(  # noqa: S603 — existing explicitly selected compatibility wrapper.
             cmd,
             input=prompt,
             capture_output=True,
             text=True,
-            timeout=_CLI_TIMEOUT_SECONDS,
+            timeout=_remaining(deadline),
             check=False,
             env=env,
         )
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
+        raise OptimizerAssistantError("compatibility bridge timed out") from None
+    except (OSError, ValueError):
         raise OptimizerAssistantError(
-            f"claude CLI timed out after {_CLI_TIMEOUT_SECONDS}s"
-        ) from exc
-    except FileNotFoundError as exc:
-        raise OptimizerAssistantError("claude CLI not found on PATH") from exc
-
+            "compatibility bridge could not execute"
+        ) from None
     if proc.returncode != 0:
-        stderr = proc.stderr.strip()
-        raise OptimizerAssistantError(
-            f"claude CLI exited {proc.returncode}: {stderr[:500]}"
-        )
-
+        raise OptimizerAssistantError("compatibility bridge execution failed")
     try:
         data = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise OptimizerAssistantError("claude CLI returned non-JSON output") from exc
-    if not isinstance(data, dict):
-        raise OptimizerAssistantError("claude CLI JSON output must be an object")
-
-    content = data.get("result")
-    if not isinstance(content, str):
+    except (ValueError, TypeError):
+        raise OptimizerAssistantError(
+            "compatibility bridge returned invalid JSON"
+        ) from None
+    content = data.get("result") if isinstance(data, dict) else None
+    if not isinstance(content, str) and isinstance(data, dict):
         content = data.get("response")
     if not isinstance(content, str):
-        raise OptimizerAssistantError("claude CLI JSON output missing result/response")
+        raise OptimizerAssistantError("compatibility bridge returned no content")
+    _remaining(deadline)
     return content
-
-
-def _run_codex(*, prompt: str, system_prompt: str) -> str:
-    cli_path = shutil.which("codex") or "codex"
-    output_path = _temporary_output_path()
-    cmd = [
-        cli_path,
-        "exec",
-        "--sandbox",
-        "read-only",
-        "--skip-git-repo-check",
-        "--ephemeral",
-        "--ignore-rules",
-        "--output-last-message",
-        str(output_path),
-        "-",
-    ]
-    if model := os.environ.get("CLAUDE_SMART_LEARNING_MODEL"):
-        cmd[2:2] = ["--model", model]
-
-    env = os.environ.copy()
-    env[runtime.HOST_ENV] = runtime.HOST_CODEX
-    env[runtime.INTERNAL_ENV] = "1"
-    env[internal_call._ENTRYPOINT_VAR] = "optimizer"  # noqa: SLF001
-
-    try:
-        proc = subprocess.run(  # noqa: S603 - command is fixed plus resolved executable.
-            cmd,
-            input=_codex_prompt(prompt=prompt, system_prompt=system_prompt),
-            capture_output=True,
-            text=True,
-            timeout=_CLI_TIMEOUT_SECONDS,
-            check=False,
-            env=env,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise OptimizerAssistantError(
-            f"codex CLI timed out after {_CLI_TIMEOUT_SECONDS}s"
-        ) from exc
-    except FileNotFoundError as exc:
-        raise OptimizerAssistantError("codex CLI not found on PATH") from exc
-
-    try:
-        content = output_path.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise OptimizerAssistantError("codex CLI did not write output") from exc
-    finally:
-        try:
-            output_path.unlink()
-        except OSError:
-            pass
-
-    if proc.returncode != 0:
-        stderr = proc.stderr.strip()
-        raise OptimizerAssistantError(
-            f"codex CLI exited {proc.returncode}: {stderr[:500]}"
-        )
-    if not content:
-        raise OptimizerAssistantError("codex CLI returned empty output")
-    return content
-
-
-def _temporary_output_path() -> Path:
-    handle = tempfile.NamedTemporaryFile(prefix="claude-smart-codex-", delete=False)
-    try:
-        return Path(handle.name)
-    finally:
-        handle.close()
-
-
-def _codex_prompt(*, prompt: str, system_prompt: str) -> str:
-    if not system_prompt:
-        return prompt
-    return f"{system_prompt}\n\n## Task\n{prompt}"
 
 
 if __name__ == "__main__":

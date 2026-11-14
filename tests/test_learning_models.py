@@ -1,17 +1,21 @@
 """Model selection must reach real CLI subprocesses, not just installer output."""
 
+# ruff: noqa: S101 -- pytest assertions are the test interface.
+
 from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
+import time
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
-
 from claude_smart import optimizer_assistant, runtime
+
 from tests.test_install_guide import fake_guide
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,8 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.skipif(os.name == "nt", reason="Executable POSIX fake CLI fixture")
 @pytest.mark.parametrize("provider,model", [("opencode", "openai/gpt-6.1-sol")])
 def test_extraction_bridge_passes_selected_model_to_agent(
-    tmp_path, monkeypatch, provider, model
-):
+    tmp_path: Path, provider: str, model: str
+) -> None:
     executable = tmp_path / provider
     recorded = tmp_path / "args.json"
     node = shutil.which("node")
@@ -38,7 +42,7 @@ else console.log(JSON.stringify({{type:'result',result:'reply'}}));
     env = dict(os.environ)
     env["CLAUDE_SMART_LEARNING_MODEL"] = model
     env[f"CLAUDE_SMART_{provider.upper()}_PATH"] = str(executable)
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603 -- owned Node fixture and explicit executable.
         [
             node,
             str(ROOT / f"plugin/scripts/{provider}-claude-compat.js"),
@@ -69,8 +73,8 @@ else console.log(JSON.stringify({{type:'result',result:'reply'}}));
     ],
 )
 def test_optimizer_passes_same_model_to_selected_provider(
-    monkeypatch, tmp_path, provider, model
-):
+    monkeypatch: pytest.MonkeyPatch, provider: str, model: str
+) -> None:
     runtime.set_host(runtime.HOST_CODEX)
     monkeypatch.setenv("CLAUDE_SMART_LEARNING_PROVIDER", provider)
     monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", model)
@@ -84,23 +88,27 @@ def test_optimizer_passes_same_model_to_selected_provider(
     else:
         monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", cli)
     monkeypatch.setattr(optimizer_assistant.shutil, "which", lambda _: "/fake/codex")
-    output = tmp_path / "reply.txt"
-    monkeypatch.setattr(optimizer_assistant, "_temporary_output_path", lambda: output)
     calls = []
 
-    def fake_run(cmd, **kwargs):
+    def fake_run(cmd: list[str], **_kwargs: Any) -> SimpleNamespace:
         calls.append(cmd)
-        output.write_text("reply")
         return SimpleNamespace(returncode=0, stdout='{"result":"reply"}', stderr="")
 
     monkeypatch.setattr(optimizer_assistant.subprocess, "run", fake_run)
-    assert (
-        optimizer_assistant._run_local_cli(prompt="prompt", system_prompt="") == "reply"
+    result = optimizer_assistant._prepare_result(
+        prompt="prompt", system_prompt="", deadline=time.monotonic() + 30
     )
-    assert calls[0][calls[0].index("--model") + 1] == model
+    if provider == "opencode":
+        assert result == {"content": "reply"}
+        assert calls[0][calls[0].index("--model") + 1] == model
+    else:
+        assert result["native_cli_v1"]["model"] == model
+        assert calls == []
 
 
-def test_installer_preserves_model_on_update_and_adopts_new_provider_default(tmp_path):
+def test_installer_preserves_model_on_update_and_adopts_new_provider_default(
+    tmp_path: Path,
+) -> None:
     installer, env = fake_guide(tmp_path)
     state = tmp_path / ".claude-smart"
     state.mkdir()
@@ -124,7 +132,7 @@ def test_installer_preserves_model_on_update_and_adopts_new_provider_default(tmp
             "claude-sonnet-5",
         ),
     ]:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603 -- owned Node fixture and explicit executable.
             [node, str(installer), "update", *args],
             env=env,
             text=True,
