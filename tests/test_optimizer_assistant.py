@@ -31,7 +31,7 @@ def _run_main(monkeypatch, payload):
     ("provider", "cli_path", "expected_prefix"),
     [
         ("claude-code", "/bin/claude", ["/bin/claude", "-p"]),
-        ("codex", "/plugin/codex-claude-compat", ["/bin/codex", "exec"]),
+        ("codex", "", ["/bin/codex", "exec"]),
         (
             "opencode",
             "/plugin/opencode-claude-compat",
@@ -152,7 +152,7 @@ def test_optimizer_assistant_invokes_codex_for_codex_host(
         lambda name: "/bin/codex" if name == "codex" else None,
     )
     monkeypatch.setattr("claude_smart.optimizer_assistant.subprocess.run", fake_run)
-    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/ignored/codex-claude-compat")
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
 
     rc, stdout, stderr = _run_main(
         monkeypatch,
@@ -171,7 +171,6 @@ def test_optimizer_assistant_invokes_codex_for_codex_host(
     assert json.loads(stdout) == {"content": "codex reply"}
     cmd, kwargs = calls[0]
     assert cmd[:2] == ["/bin/codex", "exec"]
-    assert "/ignored/codex-claude-compat" not in cmd
     assert "--output-last-message" in cmd
     assert cmd[cmd.index("--sandbox") + 1] == "read-only"
     assert "--ask-for-approval" not in cmd

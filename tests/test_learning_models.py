@@ -18,9 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Executable POSIX fake CLI fixture")
-@pytest.mark.parametrize(
-    "provider,model", [("codex", "gpt-6.1-sol"), ("opencode", "openai/gpt-6.1-sol")]
-)
+@pytest.mark.parametrize("provider,model", [("opencode", "openai/gpt-6.1-sol")])
 def test_extraction_bridge_passes_selected_model_to_agent(
     tmp_path, monkeypatch, provider, model
 ):
@@ -81,7 +79,10 @@ def test_optimizer_passes_same_model_to_selected_provider(
         if provider == "claude-code"
         else f"/fake/{provider}-claude-compat"
     )
-    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", cli)
+    if provider == "codex":
+        monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+    else:
+        monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", cli)
     monkeypatch.setattr(optimizer_assistant.shutil, "which", lambda _: "/fake/codex")
     output = tmp_path / "reply.txt"
     monkeypatch.setattr(optimizer_assistant, "_temporary_output_path", lambda: output)

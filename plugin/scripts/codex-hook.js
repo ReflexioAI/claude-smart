@@ -282,23 +282,16 @@ function loadReflexioEnv() {
   }
 }
 
-function codexCompatPath(root) {
-  const filename = process.platform === "win32"
-    ? "codex-claude-compat.cmd"
-    : "codex-claude-compat";
-  return path.join(root, "scripts", filename);
-}
-
 function learningCliPath(root) {
   if (process.env.CLAUDE_SMART_CLI_PATH) return process.env.CLAUDE_SMART_CLI_PATH;
   const provider = process.env.CLAUDE_SMART_LEARNING_PROVIDER || "codex";
-  // Let the shell resolve Claude Code from its login PATH. Without a saved
-  // provider, retain the legacy Codex bridge; Windows needs its .cmd wrapper.
+  // The backend resolves the selected learning CLI; preserve explicit overrides.
+  // Only OpenCode still needs the Claude-protocol compatibility bridge.
   if (provider === "claude-code") return "";
   if (provider === "opencode") {
     return path.join(root, "scripts", `opencode-claude-compat${process.platform === "win32" ? ".cmd" : ""}`);
   }
-  return codexCompatPath(root);
+  return "";
 }
 
 // Same rewrite as claude_smart_derive_reflexio_url_from_backend_port in

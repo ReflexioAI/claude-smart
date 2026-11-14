@@ -5,12 +5,10 @@ one JSON object on stdout. This module bridges that protocol to a guarded
 local CLI subprocess so candidate playbooks can be evaluated against the active
 host without re-entering claude-smart/reflexio hooks.
 
-Host CLI resolution: when ``CLAUDE_SMART_CLI_PATH`` is set in the environment
-(``backend-service.sh`` writes it for ``opencode`` and ``codex`` hosts so
-generation routes through the host-specific compatibility bridge instead of
-the real Claude CLI), this script honours that override. Falling back to
-``shutil.which("claude")`` preserves the legacy Claude Code host behaviour
-where no override is configured.
+Host CLI resolution: the saved learning provider selects native Codex when no
+custom executable is configured. Explicit custom optimizer executables retain
+Claude protocol; the OpenCode bridge still supplies that protocol. The backend
+and optimizer both use the user's authenticated CLI rather than a cloud key.
 """
 
 from __future__ import annotations
@@ -30,14 +28,10 @@ _CLI_TIMEOUT_SECONDS = 300
 _READ_ONLY_TOOLS = "Read,Grep,Glob,LS"
 _MUTATING_TOOLS = "Bash,Edit,Write,MultiEdit,NotebookEdit"
 # Mirrors ``reflexio.server.llm.providers.claude_code_provider._ENV_CLI_PATH``
-# so backend-service.sh can route both the reflexio Claude CLI provider and
-# this assistant script through the same host-specific bridge.
+# for explicit custom optimizer executables and the remaining OpenCode bridge.
 _ENV_CLI_PATH = "CLAUDE_SMART_CLI_PATH"
 _CLAUDE_SMART_COMPAT_BRIDGE_NAMES = frozenset(
     {
-        "codex-claude-compat",
-        "codex-claude-compat.cmd",
-        "codex-claude-compat.js",
         "opencode-claude-compat",
         "opencode-claude-compat.cmd",
         "opencode-claude-compat.js",

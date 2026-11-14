@@ -58,7 +58,8 @@ def test_undrained_selected_database_refuses_before_incompatible_config_publicat
         timeout=30,
     )
     assert reader.returncode == 0, reader.stderr
-    if int(reader.stdout.strip().splitlines()[-1]) < 11:
+    current_generation = int(reader.stdout.strip().splitlines()[-1])
+    if current_generation < 11:
         pytest.skip("Release bundle predates generation-11 storage admission")
     legacy = tmp_path / "data" / "reflexio.db"
     legacy.parent.mkdir()
@@ -109,7 +110,7 @@ def test_undrained_selected_database_refuses_before_incompatible_config_publicat
     result = _run_runner(tmp_path, "--claude-smart-backend=1")
     assert result.returncode == 0, result.stderr
     document = json.loads(path.read_bytes())
-    assert document["_reflexio_config_file"]["version"] == 11
+    assert document["_reflexio_config_file"]["version"] == current_generation
     assert document["storage_config"]["db_path"] == str(legacy)
 
 
