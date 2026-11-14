@@ -277,7 +277,7 @@ def test_saved_learning_provider_wins_over_hook_identity(
         capture_output=True,
         check=True,
     )
-    assert result.stdout.endswith("/fixture/scripts/codex-claude-compat")
+    assert result.stdout == ""
 
 
 @pytest.mark.skipif(os.name == "nt", reason="PTY terminal fixtures require POSIX")
@@ -617,9 +617,10 @@ def test_actual_codex_node_hook_uses_selected_learning_provider(
     recorder = (
         "#!/bin/bash\n"
         f'. "{LIB}"\nclaude_smart_source_reflexio_env\n'
+        'printf "%s\\n" "$CLAUDE_SMART_HOST" > "$HOME/hook-identity"\n'
         f'PLUGIN_ROOT="{root}"\n{selection}\n'
         'printf "%s\\n" "$CLAUDE_SMART_CLI_PATH" > "$HOME/selected-cli"\n'
-        'printf "%s\\n" "$CLAUDE_SMART_HOST" > "$HOME/hook-identity"\n'
+        'printf "%s\\n" "$CLAUDE_SMART_HOST" > "$HOME/learning-host"\n'
         "printf '{\"continue\":true}\\n'\n"
     )
     _write_executable(scripts / "backend-service.sh", recorder)
@@ -647,10 +648,11 @@ def test_actual_codex_node_hook_uses_selected_learning_provider(
         if provider == "claude-code"
         else str(scripts / "opencode-claude-compat")
         if provider == "opencode"
-        else str(scripts / "codex-claude-compat")
+        else ""
     )
     assert (tmp_path / "selected-cli").read_text().strip() == expected
     assert (tmp_path / "hook-identity").read_text().strip() == "codex"
+    assert (tmp_path / "learning-host").read_text().strip() == (provider or "codex")
 
 
 @pytest.mark.parametrize("command", ["install", "update", "setup"])

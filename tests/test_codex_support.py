@@ -196,9 +196,7 @@ def test_codex_hooks_use_expected_events_and_marketplace_fallback() -> None:
         "Stop",
     }
     assert 'CLAUDE_SMART_HOST="codex"' in codex_env
-    assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"' in (
-        backend_service
-    )
+    assert 'export CLAUDE_SMART_HOST="$learning_provider"' in backend_service
     for command in _command_hooks("plugin/hooks/codex-hooks.json"):
         assert "_codex_env.sh" in command
         assert "printenv PATH" not in command

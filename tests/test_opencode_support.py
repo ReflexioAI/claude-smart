@@ -1040,7 +1040,7 @@ def test_opencode_backend_service_uses_bridge_without_opencode_path_probe() -> N
     assert 'if [ "$learning_provider" = "opencode" ]' in service
     assert 'CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"' in service
     assert "command -v opencode" not in service
-    assert 'CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"' in service
+    assert 'export CLAUDE_SMART_HOST="$learning_provider"' in service
 
 
 def test_opencode_server_resolves_windows_bash_before_spawning() -> None:

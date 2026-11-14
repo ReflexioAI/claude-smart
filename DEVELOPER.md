@@ -48,7 +48,7 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | --- | --- | --- |
 | `CLAUDE_SMART_USE_LOCAL_CLI` | `0` (installer sets `1`) | Route generation through the active host CLI (`claude` for Claude Code, `codex` for Codex). Written to `~/.claude-smart/.env` by `claude-smart install`. |
 | `CLAUDE_SMART_LEARNING_PROVIDER` | unset (legacy host fallback) | Saved local background learning provider: `claude-code`, `codex`, or `opencode`. Independent of the agent collecting interactions. The guided installer saves the user's choice; session hooks and integration removal do not change it. An explicit `CLAUDE_SMART_CLI_PATH` still overrides the executable; the guide preserves it on unattended updates and clears it when choosing a provider interactively or with `--provider`. |
-| `CLAUDE_SMART_LEARNING_MODEL` | unset (provider-configured default) | Local learning model ID selected by the installer (`--model`). Routed to Claude Code extraction and optimizer calls and the Codex/OpenCode bridges. Unattended updates preserve the setting; choosing a different provider resets it unless a model is explicitly supplied. Applying it refreshes the local backend through the installer. Managed learning models are configured by the cloud service; the installer reports its configured model when the API exposes one. |
+| `CLAUDE_SMART_LEARNING_MODEL` | unset (provider-configured default) | Local learning model ID selected by the installer (`--model`). Routed to Claude Code extraction and optimizer calls native Codex and the OpenCode bridge. Unattended updates preserve the setting; choosing a different provider resets it unless a model is explicitly supplied. Applying it refreshes the local backend through the installer. Managed learning models are configured by the cloud service; the installer reports its configured model when the API exposes one. |
 | `CLAUDE_SMART_LOCAL_URL`, `CLAUDE_SMART_LOCAL_API_KEY` | unset (bundled loopback endpoint, no key) | Private saved local dashboard connection. The installer and Configure page retain the previous connection when changing runtime modes. These keys are not exposed to browser clients. |
 | `CLAUDE_SMART_MANAGED_URL`, `CLAUDE_SMART_MANAGED_API_KEY` | unset (managed view unavailable) | Private saved managed dashboard connection. Allows viewing managed data while the runtime remains local. Selecting a view does not rewrite runtime settings, start services, or send cloud credentials to the local endpoint. |
 | `CLAUDE_SMART_GUIDED_CONFIG` | unset (legacy setup) | Internal saved marker (`1`) written after confirming guided configuration. Preserves explicit local endpoints and sharing settings even when a custom executable or cloud provider replaces the named learning provider. |
@@ -60,7 +60,7 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | `CLAUDE_SMART_CITATIONS` | `on` | Controls the final `✨ claude-smart rule applied` marker instruction. `on` (default) injects a compact instruction asking the assistant to cite only memories that materially changed the answer. `off` skips injection of the citation instruction entirely and strips any stray marker line from the assistant text before publishing. Legacy values `auto` and `marker-only` are accepted as enabled aliases. Set in Claude Code settings (hook env), not `~/.reflexio/.env`. |
 | `CLAUDE_SMART_CITATION_LINK_STYLE` | `markdown` | Controls the visible links in the final `✨ claude-smart rule applied` marker. `markdown` asks the model to emit `[human title](dashboard URL)` links and is the Codex default because Codex renders markdown links in assistant messages. `osc8` asks it to emit terminal-native OSC 8 hyperlinks so the human title can be clickable without showing the URL; unsupported terminals should fall back to markdown links. |
 | `CLAUDE_SMART_DASHBOARD_URL` | `http://localhost:3001` | Base URL used in injected citation targets and the final `✨ claude-smart rule applied` marker links. Override only if the local dashboard is exposed on another host or port. Model-facing citation links use short `/rules/{citationId}` resolver URLs; canonical direct links remain `/skills/project/{id}`, `/skills/shared/{id}`, and `/preferences/project/{id}`. `/preferences/{id}` remains a compatibility alias. |
-| `CLAUDE_SMART_CLI_PATH` | `claude` on Claude Code; Codex compatibility wrapper or `codex` on Codex | Override the executable Reflexio calls for local generation. |
+| `CLAUDE_SMART_CLI_PATH` | `claude` on Claude Code; native `codex` on Codex | Override the executable Reflexio calls for local generation. |
 | `CLAUDE_SMART_MAX_INJECTED_ITEMS` | `6` | Total results one UserPromptSubmit or PreToolUse search may return across its three collections. Enforced as a per-collection `top_k` of `cap // 3` (at least 1), so nothing the server marks as served is dropped. `0` removes the cap (`top_k` 5); empty or invalid values use the default. Hook env. |
 | `CLAUDE_SMART_SEARCH_THRESHOLD` | unset (not sent) | Similarity threshold from 0 to 1 passed to Reflexio's `/api/search`. Unset, empty, or invalid leaves the server's embedding default in place. Hook env. |
 | `CLAUDE_SMART_STATE_DIR` | `~/.claude-smart/sessions/` | Where the per-session JSONL buffer lives. |
@@ -951,3 +951,16 @@ blank or invalid candidate-budget edit blocks Save rather than disabling retriev
 Only explicit zero disables it. Help, stop and docs-only runner commands do not
 prepare, initialize, upgrade or pin a selected backend configuration; backend
 startup retains exact originals and database identity preparation.
+
+### Native Codex learning
+
+The bundled SDK executes Codex directly, without a Codex-to-Claude wrapper or
+its nested timer. Backend learning follows the saved learning provider and model,
+independently of the coding host that started it. Hooks retain their own coding
+identity. An unset model delegates to Codex; explicit learning models are forwarded
+through the existing CLI model setting. Explicit generation executable overrides
+remain authoritative; custom optimizer executables retain their Claude protocol.
+OpenCode continues to use its existing bridge, including model/variant selection.
+
+This migration does not retire SDK settings yet. The separate duplicate Codex-path
+retirement must reject active obsolete configuration safely before changing a target.

@@ -32,7 +32,6 @@ RELEASE_WITH_REFLEXIO = REPO_ROOT / "scripts" / "release-with-reflexio.sh"
 SETUP_CLAUDE_SMART = REPO_ROOT / "scripts" / "setup-claude-smart.sh"
 HOOK_ENTRY = REPO_ROOT / "plugin" / "scripts" / "hook_entry.sh"
 CLI_SH = REPO_ROOT / "plugin" / "scripts" / "cli.sh"
-CODEX_COMPAT = REPO_ROOT / "plugin" / "scripts" / "codex-claude-compat"
 CODEX_HOOK = REPO_ROOT / "plugin" / "scripts" / "codex-hook.js"
 BACKEND_LOG_RUNNER = REPO_ROOT / "plugin" / "scripts" / "backend-log-runner.sh"
 BACKEND_PYTHON_RUNNER = REPO_ROOT / "plugin" / "scripts" / "backend-python-runner.py"
@@ -8384,99 +8383,6 @@ def test_dashboard_build_writes_marker_when_npm_missing(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert marker.is_file()
     assert "npm is not on PATH" in marker.read_text()
-
-
-def test_codex_claude_compat_translates_claude_contract(tmp_path: Path) -> None:
-    output_file = tmp_path / "captured-output-path"
-    codex = tmp_path / "codex"
-    codex.write_text(
-        "#!/bin/sh\n"
-        'while [ "$#" -gt 0 ]; do\n'
-        '  if [ "$1" = "--output-last-message" ]; then\n'
-        "    shift\n"
-        '    out="$1"\n'
-        "  fi\n"
-        "  shift || exit 1\n"
-        "done\n"
-        'cat > "$out.prompt"\n'
-        "printf 'codex reply' > \"$out\"\n"
-    )
-    codex.chmod(codex.stat().st_mode | stat.S_IXUSR)
-    env = _isolated_env(tmp_path)
-    env["PATH"] = _minimal_path(tmp_path, "cat", "node", "sh")
-    env["CLAUDE_SMART_CODEX_PATH"] = str(codex)
-    env["TMPDIR"] = str(tmp_path)
-
-    result = subprocess.run(
-        [
-            str(CODEX_COMPAT),
-            "-p",
-            "--output-format",
-            "json",
-            "--model",
-            "claude-sonnet-4-6",
-            "--append-system-prompt",
-            "system rules",
-        ],
-        input="answer this",
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"result": "codex reply"}
-    prompt_files = list(tmp_path.glob("claude-smart-codex-*.prompt"))
-    assert len(prompt_files) == 1
-    assert prompt_files[0].read_text() == "system rules\n\n## Task\nanswer this"
-    assert not output_file.exists()
-
-
-def test_codex_claude_compat_accepts_stream_json_flags(tmp_path: Path) -> None:
-    codex = tmp_path / "codex"
-    codex.write_text(
-        "#!/bin/sh\n"
-        'while [ "$#" -gt 0 ]; do\n'
-        '  if [ "$1" = "--output-last-message" ]; then\n'
-        "    shift\n"
-        '    out="$1"\n'
-        "  fi\n"
-        "  shift || exit 1\n"
-        "done\n"
-        "while IFS= read -r _line; do :; done\n"
-        "printf 'stream reply' > \"$out\"\n"
-    )
-    codex.chmod(codex.stat().st_mode | stat.S_IXUSR)
-    env = _isolated_env(tmp_path)
-    env["PATH"] = _minimal_path(tmp_path, "node", "sh")
-    env["CLAUDE_SMART_CODEX_PATH"] = str(codex)
-    env["TMPDIR"] = str(tmp_path)
-
-    result = subprocess.run(
-        [
-            str(CODEX_COMPAT),
-            "-p",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--include-partial-messages",
-            "--model",
-            "claude-sonnet-4-6",
-        ],
-        input="answer this",
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {
-        "type": "result",
-        "subtype": "success",
-        "result": "stream reply",
-    }
 
 
 def test_codex_hook_ensure_root_tracks_active_plugin_root(tmp_path: Path) -> None:

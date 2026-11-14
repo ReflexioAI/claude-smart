@@ -103,6 +103,8 @@ PLUGIN_VERSION="$(plugin_version_from_root "$PLUGIN_ROOT_CANONICAL")"
 # Integration identity is per hook; the saved learning provider is shared.
 # Older installs without the new setting retain their existing host fallback.
 learning_provider="${CLAUDE_SMART_LEARNING_PROVIDER:-${CLAUDE_SMART_HOST:-claude-code}}"
+# The backend performs learning; hook processes retain their coding identity.
+export CLAUDE_SMART_HOST="$learning_provider"
 if [ -n "${CLAUDE_SMART_LEARNING_MODEL:-}" ]; then
   export CLAUDE_SMART_CLI_MODEL="$CLAUDE_SMART_LEARNING_MODEL"
 elif [ "$learning_provider" = "claude-code" ] && [ -z "${CLAUDE_SMART_CLI_PATH:-}" ] && [ "${CLAUDE_SMART_USE_LOCAL_CLI:-1}" != "0" ]; then
@@ -120,11 +122,8 @@ if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
     CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"
     export CLAUDE_SMART_CLI_PATH
   elif [ "$learning_provider" = "codex" ]; then
-    # Reflexio's provider still calls CLAUDE_SMART_CLI_PATH with Claude CLI
-    # flags. Use a small compatibility executable that translates that narrow
-    # contract to `codex exec`.
+    # The bundled SDK owns native Codex execution, including CLI/model selection.
     claude_smart_prepend_node_bins
-    export CLAUDE_SMART_CLI_PATH="$PLUGIN_ROOT/scripts/codex-claude-compat"
   elif _cs_cli_path=$(command -v claude 2>/dev/null) && [ -n "$_cs_cli_path" ]; then
     export CLAUDE_SMART_CLI_PATH="$_cs_cli_path"
   elif [ -x "$HOME/.local/bin/claude" ]; then
