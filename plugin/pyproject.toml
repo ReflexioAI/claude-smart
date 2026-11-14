@@ -34,7 +34,8 @@ dependencies = [
     # already install every requirement it declares;
     # scripts/check-vendor-requirements.py enforces that at release and in CI.
     "reflexio-ai>=0.2.34",
-    "filelock>=3.20.3",
+    # Native env transactions require fail-closed locking and descriptor cleanup.
+    "filelock>=4.2.10",
     # The vendored SDK requires process inspection; the PyPI baseline does not.
     "psutil>=7.2.2",
 ]

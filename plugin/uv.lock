@@ -607,7 +607,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "filelock", specifier = ">=3.20.3" },
+    { name = "filelock", specifier = ">=4.2.10" },
     { name = "psutil", specifier = ">=7.2.2" },
     { name = "reflexio-ai", specifier = ">=0.2.34" },
 ]

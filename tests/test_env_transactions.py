@@ -248,12 +248,16 @@ def test_unsupported_native_filesystem_never_falls_back_to_a_marker_lock(
     assert not list(tmp_path.glob(".env-*"))
 
 
+@pytest.mark.parametrize(
+    "separator",
+    ["\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"],
+)
 def test_unsafe_parent_default_is_rejected_without_replacing_original(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, separator
 ):
     path = tmp_path / ".env"
     path.write_text("ORIGINAL=keep\n")
-    monkeypatch.setenv("REFLEXIO_ROW_LIMIT_INTERACTIONS", "0\nOTHER=bad")
+    monkeypatch.setenv("REFLEXIO_ROW_LIMIT_INTERACTIONS", f"0{separator}OTHER=bad")
     with pytest.raises(ValueError, match="Invalid local environment default"):
         env_config.ensure_local_env_defaults(path)
     assert path.read_text() == "ORIGINAL=keep\n"
@@ -279,3 +283,69 @@ def test_temporary_is_private_before_secret_content_is_written(tmp_path, monkeyp
         os.umask(prior_umask)
     assert modes == [0o600]
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    "separator", ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+)
+def test_all_reader_line_boundaries_are_rejected_in_assignments(tmp_path, separator):
+    path = tmp_path / ".env"
+    with pytest.raises(ValueError, match="Invalid environment assignment"):
+        env_config.set_env_vars(
+            path, {"KEY": f"safe{separator}CLAUDE_SMART_READ_ONLY=0{separator}"}
+        )
+    assert not path.exists()
+
+
+def test_existing_file_does_not_require_posix_nonblocking_flag(tmp_path, monkeypatch):
+    path = tmp_path / ".env"
+    path.write_text("OLD=keep\n")
+    from types import SimpleNamespace
+
+    # Simulate only our module's Windows flag surface; the native POSIX lock
+    # must keep its real OS API rather than inherit this simulated platform.
+    flags = SimpleNamespace(**vars(os))
+    flags.__dict__.pop("O_NONBLOCK", None)
+    monkeypatch.setattr(env_config, "os", flags)
+    env_config.set_env_vars(path, {"NEW": "two"})
+    assert path.read_text() == 'OLD=keep\nNEW="two"\n'
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fchmod is POSIX-only")
+def test_native_lock_acquisition_failure_closes_its_descriptor(tmp_path, monkeypatch):
+    import errno
+
+    path = tmp_path / ".env"
+    path.write_text("ORIGINAL=keep\n")
+    real_open, real_close, real_fchmod = os.open, os.close, os.fchmod
+    opened, closed = [], []
+
+    def record_open(name, *args, **kwargs):
+        descriptor = real_open(name, *args, **kwargs)
+        if Path(name).name == ".env.lock":
+            opened.append(descriptor)
+        return descriptor
+
+    def record_close(descriptor):
+        closed.append(descriptor)
+        return real_close(descriptor)
+
+    def fail_mode(descriptor, mode):
+        if descriptor in opened:
+            raise OSError(errno.EIO, "owned injected fchmod failure")
+        return real_fchmod(descriptor, mode)
+
+    monkeypatch.setattr(env_config.os, "open", record_open)
+    monkeypatch.setattr(env_config.os, "close", record_close)
+    monkeypatch.setattr(env_config.os, "fchmod", fail_mode)
+    try:
+        with pytest.raises(OSError, match="owned injected fchmod failure"):
+            env_config.set_env_vars(path, {"NEW": "two"})
+        assert opened
+        assert all(descriptor in closed for descriptor in opened)
+        assert path.read_text() == "ORIGINAL=keep\n"
+    finally:
+        # Even a broken dependency/counterfactual must not leak owned test FDs.
+        for descriptor in opened:
+            if descriptor not in closed:
+                real_close(descriptor)

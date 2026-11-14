@@ -121,9 +121,9 @@ def set_env_vars(path: Path, values: dict[str, str]) -> list[str]:
     # Validate before creating even the parent directory; never interpolate
     # caller-supplied newlines into extra settings.
     for key, value in values.items():
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None or any(
-            char in value for char in "\r\n\0"
-        ):
+        if re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*", key
+        ) is None or not _single_line_value(value):
             raise ValueError("Invalid environment assignment")
     return _edit_env_file(path, lambda text: _upsert_env(text, values))
 
@@ -261,20 +261,24 @@ def _edit_env_file[Result](
     lock_path = path.with_name(path.name + ".lock")
     _regular_env_file(lock_path)
     native_lock = WindowsFileLock if os.name == "nt" else UnixFileLock
-    # filelock 3.20.3's native implementations fail closed on unsupported locks
-    # and filter unknown optional kwargs. 4.x needs fallback explicitly disabled;
-    # retaining its marker avoids a second lock inode during release.
+    # Require the declared native-backend contract, including failure cleanup.
+    # Keep one marker identity and refuse a filesystem without native locking.
     lock = native_lock(
         lock_path,
         timeout=0,
         mode=0o600,
-        **{"fallback_to_soft": False, "preserve_lock_file": True},
+        fallback_to_soft=False,
+        preserve_lock_file=True,
     )
     try:
         with lock:
             exists = _regular_env_file(path)
             if exists:
-                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK
+                flags = (
+                    os.O_RDONLY
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_NONBLOCK", 0)
+                )
                 with os.fdopen(os.open(path, flags), "rb") as source:
                     if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
                         raise ValueError("Environment settings must be a regular file")
@@ -314,7 +318,7 @@ def _resolve_local_env_default(key: str, fallback: str, install_host: str) -> st
     if key in _ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS:
         explicit = os.environ.get(key, "").strip()
         if explicit:
-            if any(char in explicit for char in "\r\n\0"):
+            if not _single_line_value(explicit):
                 raise ValueError("Invalid local environment default")
             return explicit
     return fallback
@@ -333,6 +337,12 @@ def mask_secret(value: str) -> str:
         return "*" * len(value)
     prefix = value[:5] if "-" in value[:8] else value[:4]
     return f"{prefix}****{value[-4:]}"
+
+
+def _single_line_value(value: str) -> bool:
+    # Readers use str.splitlines(), whose boundaries include Unicode separators
+    # as well as CR/LF. Values must never become additional assignments there.
+    return "\0" not in value and value.splitlines() in ([], [value])
 
 
 def _escape_env_value(value: str) -> str:

@@ -63,7 +63,8 @@ UserPromptSubmit / PreToolUse -> context_inject pulls relevant learnings back in
 
 `set_env_vars` and `ensure_local_env_defaults` own their full read/transform/write
 under an adjacent `.env.lock`. A competing Python helper fails immediately with
-an actionable busy error. Native locking must be available: there is no soft-lock
+an actionable busy error. The existing locked filelock 4.2.10 is also the minimum supported version,
+so native acquisition closes descriptors on filesystem errors. Native locking must be available: there is no soft-lock
 fallback or application-side stale-marker deletion. Failed writes before atomic
 replacement preserve the old settings. Original settings and lock paths must be
 regular files without symlinks or hard links; invalid UTF-8 is rejected rather
