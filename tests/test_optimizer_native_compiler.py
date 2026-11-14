@@ -5,6 +5,7 @@
 import io
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -77,6 +78,78 @@ def test_native_compiler_never_launches_cli(
         "dialogue",
     }
     launch.assert_not_called()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="owned POSIX shebang executable")
+@pytest.mark.parametrize("delay", [0, 30])
+def test_real_plugin_claude_json_permissions_and_retirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, delay: int
+) -> None:
+    from reflexio.server.services.playbook_optimizer.assistant_webhook import (
+        LocalScriptAssistant,
+        LocalScriptFailedError,
+    )
+    from reflexio.server.services.playbook_optimizer.models import ChatMessage
+
+    executable = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
+    fake_cli = tmp_path / "owned-claude"
+    record = tmp_path / "claude.json"
+    fake_cli.write_text(
+        f"#!{executable}\n"
+        "import sys,os,json,time\nfrom pathlib import Path\n"
+        "data={'pid':os.getpid(),'ppid':os.getppid(),'argv':sys.argv,'stdin':sys.stdin.read()}\n"
+        "data['env']={k:os.environ.get(k) for k in ('CLAUDE_SMART_INTERNAL','CLAUDE_CODE_ENTRYPOINT')}\n"
+        f"with Path({str(record)!r}).open('a') as f:f.write(json.dumps(data)+'\\n')\n"
+        f"time.sleep({delay})\n"
+        "print(json.dumps({'result':'owned Claude reply'}))\n",
+        encoding="utf-8",
+    )
+    fake_cli.chmod(0o755)
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(fake_cli))
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_PROVIDER", "claude-code")
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", "owned-claude-model")
+    monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+    children = []
+    original_popen = subprocess.Popen
+
+    def observed(*args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
+        child = original_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", observed)
+    assistant = LocalScriptAssistant(
+        sys.executable, ["-m", "claude_smart.optimizer_assistant"], 2 if delay else 10
+    )
+    messages = [ChatMessage(role="user", content="owned synthetic Claude task")]
+    if delay:
+        with pytest.raises(LocalScriptFailedError, match="timed out"):
+            assistant(messages, [])
+    else:
+        assert assistant(messages, []) == "owned Claude reply"
+    entries = record.read_text().splitlines()
+    assert len(entries) == 1, "a failed native call was replayed"
+    entry = json.loads(entries[0])
+    assert entry["ppid"] == os.getpid()
+    owned = [child for child in children if child.pid == entry["pid"]]
+    assert len(owned) == 1 and owned[0].poll() is not None
+    assert entry["env"] == {
+        "CLAUDE_SMART_INTERNAL": "1",
+        "CLAUDE_CODE_ENTRYPOINT": "optimizer",
+    }
+    argv = entry["argv"]
+    assert argv[argv.index("--model") + 1] == "owned-claude-model"
+    assert argv[argv.index("--permission-mode") + 1] == "plan"
+    assert argv[argv.index("--tools") + 1] == "Read,Grep,Glob,LS"
+    assert (
+        argv[argv.index("--disallowedTools") + 1]
+        == "Bash,Edit,Write,MultiEdit,NotebookEdit"
+    )
+    assert "--no-session-persistence" in argv and "--strict-mcp-config" in argv
+    assert json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
+    assert entry["stdin"] == "owned synthetic Claude task"
+    with pytest.raises(ProcessLookupError):
+        os.kill(entry["pid"], 0)
 
 
 @pytest.mark.parametrize("host,provider", [("codex", None), ("claude-code", "codex")])

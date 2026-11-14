@@ -57,6 +57,25 @@ def _payload() -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize("provider", ["claude-code", "codex"])
+@pytest.mark.parametrize("override", [None, "missing-custom-cli"])
+def test_unresolved_bare_cli_never_selects_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, override: str | None
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_PROVIDER", provider)
+    if override:
+        monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", override)
+    name = override or ("claude" if provider == "claude-code" else "codex")
+    (tmp_path / name).write_text("untrusted working-directory program")
+    monkeypatch.setattr(optimizer_assistant.shutil, "which", lambda _: None)
+    launch = Mock(side_effect=AssertionError("untrusted program launched"))
+    monkeypatch.setattr(optimizer_assistant.subprocess, "run", launch)
+    rc, out, err = _run_main(monkeypatch, _payload())
+    assert rc == 1 and out == "" and "not found on PATH" in err
+    launch.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "host", [runtime.HOST_CLAUDE_CODE, runtime.HOST_CODEX, runtime.HOST_OPENCODE]
 )
@@ -214,11 +233,15 @@ def test_expired_invocation_never_launches_bridge(
     launch.assert_not_called()
 
 
+@pytest.mark.parametrize("relative", [False, True])
 def test_override_missing_path_does_not_choose_another_cli(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, relative: bool
 ) -> None:
     selected = str(tmp_path / "missing-cli")
-    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", selected)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(
+        "CLAUDE_SMART_CLI_PATH", "./missing-cli" if relative else selected
+    )
     lookups = []
 
     def which(name: str) -> str | None:

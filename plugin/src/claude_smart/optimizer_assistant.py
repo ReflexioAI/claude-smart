@@ -217,10 +217,13 @@ def _prepare_result(
         ):
             model = "sonnet"
     _remaining(deadline)
+    resolved = shutil.which(executable)
+    if resolved is None and Path(executable).name == executable:
+        raise OptimizerAssistantError("native assistant executable not found on PATH")
     return {
         "native_cli_v1": {
             "protocol": protocol,
-            "executable": str(Path(shutil.which(executable) or executable).absolute()),
+            "executable": str(Path(resolved or executable).absolute()),
             "model": model or None,
             "dialogue": prompt,
             "system_prompt": system_prompt,
