@@ -68,9 +68,12 @@ so native acquisition closes descriptors on filesystem errors. Native locking mu
 fallback or application-side stale-marker deletion. Failed writes before atomic
 replacement preserve the old settings. Original settings and lock paths must be
 regular files without symlinks or hard links; invalid UTF-8 is rejected rather
-than treated as an empty configuration. POSIX temporary files are private before
-content is written. Unexpected process death releases the OS lock, but can leave
-a private temporary file; the original remains intact if replacement had not
+than treated as an empty configuration. Temporary content is staged in a private same-filesystem directory before
+publication. Python >=3.12.4 supplies its owner/admin-only Windows DACL as well
+as POSIX 0700 permissions; the file is private before credentials are written
+and retains that access on replacement. Windows read-only attributes are
+repaired before replacing an existing file, as with the previous writer. Unexpected process death releases the OS lock, but can leave
+a private staging directory; the original remains intact if replacement had not
 committed.
 
 This boundary covers each Python helper operation, not an entire installation.

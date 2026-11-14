@@ -145,7 +145,8 @@ def test_process_death_before_replace_preserves_original_and_releases_lock(tmp_p
         candidates = list(tmp_path.glob(".env-*"))
         assert len(candidates) == 1
         if os.name != "nt":
-            assert stat.S_IMODE(candidates[0].stat().st_mode) == 0o600
+            assert stat.S_IMODE(candidates[0].stat().st_mode) == 0o700
+            assert stat.S_IMODE((candidates[0] / "settings").stat().st_mode) == 0o600
         child.kill()
         child.wait(timeout=10)
     # No stale-PID recovery or lock-file removal is necessary after kernel cleanup.
@@ -349,3 +350,112 @@ def test_native_lock_acquisition_failure_closes_its_descriptor(tmp_path, monkeyp
         for descriptor in opened:
             if descriptor not in closed:
                 real_close(descriptor)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Native Windows read-only attributes")
+@pytest.mark.parametrize("operation", ["upsert", "defaults"])
+def test_changed_publication_repairs_read_only_attribute(tmp_path, operation):
+    path = tmp_path / ".env"
+    path.write_text("ORIGINAL=keep\n")
+    path.chmod(stat.S_IREAD)
+    try:
+        if operation == "upsert":
+            env_config.set_env_vars(path, {"NEW": "two"})
+            assert 'NEW="two"' in path.read_text()
+        else:
+            env_config.ensure_local_env_defaults(path, host="codex")
+            assert "CLAUDE_SMART_HOST=codex" in path.read_text()
+    finally:
+        path.chmod(0o600)
+
+
+def _native_powershell(script):
+    import base64
+    import json
+
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    return json.loads(result.stdout)
+
+
+def _windows_allow_principals(path):
+    # Only owned test paths reach PowerShell, never configuration content.
+    literal = str(path).replace("'", "''")
+    return _native_powershell(f"""
+$ErrorActionPreference = 'Stop'
+$acl = Get-Acl -LiteralPath '{literal}'
+$sids = @($acl.Access | Where-Object {{ $_.AccessControlType -eq 'Allow' }} | ForEach-Object {{ $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }})
+ConvertTo-Json -InputObject @{{ owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; allowed = $sids }} -Compress
+""")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Native Windows DACLs")
+@pytest.mark.parametrize("existing", [False, True])
+def test_windows_publication_is_private_in_a_broadly_readable_parent(
+    tmp_path, monkeypatch, existing
+):
+    parent = tmp_path / "broad parent"
+    parent.mkdir()
+    path = parent / ".env"
+    literal = str(parent).replace("'", "''")
+    # Broaden ONLY this disposable directory. The original file, if present,
+    # is then protected separately to reproduce private-file/public-parent use.
+    _native_powershell(f"""
+$ErrorActionPreference = 'Stop'
+$p = '{literal}'
+$acl = Get-Acl -LiteralPath $p
+$sid = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $p -AclObject $acl
+ConvertTo-Json -InputObject $true
+""")
+    if existing:
+        path.write_text("ORIGINAL=keep\n")
+        file_literal = str(path).replace("'", "''")
+        _native_powershell(f"""
+$ErrorActionPreference = 'Stop'
+$acl = Get-Acl -LiteralPath '{file_literal}'
+$acl.SetAccessRuleProtection($true, $false)
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow')
+$acl.SetAccessRule($rule)
+Set-Acl -LiteralPath '{file_literal}' -AclObject $acl
+ConvertTo-Json -InputObject $true
+""")
+    assert "S-1-1-0" in _windows_allow_principals(parent)["allowed"]
+    control = parent / "inherited-control"
+    control.touch()
+    assert "S-1-1-0" in _windows_allow_principals(control)["allowed"]
+    control.unlink()
+    if existing:
+        assert "S-1-1-0" not in _windows_allow_principals(path)["allowed"]
+    observed = []
+    real_fdopen = os.fdopen
+
+    def before_content(fd, mode):
+        if mode == "wb":
+            candidates = list(parent.glob(".env-*/settings"))
+            assert len(candidates) == 1
+            assert candidates[0].stat().st_size == 0
+            observed.append(_windows_allow_principals(candidates[0]))
+        return real_fdopen(fd, mode)
+
+    monkeypatch.setattr(env_config.os, "fdopen", before_content)
+    env_config.set_env_vars(path, {"KEY": "fake-secret"})
+    observed.append(_windows_allow_principals(path))
+    assert len(observed) == 2
+    for acl in observed:
+        # Current user/owner, SYSTEM and administrators are privileged readers;
+        # Everyone/Users/Authenticated Users must not inherit access here.
+        privileged = {acl["owner"], "S-1-5-18", "S-1-5-32-544", "S-1-3-4"}
+        assert acl["allowed"]
+        assert set(acl["allowed"]) <= privileged
+    assert 'KEY="fake-secret"' in path.read_text()
+    assert not list(parent.glob(".env-*"))

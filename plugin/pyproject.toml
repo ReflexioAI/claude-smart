@@ -24,7 +24,8 @@ keywords = [
     "learning",
 ]
 readme = "README.md"
-requires-python = ">=3.12"
+# 3.12.4 adds owner/admin-only Windows mkdir(0700) for secret publication.
+requires-python = ">=3.12.4"
 dependencies = [
     # Core Reflexio client/backend package. This is the PyPI baseline used by
     # normal installs; vendor releases may override it after uv sync by

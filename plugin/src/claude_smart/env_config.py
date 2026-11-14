@@ -295,16 +295,25 @@ def _edit_env_file[Result](
             if exists and content == original:
                 path.chmod(0o600)
                 return result
-            fd, temporary_name = tempfile.mkstemp(prefix=".env-", dir=path.parent)
-            temporary = Path(temporary_name)
-            try:
+            # Python >=3.12.4 gives a 0700 directory a private Windows DACL,
+            # too. Its child inherits that access before any secret is written;
+            # a same-volume rename retains it even in a broadly readable parent.
+            with tempfile.TemporaryDirectory(
+                prefix=".env-", dir=path.parent
+            ) as staging:
+                temporary = Path(staging) / "settings"
+                flags = (
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+                )
+                fd = os.open(temporary, flags, 0o600)
                 with os.fdopen(fd, "wb") as target:
                     target.write(content.encode("utf-8"))
                     target.flush()
                     os.fsync(target.fileno())
+                if exists and os.name == "nt":
+                    # Match the old in-place writer's read-only-attribute repair.
+                    path.chmod(0o600)
                 temporary.replace(path)
-            finally:
-                temporary.unlink(missing_ok=True)
             return result
     except Timeout:
         raise RuntimeError(
