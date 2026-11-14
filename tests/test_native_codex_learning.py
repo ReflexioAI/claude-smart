@@ -18,8 +18,13 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.parametrize("coding_host", ["claude-code", "codex", "opencode"])
 @pytest.mark.parametrize("explicit_path", [False, True])
 @pytest.mark.parametrize("learning_model", [None, " selected-native-model "])
+@pytest.mark.parametrize("legacy_path", [False, True])
 def test_saved_codex_learning_reaches_native_bundled_sdk(
-    tmp_path: Path, coding_host: str, explicit_path: bool, learning_model: str | None
+    tmp_path: Path,
+    coding_host: str,
+    explicit_path: bool,
+    learning_model: str | None,
+    legacy_path: bool,
 ) -> None:
     vendor = ROOT / "plugin/vendor/reflexio"
     assert (vendor / "reflexio").is_dir(), "Materialize the locked SDK bundle first"
@@ -66,6 +71,8 @@ def test_saved_codex_learning_reaches_native_bundled_sdk(
         CLAUDE_SMART_LEARNING_PROVIDER="codex",
         CLAUDE_SMART_USE_LOCAL_CLI="1",
     )
+    if legacy_path:
+        env["CLAUDE_SMART_CODEX_PATH"] = "private-retired-executable"
     if explicit_path:
         env["CLAUDE_SMART_CLI_PATH"] = str(cli)
     if learning_model is not None:
@@ -97,6 +104,12 @@ def test_saved_codex_learning_reaches_native_bundled_sdk(
         timeout=30,
         check=False,
     )
+    if legacy_path and not explicit_path:
+        assert result.returncode != 0
+        assert "CLAUDE_SMART_CODEX_PATH" in result.stderr
+        assert "private-retired-executable" not in result.stdout + result.stderr
+        assert not record.exists(), "Retired selection must refuse before any CLI call"
+        return
     assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-3000:]
     calls = [json.loads(line) for line in record.read_text().splitlines()]
     assert len(calls) == 1
