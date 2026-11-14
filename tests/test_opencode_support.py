@@ -10,6 +10,7 @@ import subprocess
 import textwrap
 from collections.abc import Generator
 from pathlib import Path, PosixPath
+from types import SimpleNamespace
 from typing import Any
 
 import pytest  # type: ignore[reportMissingImports]
@@ -973,7 +974,7 @@ def test_opencode_install_requires_opencode_cli_even_with_other_provider(
 def test_opencode_install_requires_git_bash_on_windows(monkeypatch, tmp_path, capsys) -> None:
     monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
     monkeypatch.setattr(cli, "_has_opencode_cli", lambda: True)
-    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "os", SimpleNamespace(**(vars(os) | {"name": "nt"})))
     monkeypatch.setattr(cli, "_resolve_bash", lambda: None)
 
     rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
@@ -984,7 +985,7 @@ def test_opencode_install_requires_git_bash_on_windows(monkeypatch, tmp_path, ca
 
 def test_opencode_prerequisite_accepts_git_bash_on_windows(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_has_opencode_cli", lambda: True)
-    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "os", SimpleNamespace(**(vars(os) | {"name": "nt"})))
     monkeypatch.setattr(cli, "_resolve_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
 
     assert cli._opencode_prerequisite_error() is None
@@ -1874,7 +1875,8 @@ def test_opencode_install_writes_project_loader_after_bootstrap(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
-    monkeypatch.setattr(cli.os, "name", "nt")
+    # Simulate the CLI branch, not the OS used by pathlib and native file locks.
+    monkeypatch.setattr(cli, "os", SimpleNamespace(**(vars(os) | {"name": "nt"})))
     monkeypatch.setattr(cli, "Path", PosixPath)
     monkeypatch.setattr(cli, "_resolve_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
     monkeypatch.setattr(
