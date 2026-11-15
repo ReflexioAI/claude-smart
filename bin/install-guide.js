@@ -352,10 +352,11 @@ async function configure(
       // classifier recognizes; do not reclassify existing files when reading.
       config.url = parsed.href;
       // WHATWG URL drops :80. Runtime readers require an explicit port for
-      // non-root paths; writing HTTP's standard port keeps the same endpoint
-      // without reinterpreting historical files during ordinary reads.
-      if (!parsed.port && parsed.pathname !== "/")
-        config.url = `${parsed.protocol}//${parsed.hostname}:80${parsed.pathname}`;
+      // non-root resources; preserve the entire resource, including empty
+      // query/fragment delimiters, without reinterpreting historical files.
+      const resource = parsed.href.slice(parsed.origin.length);
+      if (!parsed.port && resource !== "/")
+        config.url = `${parsed.protocol}//${parsed.hostname}:80${resource}`;
     }
     config.apiKey =
       config.url && sameOrigin(config.url, savedLocalUrl)

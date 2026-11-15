@@ -1163,6 +1163,10 @@ def test_interactive_setup_confirmation_preserves_effective_learning_intent(
         ("http://localhost:9090/api", "http://localhost:9090/api"),
         ("http://localhost:80/", "http://localhost/"),
         ("http://localhost/%2Fapi", "http://localhost:80/%2Fapi"),
+        ("http://localhost?", "http://localhost:80/?"),
+        ("http://localhost#", "http://localhost:80/#"),
+        ("http://localhost:80/api?", "http://localhost:80/api?"),
+        ("http://localhost:80/api#", "http://localhost:80/api#"),
     ],
 )
 def test_confirmed_local_endpoint_is_saved_in_runtime_loopback_form(
