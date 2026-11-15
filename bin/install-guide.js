@@ -239,11 +239,14 @@ async function configure(
     const providers = inventory.filter((agent) => agent.available);
     config.cliPath = process.env.CLAUDE_SMART_CLI_PATH || saved.cliPath || "";
     config.useLocalCli = process.env.CLAUDE_SMART_USE_LOCAL_CLI || saved.useLocalCli || "1";
-    config.provider = options.provider || saved.provider || (hosts.length === 1 ? hosts[0] : null);
+    const hasCurrent = Boolean(saved.provider || config.cliPath || config.useLocalCli === "0");
+    config.provider =
+      options.provider ||
+      saved.provider ||
+      (!hasCurrent && hosts.length === 1 ? hosts[0] : undefined);
     let keepCurrent = !options.provider;
     if (interactive && !options.provider) {
       // Resolve actual saved/caller intent before inserting provider/model defaults.
-      const hasCurrent = Boolean(saved.provider || config.cliPath || config.useLocalCli === "0");
       const choices = providers.map((agent) => ({
         value: agent.host,
         label: `${LABELS[agent.host]} CLI`,

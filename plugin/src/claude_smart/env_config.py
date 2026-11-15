@@ -21,14 +21,10 @@ from pathlib import Path
 
 from filelock import Timeout, UnixFileLock, WindowsFileLock
 
-from claude_smart import runtime
-
 CLAUDE_SMART_ENV_PATH = Path.home() / ".claude-smart" / ".env"
 REFLEXIO_URL_ENV = "REFLEXIO_URL"
 CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY"
 CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
-CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST"
-DEFAULT_CLAUDE_SMART_HOST = runtime.HOST_CLAUDE_CODE
 
 _LOCAL_DEFAULT_ENTRIES = (
     (
@@ -43,7 +39,6 @@ _LOCAL_DEFAULT_ENTRIES = (
         "REFLEXIO_ROW_LIMIT_INTERACTIONS",
         "500",
     ),
-    (None, CLAUDE_SMART_HOST_ENV, DEFAULT_CLAUDE_SMART_HOST),
 )
 _ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS = {
     CLAUDE_SMART_USE_LOCAL_CLI_ENV,
@@ -112,7 +107,7 @@ class SettingsBusyError(RuntimeError):
 def repair_bootstrap_env(path: Path | None = None) -> list[str]:
     """Supply missing local defaults without selecting or changing a connection.
 
-    Setup owns the URL, credentials, sharing and installed host. Dependency
+    Setup owns the URL, credentials, sharing and learning choices. Dependency
     repair preserves those decisions, including explicit empties and duplicates.
     Remote URL alone means attached mode, even when its credentials need repair.
     """
@@ -135,7 +130,7 @@ def _bootstrap_defaults(existing: str) -> tuple[str | None, list[str]]:
         value = _resolve_local_env_default(key, default)
         if comment:
             additions.append(comment)
-        if key in {CLAUDE_SMART_READ_ONLY_ENV, CLAUDE_SMART_HOST_ENV}:
+        if key == CLAUDE_SMART_READ_ONLY_ENV:
             additions.append(f'{key}="{value}"')
         else:
             additions.append(f"{key}={value}")

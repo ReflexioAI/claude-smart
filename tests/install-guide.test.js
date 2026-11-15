@@ -528,17 +528,19 @@ test("Keep does not invent a provider for existing cloud/custom execution", asyn
     { backend: "local", cliPath: "/custom/native", model: "kept-model" },
   ]) {
     for (const host of ["claude-code", "codex"]) {
-      const config = await configure(
-        { hosts: [host], backend: "local" },
-        inventory,
-        saved,
-        confirmCurrent([]),
-        true,
-      );
-      assert.equal(config.provider, undefined);
-      assert.equal(config.model, "kept-model");
-      assert.equal(config.cliPath, saved.cliPath || "");
-      assert.equal(config.useLocalCli, saved.useLocalCli || "1");
+      for (const interactive of [false, true]) {
+        const config = await configure(
+          { hosts: [host], backend: "local" },
+          inventory,
+          saved,
+          confirmCurrent([]),
+          interactive,
+        );
+        assert.equal(config.provider, undefined);
+        assert.equal(config.model, "kept-model");
+        assert.equal(config.cliPath, saved.cliPath || "");
+        assert.equal(config.useLocalCli, saved.useLocalCli || "1");
+      }
     }
   }
 });

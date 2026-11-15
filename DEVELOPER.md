@@ -42,16 +42,15 @@ the published npm package ships neither directory.
 
 ## Environment variables
 
-Tunables read by the plugin at runtime. Most users don't need to touch these — the installer writes the local-provider flags to `~/.claude-smart/.env` and sensible defaults cover the rest. Hook-side variables must be set in the Claude Code process environment, such as a project `.claude/settings.local.json` `env` block or user-scoped `~/.claude/settings.json`, because hooks do not read Reflexio's backend `.env` file.
+Tunables read by the plugin at runtime. Most users don't need to touch these — the confirmed guide saves policy in `~/.claude-smart/.env`, while one Python repair owner supplies genuinely missing local defaults for every host. Hook-side variables must be set in the Claude Code process environment, such as a project `.claude/settings.local.json` `env` block or user-scoped `~/.claude/settings.json`, because hooks do not read Reflexio's backend `.env` file.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CLAUDE_SMART_USE_LOCAL_CLI` | `0` (installer sets `1`) | Route generation through the active host CLI (`claude` for Claude Code, `codex` for Codex). Written to `~/.claude-smart/.env` by `claude-smart install`. |
+| `CLAUDE_SMART_USE_LOCAL_CLI` | `1` for missing local policy; explicit `0` preserved | Route generation through the selected learning CLI, independently of the coding integration. Confirmation preserves cloud opt-out and explicit overrides; repair supplies only a missing local default. |
 | `CLAUDE_SMART_LEARNING_PROVIDER` | unset (legacy host fallback) | Saved local background learning provider: `claude-code`, `codex`, or `opencode`. Independent of the agent collecting interactions. The guided installer saves the user's choice; session hooks and integration removal do not change it. An explicit `CLAUDE_SMART_CLI_PATH` still overrides the executable; the guide preserves it on unattended updates and clears it when choosing a provider interactively or with `--provider`. |
 | `CLAUDE_SMART_LEARNING_MODEL` | unset (provider-configured default) | Local learning model ID selected by the installer (`--model`). Routed to Claude Code extraction and optimizer calls native Codex and the OpenCode bridge. Unattended updates preserve the setting; choosing a different provider resets it unless a model is explicitly supplied. Applying it refreshes the local backend through the installer. Managed learning models are configured by the cloud service; the installer reports its configured model when the API exposes one. |
 | `CLAUDE_SMART_LOCAL_URL`, `CLAUDE_SMART_LOCAL_API_KEY` | unset (bundled loopback endpoint, no key) | Private saved local dashboard connection. The installer and Configure page retain the previous connection when changing runtime modes. These keys are not exposed to browser clients. |
 | `CLAUDE_SMART_MANAGED_URL`, `CLAUDE_SMART_MANAGED_API_KEY` | unset (managed view unavailable) | Private saved managed dashboard connection. Allows viewing managed data while the runtime remains local. Selecting a view does not rewrite runtime settings, start services, or send cloud credentials to the local endpoint. |
-| `CLAUDE_SMART_GUIDED_CONFIG` | unset (legacy setup) | Internal saved marker (`1`) written after confirming guided configuration. Preserves explicit local endpoints and sharing settings even when a custom executable or cloud provider replaces the named learning provider. |
 | `REFLEXIO_EMBEDDING_PROVIDER` | model-derived when unset | Embedding provider mode: `cloud`, `local_service`, `internal_service`, or `off`. |
 | `REFLEXIO_EMBEDDING_SERVICE_URL` | `http://127.0.0.1:$EMBEDDING_PORT` | OpenAI-compatible embedding endpoint used by `local_service` and `internal_service`. |
 | `REFLEXIO_ROW_LIMIT_INTERACTIONS` | `500` (local installer) | Existing SDK interaction-row cap, saved in `~/.claude-smart/.env`; `0` disables cap cleanup. Existing file and process overrides remain authoritative. |
@@ -227,6 +226,16 @@ npm pack --dry-run --json
 
 Condensed install/uninstall commands live in the [README Quick Start](./README.md#quick-start); this section holds the per-host details behind them.
 
+The public guide confirms connection/learning/read-only/sharing policy once.
+Private host workers consume saved connection fields and reject incomplete policy
+before package/service effects. The prepared Python `env_config bootstrap-repair`
+owner supplies missing local defaults under its native lock for every host;
+standalone shell repair retains the same owner. Workers do not default/rewrite
+saved HOST or compensate it on failure/removal. Existing HOST text remains a
+legacy target fallback for the pinned SDK, not the identity of the last installed
+integration. No guided-config marker is required. Removal can complete with broken
+settings and report that shared-service refresh needs repair instead of guessing.
+
 ### Claude Code
 
 `npx claude-smart install` copies the npm package to
@@ -258,7 +267,7 @@ Installers and hook discovery use `CODEX_HOME` when set, falling back to `~/.cod
 
 The installer prepares the npm package at `$CODEX_HOME/claude-smart/runtime`
 (default `~/.codex/claude-smart/runtime`). Its `plugin/` owns the Python venv
-and dashboard dependencies/build. The marketplace and versioned plugin cache
+and dashboard dependencies/build. The marketplace under `$CODEX_HOME/claude-smart/marketplace` and versioned plugin cache
 contain only package files: Codex validates their entire tree and rejects
 dependency symlinks such as `node_modules/.bin/acorn`. Patched hook commands
 pass `--runtime-root` to the external runner, overriding the cache path Codex
@@ -270,9 +279,21 @@ the account runtime along with the cache.
 
 ### OpenCode
 
-**Config resolution.** The installer writes the plugin entry to `opencode.json`, the documented project config file. If the project has no root config but does have `.opencode/opencode.json` or `.opencode/opencode.jsonc`, the installer updates that existing file instead of creating a second config. If both locations exist, the root config wins. `--global` installs into `~/.config/opencode/opencode.json` for all OpenCode projects on the machine.
+**Config resolution.** The installer writes one loader into the selected scope's
+plugins directory: `.opencode/plugins/claude-smart.js` for a project, or
+`$XDG_CONFIG_HOME/opencode/plugins/claude-smart.js` (default
+`~/.config/opencode/plugins/claude-smart.js`) with `--global`. It removes legacy
+claude-smart entries from every config read by that scope, after validating all
+existing files. Other plugin entries remain. OpenCode 1.x and V2 both load this
+single entry.
 
-**Runtime copy.** The installer copies the active package to `~/.claude-smart/opencode/claude-smart`, prepares that runtime immediately, and writes a `file://` plugin entry so OpenCode reloads the same prepared package after restart. It prepares claude-smart's runtime dependencies but expects the OpenCode CLI to already be installed; it resolves and records the OpenCode executable in `~/.claude-smart/.env` for later backend restarts. Set `CLAUDE_SMART_OPENCODE_PATH` before install if `opencode` is not on `PATH`.
+**Runtime copy.** The installer prepares `~/.claude-smart/opencode/claude-smart`
+and points the loader at its compiled server. The OpenCode CLI must already be
+installed. Confirmed setup preserves an effective saved executable path and its
+duplicates; discovery fills only a missing saved path when OpenCode is selected
+as an integration or learning provider. A nonempty caller path remains an
+execution override. An unavailable explicitly configured executable requires
+repair rather than silently choosing a different executable from PATH.
 
 **Model selection.** OpenCode support uses OpenCode's plugin loader to inject relevant learned context into the system prompt of the first model request after each prompt. Learning extraction runs `opencode run` with `OPENCODE_PURE=1` from an isolated temp project. On OpenCode 1.x that skips external plugins; V2 has no pure mode, so there the extraction run loads the user's global plugins. Extraction uses OpenCode's default model unless you set `CLAUDE_SMART_OPENCODE_MODEL=provider/model`. Set that env var if your normal project config pins a different provider or model.
 

@@ -64,7 +64,6 @@ const CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY";
 const CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI";
 const CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST";
 const LEARNING_PROVIDER_ENV = "CLAUDE_SMART_LEARNING_PROVIDER";
-const GUIDED_CONFIG_ENV = "CLAUDE_SMART_GUIDED_CONFIG";
 const CLAUDE_SMART_OPENCODE_PATH_ENV = "CLAUDE_SMART_OPENCODE_PATH";
 const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const HOST_CLAUDE_CODE = "claude-code";
@@ -139,25 +138,6 @@ const COPYTREE_IGNORE_NAMES = new Set([
   "node_modules",
   ".next",
 ]);
-const LOCAL_DEFAULT_ENV_ENTRIES = [
-  [
-    "# Route reflexio generation through the configured local host CLI",
-    CLAUDE_SMART_USE_LOCAL_CLI_ENV,
-    "1",
-  ],
-  [null, CLAUDE_SMART_READ_ONLY_ENV, "0"],
-  [
-    "# Local interaction history row cap; 0 disables cap cleanup",
-    "REFLEXIO_ROW_LIMIT_INTERACTIONS",
-    "500",
-  ],
-  [null, CLAUDE_SMART_HOST_ENV, DEFAULT_CLAUDE_SMART_HOST],
-];
-const ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS = new Set([
-  CLAUDE_SMART_USE_LOCAL_CLI_ENV,
-  "REFLEXIO_ROW_LIMIT_INTERACTIONS",
-]);
-const LOCAL_MODE_PRUNE_KEYS = new Set(["REFLEXIO_URL", "REFLEXIO_API_KEY", REFLEXIO_USER_ID_ENV]);
 function shouldCopyPath(src) {
   const base = src.split(/[\\/]/).pop() || "";
   if (COPYTREE_IGNORE_NAMES.has(base)) return false;
@@ -308,77 +288,6 @@ function escapeEnvValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function resolveLocalEnvDefault(key, fallback, installHost) {
-  if (key === CLAUDE_SMART_HOST_ENV) return installHost;
-  if (ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS.has(key)) {
-    const explicit = (process.env[key] || "").trim();
-    if (explicit) return explicit;
-  }
-  return fallback;
-}
-
-// prune=false keeps REFLEXIO_URL / REFLEXIO_API_KEY: a keyed loopback URL is
-// a local setup whose URL the runtime still honors.
-function ensureLocalEnvFile(path, installHost, { prune = true } = {}) {
-  mkdirSync(dirname(path), { recursive: true });
-  const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const present = new Set();
-  const keptLines = [];
-  let pruned = false;
-  let changed = false;
-  let hostWritten = false;
-  for (const line of existing.split(/\r?\n/)) {
-    const parsed = parseEnvLine(line);
-    if (parsed) {
-      if (prune && LOCAL_MODE_PRUNE_KEYS.has(parsed.key)) {
-        pruned = true;
-        continue;
-      }
-      if (parsed.key === CLAUDE_SMART_HOST_ENV) {
-        present.add(parsed.key);
-        if (!hostWritten) {
-          const replacement = `${CLAUDE_SMART_HOST_ENV}=${escapeEnvValue(installHost)}`;
-          keptLines.push(replacement);
-          hostWritten = true;
-          if (line !== replacement || parsed.value !== installHost) changed = true;
-        } else {
-          changed = true;
-        }
-        continue;
-      }
-      present.add(parsed.key);
-    }
-    keptLines.push(line);
-  }
-
-  const additions = [];
-  const added = [];
-  for (const [comment, key, value] of LOCAL_DEFAULT_ENV_ENTRIES) {
-    if (present.has(key)) continue;
-    const effectiveValue = resolveLocalEnvDefault(key, value, installHost);
-    if (comment) additions.push(comment);
-    if (key === CLAUDE_SMART_READ_ONLY_ENV) {
-      additions.push(`${key}="${escapeEnvValue(effectiveValue)}"`);
-    } else {
-      additions.push(`${key}=${escapeEnvValue(effectiveValue)}`);
-    }
-    added.push(key);
-  }
-
-  if (additions.length > 0 || pruned || changed) {
-    let content = keptLines.join("\n").replace(/\n*$/, "");
-    if (additions.length > 0) {
-      const prefix = content ? "\n" : "";
-      content = content + prefix + additions.join("\n");
-    }
-    writePrivateFile(path, content ? `${content}\n` : "");
-  } else if (!existsSync(path)) {
-    writePrivateFile(path, "");
-  }
-  chmodSync(path, 0o600);
-  return added;
-}
-
 // The env file holds the managed API key: make it 0600 before any content
 // lands in it, so no other account can read it between write and chmod.
 function writePrivateFile(path, content) {
@@ -412,13 +321,6 @@ function setEnvVars(path, values) {
   return added;
 }
 
-function maskSecret(value) {
-  if (!value) return "";
-  if (value.length <= 8) return "*".repeat(value.length);
-  const prefix = value.slice(0, 8).includes("-") ? value.slice(0, 5) : value.slice(0, 4);
-  return `${prefix}****${value.slice(-4)}`;
-}
-
 // Match _lib.sh: caller-first flags retain their first nonempty saved value;
 // shared connection/learning fields retain the last assignment, even empty.
 const CALLER_FIRST_ENV_KEYS = new Set([
@@ -435,7 +337,9 @@ const CALLER_FIRST_ENV_KEYS = new Set([
 function readEnvFile(path) {
   const values = new Map();
   if (!existsSync(path)) return values;
-  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+  for (const line of new TextDecoder("utf-8", { fatal: true })
+    .decode(readFileSync(path))
+    .split(/\r?\n/)) {
     const parsed = parseEnvLine(line);
     if (parsed && (!CALLER_FIRST_ENV_KEYS.has(parsed.key) || !values.get(parsed.key))) {
       values.set(parsed.key, parsed.value);
@@ -527,108 +431,49 @@ function migrateLegacyManagedEnvOnce() {
   );
 }
 
-// Reads ~/.claude-smart/.env — the file the hooks and backend read — so the
-// mode reported here is the mode the runtime will actually use.
-function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
-  migrateLegacyManagedEnv();
-  const fileEnv = readEnvFile(CLAUDE_SMART_ENV_PATH);
-  // The backend picks its extraction bridge from CLAUDE_SMART_HOST at start;
-  // a change means a running backend must be restarted to follow it.
-  // A missing key means Claude Code to the runtime (_lib.sh default).
-  const hostChanged =
-    (fileEnv.get(CLAUDE_SMART_HOST_ENV) || DEFAULT_CLAUDE_SMART_HOST) !== installHost;
-  if (fileEnv.has(REFLEXIO_USER_ID_ENV)) {
-    process.env[REFLEXIO_USER_ID_ENV] = fileEnv.get(REFLEXIO_USER_ID_ENV);
-  }
-  // Same precedence as claude_smart_source_reflexio_env: a key present in the
-  // file wins (even when empty), otherwise the inherited environment.
-  const resolved = (key) => (fileEnv.has(key) ? fileEnv.get(key) : process.env[key] || "");
-  const apiKey = resolved("REFLEXIO_API_KEY").trim();
-  // Policy: only a key saved in the file makes install managed. A key that is
-  // only exported in this shell is gone in later sessions, and install never
-  // copies a secret from the environment into a file.
-  const shellOnlyKey = Boolean(apiKey) && !fileEnv.has("REFLEXIO_API_KEY");
-  let url = resolved("REFLEXIO_URL");
-  const updates = {};
-  if (apiKey && !shellOnlyKey && !(fileEnv.get("REFLEXIO_URL") || "").trim()) {
-    // The runtime treats a file key with no file URL as local mode, so the URL
-    // chosen here (an exported one, else the managed default) must be written
-    // where the runtime will read it once that export is gone.
-    if (!url.trim()) url = MANAGED_REFLEXIO_URL;
-    updates.REFLEXIO_URL = url;
-  }
-  if (apiKey && !shellOnlyKey && url.trim()) {
-    process.env.REFLEXIO_API_KEY = apiKey;
-    process.env.REFLEXIO_URL = url;
-    // The host follows the install in both modes (ensureLocalEnvFile does it
-    // for local mode).
-    updates[CLAUDE_SMART_HOST_ENV] = installHost;
-    setEnvVars(CLAUDE_SMART_ENV_PATH, updates);
-    if (!isRemoteReflexioUrl(url)) {
-      // A key next to a plain http loopback URL is still local mode at
-      // runtime, and the local backend needs the local provider defaults.
-      const added = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, installHost, { prune: false });
-      if (added.length > 0) {
-        process.stdout.write(`Seeded ${CLAUDE_SMART_ENV_PATH} with ${added.join(", ")}.\n`);
-      }
-    }
-  } else {
-    const exportedUrl = process.env.REFLEXIO_URL || "";
-    delete process.env.REFLEXIO_URL;
-    delete process.env.REFLEXIO_API_KEY;
-    delete process.env[REFLEXIO_USER_ID_ENV];
-    url = "";
-    const added = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, installHost, {
-      prune: fileEnv.get(GUIDED_CONFIG_ENV) !== "1" && !fileEnv.has(LEARNING_PROVIDER_ENV),
-    });
-    if (added.length > 0) {
-      process.stdout.write(`Seeded ${CLAUDE_SMART_ENV_PATH} with ${added.join(", ")}.\n`);
-    }
-    if (shellOnlyKey) {
-      process.stderr.write(
-        "warning: REFLEXIO_API_KEY is only exported in this shell, so install uses local " +
-          "mode and saves no key. Run `npx claude-smart setup` to save managed settings.\n",
-      );
-    }
-    // Hooks in a Claude Code started from this shell inherit the export: a
-    // remote URL, or a loopback URL on another port, sends them somewhere
-    // other than the bundled backend this install starts.
-    if (exportedUrl && !isBundledBackendUrl(exportedUrl)) {
-      process.stderr.write(
-        `warning: REFLEXIO_URL=${exportedUrl} is exported in this shell. ` +
-          "Install ignores it, but claude-smart hooks in a Claude Code started from this " +
-          `shell inherit it and will not use the local backend at ${localBackendUrl()}. ` +
-          "Unset it, or run `npx claude-smart setup` for managed mode.\n",
-      );
-    }
-  }
-  const managed = isRemoteReflexioUrl(url);
-  if (managed) {
-    process.stdout.write(`Using managed Reflexio at ${url} (API key ${maskSecret(apiKey)}).\n`);
-    if (isLoopbackUrl(url)) {
-      process.stderr.write(
-        `warning: REFLEXIO_URL ${url} points at this machine but is not a plain ` +
-          "http://localhost URL, so claude-smart treats it as remote and will not start " +
-          "its local backend.\n",
-      );
-    }
-  } else {
-    process.stdout.write(`Using local Reflexio backend at ${url || localBackendUrl()}.\n`);
-    const provider = fileEnv.get(LEARNING_PROVIDER_ENV) || installHost;
-    process.stdout.write(
-      `Background learning provider: ${guide.LABELS[provider] || provider} CLI.\n`,
+// Workers consume confirmed policy. Missing defaults belong to the prepared
+// Python repair owner, never to another integration's installation decision.
+function readInstallPolicy() {
+  const values = readEnvFile(CLAUDE_SMART_ENV_PATH);
+  const url = values.get("REFLEXIO_URL");
+  const apiKey = values.get("REFLEXIO_API_KEY");
+  const invalid = () =>
+    new Error(
+      "Saved installation policy is incomplete or invalid; run npx claude-smart setup first.",
     );
+  if (!url || apiKey === undefined) throw invalid();
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw invalid();
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) throw invalid();
+  const managed = isRemoteReflexioUrl(url);
+  if (managed && !apiKey.trim()) throw invalid();
+  for (const key of [
+    "REFLEXIO_URL",
+    "REFLEXIO_API_KEY",
+    "REFLEXIO_USER_ID",
+    "CLAUDE_SMART_READ_ONLY",
+    LEARNING_PROVIDER_ENV,
+    "CLAUDE_SMART_LEARNING_MODEL",
+  ]) {
+    if (values.has(key)) process.env[key] = values.get(key);
+  }
+  // Same nonempty-caller precedence as the runtime. Reading never publishes.
+  for (const key of CALLER_FIRST_ENV_KEYS) {
+    if (!process.env[key] && values.has(key)) process.env[key] = values.get(key);
   }
   const readOnly = ["1", "true", "yes", "on"].includes(
-    String(fileEnv.get(CLAUDE_SMART_READ_ONLY_ENV) || "")
-      .trim()
-      .toLowerCase(),
+    (values.get(CLAUDE_SMART_READ_ONLY_ENV) || "").trim().toLowerCase(),
   );
-  return { readOnly, managed, url, hostChanged };
-}
-
-function configureReflexioSetup(installHost = DEFAULT_CLAUDE_SMART_HOST) {
-  return loadReflexioSetupEnv(installHost);
+  return {
+    managed,
+    url,
+    readOnly,
+    provider: values.get(LEARNING_PROVIDER_ENV) || values.get(CLAUDE_SMART_HOST_ENV),
+  };
 }
 
 function stripJsonc(text) {
@@ -955,15 +800,8 @@ function hasOpenCodeCli() {
 
 function resolveOpenCodePath() {
   const opencodePath = (process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "").trim();
-  if (opencodePath && isExecutableFile(opencodePath)) return opencodePath;
+  if (opencodePath) return isExecutableFile(opencodePath) ? opencodePath : null;
   return resolveCommand(isWindows() ? ["opencode.cmd", "opencode.exe", "opencode"] : ["opencode"]);
-}
-
-function persistOpenCodePath() {
-  const resolved = resolveOpenCodePath();
-  if (!resolved) return [];
-  process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] = resolved;
-  return setEnvVars(CLAUDE_SMART_ENV_PATH, { [CLAUDE_SMART_OPENCODE_PATH_ENV]: resolved });
 }
 
 const WINDOWS_SYSTEM_BASH_SUFFIXES = [
@@ -1123,7 +961,7 @@ function pluginRootIsBroken() {
 // ~/.reflexio/plugin-root is used by every installed host's commands, so a
 // link left pointing at deleted files is repointed at a remaining install,
 // or removed when none is left.
-function repairPluginRoot(removedHost = null) {
+function repairPluginRoot() {
   if (pluginRootIsBroken()) {
     const next = installedPluginRoots()[0];
     if (next) {
@@ -1134,13 +972,6 @@ function repairPluginRoot(removedHost = null) {
       rmSync(join(REFLEXIO_DIR, "plugin-root.txt"), { force: true });
     }
   }
-  // CLAUDE_SMART_HOST picks the backend's extraction bridge, and hooks such
-  // as SessionStart read it from the file. If it names the host just
-  // removed, it now follows the runtime plugin-root points at.
-  const active = activePluginRoot();
-  if (!removedHost || !active || !existsSync(CLAUDE_SMART_ENV_PATH)) return;
-  if (readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) !== removedHost) return;
-  setEnvVars(CLAUDE_SMART_ENV_PATH, { [CLAUDE_SMART_HOST_ENV]: hostForPluginRoot(active) });
 }
 
 function hostForPluginRoot(root) {
@@ -1324,11 +1155,9 @@ function uniquePackagePath(packageRoot, prefix) {
 // back.
 const pendingPreviousPackages = new Map();
 
-// State an install changes outside its package that a rollback must undo:
-// the install-failed marker (a leftover one suppresses the restored,
-// working hooks) and CLAUDE_SMART_HOST (it selects the backend's
-// extraction bridge). Captured before the install touches either;
-// cleared on commit.
+// Capture marker/root recovery and prior service context before preparation.
+// Workers no longer rewrite saved HOST, so configuration needs no compensation.
+// A leftover failure marker would suppress the restored working hooks.
 let installStateSnapshot = null;
 
 function snapshotInstallState() {
@@ -1336,7 +1165,6 @@ function snapshotInstallState() {
   const host = readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) ?? null;
   installStateSnapshot = {
     failureMarker: read(INSTALL_FAILURE_MARKER),
-    host,
     // Bootstraps repoint the shared plugin-root before they finish.
     pluginRoot: activePluginRoot(),
     pluginRootBroken: pluginRootIsBroken(),
@@ -1374,19 +1202,6 @@ function restoreInstallState() {
     }
     if (snapshot.failureMarker === null) rmSync(INSTALL_FAILURE_MARKER, { force: true });
     else writeFileSync(INSTALL_FAILURE_MARKER, snapshot.failureMarker);
-    if (snapshot.host !== null) {
-      setEnvVars(CLAUDE_SMART_ENV_PATH, { [CLAUDE_SMART_HOST_ENV]: snapshot.host });
-    } else if (existsSync(CLAUDE_SMART_ENV_PATH)) {
-      // The key was absent (the runtime then defaults to Claude Code); drop
-      // the one the failed install added.
-      const kept = readFileSync(CLAUDE_SMART_ENV_PATH, "utf8")
-        .split(/\r?\n/)
-        .filter((line) => {
-          const parsed = parseEnvLine(line);
-          return !parsed || parsed.key !== CLAUDE_SMART_HOST_ENV;
-        });
-      writePrivateFile(CLAUDE_SMART_ENV_PATH, kept.join("\n"));
-    }
   } catch (err) {
     process.stderr.write(
       `warning: could not restore claude-smart install state: ${err && err.message ? err.message : err}\n`,
@@ -2020,6 +1835,7 @@ function savedInstallConfiguration() {
     localUrl: env.get("CLAUDE_SMART_LOCAL_URL") || "",
     localApiKey: env.get("CLAUDE_SMART_LOCAL_API_KEY") || "",
     cliPath: env.get("CLAUDE_SMART_CLI_PATH") || "",
+    opencodePath: env.get(CLAUDE_SMART_OPENCODE_PATH_ENV),
     useLocalCli: env.get(CLAUDE_SMART_USE_LOCAL_CLI_ENV),
     readOnly: ["1", "true", "yes", "on"].includes(
       (env.get(CLAUDE_SMART_READ_ONLY_ENV) || "").toLowerCase(),
@@ -2033,7 +1849,6 @@ function saveInstallConfiguration(config) {
   // Preserve legacy runtime flags after confirmation, before recording migration.
   migrateLegacyManagedEnv();
   const values = {
-    [GUIDED_CONFIG_ENV]: "1",
     REFLEXIO_URL: config.url || localBackendUrl(),
     REFLEXIO_API_KEY: config.apiKey || "",
     CLAUDE_SMART_READ_ONLY: config.readOnly ? "1" : "0",
@@ -2042,6 +1857,18 @@ function saveInstallConfiguration(config) {
   // Keep both dashboard connections when the runtime switches modes. Viewing
   // either source must not rewrite the active hook/learning configuration.
   const previous = readEnvFile(CLAUDE_SMART_ENV_PATH);
+  const previousProvider =
+    previous.get(LEARNING_PROVIDER_ENV) || previous.get(CLAUDE_SMART_HOST_ENV);
+  if (previousProvider) values[LEARNING_PROVIDER_ENV] = previousProvider;
+  if (
+    (config.hosts.includes(HOST_OPENCODE) ||
+      config.provider === HOST_OPENCODE ||
+      previousProvider === HOST_OPENCODE) &&
+    !previous.has(CLAUDE_SMART_OPENCODE_PATH_ENV)
+  ) {
+    const resolved = resolveOpenCodePath();
+    if (resolved) values[CLAUDE_SMART_OPENCODE_PATH_ENV] = resolved;
+  }
   const remember = (url, apiKey) => {
     if (!url) return;
     const prefix = isRemoteReflexioUrl(url) ? "MANAGED" : "LOCAL";
@@ -2060,7 +1887,6 @@ function saveInstallConfiguration(config) {
     ) {
       values.CLAUDE_SMART_CLI_PATH = config.cliPath;
     }
-    if (config.provider === HOST_OPENCODE) persistOpenCodePath();
   }
   setEnvVars(CLAUDE_SMART_ENV_PATH, values);
   // Hooks launched later read the saved values. This install must use them too,
@@ -2162,6 +1988,10 @@ async function runGuidedCommand(command, args) {
     printHelp();
     return;
   }
+  if (command !== "uninstall" && !process.env[CLAUDE_SMART_OPENCODE_PATH_ENV]) {
+    const savedPath = savedInstallConfiguration().opencodePath;
+    if (savedPath) process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] = savedPath;
+  }
   ensureRollbackOnExit();
   process.stdout.write(
     `claude-smart ${JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version} · ${command}\n`,
@@ -2206,11 +2036,16 @@ async function runGuidedCommand(command, args) {
           // serve their hooks again without selecting a different learning provider.
           process.stdout.write("\nRefreshing shared services for remaining integrations…\n");
         } else if (!results.some((result) => result.code === 0)) return;
-        const host =
-          readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) ||
-          DEFAULT_CLAUDE_SMART_HOST;
-        const saved = savedInstallConfiguration();
-        const setup = { managed: saved.backend === "managed", url: saved.url };
+        let setup;
+        try {
+          setup = readInstallPolicy();
+        } catch (err) {
+          if (action !== "uninstall") throw err;
+          return [
+            "Removal completed; repair saved settings with npx claude-smart setup before refreshing shared services.",
+          ];
+        }
+        const host = setup.provider || hostForPluginRoot(root);
         startDeferredDashboardBuild(root);
         return await startAndReportServices(root, host, setup, { summaryOnly: true });
       },
@@ -2348,6 +2183,8 @@ function isBundledBackendUrl(url) {
 }
 
 async function startAndReportServices(pluginRoot, host, setup, { summaryOnly = false } = {}) {
+  // A stored learning target wins over the integration that supplied the runtime.
+  const learningHost = setup.provider || host;
   if (process.env.CLAUDE_SMART_DEFER_SHARED_SERVICES === "1") return;
   const { managed, url: hooksUrl } = setup;
   const summary = [];
@@ -2388,7 +2225,7 @@ async function startAndReportServices(pluginRoot, host, setup, { summaryOnly = f
     process.stdout.write(`\nStarting local Reflexio at ${localBackendUrl()}…\n`);
     await runServiceWithProgress(pluginRoot, "backend-service.sh", "stop");
     await runServiceWithProgress(pluginRoot, "backend-service.sh", "start", {
-      CLAUDE_SMART_HOST: host,
+      CLAUDE_SMART_HOST: learningHost,
     });
     const url = localBackendUrl();
     if (await waitForHttp(`${url}health`, 5, ({ status }) => status === 200)) {
@@ -2987,6 +2824,15 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   }
   await syncPluginPythonEnv(pluginRoot, uv, env);
   await installVendoredReflexio(pluginRoot, uv, env);
+  const repairCode = await runChecked(
+    pluginPythonPath(pluginRoot),
+    ["-I", "-m", "claude_smart.env_config", "bootstrap-repair"],
+    { cwd: pluginRoot, env },
+  );
+  if (repairCode !== 0)
+    throw new Error(
+      "Could not repair missing installation defaults; resolve the settings error above and retry setup.",
+    );
   verifyWindowsLocalEmbeddingRuntime(pluginRoot, env);
 
   const dashboardDir = join(pluginRoot, "dashboard");
@@ -3193,7 +3039,7 @@ function cleanupCodexInstallState() {
   rmSync(CODEX_MARKETPLACE_DIR, { recursive: true, force: true });
   rmSync(CODEX_PLUGIN_CACHE_DIR, { recursive: true, force: true });
   rmSync(CODEX_RUNTIME_PACKAGE_DIR, { recursive: true, force: true });
-  repairPluginRoot(HOST_CODEX);
+  repairPluginRoot();
   try {
     rmSync(dirname(CODEX_PLUGIN_CACHE_DIR), { recursive: false, force: true });
   } catch {
@@ -3544,7 +3390,7 @@ async function runUninstall(args) {
   }
   rmSync(CLAUDE_CODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
   removeClaudeCodeVenvs();
-  repairPluginRoot(HOST_CLAUDE_CODE);
+  repairPluginRoot();
 
   process.stdout.write(
     [
@@ -3576,7 +3422,7 @@ async function runInstall(args, options = {}) {
 
   assertSupportedRuntimePlatform();
   snapshotInstallState();
-  const setup = configureReflexioSetup(HOST_CLAUDE_CODE);
+  const setup = readInstallPolicy();
   const readOnly = setup.readOnly;
   // Stop services running from the previous root (e.g. a pruned npx dir or an
   // older copy) before the copy under them is replaced.
@@ -3693,7 +3539,7 @@ async function runInstallCodex(args) {
   }
   assertSupportedRuntimePlatform();
   snapshotInstallState();
-  const setup = configureReflexioSetup(HOST_CODEX);
+  const setup = readInstallPolicy();
   const readOnly = setup.readOnly;
 
   validateCodexPackage();
@@ -3821,6 +3667,7 @@ function assertOpenCodeInstallConfiguration(args) {
 }
 
 async function runInstallOpenCode(args) {
+  const setup = readInstallPolicy();
   const prerequisiteError = opencodePrerequisiteError();
   if (prerequisiteError) {
     process.stderr.write(prerequisiteError);
@@ -3828,9 +3675,7 @@ async function runInstallOpenCode(args) {
   }
   assertSupportedRuntimePlatform();
   snapshotInstallState();
-  const setup = configureReflexioSetup(HOST_OPENCODE);
   const readOnly = setup.readOnly;
-  persistOpenCodePath();
   if (!hasExtractionProvider()) {
     process.stderr.write(extractionProviderError());
     process.exit(1);
@@ -3969,7 +3814,7 @@ async function runUninstallOpenCode(args) {
   const otherScopeInstalled = scopeHasClaudeSmart(parseGlobalFlag(args) ? [] : ["--global"]);
   if (!otherScopeInstalled) {
     rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
-    repairPluginRoot(HOST_OPENCODE);
+    repairPluginRoot();
     try {
       rmdirSync(dirname(OPENCODE_LOCAL_PACKAGE_DIR));
     } catch {
@@ -4245,7 +4090,6 @@ module.exports = {
   disabledCodexHooks,
   ensurePrivateNode,
   ensureUv,
-  configureReflexioSetup,
   patchCodexHooksForNode,
   opencodeScopeConfigPaths,
   removeOpenCodeLegacyEntries,
@@ -4258,7 +4102,6 @@ module.exports = {
   parseHost,
   hasExtractionProvider,
   hasOpenCodeCli,
-  persistOpenCodePath,
   resolveOpenCodePath,
   opencodePrerequisiteError,
   platformSupportError,

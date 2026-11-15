@@ -131,9 +131,7 @@ def test_both_mutators_reject_a_live_transaction_then_read_latest_state(
     assert 'FIRST="one"\n' in text
     assert "ORIGINAL=keep\n" in text
     assert (
-        'SECOND="two"\n'
-        if operation == "upsert"
-        else 'CLAUDE_SMART_HOST="claude-code"\n'
+        'SECOND="two"\n' if operation == "upsert" else 'CLAUDE_SMART_READ_ONLY="0"\n'
     ) in text
 
 
@@ -335,7 +333,8 @@ def test_changed_publication_repairs_read_only_attribute(tmp_path, operation):
             assert 'NEW="two"' in path.read_text()
         else:
             env_config.repair_bootstrap_env(path)
-            assert 'CLAUDE_SMART_HOST="claude-code"' in path.read_text()
+            assert 'CLAUDE_SMART_READ_ONLY="0"' in path.read_text()
+            assert "CLAUDE_SMART_HOST" not in path.read_text()
     finally:
         path.chmod(0o600)
 

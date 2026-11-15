@@ -677,31 +677,33 @@ def test_node_installer_accepts_explicit_opencode_extraction_provider(
     assert result.stdout == "true"
 
 
-def test_node_installer_persists_resolved_opencode_path(tmp_path: Path) -> None:
-    node = shutil_which_node()
-    if node is None:
-        pytest.skip("node is not installed")
-    assert node is not None
-    env = _isolated_installer_env(tmp_path)
-    env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
-    opencode = Path(env["PATH"].split(os.pathsep)[0]) / "opencode"
-    script = (
-        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
-        "installer.persistOpenCodePath();"
-    )
+@pytest.mark.parametrize("saved", [False, True])
+def test_public_confirmation_preserves_or_discovers_opencode_path(
+    tmp_path: Path, saved: bool
+) -> None:
+    from tests.test_install_scripts import _run_public_setup
 
-    result = subprocess.run(
-        [node, "-e", script],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
+    executable = _fake_opencode_path(tmp_path)
+    selected = tmp_path / ".claude-smart/.env"
+    if saved:
+        selected.parent.mkdir()
+        selected.write_text(
+            'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\n'
+            + f'CLAUDE_SMART_OPENCODE_PATH="{executable}"\nCLAUDE_SMART_OPENCODE_PATH="/stale/other"\n'
+        )
+    result = _run_public_setup(
+        tmp_path,
+        "--backend",
+        "local",
+        "--provider",
+        "opencode",
+        env_extra={} if saved else {"CLAUDE_SMART_OPENCODE_PATH": str(executable)},
     )
-
     assert result.returncode == 0, result.stderr
-    expected = f'CLAUDE_SMART_OPENCODE_PATH="{opencode}"'
-    assert expected in (Path(env["HOME"]) / ".claude-smart" / ".env").read_text()
-    assert not (Path(env["HOME"]) / ".reflexio" / ".env").exists()
+    assert f'CLAUDE_SMART_OPENCODE_PATH="{executable}"' in selected.read_text()
+    if saved:
+        assert 'CLAUDE_SMART_OPENCODE_PATH="/stale/other"' in selected.read_text()
+    assert not (tmp_path / ".reflexio/.env").exists()
 
 
 def _fake_opencode_path(tmp_path: Path) -> Path:
@@ -726,6 +728,9 @@ def _isolated_installer_env(tmp_path: Path) -> dict[str, str]:
     env.pop("REFLEXIO_API_KEY", None)
     env.pop("CLAUDE_SMART_CLI_PATH", None)
     env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
+    from tests.test_install_scripts import _seed_prepared_policy
+
+    _seed_prepared_policy(Path(env["HOME"]), "opencode")
     return env
 
 
@@ -743,6 +748,9 @@ def _write_minimal_node_package_root(package_root: Path) -> None:
         "[project]\nname='claude-smart'\n"
     )
     (package_root / "plugin" / "uv.lock").write_text("version = 1\n")
+    from tests.test_install_scripts import _copy_prepared_policy_owner
+
+    _copy_prepared_policy_owner(package_root / "plugin")
     smart_install = scripts / "smart-install.sh"
     smart_install.write_text("#!/bin/sh\nexit 0\n")
     smart_install.chmod(0o755)
@@ -757,17 +765,9 @@ def _seed_private_node_and_uv(env: dict[str, str]) -> None:
     for path in [private_node / "node", private_node / "npm"]:
         path.write_text("#!/bin/sh\nexit 0\n")
         path.chmod(0o755)
-    uv = uv_bin / "uv"
-    uv.write_text(
-        "#!/bin/sh\n"
-        'printf "uv %s\\n" "$*" >> "$HOME/uv.log"\n'
-        '/bin/mkdir -p "$PWD/.venv/bin" "$PWD/.venv/Scripts"\n'
-        'printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/bin/python"\n'
-        'printf "#!/bin/sh\\nexit 0\\n" > "$PWD/.venv/Scripts/python.exe"\n'
-        '/bin/chmod +x "$PWD/.venv/bin/python" "$PWD/.venv/Scripts/python.exe"\n'
-        "exit 0\n"
-    )
-    uv.chmod(0o755)
+    from tests.test_install_scripts import _write_bootstrap_uv
+
+    _write_bootstrap_uv(uv_bin / "uv", mode="fresh")
 
 
 def test_node_opencode_install_from_npx_root_writes_scoped_loader_only(
@@ -1033,6 +1033,8 @@ def test_node_opencode_install_preserves_existing_claude_and_codex_state_on_wind
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text(
             "# existing host state\n"
+            'REFLEXIO_URL="http://localhost:8071/"\n'
+            'REFLEXIO_API_KEY=""\n'
             "CLAUDE_SMART_HOST=codex\n"
             'CLAUDE_SMART_READ_ONLY="1"\n'
         )
