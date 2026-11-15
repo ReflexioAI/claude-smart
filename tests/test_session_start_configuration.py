@@ -72,7 +72,6 @@ def test_session_start_preserves_server_policy(tmp_path, legacy_value, optimizer
     for name in (
         "CLAUDE_SMART_INTERNAL",
         "CLAUDE_CODE_ENTRYPOINT",
-        "CLAUDE_SMART_MANAGED_SETUP",
         "CLAUDE_SMART_READ_ONLY",
         "CLAUDE_SMART_HOOK_LOG",
     ):

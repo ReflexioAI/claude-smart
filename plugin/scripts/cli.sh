@@ -9,6 +9,14 @@
 # slash commands work on a fresh install.
 set -eu
 
+# The Python runtime does not own integration installation or removal.
+case "${1:-}" in
+  install|update|uninstall)
+    printf 'claude-smart: use npx claude-smart %s for integration management.\n' "$1" >&2
+    exit 2
+    ;;
+esac
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"

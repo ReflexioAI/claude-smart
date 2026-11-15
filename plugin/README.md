@@ -97,6 +97,17 @@ Restart OpenCode after uninstalling. The copied OpenCode package is removed, but
 local learning data under `~/.reflexio/` and `~/.claude-smart/` is preserved and
 shared across supported hosts.
 
+## Runtime commands and dependency repair
+
+Use `npx claude-smart install`, `update`, and `uninstall` to manage integrations.
+The Python runtime and `scripts/cli.sh` handle learned data and service commands;
+their former installation commands now reject with the npm replacement.
+
+Dependency repair adds only missing local defaults. It preserves saved endpoint,
+credentials, sharing, host, read-only mode and history caps (including `0`). That
+step no longer silently rewrites port 8081 or creates a settings backup. Use
+setup to choose a different endpoint when an existing connection is obsolete.
+
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
