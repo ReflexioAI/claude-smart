@@ -254,7 +254,8 @@ async function configure(
         selected: [hasCurrent ? "keep" : hosts[0]],
       });
       keepCurrent = selection === "keep";
-      if (!keepCurrent) config.provider = selection;
+      // Keeping cloud/custom settings must not infer a provider from the coding integration.
+      config.provider = keepCurrent ? saved.provider : selection;
     }
     if (!keepCurrent) {
       config.cliPath = "";
