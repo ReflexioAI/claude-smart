@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import textwrap
@@ -1013,6 +1014,12 @@ def test_node_opencode_install_preserves_existing_claude_and_codex_state_on_wind
     home = Path(env["HOME"])
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir(exist_ok=True)
+    # Keep host-tool discovery isolated while the real-owner UV fixture uses
+    # these ordinary shell utilities to prepare its interpreter wrapper.
+    for command in ("mkdir", "cat", "cp", "chmod"):
+        executable = shutil.which(command)
+        assert executable is not None
+        (fake_bin / command).symlink_to(executable)
     opencode_cmd = fake_bin / "opencode.cmd"
     opencode_cmd.write_text("#!/bin/sh\nexit 0\n")
     opencode_cmd.chmod(0o755)
@@ -1029,6 +1036,17 @@ def test_node_opencode_install_preserves_existing_claude_and_codex_state_on_wind
         }
     )
     _seed_private_node_and_uv(env)
+    # The simulated installer publishes Windows ';' PATH entries, while this
+    # owned UV stand-in is a POSIX shell. Give only that stand-in its native
+    # utility path; production platform selection and tool discovery stay tested.
+    uv = home / ".local" / "bin" / "uv"
+    uv.write_text(
+        uv.read_text().replace(
+            "#!/bin/sh\n",
+            f"#!/bin/sh\nPATH={shlex.quote(str(fake_bin))}\nexport PATH\n",
+            1,
+        )
+    )
     for env_path in [home / ".reflexio" / ".env", home / ".claude-smart" / ".env"]:
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text(
@@ -1095,14 +1113,22 @@ def test_node_opencode_install_preserves_existing_claude_and_codex_state_on_wind
     assert local_package == home / ".claude-smart" / "opencode" / "claude-smart"
     assert (local_package / "plugin" / "scripts" / "smart-install.sh").exists()
     runtime_env = (home / ".claude-smart" / ".env").read_text()
-    assert "CLAUDE_SMART_HOST=opencode" in runtime_env
-    assert "CLAUDE_SMART_HOST=codex" not in runtime_env
-    assert 'CLAUDE_SMART_READ_ONLY="1"' in runtime_env
-    # ~/.reflexio/.env belongs to other Reflexio tools and is never rewritten.
-    assert (home / ".reflexio" / ".env").read_text() == (
-        '# existing host state\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_READ_ONLY="1"\n'
+    original = (
+        "# existing host state\n"
+        'REFLEXIO_URL="http://localhost:8071/"\n'
+        'REFLEXIO_API_KEY=""\n'
+        "CLAUDE_SMART_HOST=codex\n"
+        'CLAUDE_SMART_READ_ONLY="1"\n'
     )
-    assert f'CLAUDE_SMART_OPENCODE_PATH="{opencode_cmd}"' in runtime_env
+    # Private preparation can append missing defaults, never choose a new
+    # learning target or publish an executable path without confirmation.
+    assert runtime_env.startswith(original)
+    assert "CLAUDE_SMART_HOST=opencode" not in runtime_env
+    assert "CLAUDE_SMART_OPENCODE_PATH=" not in runtime_env
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in runtime_env
+    assert "REFLEXIO_ROW_LIMIT_INTERACTIONS=500" in runtime_env
+    # ~/.reflexio/.env belongs to other Reflexio tools and is never rewritten.
+    assert (home / ".reflexio" / ".env").read_text() == original
     assert (claude_cache / "keep.txt").read_text() == "keep\n"
     assert (codex_cache / "keep.txt").read_text() == "keep\n"
     assert codex_config.read_text() == (
