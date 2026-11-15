@@ -91,6 +91,12 @@ learning provider, provider CLI version when available, and model selection.
 Configured aliases/defaults are distinguished from a reported model version;
 unknown versions are shown as “not reported.” Run `npx claude-smart setup` to
 change the learning settings.
+When local learning is already configured, **Keep current learning configuration**
+is selected by default. It preserves cloud generation, custom executables and the
+current native model; selecting a native provider entry explicitly changes that
+setup and opens its model choices. Supported caller overrides still apply, and
+`--provider` explicitly replaces a cloud/custom configuration with that native
+provider. Installing a different coding integration does not select its model.
 
 The dashboard's **Data source** dropdown selects Local or Managed Reflexio.
 It defaults to the saved runtime mode. Its endpoint, overview totals, preferences,

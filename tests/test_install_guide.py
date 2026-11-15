@@ -973,3 +973,99 @@ def test_setup_rejects_empty_supplied_managed_key_before_writes(tmp_path, creden
         "claude plugin list --json"
     ]
     assert not (tmp_path / "backend-service.log").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="PTY terminal fixtures require POSIX")
+@pytest.mark.parametrize(
+    "runtime_kind",
+    ["cloud", "custom", "native", "caller-custom", "caller-cloud", "caller-model"],
+)
+def test_interactive_setup_confirmation_preserves_effective_learning_intent(
+    tmp_path, runtime_kind
+):
+    import pty
+    import signal
+    from dotenv import dotenv_values
+
+    installer, env = fake_guide(tmp_path)
+    for name in (
+        "CLAUDE_SMART_LEARNING_MODEL",
+        "CLAUDE_SMART_LEARNING_PROVIDER",
+        "CLAUDE_SMART_USE_LOCAL_CLI",
+        "CLAUDE_SMART_CLI_PATH",
+    ):
+        env.pop(name, None)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    saved_path = "/saved/custom-native" if runtime_kind == "custom" else ""
+    saved_enable = "0" if runtime_kind == "cloud" else "1"
+    selected.write_text(
+        'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\nCLAUDE_SMART_LEARNING_PROVIDER="codex"\nCLAUDE_SMART_LEARNING_MODEL="native/kept-model"\nCLAUDE_SMART_READ_ONLY="1"\nREFLEXIO_USER_ID="custom-shared-user"\nREFLEXIO_ROW_LIMIT_INTERACTIONS=0\n'
+        + f'CLAUDE_SMART_CLI_PATH="{saved_path}"\nCLAUDE_SMART_USE_LOCAL_CLI="{saved_enable}"\n'
+    )
+    expected_path, expected_enable, expected_model = (
+        saved_path,
+        saved_enable,
+        "native/kept-model",
+    )
+    if runtime_kind == "caller-custom":
+        env["CLAUDE_SMART_CLI_PATH"] = expected_path = "/caller/custom-native"
+    elif runtime_kind == "caller-cloud":
+        env["CLAUDE_SMART_USE_LOCAL_CLI"] = expected_enable = "0"
+    elif runtime_kind == "caller-model":
+        env["CLAUDE_SMART_LEARNING_MODEL"] = expected_model = "native/caller-model"
+    master, slave = pty.openpty()
+    process = subprocess.Popen(
+        [node_bin(), str(installer), "setup"],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        env=env,
+        start_new_session=True,
+    )
+    os.close(slave)
+    output = b""
+
+    def answer_after(label, answer):
+        nonlocal output
+        deadline = time.monotonic() + 10
+        while label not in output and time.monotonic() < deadline:
+            if select.select([master], [], [], 0.2)[0]:
+                output += os.read(master, 8192)
+        assert label in output, output.decode(errors="replace")
+        os.write(master, answer)
+
+    try:
+        # Keep only Claude Code installed, while Codex remains the learning provider.
+        answer_after(b"Which coding agents", b"\x1b[B \r")
+        answer_after(b"Where should", b"\r")
+        answer_after(b"Which agent should power background learning", b"\r")
+        answer_after(b"Allow claude-smart", b"\r")
+        assert b"Which model should" not in output
+        answer_after(b"Memory sharing scope", b"\r")
+        answer_after(b"Proceed with installation", b"\r")
+        deadline = time.monotonic() + 20
+        while process.poll() is None and time.monotonic() < deadline:
+            if select.select([master], [], [], 0.1)[0]:
+                try:
+                    chunk = os.read(master, 8192)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                output += chunk
+        process.wait(timeout=5)
+        assert process.returncode == 0, output.decode(errors="replace")
+        config = dotenv_values(selected)
+        assert config["CLAUDE_SMART_LEARNING_PROVIDER"] == "codex"
+        assert config["CLAUDE_SMART_LEARNING_MODEL"] == expected_model
+        assert config["CLAUDE_SMART_USE_LOCAL_CLI"] == expected_enable
+        assert config["CLAUDE_SMART_CLI_PATH"] == expected_path
+        assert config["CLAUDE_SMART_READ_ONLY"] == "1"
+        assert config["REFLEXIO_USER_ID"] == "custom-shared-user"
+        assert config["REFLEXIO_ROW_LIMIT_INTERACTIONS"] == "0"
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+        os.close(master)
