@@ -1322,11 +1322,14 @@ let installStateSnapshot = null;
 
 function snapshotInstallState() {
   const read = (path) => (existsSync(path) ? readFileSync(path) : null);
+  const host = readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) ?? null;
   installStateSnapshot = {
     failureMarker: read(INSTALL_FAILURE_MARKER),
-    host: readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) ?? null,
+    host,
     // Bootstraps repoint the shared plugin-root before they finish.
     pluginRoot: activePluginRoot(),
+    pluginRootBroken: pluginRootIsBroken(),
+    restartHost: process.env.CLAUDE_SMART_HOST || host || HOST_CLAUDE_CODE,
   };
   ensureRollbackOnExit();
 }
@@ -1344,13 +1347,19 @@ function commitInstallState() {
 function restoreInstallState() {
   const snapshot = installStateSnapshot;
   installStateSnapshot = null;
-  if (!snapshot) return;
+  if (!snapshot) return true;
   try {
     if (
       snapshot.pluginRoot &&
       existsSync(join(snapshot.pluginRoot, "scripts", "backend-service.sh"))
     ) {
       forcePluginRoot(snapshot.pluginRoot);
+    } else if (snapshot.pluginRootBroken || snapshot.pluginRoot) {
+      repairPluginRoot();
+    } else {
+      // A failed first install must not leave its newly published root selected.
+      rmSync(join(REFLEXIO_DIR, "plugin-root"), { force: true });
+      rmSync(join(REFLEXIO_DIR, "plugin-root.txt"), { force: true });
     }
     if (snapshot.failureMarker === null) rmSync(INSTALL_FAILURE_MARKER, { force: true });
     else writeFileSync(INSTALL_FAILURE_MARKER, snapshot.failureMarker);
@@ -1371,15 +1380,18 @@ function restoreInstallState() {
     process.stderr.write(
       `warning: could not restore claude-smart install state: ${err && err.message ? err.message : err}\n`,
     );
+    return false;
   }
+  return true;
 }
 
 function rollbackLocalPluginPackages() {
-  restoreInstallState();
+  let restored = true;
   for (const [packageRoot, { backupPackage, installedIno }] of pendingPreviousPackages) {
     pendingPreviousPackages.delete(packageRoot);
     try {
       if (!pathEntryExists(packageRoot) || lstatSync(packageRoot).ino !== installedIno) {
+        restored = false;
         // Someone replaced this package despite the lock. Leave both alone;
         // the backup may be the only copy of a working runtime.
         if (backupPackage) {
@@ -1405,17 +1417,24 @@ function rollbackLocalPluginPackages() {
         process.stderr.write(
           `Install did not complete; removed the unprepared claude-smart package at ${packageRoot}.\n`,
         );
-        repairPluginRoot();
       }
     } catch (err) {
+      restored = false;
       process.stderr.write(
         `warning: could not restore the previous claude-smart package from ${backupPackage}: ` +
           `${err && err.message ? err.message : err}\n`,
       );
     }
   }
+  restored = restoreInstallState() && restored;
   for (const packageRoot of [...heldPackageLocks.keys()]) releasePackageInstallLock(packageRoot);
-  restartStoppedServices();
+  if (restored) restartStoppedServices();
+  else {
+    stoppedServices = null;
+    process.stderr.write(
+      "warning: package recovery was incomplete; services were not restarted automatically.\n",
+    );
+  }
 }
 
 // Services an install stopped before replacing their root. If the install
@@ -1466,31 +1485,31 @@ function restartStoppedServices() {
   process.stderr.write(`Restarted claude-smart services from ${stopped.root}.\n`);
 }
 
-function commitLocalPluginPackage(packageRoot) {
-  const pending = pendingPreviousPackages.get(packageRoot);
-  pendingPreviousPackages.delete(packageRoot);
-  // The install succeeded; failing to delete the old copy (e.g. a Windows
-  // file handle still open) must not turn it into a failure that leaves
-  // services stopped.
-  try {
-    if (pending && pending.backupPackage) {
-      rmSync(pending.backupPackage, { recursive: true, force: true });
-    }
-  } catch (err) {
-    process.stderr.write(
-      `warning: could not remove the previous package at ${pending.backupPackage}: ` +
-        `${err && err.message ? err.message : err}\n`,
-    );
-  }
-  // Keep older Python envs until explicit uninstall: cached plugin paths or
-  // hooks already in flight may still reference them after this update.
-  try {
-    releasePackageInstallLock(packageRoot);
-  } catch {
-    // A leftover lock dir is reclaimed as stale by the next install.
-  }
+function commitLocalPluginPackages(packageRoots) {
+  // Commit the complete package set before best-effort backup cleanup. Codex's
+  // cache and runtime belong to the same install; neither clears ownership early.
+  const committed = packageRoots.map((root) => [root, pendingPreviousPackages.get(root)]);
+  for (const root of packageRoots) pendingPreviousPackages.delete(root);
   stoppedServices = null;
   commitInstallState();
+  for (const [packageRoot, pending] of committed) {
+    try {
+      if (pending && pending.backupPackage) {
+        rmSync(pending.backupPackage, { recursive: true, force: true });
+      }
+    } catch (err) {
+      process.stderr.write(
+        `warning: could not remove the previous package at ${pending.backupPackage}: ` +
+          `${err && err.message ? err.message : err}\n`,
+      );
+    }
+    // Keep older Python envs until explicit uninstall: cached hooks may use them.
+    try {
+      releasePackageInstallLock(packageRoot);
+    } catch {
+      // A leftover lock dir is reclaimed as stale by the next install.
+    }
+  }
 }
 
 // Claude Code caches can reference an external Python env after an update.
@@ -3458,37 +3477,8 @@ function findCodexPluginRoot() {
 }
 
 async function runUpdate(args) {
-  if (parseHost(args) === HOST_CODEX) {
-    await runUpdateCodex(args);
-    return;
-  }
-  if (parseHost(args) === HOST_OPENCODE) {
-    await runUpdateOpenCode(args);
-    return;
-  }
-
   process.stdout.write("Updating claude-smart by reinstalling from this package...\n");
   await runInstall(args, { retryInstallAfterUninstall: true });
-}
-
-async function runUpdateCodex(args) {
-  const pluginRoot = existsSync(CODEX_RUNTIME_PLUGIN_ROOT)
-    ? CODEX_RUNTIME_PLUGIN_ROOT
-    : findCodexPluginRoot() || join(PACKAGE_ROOT, "plugin");
-  stopClaudeSmartServices(pluginRoot);
-  process.stdout.write(
-    "Updating claude-smart Codex support by reinstalling from this package...\n",
-  );
-  await runInstallCodex(args);
-}
-
-async function runUpdateOpenCode(args) {
-  const pluginRoot = join(PACKAGE_ROOT, "plugin");
-  stopClaudeSmartServices(pluginRoot);
-  process.stdout.write(
-    "Updating claude-smart OpenCode support by reinstalling from this package...\n",
-  );
-  await runInstallOpenCode(args);
 }
 
 async function runUninstall(args) {
@@ -3566,15 +3556,15 @@ async function runInstall(args, options = {}) {
     process.exit(1);
   }
 
+  assertSupportedRuntimePlatform();
   snapshotInstallState();
-  const previousHost = installStateSnapshot.host;
   const setup = configureReflexioSetup(HOST_CLAUDE_CODE);
   const readOnly = setup.readOnly;
   // Stop services running from the previous root (e.g. a pruned npx dir or an
   // older copy) before the copy under them is replaced.
   const previousRoot = activePluginRoot();
   // Restart with the host that root was running for (e.g. Codex's bridge).
-  if (previousRoot) stopServicesForInstall(previousRoot, previousHost || HOST_CLAUDE_CODE);
+  if (previousRoot) stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
   let source;
   try {
     source = installLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "Claude Code");
@@ -3658,7 +3648,7 @@ async function runInstall(args, options = {}) {
     );
   }
 
-  commitLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
+  commitLocalPluginPackages([CLAUDE_CODE_LOCAL_PACKAGE_DIR]);
   startDeferredDashboardBuild(pluginRoot);
   await startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup);
 
@@ -3683,10 +3673,15 @@ async function runInstallCodex(args) {
     process.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n");
     process.exit(1);
   }
+  assertSupportedRuntimePlatform();
   snapshotInstallState();
   const setup = configureReflexioSetup(HOST_CODEX);
   const readOnly = setup.readOnly;
 
+  const previousRoot = existsSync(CODEX_RUNTIME_PLUGIN_ROOT)
+    ? CODEX_RUNTIME_PLUGIN_ROOT
+    : findCodexPluginRoot() || join(PACKAGE_ROOT, "plugin");
+  stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
   const marketplaceRoot = copyCodexMarketplace();
   if (readOnly) {
     prunePublishHooksForReadOnly(codexMarketplacePluginRoot(marketplaceRoot));
@@ -3745,8 +3740,7 @@ async function runInstallCodex(args) {
       );
     }
     // Preparation succeeded; discard the rollback cache only now.
-    commitLocalPluginPackage(cacheDir);
-    commitLocalPluginPackage(CODEX_RUNTIME_PACKAGE_DIR);
+    commitLocalPluginPackages([cacheDir, CODEX_RUNTIME_PACKAGE_DIR]);
     await startAndReportServices(CODEX_RUNTIME_PLUGIN_ROOT, HOST_CODEX, setup);
   } catch (err) {
     process.stderr.write(
@@ -3793,12 +3787,27 @@ async function runInstallCodex(args) {
   );
 }
 
+function assertOpenCodeInstallConfiguration(args) {
+  const conflictReason = openCodeV2LoaderConflicts(args);
+  if (conflictReason !== null) {
+    throw new Error(
+      `left an existing OpenCode plugin in place at ${opencodeV2PluginFile(args)}. ` +
+        `${conflictReason}; move it aside and reinstall to write ` +
+        "the loader. claude-smart OpenCode support is not installed.",
+    );
+  }
+  for (const file of opencodeScopeConfigPaths(args)) {
+    if (existsSync(file)) readOpenCodePluginConfig(file);
+  }
+}
+
 async function runInstallOpenCode(args) {
   const prerequisiteError = opencodePrerequisiteError();
   if (prerequisiteError) {
     process.stderr.write(prerequisiteError);
     process.exit(1);
   }
+  assertSupportedRuntimePlatform();
   snapshotInstallState();
   const setup = configureReflexioSetup(HOST_OPENCODE);
   const readOnly = setup.readOnly;
@@ -3808,6 +3817,10 @@ async function runInstallOpenCode(args) {
     process.exit(1);
   }
 
+  assertOpenCodeInstallConfiguration(args);
+  const installedRoot = join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin");
+  const previousRoot = existsSync(installedRoot) ? installedRoot : join(PACKAGE_ROOT, "plugin");
+  stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
   let packageRoot;
   try {
     packageRoot = installOpenCodePluginPackage();
@@ -3827,19 +3840,7 @@ async function runInstallOpenCode(args) {
     );
     process.exit(1);
   }
-  const conflictReason = openCodeV2LoaderConflicts(args);
-  if (conflictReason !== null) {
-    // The loader is the only load path, so on a conflict nothing loads
-    // claude-smart: fail loudly, before the config is touched.
-    process.stderr.write(
-      `error: left an existing OpenCode plugin in place at ${opencodeV2PluginFile(args)}. ` +
-        `${conflictReason}; move it aside and reinstall to write ` +
-        "the loader. claude-smart OpenCode support is not installed.\n",
-    );
-    // No services were started or stopped by this install: leave any shared
-    // backend and dashboard (e.g. a global install's) running.
-    process.exit(1);
-  }
+  assertOpenCodeInstallConfiguration(args);
   try {
     // One load path per scope: OpenCode 1.x auto-loads {plugin,plugins}/*.{ts,js}
     // from its config directories and V2 loads the plugins directory, so the
@@ -3854,7 +3855,6 @@ async function runInstallOpenCode(args) {
     process.stderr.write(
       `error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`,
     );
-    stopClaudeSmartServices(pluginRoot);
     process.exit(1);
   }
   if (readOnly) {
@@ -3863,8 +3863,13 @@ async function runInstallOpenCode(args) {
     );
   }
   const v2PluginFile = writeOpenCodeV2Plugin(args, packageRoot);
-  // Committed only after the loader check, so a conflict exit rolls the package back.
-  commitLocalPluginPackage(packageRoot);
+  if (v2PluginFile.status === "conflict") {
+    throw new Error(
+      `OpenCode loader changed during install at ${v2PluginFile.path}; reinstall after resolving the conflict.`,
+    );
+  }
+  // Committed only after publication, so a conflict exit rolls the package back.
+  commitLocalPluginPackages([packageRoot]);
   await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);
   reportOpenCodeConfigBackups(results);
   process.stdout.write(
