@@ -351,6 +351,11 @@ async function configure(
       // Persist the validated loopback spelling that the runtime's raw-string
       // classifier recognizes; do not reclassify existing files when reading.
       config.url = parsed.href;
+      // WHATWG URL drops :80. Runtime readers require an explicit port for
+      // non-root paths; writing HTTP's standard port keeps the same endpoint
+      // without reinterpreting historical files during ordinary reads.
+      if (!parsed.port && parsed.pathname !== "/")
+        config.url = `${parsed.protocol}//${parsed.hostname}:80${parsed.pathname}`;
     }
     config.apiKey =
       config.url && sameOrigin(config.url, savedLocalUrl)

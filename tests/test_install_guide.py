@@ -1155,6 +1155,14 @@ def test_interactive_setup_confirmation_preserves_effective_learning_intent(
         ("http://LOCALHOST:9090", "http://localhost:9090/"),
         ("http://0x7f000001:9090", "http://127.0.0.1:9090/"),
         ("http://0177.0.0.1:9090", "http://127.0.0.1:9090/"),
+        ("http://localhost:80/api/", "http://localhost:80/api/"),
+        ("http://localhost/api", "http://localhost:80/api"),
+        ("http://LOCALHOST:80/api", "http://localhost:80/api"),
+        ("http://127.1:80/api", "http://127.0.0.1:80/api"),
+        ("http://[::1]:80/api", "http://[::1]:80/api"),
+        ("http://localhost:9090/api", "http://localhost:9090/api"),
+        ("http://localhost:80/", "http://localhost/"),
+        ("http://localhost/%2Fapi", "http://localhost:80/%2Fapi"),
     ],
 )
 def test_confirmed_local_endpoint_is_saved_in_runtime_loopback_form(
@@ -1196,3 +1204,22 @@ def test_confirmed_local_endpoint_is_saved_in_runtime_loopback_form(
     assert 'REFLEXIO_API_KEY=""' in selected.read_text()
     assert "Claude Code: installed" in result.stdout
     assert "incomplete or invalid" not in result.stderr
+    # Public confirmation must agree with all three real runtime readers.
+    from claude_smart.env_config import reflexio_url_is_remote
+
+    assert not reflexio_url_is_remote(normalized)
+    shell = subprocess.run(
+        [
+            "bash",
+            "-c",
+            '. "$1"; claude_smart_reflexio_url_is_remote "$2"',
+            "bash",
+            str(LIB),
+            normalized,
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert shell.returncode == 1, shell.stdout + shell.stderr
