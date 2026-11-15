@@ -102,6 +102,8 @@ shared across supported hosts.
 Use `npx claude-smart install`, `update`, and `uninstall` to manage integrations.
 The Python runtime and `scripts/cli.sh` handle learned data and service commands;
 their former installation commands now reject with the npm replacement.
+Use `npx claude-smart setup` for the shared setup guide; the older
+`scripts/setup-claude-smart.sh` wizard has been retired.
 
 Dependency repair adds only missing local defaults. It preserves saved endpoint,
 credentials, sharing, host, read-only mode and history caps (including `0`). That

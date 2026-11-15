@@ -9,7 +9,7 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 |------|---------|
 | `hook.py` | Hook dispatcher. Parses the stdin JSON payload and routes each event (Setup, SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd) to its handler in `events/`. |
 | `cli.py` | Prepared-runtime commands: `show`, `learn`, `load`, `restart`, `clear-all`, `clear-user`. Integration management belongs to `bin/claude-smart.js` (npm). |
-| `env_config.py` | Dotenv readers and append-only bootstrap repair: native OS lock, private staging and atomic publication. Shell repair delegates here after core Python preparation; npm/dashboard/setup writers remain separate. |
+| `env_config.py` | Dotenv readers and append-only bootstrap repair: native OS lock, private staging and atomic publication. Shell repair delegates here after core Python preparation; npm/dashboard writers remain separate. |
 | `state.py` | Per-session JSONL buffer at `~/.claude-smart/sessions/{session_id}.jsonl`; high-water mark for idempotent publish retries. |
 | `publish.py` | Drains the session buffer, calls the Reflexio adapter, and stamps the watermark. Used by Stop, SessionEnd, and `learn`. |
 | `publish_outbox.py` | Private, destination-bound Codex publish intents and one detached worker; reuses the existing publisher and recovers on startup/Stop. |
@@ -78,8 +78,16 @@ access. Windows read-only attributes are repaired before replacement. Process
 death can leave a private staging directory, and the OS releases its lock.
 
 This covers dependency repair, not the entire installation or every writer.
-Node installer, dashboard and root setup decisions remain separate. External
+Node installer and dashboard configuration decisions remain separate. External
 editors do not participate in the lock; directory/power-loss durability and
 rollback after a committed replacement are not promised. The Python installer
 and its exclusive helpers/setters were retired; use `npx claude-smart` for
 integration management. Runtime/data/service commands remain in `cli.py`.
+
+
+### Setup ownership
+
+Public `npx claude-smart setup` uses the same guide and per-host install workers
+as install/update. The former root Bash wizard and private setup worker were
+retired; they no longer parse or write settings. Internal host workers accept
+installation/removal operations, not another setup prompt flow.
