@@ -419,12 +419,27 @@ function maskSecret(value) {
   return `${prefix}****${value.slice(-4)}`;
 }
 
+// Match _lib.sh: caller-first flags retain their first nonempty saved value;
+// shared connection/learning fields retain the last assignment, even empty.
+const CALLER_FIRST_ENV_KEYS = new Set([
+  "CLAUDE_SMART_USE_LOCAL_CLI",
+  "CLAUDE_SMART_HOST",
+  "CLAUDE_SMART_BACKEND_AUTOSTART",
+  "CLAUDE_SMART_DASHBOARD_AUTOSTART",
+  "CLAUDE_SMART_CLI_PATH",
+  "CLAUDE_SMART_OPENCODE_PATH",
+  "CLAUDE_SMART_CLI_TIMEOUT",
+  "CLAUDE_SMART_STATE_DIR",
+]);
+
 function readEnvFile(path) {
   const values = new Map();
   if (!existsSync(path)) return values;
   for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
     const parsed = parseEnvLine(line);
-    if (parsed) values.set(parsed.key, parsed.value);
+    if (parsed && (!CALLER_FIRST_ENV_KEYS.has(parsed.key) || !values.get(parsed.key))) {
+      values.set(parsed.key, parsed.value);
+    }
   }
   return values;
 }
@@ -475,6 +490,7 @@ function migrateLegacyManagedEnvOnce() {
         parsed &&
         /^CLAUDE_SMART_[A-Z0-9_]+$/.test(parsed.key) &&
         parsed.key !== "CLAUDE_SMART_USE_LOCAL_EMBEDDING" &&
+        parsed.value === legacy.get(parsed.key) &&
         !runtime.has(parsed.key)
       ) {
         runtimeLines.set(parsed.key, line);
