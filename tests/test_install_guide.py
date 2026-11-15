@@ -281,11 +281,19 @@ def test_saved_learning_provider_wins_over_hook_identity(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="PTY terminal fixtures require POSIX")
-@pytest.mark.parametrize("cancel_key", [b"\x1b", b"\x03"])
+@pytest.mark.parametrize("seeded", [False, True])
+@pytest.mark.parametrize("command", ["install", "setup"])
+@pytest.mark.parametrize("cancel_key", [b"\x1b", b"\x03", b"\x04"])
 def test_terminal_cancel_before_install_makes_no_changes(
-    tmp_path: Path, cancel_key: bytes
+    tmp_path: Path, cancel_key: bytes, command: str, seeded: bool
 ) -> None:
     import pty
+
+    original = b'REFLEXIO_URL="http://localhost:9000/"\nREFLEXIO_API_KEY="saved-secret"\nCLAUDE_SMART_READ_ONLY=1\nREFLEXIO_ROW_LIMIT_INTERACTIONS=0\n'
+    if seeded:
+        for folder in (".claude-smart", ".reflexio"):
+            (tmp_path / folder).mkdir()
+            (tmp_path / folder / ".env").write_bytes(original)
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -294,7 +302,7 @@ def test_terminal_cancel_before_install_makes_no_changes(
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     master, slave = pty.openpty()
     proc = subprocess.Popen(
-        [node_bin(), str(NODE_INSTALLER), "install"],
+        [node_bin(), str(NODE_INSTALLER), command],
         stdin=slave,
         stdout=slave,
         stderr=slave,
@@ -310,8 +318,17 @@ def test_terminal_cancel_before_install_makes_no_changes(
         assert b"Which coding agents" in output
         os.write(master, cancel_key)
         proc.wait(timeout=5)
-        assert not (tmp_path / ".claude-smart").exists()
-        assert not (tmp_path / ".reflexio").exists()
+        if seeded:
+            for folder in (".claude-smart", ".reflexio"):
+                assert (tmp_path / folder / ".env").read_bytes() == original
+                assert sorted(path.name for path in (tmp_path / folder).iterdir()) == [
+                    ".env"
+                ]
+        else:
+            assert not (tmp_path / ".claude-smart").exists()
+            assert not (tmp_path / ".reflexio").exists()
+        assert not (tmp_path / "claude.log").exists()
+        assert not (tmp_path / "backend-service.log").exists()
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -352,17 +369,19 @@ def test_final_uninstall_does_not_restart_services_from_a_surviving_npx_root(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="PTY terminal fixtures require POSIX")
+@pytest.mark.parametrize("command", ["install", "setup"])
 @pytest.mark.parametrize("proceed", [False, True])
 def test_managed_key_is_hidden_and_final_cancel_does_not_save_it(
     tmp_path: Path,
     proceed: bool,
+    command: str,
 ) -> None:
     import pty
 
     installer, env = fake_guide(tmp_path)
     master, slave = pty.openpty()
     proc = subprocess.Popen(
-        [node_bin(), str(installer), "install"],
+        [node_bin(), str(installer), command],
         stdin=slave,
         stdout=slave,
         stderr=slave,
@@ -421,9 +440,10 @@ def test_managed_key_is_hidden_and_final_cancel_does_not_save_it(
         os.close(master)
 
 
+@pytest.mark.parametrize("command", ["update", "setup"])
 @pytest.mark.parametrize("legacy", [True, False])
-def test_guided_update_preserves_managed_key_read_only_and_sharing(
-    tmp_path: Path, legacy: bool
+def test_guided_command_preserves_managed_key_read_only_and_sharing(
+    tmp_path: Path, legacy: bool, command: str
 ) -> None:
     installer, env = fake_guide(tmp_path)
     saved = tmp_path / (".reflexio" if legacy else ".claude-smart") / ".env"
@@ -432,7 +452,7 @@ def test_guided_update_preserves_managed_key_read_only_and_sharing(
         'REFLEXIO_API_KEY="secret-managed-sentinel"\nCLAUDE_SMART_READ_ONLY="1"\nREFLEXIO_USER_ID="custom-shared-user"\n'
     )
     result = subprocess.run(
-        [node_bin(), str(installer), "update", "--host", "claude-code"],
+        [node_bin(), str(installer), command, "--host", "claude-code"],
         env=env,
         text=True,
         capture_output=True,
@@ -734,3 +754,222 @@ def test_backend_learning_model_selection(
         check=True,
     )
     assert result.stdout == f"{expected}:{expected}"
+
+
+@pytest.mark.parametrize("arguments", [[], ["--help"], ["--backend", "local"]])
+@pytest.mark.parametrize("overrides", [False, True])
+def test_private_setup_refuses_before_configuration_or_installation(
+    tmp_path, arguments, overrides
+):
+    installer, env = fake_guide(tmp_path)
+    env["CLAUDE_SMART_INSTALL_CHILD"] = "1"
+    if overrides:
+        env.update(
+            REFLEXIO_ENV_PATH=str(tmp_path / "alternate.env"),
+            LEGACY_REFLEXIO_ENV_PATH=str(tmp_path / "legacy.env"),
+            CLAUDE_SMART_SETUP_NO_INSTALL="1",
+        )
+    result = subprocess.run(
+        [node_bin(), str(installer), "setup", *arguments],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode != 0
+    assert (
+        "public guide" in result.stderr
+        and "CLAUDE_SMART_INSTALL_CHILD" in result.stderr
+    )
+    assert not (tmp_path / ".claude-smart").exists()
+    assert not (tmp_path / ".reflexio").exists()
+    assert not (tmp_path / "alternate.env").exists()
+    assert not (tmp_path / "claude.log").exists()
+    assert not (tmp_path / "backend-service.log").exists()
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "fresh-local",
+        "custom-local",
+        "managed-to-local",
+        "local-to-managed",
+        "legacy-local-flags",
+    ],
+)
+def test_public_setup_preserves_policy_and_connection_choices(tmp_path, scenario):
+    from dotenv import dotenv_values
+
+    installer, env = fake_guide(tmp_path)
+    selected = tmp_path / ".claude-smart/.env"
+    legacy = tmp_path / ".reflexio/.env"
+    arguments = ["--backend", "local"]
+    if scenario != "fresh-local":
+        selected.parent.mkdir()
+        selected.write_text(
+            'CLAUDE_SMART_READ_ONLY="1"\nREFLEXIO_ROW_LIMIT_INTERACTIONS=0\nREFLEXIO_USER_ID="custom-shared-user"\n'
+        )
+    if scenario in {"custom-local", "local-to-managed"}:
+        with selected.open("a") as target:
+            target.write(
+                'REFLEXIO_URL="http://localhost:9000/prefix/"\nREFLEXIO_API_KEY="local-key"\n'
+            )
+    elif scenario == "managed-to-local":
+        legacy.parent.mkdir()
+        legacy.write_text(
+            'REFLEXIO_URL="https://legacy.example/"\nREFLEXIO_API_KEY="legacy-key"\n'
+        )
+        with selected.open("a") as target:
+            target.write(
+                'REFLEXIO_URL="https://managed.example/"\nREFLEXIO_API_KEY="managed-key"\n'
+            )
+    elif scenario == "legacy-local-flags":
+        legacy.parent.mkdir()
+        legacy.write_text(
+            'CLAUDE_SMART_READ_ONLY="0"\nCLAUDE_SMART_READ_ONLY="1"\nCLAUDE_SMART_CLI_TIMEOUT="90"\n'
+        )
+        selected.write_text("REFLEXIO_ROW_LIMIT_INTERACTIONS=0\n")
+    if scenario == "local-to-managed":
+        env["NEW_MANAGED_KEY"] = "new-managed-key"
+        arguments = ["--backend", "managed", "--api-key-env", "NEW_MANAGED_KEY"]
+    before_legacy = legacy.read_bytes() if legacy.exists() else None
+    command = [
+        node_bin(),
+        str(installer),
+        "setup",
+        "--host",
+        "claude-code",
+        "--yes",
+        *arguments,
+    ]
+    result = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=30
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    config = dotenv_values(selected)
+    assert config["REFLEXIO_ROW_LIMIT_INTERACTIONS"] == (
+        "500" if scenario == "fresh-local" else "0"
+    )
+    assert config["CLAUDE_SMART_READ_ONLY"] == (
+        "0" if scenario == "fresh-local" else "1"
+    )
+    if scenario == "custom-local":
+        assert config["REFLEXIO_URL"] == "http://localhost:9000/prefix/"
+        assert config["REFLEXIO_API_KEY"] == "local-key"
+    elif scenario == "local-to-managed":
+        assert config["REFLEXIO_URL"] == "https://www.reflexio.ai/"
+        assert config["REFLEXIO_API_KEY"] == "new-managed-key"
+        assert config["CLAUDE_SMART_LOCAL_URL"] == "http://localhost:9000/prefix/"
+        assert config["CLAUDE_SMART_LOCAL_API_KEY"] == "local-key"
+    else:
+        assert config["REFLEXIO_URL"] == "http://localhost:8071/"
+        assert config["REFLEXIO_API_KEY"] == ""
+    if scenario in {"custom-local", "managed-to-local", "local-to-managed"}:
+        assert config["REFLEXIO_USER_ID"] == "custom-shared-user"
+    if scenario == "legacy-local-flags":
+        assert config["CLAUDE_SMART_CLI_TIMEOUT"] == "90"
+    if before_legacy is not None:
+        assert legacy.read_bytes() == before_legacy
+    if scenario == "managed-to-local":
+        assert config["CLAUDE_SMART_MANAGED_API_KEY"] == "managed-key"
+        assert (selected.parent / "legacy-reflexio-env-checked").exists()
+        again = subprocess.run(
+            command, env=env, text=True, capture_output=True, timeout=30
+        )
+        assert again.returncode == 0, again.stderr
+        assert dotenv_values(selected)["REFLEXIO_API_KEY"] == ""
+    assert "local-key" not in result.stdout + result.stderr
+    assert "new-managed-key" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "arguments", [["--unknown"], ["--backend"], ["--api-key", "never-on-argv"]]
+)
+def test_public_setup_invalid_arguments_preserve_saved_state(tmp_path, arguments):
+    installer, env = fake_guide(tmp_path)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = b'REFLEXIO_URL="http://localhost:9000/"\nREFLEXIO_API_KEY="saved-key"\n'
+    selected.write_bytes(original)
+    result = subprocess.run(
+        [node_bin(), str(installer), "setup", *arguments],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode != 0
+    assert selected.read_bytes() == original
+    assert sorted(path.name for path in selected.parent.iterdir()) == [".env"]
+    assert not (tmp_path / "claude.log").exists()
+    assert not (tmp_path / "backend-service.log").exists()
+
+
+def test_public_setup_passes_caller_workspace_to_real_host_child(tmp_path):
+    installer, env = fake_guide(tmp_path)
+    script = installer.parent.parent / "plugin/scripts/smart-install.sh"
+    _write_executable(
+        script,
+        '#!/bin/sh\nprintf "%s" "$CLAUDE_SMART_DASHBOARD_WORKSPACE" > "$HOME/workspace"\nprintf \'{"continue":true,"suppressOutput":true}\\n\'\n',
+    )
+    project = tmp_path / "caller-project"
+    project.mkdir()
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            "setup",
+            "--host",
+            "claude-code",
+            "--backend",
+            "local",
+            "--yes",
+        ],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "workspace").read_text() == str(project)
+
+
+@pytest.mark.parametrize("credential", ["", "   ", "\t"])
+def test_setup_rejects_empty_supplied_managed_key_before_writes(tmp_path, credential):
+    installer, env = fake_guide(tmp_path)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = (
+        b'REFLEXIO_URL="http://localhost:9000/"\nREFLEXIO_API_KEY="saved-local-key"\n'
+    )
+    selected.write_bytes(original)
+    env["EMPTY_MANAGED_KEY"] = credential
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            "setup",
+            "--host",
+            "claude-code",
+            "--backend",
+            "managed",
+            "--api-key-env",
+            "EMPTY_MANAGED_KEY",
+            "--yes",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode != 0
+    assert "requires a saved API key" in result.stderr
+    assert selected.read_bytes() == original
+    assert sorted(path.name for path in selected.parent.iterdir()) == [".env"]
+    # Discovering available integrations is read-only and precedes key validation.
+    assert (tmp_path / "claude.log").read_text().splitlines() == [
+        "claude plugin list --json"
+    ]
+    assert not (tmp_path / "backend-service.log").exists()

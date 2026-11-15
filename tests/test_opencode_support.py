@@ -147,10 +147,9 @@ def test_opencode_package_includes_local_cli_bridge() -> None:
 
 
 def test_opencode_hook_bootstrap_lockfile_matches_pyproject() -> None:
-    uv = shutil.which("uv")
-    if uv is None:
-        pytest.skip("uv is not installed")
-    assert uv is not None
+    for prerequisite in ("uv", "bash", "rsync"):
+        if shutil.which(prerequisite) is None:
+            pytest.skip(f"{prerequisite} is not installed")
 
     # Check the customer project outside any enclosing enterprise workspace.
     result = subprocess.run(

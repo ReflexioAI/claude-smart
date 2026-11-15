@@ -77,7 +77,7 @@ const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const INSTALL_FAILURE_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-failed");
 // Written the first time install considers ~/.reflexio/.env, whatever the
 // outcome, so the migration runs once and a later local-mode choice sticks.
-// scripts/setup-claude-smart.sh writes the same path before a local install.
+// The public setup guide writes the same path before a local install.
 const LEGACY_ENV_MIGRATION_MARKER = join(CLAUDE_SMART_STATE_DIR, "legacy-reflexio-env-checked");
 const OPENCODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "opencode", "claude-smart");
 // Claude Code loads plugins from a local-directory marketplace in place
@@ -3548,28 +3548,6 @@ async function runUninstall(args) {
   );
 }
 
-async function runSetup(args) {
-  if (args.some((arg) => ["--help", "-h", "help"].includes(arg))) {
-    printHelp();
-    return;
-  }
-  if (args.length) {
-    throw new Error(`unknown setup argument '${args[0]}'. Try 'claude-smart setup --help'.`);
-  }
-  const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
-  if (!bash) {
-    process.stderr.write("error: bash is required to run claude-smart setup.\n");
-    process.exit(1);
-  }
-  const script = join(PACKAGE_ROOT, "scripts", "setup-claude-smart.sh");
-  if (!existsSync(script)) {
-    process.stderr.write(`error: setup script not found at ${script}\n`);
-    process.exit(1);
-  }
-  const code = await runChecked(bash, [script, ...args], { cwd: PACKAGE_ROOT });
-  if (code !== 0) process.exit(code);
-}
-
 async function runInstall(args, options = {}) {
   if (parseHost(args) === HOST_CODEX) {
     await runInstallCodex(args);
@@ -4174,6 +4152,11 @@ function runStatus(args) {
 async function main() {
   const args = process.argv.slice(2);
   const cmd = args[0] || "install";
+  if (cmd === "setup" && process.env.CLAUDE_SMART_INSTALL_CHILD === "1") {
+    throw new Error(
+      "Setup uses the public guide; unset the internal CLAUDE_SMART_INSTALL_CHILD marker and run npx claude-smart setup.",
+    );
+  }
 
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     printHelp();
@@ -4206,8 +4189,7 @@ async function main() {
   }
 
   if (cmd === "setup") {
-    if (process.env.CLAUDE_SMART_INSTALL_CHILD === "1") await runSetup(args.slice(1));
-    else await runGuidedCommand(cmd, args.slice(1));
+    await runGuidedCommand(cmd, args.slice(1));
     return;
   }
 

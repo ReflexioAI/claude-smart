@@ -52,7 +52,6 @@
   },
   "files": [
     "bin",
-    "scripts/setup-claude-smart.sh",
     ".agents/plugins/marketplace.json",
     ".claude-plugin/marketplace.json",
     "plugin",
