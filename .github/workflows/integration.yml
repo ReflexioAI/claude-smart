@@ -113,7 +113,7 @@ jobs:
           locked_filelock=$(python -c 'import tomllib; p=tomllib.load(open("plugin/uv.lock", "rb")); print(next(x["version"] for x in p["package"] if x["name"] == "filelock"))')
           minimum_filelock=$(python -c 'import tomllib; p=tomllib.load(open("plugin/pyproject.toml", "rb")); print(next(x.removeprefix("filelock>=") for x in p["project"]["dependencies"] if x.startswith("filelock>=")))')
           for filelock_version in $(printf '%s\n' "$minimum_filelock" "$locked_filelock" | sort -u); do
-            uv run --no-project --with pytest --with "filelock==$filelock_version" python -m pytest tests/test_env_transactions.py -q -o addopts=
+            uv run --no-project --with pytest --with "filelock==$filelock_version" python -m pytest tests/test_env_transactions.py tests/test_env_bootstrap.py -q -o addopts=
           done
 
       - name: Check Python dependency lock

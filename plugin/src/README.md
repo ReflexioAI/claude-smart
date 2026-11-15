@@ -8,8 +8,8 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 | File | Purpose |
 |------|---------|
 | `hook.py` | Hook dispatcher. Parses the stdin JSON payload and routes each event (Setup, SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd) to its handler in `events/`. |
-| `cli.py` | `claude-smart` CLI: `install`, `uninstall`, `show`, `learn`, `restart`, `dashboard`, `clear-all`. |
-| `env_config.py` | Dotenv parsing and Python helper transactions: native OS lock, complete private temporary write, atomic publication. Node, dashboard and shell writers are not yet participants. |
+| `cli.py` | Prepared-runtime commands: `show`, `learn`, `load`, `restart`, `clear-all`, `clear-user`. Integration management belongs to `bin/claude-smart.js` (npm). |
+| `env_config.py` | Dotenv readers and append-only bootstrap repair: native OS lock, private staging and atomic publication. Shell repair delegates here after core Python preparation; npm/dashboard/setup writers remain separate. |
 | `state.py` | Per-session JSONL buffer at `~/.claude-smart/sessions/{session_id}.jsonl`; high-water mark for idempotent publish retries. |
 | `publish.py` | Drains the session buffer, calls the Reflexio adapter, and stamps the watermark. Used by Stop, SessionEnd, and `learn`. |
 | `publish_outbox.py` | Private, destination-bound Codex publish intents and one detached worker; reuses the existing publisher and recovers on startup/Stop. |
@@ -47,7 +47,7 @@ Stop/SessionEnd -> publish.py -> reflexio_adapter -> Reflexio extracts playbooks
 UserPromptSubmit / PreToolUse -> context_inject pulls relevant learnings back into context
 ```
 
-- **Dual-host** — the same package runs under Claude Code (native slash commands) and Codex (shell-script fallbacks in `../scripts/`); host shape is normalized in `runtime.py`.
+- **Shared runtime** — Claude Code, Codex and OpenCode events are normalized in `runtime.py`; the npm CLI owns integration installation, updating and removal.
 - **Offline-resilient** — if Reflexio is unreachable, interactions stay buffered and drain on the next successful publish.
 - **Hooks registered** in `../hooks/hooks.json` (Claude Code) and `../hooks/codex-hooks.json` (Codex). Claude Code uses `../scripts/hook_entry.sh`; Codex uses `../scripts/codex-hook.js` and the prepared Python environment directly.
 - **Codex deadlines** — Python dispatch has a 12s prompt/tool budget and 24s Stop budget. Publication runs outside Stop in one detached worker; acknowledgement still controls watermarks. Launcher, handler and worker timings distinguish slow stages; optional log writes skip contended locks.
@@ -61,23 +61,25 @@ UserPromptSubmit / PreToolUse -> context_inject pulls relevant learnings back in
 
 ### Python settings publication
 
-`set_env_vars` and `ensure_local_env_defaults` own their full read/transform/write
-under an adjacent `.env.lock`. A competing Python helper fails immediately with
-an actionable busy error. The existing locked filelock 4.2.10 is also the minimum supported version,
-so native acquisition closes descriptors on filesystem errors. Native locking must be available: there is no soft-lock
-fallback or application-side stale-marker deletion. Failed writes before atomic
-replacement preserve the old settings. Original settings and lock paths must be
-regular files without symlinks or hard links; invalid UTF-8 is rejected rather
-than treated as an empty configuration. Temporary content is staged in a private same-filesystem directory before
-publication. Python >=3.12.4 supplies its owner/admin-only Windows DACL as well
-as POSIX 0700 permissions; the file is private before credentials are written
-and retains that access on replacement. Windows read-only attributes are
-repaired before replacing an existing file, as with the previous writer. Unexpected process death releases the OS lock, but can leave
-a private staging directory; the original remains intact if replacement had not
-committed.
+The internal `python -I -m claude_smart.env_config bootstrap-repair` operation
+adds missing local defaults under an adjacent `.env.lock` after shell dependency
+preparation. It preserves connection values, sharing, host assignments, caps,
+comments and duplicates. Remote URL alone means attached mode: absent credentials
+need authentication repair, not an automatic endpoint change. The repair step
+neither prunes connections nor rewrites port 8081 or creates `.bak` files.
 
-This boundary covers each Python helper operation, not an entire installation.
-Higher-level decisions and the Node/dashboard/shell writers still need migration;
-concurrent external editors do not acquire this lock. No power-loss durability or
-rollback after a committed replacement is promised. Settings names, defaults and
-SDK pin are unchanged.
+The transaction uses native locking with no soft fallback or application-side
+marker deletion. A competing publisher gets a typed busy error; the shell exits
+transiently without a persistent installation-failure marker. Ordinary failures
+before atomic replacement preserve the old bytes. A declined remote publication
+does not create `.env`. Filelock 4.2.10 provides the supported native API and
+acquisition-failure cleanup; Python 3.12.4 provides private Windows staging
+access. Windows read-only attributes are repaired before replacement. Process
+death can leave a private staging directory, and the OS releases its lock.
+
+This covers dependency repair, not the entire installation or every writer.
+Node installer, dashboard and root setup decisions remain separate. External
+editors do not participate in the lock; directory/power-loss durability and
+rollback after a committed replacement are not promised. The Python installer
+and its exclusive helpers/setters were retired; use `npx claude-smart` for
+integration management. Runtime/data/service commands remain in `cli.py`.

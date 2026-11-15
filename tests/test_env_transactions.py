@@ -15,6 +15,12 @@ import pytest
 from claude_smart import env_config
 
 
+def _append_settings(path, values):
+    """Test the store's RMW boundary with a simple append-only client."""
+    content = "".join(f'{key}="{value}"\n' for key, value in values.items())
+    return env_config._edit_env_file(path, lambda previous: (previous + content, None))
+
+
 @contextmanager
 def _paused_writer(path: Path, *, before_replace: bool = False):
     """An owned process runs the public helper and pauses while holding its lock."""
@@ -32,13 +38,13 @@ if sys.argv[3] == 'replace':
         return original(self, target)
     Path.replace = pause
 else:
-    original = env_config._upsert_env
-    def pause(text, values):
+    def pause(previous):
         ready.write_text('ready')
         sys.stdin.readline()
-        return original(text, values)
-    env_config._upsert_env = pause
-env_config.set_env_vars(path, {'FIRST': 'one'})
+        return previous + 'FIRST="one"\\n', None
+    env_config._edit_env_file(path, pause)
+    raise SystemExit(0)
+env_config._edit_env_file(path, lambda previous: (previous + 'FIRST="one"\\n', None))
 """
     environment = dict(os.environ)
     environment.update(HOME=str(path.parent), USERPROFILE=str(path.parent))
@@ -76,34 +82,26 @@ env_config.set_env_vars(path, {'FIRST': 'one'})
             child.communicate(timeout=10)
 
 
-def test_upsert_preserves_existing_policy_and_comments(tmp_path):
+def test_repair_preserves_connections_comments_and_duplicate_host_choices(tmp_path):
     path = tmp_path / ".env"
-    path.write_text("# keep\nOTHER='opaque\\path'\nexport DUP = 'old'\nDUP=older\n")
-    added = env_config.set_env_vars(path, {"DUP": 'new"value', "NEW": "two"})
-    assert added == ["NEW"]
-    assert (
-        path.read_text()
-        == '# keep\nOTHER=\'opaque\\path\'\nDUP="new\\"value"\nDUP="new\\"value"\nNEW="two"\n'
-    )
+    original = "# keep\nOTHER=opaque\\path\nREFLEXIO_URL=http://localhost:8081/\nREFLEXIO_API_KEY=local-key\nREFLEXIO_USER_ID=shared\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_HOST=opencode\n"
+    path.write_text(original)
+    env_config.repair_bootstrap_env(path)
+    assert path.read_text().startswith(original)
+    assert not (tmp_path / ".env.bak").exists()
 
 
-def test_defaults_preserve_caps_read_only_and_installer_host_semantics(
+def test_repair_preserves_caps_read_only_and_host_and_is_idempotent(
     tmp_path, monkeypatch
 ):
     path = tmp_path / ".env"
-    path.write_text(
-        '# keep\nCLAUDE_SMART_HOST=claude-code\nCLAUDE_SMART_HOST=opencode\nCLAUDE_SMART_READ_ONLY="1"\nREFLEXIO_ROW_LIMIT_INTERACTIONS=0\nREFLEXIO_API_KEY="obsolete"\n'
-    )
+    original = 'CLAUDE_SMART_HOST=opencode\nCLAUDE_SMART_READ_ONLY="1"\nREFLEXIO_ROW_LIMIT_INTERACTIONS=0\nREFLEXIO_API_KEY="keep"\n'
+    path.write_text(original)
     monkeypatch.setenv("REFLEXIO_ROW_LIMIT_INTERACTIONS", "9000")
-    env_config.ensure_local_env_defaults(path, host="codex")
-    text = path.read_text()
-    assert text.count("CLAUDE_SMART_HOST=") == 1
-    assert "CLAUDE_SMART_HOST=codex\n" in text
-    assert 'CLAUDE_SMART_READ_ONLY="1"\n' in text
-    assert "REFLEXIO_ROW_LIMIT_INTERACTIONS=0\n" in text
-    assert "REFLEXIO_API_KEY" not in text
+    assert env_config.repair_bootstrap_env(path) == ["CLAUDE_SMART_USE_LOCAL_CLI"]
+    assert path.read_text().startswith(original)
     before = path.read_bytes()
-    env_config.ensure_local_env_defaults(path, host="codex")
+    assert env_config.repair_bootstrap_env(path) == []
     assert path.read_bytes() == before
 
 
@@ -116,9 +114,9 @@ def test_both_mutators_reject_a_live_transaction_then_read_latest_state(
 
     def save():
         if operation == "upsert":
-            env_config.set_env_vars(path, {"SECOND": "two"})
+            _append_settings(path, {"SECOND": "two"})
         else:
-            env_config.ensure_local_env_defaults(path, host="codex", prune=False)
+            env_config.repair_bootstrap_env(path)
 
     with _paused_writer(path) as child:
         with pytest.raises(RuntimeError, match="settings are busy"):
@@ -133,7 +131,9 @@ def test_both_mutators_reject_a_live_transaction_then_read_latest_state(
     assert 'FIRST="one"\n' in text
     assert "ORIGINAL=keep\n" in text
     assert (
-        'SECOND="two"\n' if operation == "upsert" else "CLAUDE_SMART_HOST=codex\n"
+        'SECOND="two"\n'
+        if operation == "upsert"
+        else 'CLAUDE_SMART_HOST="claude-code"\n'
     ) in text
 
 
@@ -150,7 +150,7 @@ def test_process_death_before_replace_preserves_original_and_releases_lock(tmp_p
         child.kill()
         child.wait(timeout=10)
     # No stale-PID recovery or lock-file removal is necessary after kernel cleanup.
-    env_config.set_env_vars(path, {"SECOND": "two"})
+    _append_settings(path, {"SECOND": "two"})
     assert path.read_text() == 'ORIGINAL=keep\nSECOND="two"\n'
 
 
@@ -171,7 +171,7 @@ def test_failure_before_publication_preserves_original_and_cleans_temporary(
         monkeypatch.setattr(Path, "replace", fail)
     value = "\ud800" if failure == "encode" else "two"
     with pytest.raises((OSError, UnicodeEncodeError)):
-        env_config.set_env_vars(path, {"SECOND": value})
+        _append_settings(path, {"SECOND": value})
     assert path.read_bytes() == original
     assert not list(tmp_path.glob(".env-*"))
 
@@ -197,7 +197,7 @@ def test_unsafe_original_or_lock_is_rejected(tmp_path, target, kind):
             pytest.skip("Native FIFOs are POSIX-only")
         os.mkfifo(unsafe)
     with pytest.raises(ValueError, match="regular, unlinked"):
-        env_config.set_env_vars(path, {"NEW": "two"})
+        _append_settings(path, {"NEW": "two"})
     assert original.read_text() == "PRIVATE=keep\n"
     assert not list(tmp_path.glob(".env-*"))
 
@@ -207,26 +207,9 @@ def test_invalid_utf8_is_not_treated_as_empty_and_is_redacted(tmp_path):
     original = b"SECRET=fake-credential\xff\n"
     path.write_bytes(original)
     with pytest.raises(ValueError, match="valid UTF-8") as error:
-        env_config.ensure_local_env_defaults(path)
+        env_config.repair_bootstrap_env(path)
     assert "credential" not in str(error.value)
     assert path.read_bytes() == original
-
-
-@pytest.mark.parametrize(
-    "key,value",
-    [
-        ("BAD\nKEY", "v"),
-        ("GOOD", "fake\nINJECT=1"),
-        ("GOOD", "fake\rINJECT=1"),
-        ("GOOD", "fake\0"),
-    ],
-)
-def test_invalid_assignments_have_no_side_effects(tmp_path, key, value):
-    path = tmp_path / "not-created" / ".env"
-    with pytest.raises(ValueError, match="Invalid environment assignment") as error:
-        env_config.set_env_vars(path, {key: value})
-    assert "fake" not in str(error.value)
-    assert not path.parent.exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="flock is POSIX-only")
@@ -244,7 +227,7 @@ def test_unsupported_native_filesystem_never_falls_back_to_a_marker_lock(
 
     monkeypatch.setattr(fcntl, "flock", unsupported)
     with pytest.raises((OSError, NotImplementedError)):
-        env_config.set_env_vars(path, {"NEW": "two"})
+        _append_settings(path, {"NEW": "two"})
     assert path.read_text() == "ORIGINAL=keep\n"
     assert not list(tmp_path.glob(".env-*"))
 
@@ -260,7 +243,7 @@ def test_unsafe_parent_default_is_rejected_without_replacing_original(
     path.write_text("ORIGINAL=keep\n")
     monkeypatch.setenv("REFLEXIO_ROW_LIMIT_INTERACTIONS", f"0{separator}OTHER=bad")
     with pytest.raises(ValueError, match="Invalid local environment default"):
-        env_config.ensure_local_env_defaults(path)
+        env_config.repair_bootstrap_env(path)
     assert path.read_text() == "ORIGINAL=keep\n"
 
 
@@ -279,23 +262,11 @@ def test_temporary_is_private_before_secret_content_is_written(tmp_path, monkeyp
     monkeypatch.setattr(env_config.os, "fdopen", observe)
     prior_umask = os.umask(0)
     try:
-        env_config.set_env_vars(path, {"KEY": "fake-secret"})
+        _append_settings(path, {"KEY": "fake-secret"})
     finally:
         os.umask(prior_umask)
     assert modes == [0o600]
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
-
-
-@pytest.mark.parametrize(
-    "separator", ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
-)
-def test_all_reader_line_boundaries_are_rejected_in_assignments(tmp_path, separator):
-    path = tmp_path / ".env"
-    with pytest.raises(ValueError, match="Invalid environment assignment"):
-        env_config.set_env_vars(
-            path, {"KEY": f"safe{separator}CLAUDE_SMART_READ_ONLY=0{separator}"}
-        )
-    assert not path.exists()
 
 
 def test_existing_file_does_not_require_posix_nonblocking_flag(tmp_path, monkeypatch):
@@ -308,7 +279,7 @@ def test_existing_file_does_not_require_posix_nonblocking_flag(tmp_path, monkeyp
     flags = SimpleNamespace(**vars(os))
     flags.__dict__.pop("O_NONBLOCK", None)
     monkeypatch.setattr(env_config, "os", flags)
-    env_config.set_env_vars(path, {"NEW": "two"})
+    _append_settings(path, {"NEW": "two"})
     assert path.read_text() == 'OLD=keep\nNEW="two"\n'
 
 
@@ -341,7 +312,7 @@ def test_native_lock_acquisition_failure_closes_its_descriptor(tmp_path, monkeyp
     monkeypatch.setattr(env_config.os, "fchmod", fail_mode)
     try:
         with pytest.raises(OSError, match="owned injected fchmod failure"):
-            env_config.set_env_vars(path, {"NEW": "two"})
+            _append_settings(path, {"NEW": "two"})
         assert opened
         assert all(descriptor in closed for descriptor in opened)
         assert path.read_text() == "ORIGINAL=keep\n"
@@ -360,11 +331,11 @@ def test_changed_publication_repairs_read_only_attribute(tmp_path, operation):
     path.chmod(stat.S_IREAD)
     try:
         if operation == "upsert":
-            env_config.set_env_vars(path, {"NEW": "two"})
+            _append_settings(path, {"NEW": "two"})
             assert 'NEW="two"' in path.read_text()
         else:
-            env_config.ensure_local_env_defaults(path, host="codex")
-            assert "CLAUDE_SMART_HOST=codex" in path.read_text()
+            env_config.repair_bootstrap_env(path)
+            assert 'CLAUDE_SMART_HOST="claude-code"' in path.read_text()
     finally:
         path.chmod(0o600)
 
@@ -448,7 +419,7 @@ ConvertTo-Json -InputObject $true
         return real_fdopen(fd, mode)
 
     monkeypatch.setattr(env_config.os, "fdopen", before_content)
-    env_config.set_env_vars(path, {"KEY": "fake-secret"})
+    _append_settings(path, {"KEY": "fake-secret"})
     observed.append(_windows_allow_principals(path))
     assert len(observed) == 2
     for acl in observed:

@@ -60,7 +60,6 @@ const OPENCODE_CONFIG_NAMES = ["opencode.json", "opencode.jsonc"];
 const LEGACY_REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
 const CLAUDE_SMART_ENV_PATH = join(homedir(), ".claude-smart", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
-const MANAGED_SETUP_ENV = "CLAUDE_SMART_MANAGED_SETUP";
 const CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY";
 const CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI";
 const CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST";
@@ -89,7 +88,11 @@ const OPENCODE_PACKAGE_LOCK_TIMEOUT_MS = 120_000;
 const OPENCODE_PACKAGE_LOCK_STALE_MS = 10 * 60_000;
 const CODEX_HOME = (() => {
   const configured = resolve((process.env.CODEX_HOME || "").trim() || join(homedir(), ".codex"));
-  try { return realpathSync(configured); } catch { return configured; }
+  try {
+    return realpathSync(configured);
+  } catch {
+    return configured;
+  }
 })();
 const CODEX_CONFIG_PATH = join(CODEX_HOME, "config.toml");
 // Codex validates every entry in a plugin package and rejects dependency
@@ -148,18 +151,18 @@ const LOCAL_DEFAULT_ENV_ENTRIES = [
     "1",
   ],
   [null, CLAUDE_SMART_READ_ONLY_ENV, "0"],
-  ["# Local interaction history row cap; 0 disables cap cleanup", "REFLEXIO_ROW_LIMIT_INTERACTIONS", "500"],
+  [
+    "# Local interaction history row cap; 0 disables cap cleanup",
+    "REFLEXIO_ROW_LIMIT_INTERACTIONS",
+    "500",
+  ],
   [null, CLAUDE_SMART_HOST_ENV, DEFAULT_CLAUDE_SMART_HOST],
 ];
 const ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS = new Set([
   CLAUDE_SMART_USE_LOCAL_CLI_ENV,
   "REFLEXIO_ROW_LIMIT_INTERACTIONS",
 ]);
-const LOCAL_MODE_PRUNE_KEYS = new Set([
-  "REFLEXIO_URL",
-  "REFLEXIO_API_KEY",
-  REFLEXIO_USER_ID_ENV,
-]);
+const LOCAL_MODE_PRUNE_KEYS = new Set(["REFLEXIO_URL", "REFLEXIO_API_KEY", REFLEXIO_USER_ID_ENV]);
 function shouldCopyPath(src) {
   const base = src.split(/[\\/]/).pop() || "";
   if (COPYTREE_IGNORE_NAMES.has(base)) return false;
@@ -194,7 +197,8 @@ function runClaude(args, { spinnerLabel } = {}) {
       let exited = false;
 
       const draw = () => {
-        process.stdout.write(`\r⠿ ${spinnerLabel}`.replace("⠿", frames[i = (i + 1) % frames.length]));
+        i = (i + 1) % frames.length;
+        process.stdout.write(`\r⠿ ${spinnerLabel}`.replace("⠿", frames[i]));
       };
       const clearLine = () => process.stdout.write("\r\x1b[2K");
       const startSpin = () => {
@@ -322,9 +326,7 @@ function resolveLocalEnvDefault(key, fallback, installHost) {
 // a local setup whose URL the runtime still honors.
 function ensureLocalEnvFile(path, installHost, { prune = true } = {}) {
   mkdirSync(dirname(path), { recursive: true });
-  const existing = existsSync(path)
-    ? readFileSync(path, "utf8")
-    : "";
+  const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
   const present = new Set();
   const keptLines = [];
   let pruned = false;
@@ -474,20 +476,28 @@ function migrateLegacyManagedEnvOnce() {
   if (existsSync(LEGACY_REFLEXIO_ENV_PATH)) {
     for (const line of readFileSync(LEGACY_REFLEXIO_ENV_PATH, "utf8").split(/\r?\n/)) {
       const parsed = parseEnvLine(line);
-      if (parsed && /^CLAUDE_SMART_[A-Z0-9_]+$/.test(parsed.key) && parsed.key !== "CLAUDE_SMART_USE_LOCAL_EMBEDDING" && !runtime.has(parsed.key)) {
+      if (
+        parsed &&
+        /^CLAUDE_SMART_[A-Z0-9_]+$/.test(parsed.key) &&
+        parsed.key !== "CLAUDE_SMART_USE_LOCAL_EMBEDDING" &&
+        !runtime.has(parsed.key)
+      ) {
         runtimeLines.set(parsed.key, line);
       }
     }
   }
   if (runtimeLines.size) {
     const existing = existsSync(CLAUDE_SMART_ENV_PATH)
-      ? readFileSync(CLAUDE_SMART_ENV_PATH, "utf8") : "";
+      ? readFileSync(CLAUDE_SMART_ENV_PATH, "utf8")
+      : "";
     // Keep the original quoting: the readers do not decode doubled backslashes,
     // so re-escaping a Windows path would change its value.
     const separator = existing && !existing.endsWith("\n") ? "\n" : "";
     mkdirSync(dirname(CLAUDE_SMART_ENV_PATH), { recursive: true });
-    writePrivateFile(CLAUDE_SMART_ENV_PATH,
-      `${existing}${separator}${[...runtimeLines.values()].join("\n")}\n`);
+    writePrivateFile(
+      CLAUDE_SMART_ENV_PATH,
+      `${existing}${separator}${[...runtimeLines.values()].join("\n")}\n`,
+    );
   }
   if ((runtime.get("REFLEXIO_API_KEY") || "").trim()) return;
   const apiKey = (legacy.get("REFLEXIO_API_KEY") || "").trim();
@@ -539,7 +549,6 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
   if (apiKey && !shellOnlyKey && url.trim()) {
     process.env.REFLEXIO_API_KEY = apiKey;
     process.env.REFLEXIO_URL = url;
-    process.env[MANAGED_SETUP_ENV] = "1";
     // The host follows the install in both modes (ensureLocalEnvFile does it
     // for local mode).
     updates[CLAUDE_SMART_HOST_ENV] = installHost;
@@ -557,7 +566,6 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
     delete process.env.REFLEXIO_URL;
     delete process.env.REFLEXIO_API_KEY;
     delete process.env[REFLEXIO_USER_ID_ENV];
-    delete process.env[MANAGED_SETUP_ENV];
     url = "";
     const added = ensureLocalEnvFile(CLAUDE_SMART_ENV_PATH, installHost, {
       prune: fileEnv.get(GUIDED_CONFIG_ENV) !== "1" && !fileEnv.has(LEARNING_PROVIDER_ENV),
@@ -585,9 +593,7 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
   }
   const managed = isRemoteReflexioUrl(url);
   if (managed) {
-    process.stdout.write(
-      `Using managed Reflexio at ${url} (API key ${maskSecret(apiKey)}).\n`,
-    );
+    process.stdout.write(`Using managed Reflexio at ${url} (API key ${maskSecret(apiKey)}).\n`);
     if (isLoopbackUrl(url)) {
       process.stderr.write(
         `warning: REFLEXIO_URL ${url} points at this machine but is not a plain ` +
@@ -598,10 +604,14 @@ function loadReflexioSetupEnv(installHost = DEFAULT_CLAUDE_SMART_HOST) {
   } else {
     process.stdout.write(`Using local Reflexio backend at ${url || localBackendUrl()}.\n`);
     const provider = fileEnv.get(LEARNING_PROVIDER_ENV) || installHost;
-    process.stdout.write(`Background learning provider: ${guide.LABELS[provider] || provider} CLI.\n`);
+    process.stdout.write(
+      `Background learning provider: ${guide.LABELS[provider] || provider} CLI.\n`,
+    );
   }
   const readOnly = ["1", "true", "yes", "on"].includes(
-    String(fileEnv.get(CLAUDE_SMART_READ_ONLY_ENV) || "").trim().toLowerCase(),
+    String(fileEnv.get(CLAUDE_SMART_READ_ONLY_ENV) || "")
+      .trim()
+      .toLowerCase(),
   );
   return { readOnly, managed, url, hostChanged };
 }
@@ -624,7 +634,8 @@ function stripJsonc(text) {
       }
       if (text[index] === "/" && text[index + 1] === "*") {
         index += 2;
-        while (index + 1 < text.length && !(text[index] === "*" && text[index + 1] === "/")) index += 1;
+        while (index + 1 < text.length && !(text[index] === "*" && text[index + 1] === "/"))
+          index += 1;
         index = Math.min(index + 2, text.length);
         continue;
       }
@@ -736,7 +747,8 @@ function isGeneratedOpenCodeV2Loader(text) {
   const lines = String(text).split("\n");
   if (lines.length !== 4 || lines[3] !== "") return false;
   if (lines[0] !== `// ${OPENCODE_V2_PLUGIN_MARKER}`) return false;
-  if (lines[1] !== "// OpenCode V2 auto-loads this directory. Reinstall claude-smart to refresh.") return false;
+  if (lines[1] !== "// OpenCode V2 auto-loads this directory. Reinstall claude-smart to refresh.")
+    return false;
   return /^export \{ default \} from "file:\/\/.+";$/.test(lines[2]);
 }
 
@@ -860,7 +872,7 @@ function readOpenCodePluginConfig(configPath) {
 }
 
 function patchOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
-  const resolvedPluginSpec = install ? (pluginSpec || opencodeLocalPluginSpec()) : pluginSpec;
+  const resolvedPluginSpec = install ? pluginSpec || opencodeLocalPluginSpec() : pluginSpec;
   const data = readOpenCodePluginConfig(configPath);
   const current = [
     ...(Array.isArray(data.plugin) ? data.plugin : []),
@@ -871,7 +883,8 @@ function patchOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
   const changed =
     data.plugins !== undefined ||
     (Array.isArray(data.plugin)
-      ? next.length !== data.plugin.length || next.some((entry, index) => entry !== data.plugin[index])
+      ? next.length !== data.plugin.length ||
+        next.some((entry, index) => entry !== data.plugin[index])
       : install && next.length > 0);
   if (!changed) return { changed: false, configPath };
   let backupPath = null;
@@ -1060,7 +1073,9 @@ function installedPluginRoots() {
     CODEX_RUNTIME_PLUGIN_ROOT,
   ];
   try {
-    const versions = readdirSync(CODEX_PLUGIN_CACHE_DIR).map((name) => join(CODEX_PLUGIN_CACHE_DIR, name));
+    const versions = readdirSync(CODEX_PLUGIN_CACHE_DIR).map((name) =>
+      join(CODEX_PLUGIN_CACHE_DIR, name),
+    );
     // Same order as findCodexPluginRoot: newest version first, not lexical.
     versions.sort((a, b) => compareSemverLikePathNames(b, a));
     roots.push(...versions);
@@ -1128,7 +1143,12 @@ function hostForPluginRoot(root) {
   const target = real(root);
   const under = (dir) => target === real(dir) || target.startsWith(`${real(dir)}${sep}`);
   if (under(OPENCODE_LOCAL_PACKAGE_DIR)) return HOST_OPENCODE;
-  if (under(CODEX_RUNTIME_PACKAGE_DIR) || under(CODEX_PLUGIN_CACHE_DIR) || under(CODEX_MARKETPLACE_DIR)) return HOST_CODEX;
+  if (
+    under(CODEX_RUNTIME_PACKAGE_DIR) ||
+    under(CODEX_PLUGIN_CACHE_DIR) ||
+    under(CODEX_MARKETPLACE_DIR)
+  )
+    return HOST_CODEX;
   return HOST_CLAUDE_CODE;
 }
 
@@ -1250,7 +1270,11 @@ function ensureRollbackOnExit() {
   if (rollbackOnExitRegistered) return;
   rollbackOnExitRegistered = true;
   process.once("exit", rollbackLocalPluginPackages);
-  for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
+  for (const [signal, code] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+    ["SIGHUP", 129],
+  ]) {
     process.once(signal, async () => {
       terminatingOnSignal = true;
       // Stop and await children first: an orphaned smart-install or Claude
@@ -1322,7 +1346,10 @@ function restoreInstallState() {
   installStateSnapshot = null;
   if (!snapshot) return;
   try {
-    if (snapshot.pluginRoot && existsSync(join(snapshot.pluginRoot, "scripts", "backend-service.sh"))) {
+    if (
+      snapshot.pluginRoot &&
+      existsSync(join(snapshot.pluginRoot, "scripts", "backend-service.sh"))
+    ) {
       forcePluginRoot(snapshot.pluginRoot);
     }
     if (snapshot.failureMarker === null) rmSync(INSTALL_FAILURE_MARKER, { force: true });
@@ -1408,7 +1435,12 @@ function pluginServiceStatus(root, scriptName) {
     windowsHide: true,
     timeout: PLUGIN_SERVICE_TIMEOUT_MS,
   });
-  return String(result.stdout || "").trim().split(/\r?\n/).pop() || "";
+  return (
+    String(result.stdout || "")
+      .trim()
+      .split(/\r?\n/)
+      .pop() || ""
+  );
 }
 
 function stopServicesForInstall(root, host) {
@@ -1533,10 +1565,13 @@ function replaceLocalPluginPackage(stagedPackage, packageRoot) {
 // external Claude Code venv must remain usable if preparation rolls back.
 function reusePreparedRuntime(previous, current, externalVenv = false) {
   if (!previous || !existsSync(previous)) return;
-  const clone = (from, to) => cpSync(from, to, {
-    recursive: true, mode: constants.COPYFILE_FICLONE, preserveTimestamps: true,
-    verbatimSymlinks: true,
-  });
+  const clone = (from, to) =>
+    cpSync(from, to, {
+      recursive: true,
+      mode: constants.COPYFILE_FICLONE,
+      preserveTimestamps: true,
+      verbatimSymlinks: true,
+    });
   const previousVenv = join(previous, ".venv");
   if (!isWindows() && existsSync(previousVenv)) {
     let target = join(current, ".venv");
@@ -1559,7 +1594,8 @@ function reusePreparedRuntime(previous, current, externalVenv = false) {
           if (relocated !== text) writeFileSync(file, relocated);
         }
       }
-      if (externalVenv) symlinkSync(target, join(current, ".venv"), isWindows() ? "junction" : "dir");
+      if (externalVenv)
+        symlinkSync(target, join(current, ".venv"), isWindows() ? "junction" : "dir");
     } catch {
       rmSync(target, { recursive: true, force: true });
     }
@@ -1572,12 +1608,18 @@ function reusePreparedRuntime(previous, current, externalVenv = false) {
   // npx may run under a different Node than the private build runtime.
   // Clone against the recorded runtime; bootstrap revalidates the actual one.
   const builtWith = cache.recordedVersion(oldDashboard);
-  if (builtWith && existsSync(dashboard) && cache.reusable(oldDashboard, builtWith) &&
-      cache.buildKey(oldDashboard, builtWith) === cache.buildKey(dashboard, builtWith)) {
+  if (
+    builtWith &&
+    existsSync(dashboard) &&
+    cache.reusable(oldDashboard, builtWith) &&
+    cache.buildKey(oldDashboard, builtWith) === cache.buildKey(dashboard, builtWith)
+  ) {
     try {
-      for (const name of ["node_modules", ".next"]) clone(join(oldDashboard, name), join(dashboard, name));
+      for (const name of ["node_modules", ".next"])
+        clone(join(oldDashboard, name), join(dashboard, name));
     } catch {
-      for (const name of ["node_modules", ".next"]) rmSync(join(dashboard, name), { recursive: true, force: true });
+      for (const name of ["node_modules", ".next"])
+        rmSync(join(dashboard, name), { recursive: true, force: true });
     }
   }
 }
@@ -1605,8 +1647,11 @@ function installLocalPluginPackage(packageRoot, label) {
     replaceLocalPluginPackage(stagedPackage, packageRoot);
     replaced = true;
     const previous = pendingPreviousPackages.get(packageRoot)?.backupPackage;
-    reusePreparedRuntime(previous ? join(previous, "plugin") : null,
-      join(packageRoot, "plugin"), packageRoot === CLAUDE_CODE_LOCAL_PACKAGE_DIR);
+    reusePreparedRuntime(
+      previous ? join(previous, "plugin") : null,
+      join(packageRoot, "plugin"),
+      packageRoot === CLAUDE_CODE_LOCAL_PACKAGE_DIR,
+    );
     verifyLocalPluginPackage(packageRoot, label);
     return packageRoot;
   } catch (err) {
@@ -1817,22 +1862,41 @@ async function runServiceWithProgress(pluginRoot, scriptName, subcommand, envOve
   const bash = resolveUsableBash();
   if (!bash || !existsSync(script)) return false;
   const started = Date.now();
-  const timer = setInterval(() => process.stdout.write(`  Still waiting for ${scriptName} ${subcommand}… ${Math.floor((Date.now() - started) / 1000)}s\n`), 5000);
+  const timer = setInterval(
+    () =>
+      process.stdout.write(
+        `  Still waiting for ${scriptName} ${subcommand}… ${Math.floor((Date.now() - started) / 1000)}s\n`,
+      ),
+    5000,
+  );
   try {
     return await new Promise((resolve) => {
       const child = spawn(bash, [script, subcommand], {
-        cwd: pluginRoot, env: { ...runtimeEnv(), ...envOverrides }, stdio: "ignore",
-        windowsHide: true, detached: !isWindows(),
+        cwd: pluginRoot,
+        env: { ...runtimeEnv(), ...envOverrides },
+        stdio: "ignore",
+        windowsHide: true,
+        detached: !isWindows(),
       });
       trackChild(child, !isWindows());
       const timeout = setTimeout(async () => {
-        process.stderr.write(`warning: ${scriptName} ${subcommand} timed out; inspect ~/.claude-smart service logs.\n`);
+        process.stderr.write(
+          `warning: ${scriptName} ${subcommand} timed out; inspect ~/.claude-smart service logs.\n`,
+        );
         await terminateChildren([[child, !isWindows()]]);
       }, PLUGIN_SERVICE_TIMEOUT_MS);
-      child.once("error", () => { clearTimeout(timeout); resolve(false); });
-      child.once("exit", (code) => { clearTimeout(timeout); if (!terminatingOnSignal) resolve(code === 0); });
+      child.once("error", () => {
+        clearTimeout(timeout);
+        resolve(false);
+      });
+      child.once("exit", (code) => {
+        clearTimeout(timeout);
+        if (!terminatingOnSignal) resolve(code === 0);
+      });
     });
-  } finally { clearInterval(timer); }
+  } finally {
+    clearInterval(timer);
+  }
 }
 
 function installInventory(options = {}) {
@@ -1842,9 +1906,17 @@ function installInventory(options = {}) {
   let openCodeInstalled = false;
   try {
     openCodeInstalled = scopeHasClaudeSmart(args);
-  } catch { /* A missing config is normal. Installation reports malformed configs. */ }
+  } catch {
+    /* A missing config is normal. Installation reports malformed configs. */
+  }
   return [
-    { host: HOST_CLAUDE_CODE, available: hasClaudeCli(), installed: existsSync(join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin")) || hostRegistrationExists(HOST_CLAUDE_CODE) },
+    {
+      host: HOST_CLAUDE_CODE,
+      available: hasClaudeCli(),
+      installed:
+        existsSync(join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin")) ||
+        hostRegistrationExists(HOST_CLAUDE_CODE),
+    },
     { host: HOST_CODEX, available: hasCli("codex"), installed: Boolean(findCodexPluginRoot()) },
     { host: HOST_OPENCODE, available: hasOpenCodeCli(), installed: openCodeInstalled },
   ];
@@ -1853,36 +1925,73 @@ function installInventory(options = {}) {
 function hostRegistrationExists(host) {
   const cli = host === HOST_CODEX ? "codex" : "claude";
   if (!hasCli(cli)) return false;
-  const result = spawnSync(cli, ["plugin", "list", "--json"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, windowsHide: true });
+  const result = spawnSync(cli, ["plugin", "list", "--json"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 5000,
+    windowsHide: true,
+  });
   try {
     const data = JSON.parse(result.stdout);
-    return Array.isArray(data) && data.some((plugin) => (plugin.id || plugin.pluginId) === PLUGIN_SPEC);
-  } catch { return false; }
+    return (
+      Array.isArray(data) && data.some((plugin) => (plugin.id || plugin.pluginId) === PLUGIN_SPEC)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function savedInstallConfiguration() {
   // Read without migration/writes: cancelling the guide must leave files untouched.
   const env = readEnvFile(CLAUDE_SMART_ENV_PATH);
-  const legacy = existsSync(LEGACY_ENV_MIGRATION_MARKER) ? new Map() : readEnvFile(LEGACY_REFLEXIO_ENV_PATH);
+  const legacy = existsSync(LEGACY_ENV_MIGRATION_MARKER)
+    ? new Map()
+    : readEnvFile(LEGACY_REFLEXIO_ENV_PATH);
   for (const [key, value] of legacy) {
-    if (key.startsWith("CLAUDE_SMART_") && key !== "CLAUDE_SMART_USE_LOCAL_EMBEDDING" && !env.has(key)) env.set(key, value);
+    if (
+      key.startsWith("CLAUDE_SMART_") &&
+      key !== "CLAUDE_SMART_USE_LOCAL_EMBEDDING" &&
+      !env.has(key)
+    )
+      env.set(key, value);
   }
   const legacyKey = legacy.get("REFLEXIO_API_KEY");
   const legacyUrl = legacy.get("REFLEXIO_URL") || MANAGED_REFLEXIO_URL;
-  const legacyManaged = !env.has("REFLEXIO_API_KEY") && Boolean(legacyKey?.trim()) && !isLoopbackUrl(legacyUrl);
-  const url = env.get("REFLEXIO_URL") || (env.get("REFLEXIO_API_KEY")?.trim() ? process.env.REFLEXIO_URL || MANAGED_REFLEXIO_URL : legacyManaged ? legacyUrl : "");
+  const legacyManaged =
+    !env.has("REFLEXIO_API_KEY") && Boolean(legacyKey?.trim()) && !isLoopbackUrl(legacyUrl);
+  const url =
+    env.get("REFLEXIO_URL") ||
+    (env.get("REFLEXIO_API_KEY")?.trim()
+      ? process.env.REFLEXIO_URL || MANAGED_REFLEXIO_URL
+      : legacyManaged
+        ? legacyUrl
+        : "");
   const apiKey = env.get("REFLEXIO_API_KEY") ?? (legacyManaged ? legacyKey : "");
-  const userId = env.get(REFLEXIO_USER_ID_ENV) ?? (legacyManaged ? legacy.get(REFLEXIO_USER_ID_ENV) : "");
+  const userId =
+    env.get(REFLEXIO_USER_ID_ENV) ?? (legacyManaged ? legacy.get(REFLEXIO_USER_ID_ENV) : "");
   return {
-    backend: env.size ? isRemoteReflexioUrl(url) ? "managed" : "local" : legacyManaged ? "managed" : null,
-    url, apiKey,
+    backend: env.size
+      ? isRemoteReflexioUrl(url)
+        ? "managed"
+        : "local"
+      : legacyManaged
+        ? "managed"
+        : null,
+    url,
+    apiKey,
     provider: env.get(LEARNING_PROVIDER_ENV) || env.get(CLAUDE_SMART_HOST_ENV),
     model: env.get("CLAUDE_SMART_LEARNING_MODEL") || "",
-    managedUrl: env.get("CLAUDE_SMART_MANAGED_URL") || "", managedApiKey: env.get("CLAUDE_SMART_MANAGED_API_KEY") || "",
-    localUrl: env.get("CLAUDE_SMART_LOCAL_URL") || "", localApiKey: env.get("CLAUDE_SMART_LOCAL_API_KEY") || "",
-    cliPath: env.get("CLAUDE_SMART_CLI_PATH") || "", useLocalCli: env.get(CLAUDE_SMART_USE_LOCAL_CLI_ENV),
-    readOnly: ["1", "true", "yes", "on"].includes((env.get(CLAUDE_SMART_READ_ONLY_ENV) || "").toLowerCase()),
-    sharing: userId ? "global" : "project", userId,
+    managedUrl: env.get("CLAUDE_SMART_MANAGED_URL") || "",
+    managedApiKey: env.get("CLAUDE_SMART_MANAGED_API_KEY") || "",
+    localUrl: env.get("CLAUDE_SMART_LOCAL_URL") || "",
+    localApiKey: env.get("CLAUDE_SMART_LOCAL_API_KEY") || "",
+    cliPath: env.get("CLAUDE_SMART_CLI_PATH") || "",
+    useLocalCli: env.get(CLAUDE_SMART_USE_LOCAL_CLI_ENV),
+    readOnly: ["1", "true", "yes", "on"].includes(
+      (env.get(CLAUDE_SMART_READ_ONLY_ENV) || "").toLowerCase(),
+    ),
+    sharing: userId ? "global" : "project",
+    userId,
   };
 }
 
@@ -1891,7 +2000,8 @@ function saveInstallConfiguration(config) {
   migrateLegacyManagedEnv();
   const values = {
     [GUIDED_CONFIG_ENV]: "1",
-    REFLEXIO_URL: config.url || localBackendUrl(), REFLEXIO_API_KEY: config.apiKey || "",
+    REFLEXIO_URL: config.url || localBackendUrl(),
+    REFLEXIO_API_KEY: config.apiKey || "",
     CLAUDE_SMART_READ_ONLY: config.readOnly ? "1" : "0",
     REFLEXIO_USER_ID: config.sharing === "global" ? config.userId || "global_user" : "",
   };
@@ -1911,7 +2021,9 @@ function saveInstallConfiguration(config) {
     // Make the explicit CLI choice effective even after a previous cloud setup.
     values[CLAUDE_SMART_USE_LOCAL_CLI_ENV] = config.useLocalCli;
     values.CLAUDE_SMART_LEARNING_MODEL = config.model || "";
-    if ((readEnvFile(CLAUDE_SMART_ENV_PATH).get("CLAUDE_SMART_CLI_PATH") || "") !== config.cliPath) {
+    if (
+      (readEnvFile(CLAUDE_SMART_ENV_PATH).get("CLAUDE_SMART_CLI_PATH") || "") !== config.cliPath
+    ) {
       values.CLAUDE_SMART_CLI_PATH = config.cliPath;
     }
     if (config.provider === HOST_OPENCODE) persistOpenCodePath();
@@ -1926,19 +2038,32 @@ function saveInstallConfiguration(config) {
 
 async function runGuidedHost(command, host, options, label) {
   mkdirSync(join(CLAUDE_SMART_STATE_DIR, "install-logs"), { recursive: true });
-  const log = join(CLAUDE_SMART_STATE_DIR, "install-logs", `${command}-${host}-${Date.now()}-${process.pid}.log`);
+  const log = join(
+    CLAUDE_SMART_STATE_DIR,
+    "install-logs",
+    `${command}-${host}-${Date.now()}-${process.pid}.log`,
+  );
   const fd = openSync(log, "wx", 0o600);
   const args = [__filename, command === "setup" ? "install" : command, "--host", host];
   if (options.global) args.push("--global");
   if (options.local) args.push("--local");
   process.stdout.write(`\n${label}…\n  Log: ${log}\n`);
   const started = Date.now();
-  const timer = setInterval(() => process.stdout.write(`  ${label}… ${Math.floor((Date.now() - started) / 1000)}s\n`), 5000);
+  const timer = setInterval(
+    () => process.stdout.write(`  ${label}… ${Math.floor((Date.now() - started) / 1000)}s\n`),
+    5000,
+  );
   try {
     const code = await new Promise((resolve) => {
       const child = spawn(process.execPath, args, {
-        env: { ...runtimeEnv(), CLAUDE_SMART_INSTALL_CHILD: "1", CLAUDE_SMART_DEFER_SHARED_SERVICES: "1" },
-        stdio: ["ignore", "pipe", fd], detached: !isWindows(), windowsHide: true,
+        env: {
+          ...runtimeEnv(),
+          CLAUDE_SMART_INSTALL_CHILD: "1",
+          CLAUDE_SMART_DEFER_SHARED_SERVICES: "1",
+        },
+        stdio: ["ignore", "pipe", fd],
+        detached: !isWindows(),
+        windowsHide: true,
       });
       trackChild(child, !isWindows());
       let pending = "";
@@ -1947,31 +2072,50 @@ async function runGuidedHost(command, host, options, label) {
         pending += chunk.toString();
         const lines = pending.split(/\r?\n/);
         pending = lines.pop().slice(-4096);
-        for (const line of lines) if (line.startsWith("[phase] ")) process.stdout.write(`  ${line.slice(8)}\n`);
+        for (const line of lines)
+          if (line.startsWith("[phase] ")) process.stdout.write(`  ${line.slice(8)}\n`);
       });
-      child.once("error", (err) => { process.stderr.write(`  ${label} failed: ${err.message}\n`); resolve(1); });
+      child.once("error", (err) => {
+        process.stderr.write(`  ${label} failed: ${err.message}\n`);
+        resolve(1);
+      });
       // close follows all stdout data; exit can precede the final pipe chunks.
-      child.once("close", (code) => { if (!terminatingOnSignal) resolve(typeof code === "number" ? code : 1); });
+      child.once("close", (code) => {
+        if (!terminatingOnSignal) resolve(typeof code === "number" ? code : 1);
+      });
     });
     if (code !== 0) process.stderr.write(`  ${label} failed. Details: ${log}\n`);
     return { code, log };
-  } finally { clearInterval(timer); closeSync(fd); }
+  } finally {
+    clearInterval(timer);
+    closeSync(fd);
+  }
 }
 
 function learningProviderVersion(config) {
   // Custom executables need not implement --version. Do not run arbitrary probes.
   if (config.cliPath) return undefined;
-  const command = config.provider === HOST_OPENCODE ? resolveOpenCodePath()
-    : config.provider === HOST_CODEX ? "codex" : config.provider === HOST_CLAUDE_CODE ? "claude" : null;
+  const command =
+    config.provider === HOST_OPENCODE
+      ? resolveOpenCodePath()
+      : config.provider === HOST_CODEX
+        ? "codex"
+        : config.provider === HOST_CLAUDE_CODE
+          ? "claude"
+          : null;
   if (!command) return undefined;
-  const shell = isWindows() && (command === "claude" || command === "codex" || /\.(?:cmd|bat)$/i.test(command));
+  const shell =
+    isWindows() && (command === "claude" || command === "codex" || /\.(?:cmd|bat)$/i.test(command));
   // Node joins shell arguments without quoting batch-file paths. Optional
   // metadata probes must not interpret shell metacharacters in a custom path.
   if (shell && /[%!^&|<>"\r\n]/.test(command)) return undefined;
   const probeCommand = shell ? `"${command}"` : command;
   const result = spawnSync(probeCommand, ["--version"], {
-    encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000,
-    maxBuffer: 4096, windowsHide: true,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 3000,
+    maxBuffer: 4096,
+    windowsHide: true,
     shell,
   });
   if (result.status !== 0 || result.error || result.signal) return undefined;
@@ -1980,50 +2124,68 @@ function learningProviderVersion(config) {
 }
 
 async function runGuidedCommand(command, args) {
-  if (args.includes("--help") || args.includes("-h")) { printHelp(); return; }
+  if (args.includes("--help") || args.includes("-h")) {
+    printHelp();
+    return;
+  }
   ensureRollbackOnExit();
-  process.stdout.write(`claude-smart ${JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version} · ${command}\n`);
-  await guide.runGuide(command, args, {
-    inventory: installInventory, saved: savedInstallConfiguration, save: saveInstallConfiguration,
-    version: JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version,
-    providerVersion: learningProviderVersion,
-    learningModel: async (config) => {
-      try {
-        const response = await fetch(new URL("/api/get_config", config.url), {
-          headers: { authorization: `Bearer ${config.apiKey}` }, signal: AbortSignal.timeout(5000),
-        });
-        if (!response.ok) return;
-        const data = await response.json();
-        const model = data.llm_config?.generation_model_name;
-        return typeof model === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(model) ? `${model} (managed configuration)` : undefined;
-      } catch { return; }
-    },
-    runHost: runGuidedHost,
-    finish: async (action, config, results) => {
-      const root = activePluginRoot();
-      if (!root || !existsSync(join(root, "scripts", "backend-service.sh"))) return;
-      if (action === "uninstall") {
-        const current = installInventory();
-        const global = installInventory({ global: true });
-        if (![...current, ...global].some((agent) => agent.installed)) {
-          stopClaudeSmartServices(root);
-          return ["Shared services stopped; no integrations remain in this project/account or global OpenCode config."];
+  process.stdout.write(
+    `claude-smart ${JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version} · ${command}\n`,
+  );
+  await guide
+    .runGuide(command, args, {
+      inventory: installInventory,
+      saved: savedInstallConfiguration,
+      save: saveInstallConfiguration,
+      version: JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version,
+      providerVersion: learningProviderVersion,
+      learningModel: async (config) => {
+        try {
+          const response = await fetch(new URL("/api/get_config", config.url), {
+            headers: { authorization: `Bearer ${config.apiKey}` },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!response.ok) return;
+          const data = await response.json();
+          const model = data.llm_config?.generation_model_name;
+          return typeof model === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(model)
+            ? `${model} (managed configuration)`
+            : undefined;
+        } catch {
+          return;
         }
-        // Removal stops only owned services. Repointing lets remaining integrations
-        // serve their hooks again without selecting a different learning provider.
-        process.stdout.write("\nRefreshing shared services for remaining integrations…\n");
-      } else if (!results.some((result) => result.code === 0)) return;
-      const host = readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) || DEFAULT_CLAUDE_SMART_HOST;
-      const saved = savedInstallConfiguration();
-      const setup = { managed: saved.backend === "managed", url: saved.url };
-      startDeferredDashboardBuild(root);
-      return await startAndReportServices(root, host, setup, { summaryOnly: true });
-    },
-  }).finally(() => {
-    // Keypress listeners can keep the TTY alive after the last prompt. Release
-    // it only when the whole guide finishes; later prompts still need stdin.
-    if (process.stdin.isTTY) process.stdin.destroy();
-  });
+      },
+      runHost: runGuidedHost,
+      finish: async (action, config, results) => {
+        const root = activePluginRoot();
+        if (!root || !existsSync(join(root, "scripts", "backend-service.sh"))) return;
+        if (action === "uninstall") {
+          const current = installInventory();
+          const global = installInventory({ global: true });
+          if (![...current, ...global].some((agent) => agent.installed)) {
+            stopClaudeSmartServices(root);
+            return [
+              "Shared services stopped; no integrations remain in this project/account or global OpenCode config.",
+            ];
+          }
+          // Removal stops only owned services. Repointing lets remaining integrations
+          // serve their hooks again without selecting a different learning provider.
+          process.stdout.write("\nRefreshing shared services for remaining integrations…\n");
+        } else if (!results.some((result) => result.code === 0)) return;
+        const host =
+          readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) ||
+          DEFAULT_CLAUDE_SMART_HOST;
+        const saved = savedInstallConfiguration();
+        const setup = { managed: saved.backend === "managed", url: saved.url };
+        startDeferredDashboardBuild(root);
+        return await startAndReportServices(root, host, setup, { summaryOnly: true });
+      },
+    })
+    .finally(() => {
+      // Keypress listeners can keep the TTY alive after the last prompt. Release
+      // it only when the whole guide finishes; later prompts still need stdin.
+      if (process.stdin.isTTY) process.stdin.destroy();
+    });
 }
 
 function runPluginService(pluginRoot, scriptName, subcommand, envOverrides = {}) {
@@ -2046,14 +2208,13 @@ function runPluginService(pluginRoot, scriptName, subcommand, envOverrides = {})
     killSignal: "SIGTERM",
   });
   if (result.error || result.signal) {
-    const reason = result.error && result.error.code === "ETIMEDOUT"
-      ? `timed out after ${PLUGIN_SERVICE_TIMEOUT_MS / 1000}s`
-      : result.error
-        ? result.error.message
-        : `terminated by ${result.signal}`;
-    process.stderr.write(
-      `warning: ${scriptName} ${subcommand} ${reason}; continuing.\n`,
-    );
+    const reason =
+      result.error && result.error.code === "ETIMEDOUT"
+        ? `timed out after ${PLUGIN_SERVICE_TIMEOUT_MS / 1000}s`
+        : result.error
+          ? result.error.message
+          : `terminated by ${result.signal}`;
+    process.stderr.write(`warning: ${scriptName} ${subcommand} ${reason}; continuing.\n`);
     return false;
   }
   return result.status === 0;
@@ -2108,7 +2269,12 @@ function backendServiceStatus(pluginRoot) {
     timeout: PLUGIN_SERVICE_TIMEOUT_MS,
     killSignal: "SIGTERM",
   });
-  return String(result.stdout || "").trim().split(/\r?\n/).pop() || "";
+  return (
+    String(result.stdout || "")
+      .trim()
+      .split(/\r?\n/)
+      .pop() || ""
+  );
 }
 
 // Same precedence as _lib.sh: an exported value wins over ~/.claude-smart/.env.
@@ -2187,7 +2353,9 @@ async function startAndReportServices(pluginRoot, host, setup, { summaryOnly = f
     // point; restart only owned services to apply the installed configuration.
     process.stdout.write(`\nStarting local Reflexio at ${localBackendUrl()}…\n`);
     await runServiceWithProgress(pluginRoot, "backend-service.sh", "stop");
-    await runServiceWithProgress(pluginRoot, "backend-service.sh", "start", { CLAUDE_SMART_HOST: host });
+    await runServiceWithProgress(pluginRoot, "backend-service.sh", "start", {
+      CLAUDE_SMART_HOST: host,
+    });
     const url = localBackendUrl();
     if (await waitForHttp(`${url}health`, 5, ({ status }) => status === 200)) {
       const status = backendServiceStatus(pluginRoot);
@@ -2220,7 +2388,9 @@ async function startAndReportServices(pluginRoot, host, setup, { summaryOnly = f
   const isDashboard = ({ status, headers }) =>
     status === 200 && headers["x-claude-smart-dashboard"] !== undefined;
   if (await waitForHttp(`${url}api/health`, 3, isDashboard)) {
-    report(`Local dashboard: ${url} · default data source: ${managed ? "Managed Reflexio" : "Local Reflexio"}.\n`);
+    report(
+      `Local dashboard: ${url} · default data source: ${managed ? "Managed Reflexio" : "Local Reflexio"}.\n`,
+    );
   } else if ((await httpProbe(`${url}api/health`)).status !== null) {
     report(
       `Another app answers ${url} without the claude-smart dashboard marker; ` +
@@ -2248,8 +2418,10 @@ function downloadFile(url, dest) {
         response.statusCode < 400 &&
         response.headers.location
       ) {
-        downloadFile(new URL(response.headers.location, url).toString(), dest)
-          .then(resolve, reject);
+        downloadFile(new URL(response.headers.location, url).toString(), dest).then(
+          resolve,
+          reject,
+        );
         response.resume();
         return;
       }
@@ -2354,7 +2526,8 @@ async function ensurePrivateNode() {
   assertSupportedRuntimePlatform();
   const major = process.env.CLAUDE_SMART_NODE_LTS_MAJOR || "26";
   const { nodeOs, nodeArch, archiveExt } = nodeArchiveSpec();
-  const baseUrl = process.env.CLAUDE_SMART_NODE_BASE_URL || `https://nodejs.org/dist/latest-v${major}.x`;
+  const baseUrl =
+    process.env.CLAUDE_SMART_NODE_BASE_URL || `https://nodejs.org/dist/latest-v${major}.x`;
   const nodeRoot = join(homedir(), ".claude-smart", "node");
   const temp = join(tmpdir(), `claude-smart-node-${process.pid}`);
   mkdirSync(nodeRoot, { recursive: true });
@@ -2367,8 +2540,15 @@ async function ensurePrivateNode() {
   const match = sums
     .split(/\r?\n/)
     .map((line) => line.trim().split(/\s+/))
-    .find((parts) => parts[1] && new RegExp(`^node-v[^ ]+-${nodeOs}-${nodeArch}\\.${archiveExt.replace(/\./g, "\\.")}$`).test(parts[1]));
-  if (!match) throw new Error(`could not resolve Node.js ${nodeOs}-${nodeArch} archive from ${baseUrl}`);
+    .find(
+      (parts) =>
+        parts[1] &&
+        new RegExp(
+          `^node-v[^ ]+-${nodeOs}-${nodeArch}\\.${archiveExt.replace(/\./g, "\\.")}$`,
+        ).test(parts[1]),
+    );
+  if (!match)
+    throw new Error(`could not resolve Node.js ${nodeOs}-${nodeArch} archive from ${baseUrl}`);
   const [expectedHash, archiveName] = match;
   const archivePath = join(temp, archiveName);
   await downloadFile(`${baseUrl}/${archiveName}`, archivePath);
@@ -2382,7 +2562,8 @@ async function ensurePrivateNode() {
   let code = 0;
   if (archiveExt === "zip") {
     const powershell = resolveCommand(["powershell.exe", "powershell", "pwsh"]);
-    if (!powershell) throw new Error("PowerShell is required to extract private Node.js on Windows");
+    if (!powershell)
+      throw new Error("PowerShell is required to extract private Node.js on Windows");
     code = await runChecked(
       powershell,
       [
@@ -2422,7 +2603,11 @@ async function ensurePrivateNode() {
     }
   } catch (err) {
     if (hadCurrent) {
-      try { renameSync(backup, current); } catch { /* leave backup for manual recovery */ }
+      try {
+        renameSync(backup, current);
+      } catch {
+        /* leave backup for manual recovery */
+      }
     }
     throw err;
   }
@@ -2431,7 +2616,8 @@ async function ensurePrivateNode() {
 
   const node = resolvePrivateNode();
   const npm = resolvePrivateNpm();
-  if (!node || !npm) throw new Error("private Node.js install completed but node/npm are not usable");
+  if (!node || !npm)
+    throw new Error("private Node.js install completed but node/npm are not usable");
   return { node, npm };
 }
 
@@ -2537,8 +2723,8 @@ function patchCodexHooksForNode(pluginRoot, nodePath) {
   const hookPath = join(pluginRoot, "hooks", "codex-hooks.json");
   const parsed = JSON.parse(readFileSync(hookPath, "utf8"));
   const runner = join(pluginRoot, "scripts", "codex-hook.js");
-  const command = (...args) => [nodePath, runner, ...args, "--runtime-root", pluginRoot]
-    .map(quoteCommandPart).join(" ");
+  const command = (...args) =>
+    [nodePath, runner, ...args, "--runtime-root", pluginRoot].map(quoteCommandPart).join(" ");
   // Dispatch by command content rather than index — entries can be added or
   // reordered without breaking the patch.
   const patchOne = (original) => {
@@ -2650,7 +2836,18 @@ async function installVendoredReflexio(pluginRoot, uv, env) {
   process.stdout.write(`Installing bundled Reflexio source from ${vendorRoot}...\n`);
   let code = await runChecked(
     uv,
-    ["pip", "install", "--project", pluginRoot, "--python", pythonPath, "--quiet", "--reinstall", "--no-deps", vendorRoot],
+    [
+      "pip",
+      "install",
+      "--project",
+      pluginRoot,
+      "--python",
+      pythonPath,
+      "--quiet",
+      "--reinstall",
+      "--no-deps",
+      vendorRoot,
+    ],
     { cwd: pluginRoot, env },
   );
   if (code !== 0) {
@@ -2659,7 +2856,17 @@ async function installVendoredReflexio(pluginRoot, uv, env) {
     );
     code = await runChecked(
       uv,
-      ["pip", "install", "--project", pluginRoot, "--python", pythonPath, "--reinstall", "--no-deps", vendorRoot],
+      [
+        "pip",
+        "install",
+        "--project",
+        pluginRoot,
+        "--python",
+        pythonPath,
+        "--reinstall",
+        "--no-deps",
+        vendorRoot,
+      ],
       { cwd: pluginRoot, env },
     );
   }
@@ -2694,27 +2901,19 @@ function verifyVendoredReflexioRequirements(pluginRoot, uv, pythonPath, env) {
 }
 
 async function syncPluginPythonEnv(pluginRoot, uv, env) {
-  let code = await runChecked(
-    uv,
-    ["sync", "--locked", "--python", "3.12", "--quiet"],
-    { cwd: pluginRoot, env },
-  );
+  let code = await runChecked(uv, ["sync", "--locked", "--python", "3.12", "--quiet"], {
+    cwd: pluginRoot,
+    env,
+  });
   if (code === 0) return;
 
-  const lockIsFresh = runSilentStatus(
-    uv,
-    ["lock", "--check", "--python", "3.12"],
-    { cwd: pluginRoot, env },
-  ) === 0;
+  const lockIsFresh =
+    runSilentStatus(uv, ["lock", "--check", "--python", "3.12"], { cwd: pluginRoot, env }) === 0;
   if (lockIsFresh) {
     process.stderr.write(
       `warning: quiet uv sync failed in ${pluginRoot}; retrying with full output.\n`,
     );
-    code = await runChecked(
-      uv,
-      ["sync", "--locked", "--python", "3.12"],
-      { cwd: pluginRoot, env },
-    );
+    code = await runChecked(uv, ["sync", "--locked", "--python", "3.12"], { cwd: pluginRoot, env });
     if (code !== 0) throw new Error(`uv sync failed in ${pluginRoot}`);
     return;
   }
@@ -2722,26 +2921,14 @@ async function syncPluginPythonEnv(pluginRoot, uv, env) {
   process.stderr.write(
     "warning: plugin/uv.lock is out of sync; refreshing local lockfile and retrying uv sync.\n",
   );
-  code = await runChecked(
-    uv,
-    ["lock", "--python", "3.12"],
-    { cwd: pluginRoot, env },
-  );
+  code = await runChecked(uv, ["lock", "--python", "3.12"], { cwd: pluginRoot, env });
   if (code !== 0) throw new Error(`uv lock failed in ${pluginRoot}`);
-  code = await runChecked(
-    uv,
-    ["sync", "--python", "3.12", "--quiet"],
-    { cwd: pluginRoot, env },
-  );
+  code = await runChecked(uv, ["sync", "--python", "3.12", "--quiet"], { cwd: pluginRoot, env });
   if (code !== 0) {
     process.stderr.write(
       `warning: quiet uv sync failed in ${pluginRoot} after refreshing plugin/uv.lock; retrying with full output.\n`,
     );
-    code = await runChecked(
-      uv,
-      ["sync", "--python", "3.12"],
-      { cwd: pluginRoot, env },
-    );
+    code = await runChecked(uv, ["sync", "--python", "3.12"], { cwd: pluginRoot, env });
   }
   if (code !== 0) throw new Error(`uv sync failed in ${pluginRoot}`);
 }
@@ -2761,11 +2948,7 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   const pyprojectPath = join(pluginRoot, "pyproject.toml");
   const pyproject = existsSync(pyprojectPath) ? readFileSync(pyprojectPath, "utf8") : "";
   if (/^\s*\[tool\.uv\.sources\]\s*$/m.test(pyproject)) {
-    const lockCode = await runChecked(
-      uv,
-      ["lock", "--quiet"],
-      { cwd: pluginRoot, env },
-    );
+    const lockCode = await runChecked(uv, ["lock", "--quiet"], { cwd: pluginRoot, env });
     if (lockCode !== 0) throw new Error(`uv lock failed in ${pluginRoot}`);
   }
   await syncPluginPythonEnv(pluginRoot, uv, env);
@@ -2777,7 +2960,9 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
     process.stdout.write("[phase] Preparing dashboard dependencies and build…\n");
     const helper = join(PACKAGE_ROOT, "plugin", "scripts", "dashboard-cache.js");
     const cache = existsSync(helper) ? require(helper) : null;
-    const nodeVersion = spawnSync(nodeRuntime.node, ["--version"], { encoding: "utf8" }).stdout?.trim();
+    const nodeVersion = spawnSync(nodeRuntime.node, ["--version"], {
+      encoding: "utf8",
+    }).stdout?.trim();
     if (nodeVersion && cache?.reusable(dashboardDir, nodeVersion)) {
       process.stdout.write("Dashboard build inputs unchanged; reusing prepared build.\n");
       return;
@@ -2787,7 +2972,8 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
     if (code !== 0) throw new Error(`npm ci --omit=dev failed in ${dashboardDir}`);
     code = await runChecked(nodeRuntime.npm, ["run", "build"], { cwd: dashboardDir, env });
     if (code !== 0) throw new Error(`npm run build failed in ${dashboardDir}`);
-    if (cache && nodeVersion && existsSync(join(dashboardDir, ".next", "BUILD_ID"))) cache.record(dashboardDir, nodeVersion);
+    if (cache && nodeVersion && existsSync(join(dashboardDir, ".next", "BUILD_ID")))
+      cache.record(dashboardDir, nodeVersion);
   }
 }
 
@@ -2964,10 +3150,7 @@ function removeTomlSections(path, { exact, prefixes = [] }) {
 
 function cleanupCodexInstallState() {
   removeTomlSections(CODEX_CONFIG_PATH, {
-    exact: new Set([
-      `plugins."${CODEX_PLUGIN_ID}"`,
-      `marketplaces.${CODEX_MARKETPLACE_NAME}`,
-    ]),
+    exact: new Set([`plugins."${CODEX_PLUGIN_ID}"`, `marketplaces.${CODEX_MARKETPLACE_NAME}`]),
     prefixes: [`hooks.state."${CODEX_PLUGIN_ID}:`],
   });
   rmSync(CODEX_MARKETPLACE_DIR, { recursive: true, force: true });
@@ -2984,9 +3167,7 @@ function cleanupCodexInstallState() {
 function setCodexPluginEnabled() {
   const sectionName = `plugins."${CODEX_PLUGIN_ID}"`;
   removeTomlSections(CODEX_CONFIG_PATH, { exact: new Set([sectionName]) });
-  const existing = existsSync(CODEX_CONFIG_PATH)
-    ? readFileSync(CODEX_CONFIG_PATH, "utf8")
-    : "";
+  const existing = existsSync(CODEX_CONFIG_PATH) ? readFileSync(CODEX_CONFIG_PATH, "utf8") : "";
   let next = existing;
   if (next && !next.endsWith("\n")) next += "\n";
   if (next.trim()) next += "\n";
@@ -3006,9 +3187,7 @@ function setTomlFeature(feature, value) {
   const desired = `${feature} = ${value ? "true" : "false"}`;
   const sectionRe = /^\s*\[([^\]]+)\]\s*(?:#.*)?$/;
   const featureRe = new RegExp(`^\\s*${feature.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*=`);
-  const text = existsSync(CODEX_CONFIG_PATH)
-    ? readFileSync(CODEX_CONFIG_PATH, "utf8")
-    : "";
+  const text = existsSync(CODEX_CONFIG_PATH) ? readFileSync(CODEX_CONFIG_PATH, "utf8") : "";
   const lines = text.split("\n");
   let inFeatures = false;
   let featuresIdx = null;
@@ -3039,7 +3218,10 @@ function setTomlFeature(feature, value) {
     const sectionEnd = insertIdx !== null ? insertIdx : out.length;
     let hasFeature = false;
     for (let i = featuresIdx + 1; i < sectionEnd; i++) {
-      if (featureRe.test(out[i])) { hasFeature = true; break; }
+      if (featureRe.test(out[i])) {
+        hasFeature = true;
+        break;
+      }
     }
     if (!hasFeature) {
       const idx = insertIdx !== null ? insertIdx : out.length;
@@ -3062,9 +3244,7 @@ function setCodexHookStates(states) {
     exact: new Set(),
     prefixes: [`hooks.state."${CODEX_PLUGIN_ID}:`],
   });
-  const existing = existsSync(CODEX_CONFIG_PATH)
-    ? readFileSync(CODEX_CONFIG_PATH, "utf8")
-    : "";
+  const existing = existsSync(CODEX_CONFIG_PATH) ? readFileSync(CODEX_CONFIG_PATH, "utf8") : "";
   let next = existing;
   if (next && !next.endsWith("\n")) next += "\n";
   if (!next.includes("[hooks.state]")) {
@@ -3091,8 +3271,9 @@ function createCodexAppServerClient(child) {
 
   const onData = (chunk) => {
     buffer += chunk.toString();
-    let newline;
-    while ((newline = buffer.indexOf("\n")) >= 0) {
+    while (true) {
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) break;
       const line = buffer.slice(0, newline);
       buffer = buffer.slice(newline + 1);
       if (!line.trim()) continue;
@@ -3170,12 +3351,7 @@ async function listCodexPluginHooks(cwd) {
       CODEX_CLI_TIMEOUT_MS,
     );
     client.notify("initialized", {});
-    const response = await client.request(
-      2,
-      "hooks/list",
-      { cwds: [cwd] },
-      CODEX_CLI_TIMEOUT_MS,
-    );
+    const response = await client.request(2, "hooks/list", { cwds: [cwd] }, CODEX_CLI_TIMEOUT_MS);
     const hooks = response.result?.data?.[0]?.hooks;
     if (!Array.isArray(hooks)) {
       throw new Error("Codex app-server hook metadata was malformed");
@@ -3221,9 +3397,7 @@ function codexPluginVersion(pluginRoot) {
     const manifest = JSON.parse(
       readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
     );
-    return typeof manifest.version === "string" && manifest.version
-      ? manifest.version
-      : null;
+    return typeof manifest.version === "string" && manifest.version ? manifest.version : null;
   } catch {
     return null;
   }
@@ -3239,7 +3413,10 @@ function installCodexPluginCache(pluginRoot) {
   const staged = uniquePackagePath(cacheDir, ".claude-smart-copy");
   try {
     cpSync(pluginRoot, staged, {
-      recursive: true, force: true, verbatimSymlinks: false, filter: shouldCopyPath,
+      recursive: true,
+      force: true,
+      verbatimSymlinks: false,
+      filter: shouldCopyPath,
     });
     replaceLocalPluginPackage(staged, cacheDir);
     setCodexPluginEnabled();
@@ -3296,16 +3473,21 @@ async function runUpdate(args) {
 
 async function runUpdateCodex(args) {
   const pluginRoot = existsSync(CODEX_RUNTIME_PLUGIN_ROOT)
-    ? CODEX_RUNTIME_PLUGIN_ROOT : findCodexPluginRoot() || join(PACKAGE_ROOT, "plugin");
+    ? CODEX_RUNTIME_PLUGIN_ROOT
+    : findCodexPluginRoot() || join(PACKAGE_ROOT, "plugin");
   stopClaudeSmartServices(pluginRoot);
-  process.stdout.write("Updating claude-smart Codex support by reinstalling from this package...\n");
+  process.stdout.write(
+    "Updating claude-smart Codex support by reinstalling from this package...\n",
+  );
   await runInstallCodex(args);
 }
 
 async function runUpdateOpenCode(args) {
   const pluginRoot = join(PACKAGE_ROOT, "plugin");
   stopClaudeSmartServices(pluginRoot);
-  process.stdout.write("Updating claude-smart OpenCode support by reinstalling from this package...\n");
+  process.stdout.write(
+    "Updating claude-smart OpenCode support by reinstalling from this package...\n",
+  );
   await runInstallOpenCode(args);
 }
 
@@ -3340,7 +3522,12 @@ async function runUninstall(args) {
   stopClaudeSmartServices(join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin"));
   // The marketplace points at the copy removed below; drop it too so Claude
   // Code is not left with an entry for a missing directory.
-  const marketplaceCode = await runClaude(["plugin", "marketplace", "remove", CODEX_MARKETPLACE_NAME]);
+  const marketplaceCode = await runClaude([
+    "plugin",
+    "marketplace",
+    "remove",
+    CODEX_MARKETPLACE_NAME,
+  ]);
   if (marketplaceCode !== 0) {
     process.stderr.write(
       `warning: could not remove the ${CODEX_MARKETPLACE_NAME} marketplace; remove it with: ` +
@@ -3432,7 +3619,9 @@ async function runInstall(args, options = {}) {
     pluginRoot = await bootstrapClaudeCodeInstall(join(source, "plugin"));
     restorePublishHooksFromSource(pluginRoot);
     if (readOnly && prunePublishHooksForReadOnly(pluginRoot)) {
-      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
+      process.stdout.write(
+        "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
+      );
     }
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
     markLocalPluginPackagePrepared(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
@@ -3470,9 +3659,7 @@ async function runInstall(args, options = {}) {
       code = await runClaude(step.args, { spinnerLabel: step.label });
     }
     if (code !== 0) {
-      process.stderr.write(
-        `error: \`claude ${step.args.join(" ")}\` failed (exit ${code})\n`,
-      );
+      process.stderr.write(`error: \`claude ${step.args.join(" ")}\` failed (exit ${code})\n`);
       process.exit(code);
     }
   }
@@ -3568,12 +3755,16 @@ async function runInstallCodex(args) {
     await bootstrapPluginRuntime(CODEX_RUNTIME_PLUGIN_ROOT, { readOnly });
     // Only the patched manifest enters the marketplace/cache. Its commands
     // execute the account runtime even when Codex supplies PLUGIN_ROOT=cache.
-    cpSync(join(CODEX_RUNTIME_PLUGIN_ROOT, "hooks", "codex-hooks.json"),
-      join(codexMarketplacePluginRoot(marketplaceRoot), "hooks", "codex-hooks.json"));
+    cpSync(
+      join(CODEX_RUNTIME_PLUGIN_ROOT, "hooks", "codex-hooks.json"),
+      join(codexMarketplacePluginRoot(marketplaceRoot), "hooks", "codex-hooks.json"),
+    );
     cacheDir = installCodexPluginCache(codexMarketplacePluginRoot(marketplaceRoot));
     process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
     if (readOnly) {
-      process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
+      process.stdout.write(
+        "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
+      );
     }
     // Preparation succeeded; discard the rollback cache only now.
     commitLocalPluginPackage(cacheDir);
@@ -3682,12 +3873,16 @@ async function runInstallOpenCode(args) {
     // instead of writing one.
     results = removeOpenCodeLegacyEntries(args);
   } catch (err) {
-    process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
+    process.stderr.write(
+      `error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`,
+    );
     stopClaudeSmartServices(pluginRoot);
     process.exit(1);
   }
   if (readOnly) {
-    process.stdout.write("Installed read-only hook manifest; publish interactions hooks are disabled.\n");
+    process.stdout.write(
+      "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
+    );
   }
   const v2PluginFile = writeOpenCodeV2Plugin(args, packageRoot);
   // Committed only after the loader check, so a conflict exit rolls the package back.
@@ -3698,7 +3893,8 @@ async function runInstallOpenCode(args) {
     [
       "",
       ...results.map(
-        (result) => `Removed the legacy claude-smart plugin entry from ${result.configPath}; the loader replaces it.`,
+        (result) =>
+          `Removed the legacy claude-smart plugin entry from ${result.configPath}; the loader replaces it.`,
       ),
       `Prepared claude-smart OpenCode package at ${packageRoot}.`,
       `Wrote the OpenCode loader at ${v2PluginFile.path}; OpenCode 1.x and V2 both load the plugin from there.`,
@@ -3740,7 +3936,9 @@ async function runUninstallCodex() {
 function reportOpenCodeConfigBackups(results) {
   for (const result of results) {
     if (result.backupPath) {
-      process.stdout.write(`Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`);
+      process.stdout.write(
+        `Saved a comment-preserving backup of your previous config at ${result.backupPath}.\n`,
+      );
     }
   }
 }
@@ -3752,7 +3950,9 @@ async function runUninstallOpenCode(args) {
   try {
     results = removeOpenCodeLegacyEntries(args);
   } catch (err) {
-    process.stderr.write(`error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`);
+    process.stderr.write(
+      `error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`,
+    );
     process.exit(1);
   }
   reportOpenCodeConfigBackups(results);
@@ -3778,7 +3978,9 @@ async function runUninstallOpenCode(args) {
     [
       "",
       ...(results.length
-        ? results.map((result) => `Removed claude-smart OpenCode plugin entries from ${result.configPath}.`)
+        ? results.map(
+            (result) => `Removed claude-smart OpenCode plugin entries from ${result.configPath}.`,
+          )
         : ["OpenCode config did not include claude-smart."]),
       "Restart OpenCode to apply.",
       ...LOCAL_DATA_NOTICE,
@@ -3819,7 +4021,11 @@ function disabledCodexHooks(configPath = CODEX_CONFIG_PATH) {
       continue;
     }
     const inline = line.match(/^"((?:[^"\\]|\\.)*)"\s*=\s*\{(.*)\}\s*(?:#.*)?$/);
-    if (inline && unquote(inline[1]).startsWith(prefix) && /(?:^|[,{\s])enabled\s*=\s*false\b/.test(inline[2])) {
+    if (
+      inline &&
+      unquote(inline[1]).startsWith(prefix) &&
+      /(?:^|[,{\s])enabled\s*=\s*false\b/.test(inline[2])
+    ) {
       disabled.add(unquote(inline[1]));
     }
   }
@@ -3839,7 +4045,7 @@ function writeDisabledCodexHookWarnings(configPath = CODEX_CONFIG_PATH) {
   }
   process.stdout.write(
     "  Re-enable in Codex with /hooks, or set `enabled = true` in that hook's " +
-      "[hooks.state.\"<key>\"] section, then start a new Codex session. " +
+      '[hooks.state."<key>"] section, then start a new Codex session. ' +
       "Rerunning `npx claude-smart install --host codex` also re-enables them.\n",
   );
 }
@@ -3858,7 +4064,9 @@ function runStatus(args) {
     const command = ["plugin", "list", "--json"];
     if (host === HOST_CODEX) command.push("--marketplace", CODEX_MARKETPLACE_NAME);
     const result = spawnSync(cli, command, {
-      encoding: "utf8", timeout: CODEX_CLI_TIMEOUT_MS, windowsHide: true,
+      encoding: "utf8",
+      timeout: CODEX_CLI_TIMEOUT_MS,
+      windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"],
     });
     if (result.status === 0) {
@@ -3866,7 +4074,9 @@ function runStatus(args) {
         const data = JSON.parse(result.stdout);
         const plugins = host === HOST_CODEX ? data.installed : data;
         if (Array.isArray(plugins)) {
-          const matches = plugins.filter((plugin) => (plugin.pluginId || plugin.id) === PLUGIN_SPEC);
+          const matches = plugins.filter(
+            (plugin) => (plugin.pluginId || plugin.id) === PLUGIN_SPEC,
+          );
           if (host === HOST_CLAUDE_CODE) claudeInstallations = matches;
           else installed = matches[0];
           inventoryAvailable = true;
@@ -3879,18 +4089,25 @@ function runStatus(args) {
   process.stdout.write(`Host: ${host}\n`);
   if (host === HOST_CODEX) process.stdout.write(`Codex home: ${CODEX_HOME}\n`);
   const versionLabel = host === HOST_OPENCODE ? "Prepared runtime version" : "Installed version";
-  const version = installed ? (installed.version || "unknown (host reported no version)")
-    : (inventoryAvailable ? "not installed" : "unknown (host inventory unavailable)");
+  const version = installed
+    ? installed.version || "unknown (host reported no version)"
+    : inventoryAvailable
+      ? "not installed"
+      : "unknown (host inventory unavailable)";
   if (claudeInstallations.length) {
     process.stdout.write("Claude Code registrations (session activation is unknown):\n");
     for (const plugin of claudeInstallations) {
       const scope = plugin.scope || "unknown";
       const project = plugin.projectPath ? `, project: ${plugin.projectPath}` : "";
       const enabled = typeof plugin.enabled === "boolean" ? String(plugin.enabled) : "unknown";
-      const projectEnabled = typeof plugin.projectEnabled === "boolean"
-        ? `, project enabled: ${plugin.projectEnabled}` : "";
-      process.stdout.write(`  Installed version: ${plugin.version || "unknown (host reported no version)"} ` +
-        `(scope: ${scope}${project}, enabled: ${enabled}${projectEnabled})\n`);
+      const projectEnabled =
+        typeof plugin.projectEnabled === "boolean"
+          ? `, project enabled: ${plugin.projectEnabled}`
+          : "";
+      process.stdout.write(
+        `  Installed version: ${plugin.version || "unknown (host reported no version)"} ` +
+          `(scope: ${scope}${project}, enabled: ${enabled}${projectEnabled})\n`,
+      );
     }
   } else {
     process.stdout.write(`${versionLabel}: ${version}\n`);
@@ -3901,8 +4118,10 @@ function runStatus(args) {
   // Match only this host and account. The shared log is bounded by hook_log;
   // read its last 5 MiB even if an older writer left a larger file behind.
   const logOverride = (process.env.CLAUDE_SMART_HOOK_LOG || "").trim();
-  const logPath = logOverride && !["1", "true", "yes", "on"].includes(logOverride.toLowerCase())
-    ? logOverride : join(CLAUDE_SMART_STATE_DIR, "hook.log");
+  const logPath =
+    logOverride && !["1", "true", "yes", "on"].includes(logOverride.toLowerCase())
+      ? logOverride
+      : join(CLAUDE_SMART_STATE_DIR, "hook.log");
   const sessions = new Map();
   try {
     const fd = openSync(logPath, constants.O_RDONLY | constants.O_NONBLOCK);
@@ -3917,7 +4136,11 @@ function runStatus(args) {
       if (size > length) lines.shift();
       for (let i = lines.length - 1; i >= 0 && sessions.size < 5; i--) {
         let entry;
-        try { entry = JSON.parse(lines[i]); } catch { continue; }
+        try {
+          entry = JSON.parse(lines[i]);
+        } catch {
+          continue;
+        }
         if (!entry || entry.host !== host || entry.internal_skipped || !entry.session_id) continue;
         if (host === HOST_CODEX && entry.codex_home !== CODEX_HOME) continue;
         if (entry.event === "publish-result") continue;
@@ -3930,12 +4153,21 @@ function runStatus(args) {
     // Missing history is normal on first install.
   }
   process.stdout.write("Recent session hook observations (sessions may have ended):\n");
-  if (!sessions.size) process.stdout.write("  None recorded for this host/account; active version is unknown.\n");
+  if (!sessions.size)
+    process.stdout.write("  None recorded for this host/account; active version is unknown.\n");
   for (const [session, entry] of sessions) {
-    process.stdout.write(`  ${session}: ${entry.plugin_version || "unknown"} (${entry.event}, ts=${entry.ts})\n`);
+    process.stdout.write(
+      `  ${session}: ${entry.plugin_version || "unknown"} (${entry.event}, ts=${entry.ts})\n`,
+    );
   }
-  if (host === HOST_CLAUDE_CODE) process.stdout.write("Activate updates with /reload-plugins in Claude Code, or next session.\n");
-  if (host === HOST_CODEX) process.stdout.write("Activate updates in a new Codex session; review changed hooks in /hooks.\n");
+  if (host === HOST_CLAUDE_CODE)
+    process.stdout.write(
+      "Activate updates with /reload-plugins in Claude Code, or next session.\n",
+    );
+  if (host === HOST_CODEX)
+    process.stdout.write(
+      "Activate updates in a new Codex session; review changed hooks in /hooks.\n",
+    );
   if (host === HOST_OPENCODE) process.stdout.write("Restart OpenCode to activate updates.\n");
 }
 
@@ -3985,9 +4217,7 @@ async function main() {
     return;
   }
 
-  process.stderr.write(
-    `claude-smart: unknown command '${cmd}'. Try 'npx claude-smart --help'.\n`,
-  );
+  process.stderr.write(`claude-smart: unknown command '${cmd}'. Try 'npx claude-smart --help'.\n`);
   process.exit(1);
 }
 

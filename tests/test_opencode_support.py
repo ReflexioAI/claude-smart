@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import shutil
 import subprocess
 import textwrap
 from collections.abc import Generator
-from pathlib import Path, PosixPath
-from types import SimpleNamespace
+from pathlib import Path
 from typing import Any
 
 import pytest  # type: ignore[reportMissingImports]
 
-from claude_smart import cli, hook, runtime, state
+from claude_smart import hook, runtime, state
 from claude_smart.events import post_tool, stop, user_prompt
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -61,11 +59,11 @@ def _write_fake_bash_recorder(tmp_path: Path, *, user_prompt_context: str = "") 
     )
     fake_bash.write_text(
         "#!/bin/sh\n"
-        "script=\"$1\"\n"
+        'script="$1"\n'
         "shift\n"
         "payload=$(cat || true)\n"
-        "PAYLOAD=\"$payload\" node -e 'require(\"fs\").appendFileSync(process.env.CALL_LOG, JSON.stringify({ script: process.argv[1], args: process.argv.slice(2), payload: process.env.PAYLOAD }) + \"\\n\")' \"$script\" \"$@\"\n"
-        "if [ \"${2:-}\" = \"user-prompt\" ]; then\n"
+        'PAYLOAD="$payload" node -e \'require("fs").appendFileSync(process.env.CALL_LOG, JSON.stringify({ script: process.argv[1], args: process.argv.slice(2), payload: process.env.PAYLOAD }) + "\\n")\' "$script" "$@"\n'
+        'if [ "${2:-}" = "user-prompt" ]; then\n'
         f"  printf '%s\\n' '{response}'\n"
         "else\n"
         "  printf '%s\\n' '{}'\n"
@@ -77,7 +75,7 @@ def _write_fake_bash_recorder(tmp_path: Path, *, user_prompt_context: str = "") 
 
 def _write_minimal_plugin_root(root: Path, *, name: str = "claude-smart") -> None:
     (root / "scripts").mkdir(parents=True)
-    (root / "pyproject.toml").write_text(f"[project]\nname = \"{name}\"\n")
+    (root / "pyproject.toml").write_text(f'[project]\nname = "{name}"\n')
     (root / "uv.lock").write_text("")
     (root / "scripts" / "hook_entry.sh").write_text("#!/bin/sh\n")
 
@@ -126,12 +124,16 @@ def _run_opencode_server_and_read_calls(
 def test_package_exposes_opencode_server_entrypoint() -> None:
     package = _read_json("package.json")
 
-    assert package["exports"]["./server"]["import"] == "./plugin/opencode/dist/server.mjs"
+    assert (
+        package["exports"]["./server"]["import"] == "./plugin/opencode/dist/server.mjs"
+    )
     assert "build:opencode" in package["scripts"]
     assert "opencode" in package["keywords"]
     assert "opencode-plugin" in package["keywords"]
     assert package["engines"]["opencode"] == ">=1.17.0"
-    assert package["description"].startswith("Self-improving Claude Code, Codex, and OpenCode")
+    assert package["description"].startswith(
+        "Self-improving Claude Code, Codex, and OpenCode"
+    )
     assert package["oc-plugin"] == ["server"]
 
 
@@ -150,16 +152,9 @@ def test_opencode_hook_bootstrap_lockfile_matches_pyproject() -> None:
         pytest.skip("uv is not installed")
     assert uv is not None
 
+    # Check the customer project outside any enclosing enterprise workspace.
     result = subprocess.run(
-        [
-            uv,
-            "lock",
-            "--check",
-            "--python",
-            "3.12",
-            "--project",
-            str(REPO_ROOT / "plugin"),
-        ],
+        ["bash", str(REPO_ROOT / "scripts/standalone-lock.sh"), "--check"],
         text=True,
         capture_output=True,
         check=False,
@@ -329,717 +324,14 @@ def test_opencode_learning_loop_buffers_injects_tools_and_publishes(
     ]
 
 
-def test_opencode_config_patch_preserves_legacy_plugin_field_and_unrelated(
-    tmp_path: Path,
-) -> None:
-    plugin_spec = cli._opencode_local_plugin_spec()
-    config = tmp_path / ".opencode" / "opencode.jsonc"
-    config.parent.mkdir()
-    config.write_text(
-        '{\n'
-        '  // existing user config\n'
-        '  "theme": "system",\n'
-        '  "plugin": ["other-plugin",],\n'
-        '}\n'
-    )
-
-    changed, path = cli._patch_opencode_plugin_config(config, install=True)
-
-    assert changed is True
-    assert path == config
-    parsed = json.loads(config.read_text())
-    assert parsed["theme"] == "system"
-    assert parsed["plugin"] == ["other-plugin", plugin_spec]
-
-
-def test_opencode_config_patch_uninstall_removes_only_claude_smart(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "local-package"
-    package_root.mkdir()
-    (package_root / "package.json").write_text('{"name":"claude-smart"}\n')
-    config = tmp_path / ".opencode" / "opencode.json"
-    config.parent.mkdir()
-    config.write_text(
-        json.dumps(
-            {
-                "plugin": [
-                    "other-plugin",
-                    "claude-smart",
-                    package_root.as_uri(),
-                    ["another-plugin", {"enabled": True}],
-                ],
-                "model": "anthropic/claude-sonnet-4",
-            }
-        )
-    )
-
-    changed, _ = cli._patch_opencode_plugin_config(config, install=False)
-
-    assert changed is True
-    parsed = json.loads(config.read_text())
-    assert parsed["plugin"] == [
-        "other-plugin",
-        ["another-plugin", {"enabled": True}],
-    ]
-    assert parsed["model"] == "anthropic/claude-sonnet-4"
-
-
-def test_opencode_config_patch_install_dedupes_existing_entries(
-    tmp_path: Path,
-) -> None:
-    plugin_spec = cli._opencode_local_plugin_spec()
-    config = tmp_path / ".opencode" / "opencode.json"
-    config.parent.mkdir()
-    config.write_text(
-        json.dumps({"plugin": ["claude-smart", "other-plugin", "claude-smart"]})
-    )
-
-    changed, _ = cli._patch_opencode_plugin_config(config, install=True)
-
-    assert changed is True
-    assert json.loads(config.read_text())["plugin"] == ["other-plugin", plugin_spec]
-
-
-def test_opencode_config_patch_installs_local_file_spec_and_removes_bare_name(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "local-package"
-    package_root.mkdir()
-    old_package = tmp_path / "old-cache" / "node_modules" / "claude-smart"
-    old_package.mkdir(parents=True)
-    (old_package / "package.json").write_text('{"name":"claude-smart"}\n')
-    config = tmp_path / "opencode.json"
-    config.write_text(
-        json.dumps(
-            {
-                "plugin": [
-                    "other-plugin",
-                    "claude-smart",
-                    old_package.as_uri(),
-                ]
-            }
-        )
-    )
-
-    changed, _ = cli._patch_opencode_plugin_config(
-        config,
-        install=True,
-        plugin_spec=package_root.as_uri(),
-    )
-
-    assert changed is True
-    assert json.loads(config.read_text())["plugin"] == [
-        "other-plugin",
-        package_root.as_uri(),
-    ]
-
-
-def test_opencode_config_patch_preserves_unrelated_file_specs_named_claude_smart(
-    tmp_path: Path,
-) -> None:
-    missing_manifest = tmp_path / "vendor" / "claude-smart"
-    wrong_manifest = tmp_path / "other" / "claude-smart"
-    real_package = tmp_path / "real-package"
-    missing_manifest.mkdir(parents=True)
-    wrong_manifest.mkdir(parents=True)
-    real_package.mkdir()
-    (wrong_manifest / "package.json").write_text('{"name":"not-claude-smart"}\n')
-    (real_package / "package.json").write_text('{"name":"claude-smart"}\n')
-    config = tmp_path / "opencode.json"
-    config.write_text(
-        json.dumps(
-            {
-                "plugin": [
-                    "other-plugin",
-                    missing_manifest.as_uri(),
-                    wrong_manifest.as_uri(),
-                    real_package.as_uri(),
-                    "claude-smart@0.2.46",
-                ]
-            }
-        )
-    )
-
-    changed, _ = cli._patch_opencode_plugin_config(config, install=False)
-
-    assert changed is True
-    assert json.loads(config.read_text())["plugin"] == [
-        "other-plugin",
-        missing_manifest.as_uri(),
-        wrong_manifest.as_uri(),
-    ]
-
-
-def test_opencode_config_patch_fresh_config_uses_current_plugin_field(
-    tmp_path: Path,
-) -> None:
-    plugin_spec = cli._opencode_local_plugin_spec()
-    config = tmp_path / "opencode.json"
-
-    changed, _ = cli._patch_opencode_plugin_config(config, install=True)
-
-    assert changed is True
-    assert json.loads(config.read_text()) == {"plugin": [plugin_spec]}
-
-
-def test_opencode_config_patch_migrates_existing_plugins_field(
-    tmp_path: Path,
-) -> None:
-    plugin_spec = cli._opencode_local_plugin_spec()
-    config = tmp_path / "opencode.json"
-    config.write_text(json.dumps({"plugins": ["other-plugin"], "theme": "system"}))
-
-    changed, _ = cli._patch_opencode_plugin_config(config, install=True)
-
-    parsed = json.loads(config.read_text())
-    assert changed is True
-    assert parsed["plugin"] == ["other-plugin", plugin_spec]
-    assert "plugins" not in parsed
-    assert parsed["theme"] == "system"
-
-
-def test_opencode_config_patch_uninstall_migrates_existing_plugins_field(
-    tmp_path: Path,
-) -> None:
-    config = tmp_path / "opencode.json"
-    config.write_text(
-        json.dumps({"plugins": ["claude-smart", "other-plugin", "claude-smart"]})
-    )
-
-    changed, _ = cli._patch_opencode_plugin_config(config, install=False)
-
-    assert changed is True
-    assert json.loads(config.read_text()) == {"plugin": ["other-plugin"]}
-
-
-def test_opencode_jsonc_parser_preserves_comma_brace_inside_strings() -> None:
-    parsed = cli._strip_jsonc('{"prompt": "keep,}", "plugin": ["claude-smart",],}\n')
-
-    assert json.loads(parsed) == {"prompt": "keep,}", "plugin": ["claude-smart"]}
-
-
-def test_opencode_jsonc_parser_skips_comments_after_trailing_commas() -> None:
-    parsed = cli._strip_jsonc(
-        '{\n'
-        '  "plugin": [\n'
-        '    "other-plugin", // keep plugin note\n'
-        '  ], /* trailing array comment */\n'
-        '}\n'
-    )
-
-    assert json.loads(parsed) == {"plugin": ["other-plugin"]}
-
-
-def test_opencode_config_patch_rejects_non_array_plugin_without_rewrite(
-    tmp_path: Path,
-) -> None:
-    config = tmp_path / ".opencode" / "opencode.json"
-    config.parent.mkdir()
-    original = json.dumps({"plugin": "other-plugin", "theme": "system"})
-    config.write_text(original)
-
-    with pytest.raises(ValueError, match='field "plugin" must be a JSON array'):
-        cli._patch_opencode_plugin_config(config, install=True)
-
-    assert config.read_text() == original
-
-
-def test_opencode_config_patch_rejects_non_array_plugins_without_rewrite(
-    tmp_path: Path,
-) -> None:
-    config = tmp_path / "opencode.json"
-    original = json.dumps({"plugins": "other-plugin", "theme": "system"})
-    config.write_text(original)
-
-    with pytest.raises(ValueError, match='field "plugins" must be a JSON array'):
-        cli._patch_opencode_plugin_config(config, install=True)
-
-    assert config.read_text() == original
-
-
-def test_opencode_config_patch_uninstall_noops_without_plugin_array(
-    tmp_path: Path,
-) -> None:
-    config = tmp_path / ".opencode" / "opencode.json"
-    config.parent.mkdir()
-    config.write_text(json.dumps({"theme": "system"}))
-
-    changed, _ = cli._patch_opencode_plugin_config(config, install=False)
-
-    assert changed is False
-    assert json.loads(config.read_text()) == {"theme": "system"}
-
-
-def test_opencode_config_patch_backs_up_jsonc_config(tmp_path: Path) -> None:
-    plugin_spec = cli._opencode_local_plugin_spec()
-    config = tmp_path / ".opencode" / "opencode.jsonc"
-    config.parent.mkdir()
-    original = (
-        '{\n'
-        '  // keep my notes\n'
-        '  "theme": "system",\n'
-        '  "plugin": ["other-plugin"]\n'
-        '}\n'
-    )
-    config.write_text(original)
-
-    changed, _ = cli._patch_opencode_plugin_config(config, install=True)
-
-    assert changed is True
-    assert config.with_suffix(config.suffix + ".bak").read_text() == original
-    assert json.loads(config.read_text())["plugin"] == ["other-plugin", plugin_spec]
-
-
-def test_opencode_config_patch_skips_backup_for_plain_json(tmp_path: Path) -> None:
-    config = tmp_path / ".opencode" / "opencode.json"
-    config.parent.mkdir()
-    config.write_text(json.dumps({"plugin": ["other-plugin"]}))
-
-    changed, _ = cli._patch_opencode_plugin_config(config, install=True)
-
-    assert changed is True
-    assert not config.with_suffix(config.suffix + ".bak").exists()
-
-
-def test_opencode_scope_config_paths_cover_every_config_the_scope_loads(
-    monkeypatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-
-    assert cli._opencode_scope_config_paths(global_config=True) == [
-        tmp_path / "xdg" / "opencode" / "opencode.json",
-        tmp_path / "xdg" / "opencode" / "opencode.jsonc",
-    ]
-    assert cli._opencode_scope_config_paths(cwd=tmp_path) == [
-        tmp_path / "opencode.json",
-        tmp_path / "opencode.jsonc",
-        tmp_path / ".opencode" / "opencode.json",
-        tmp_path / ".opencode" / "opencode.jsonc",
-    ]
-
-
-def _stub_opencode_install(monkeypatch, package_root: Path) -> None:
-    monkeypatch.setattr(cli, "_OPENCODE_LOCAL_PACKAGE_DIR", package_root)
-    monkeypatch.setattr(
-        cli, "_opencode_install_supported_from_this_package", lambda: True
-    )
-    monkeypatch.setattr(cli, "_opencode_prerequisite_error", lambda: None)
-    monkeypatch.setattr(cli, "_configure_reflexio_setup", lambda host: False)
-    monkeypatch.setattr(cli, "_persist_opencode_path", lambda: [])
-    monkeypatch.setattr(cli, "_has_extraction_provider", lambda: True)
-    monkeypatch.setattr(
-        cli, "_bootstrap_opencode_install", lambda read_only: (True, str(package_root))
-    )
-
-
-def test_opencode_python_install_removes_legacy_entries_from_every_scope_config(
-    monkeypatch, tmp_path, capsys
-) -> None:
-    package_root = tmp_path / "pkg"
-    (package_root / "plugin").mkdir(parents=True)
-    _stub_opencode_install(monkeypatch, package_root)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    project = tmp_path / "project"
-    (project / ".opencode").mkdir(parents=True)
-    legacy = {"plugin": ["other", package_root.as_uri()]}
-    configs = [
-        project / "opencode.json",
-        project / "opencode.jsonc",
-        project / ".opencode" / "opencode.json",
-    ]
-    for config in configs:
-        config.write_text(json.dumps(legacy) + "\n")
-    monkeypatch.chdir(project)
-
-    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
-
-    assert rc == 0
-    # OpenCode merges every one of these; an entry left in any is a second
-    # load spec beside the loader ("Duplicate plugin ID" on V2).
-    for config in configs:
-        assert json.loads(config.read_text())["plugin"] == ["other"], config
-    out = capsys.readouterr().out
-    for config in configs:
-        assert str(config) in out
-
-
-def test_opencode_python_legacy_removal_validates_every_config_before_writing(
-    tmp_path: Path,
-) -> None:
-    package_root_uri = (tmp_path / "pkg").as_uri()
-    good = tmp_path / "opencode.json"
-    good.write_text(json.dumps({"plugin": ["claude-smart", package_root_uri]}) + "\n")
-    original = good.read_text()
-    (tmp_path / "opencode.jsonc").write_text('{"plugin": "not-a-list"}\n')
-
-    with pytest.raises(ValueError, match="must be a JSON array"):
-        cli._remove_opencode_legacy_entries(cwd=tmp_path)
-
-    # No partial edit: the valid config is untouched when another one fails.
-    assert good.read_text() == original
-
-
-def test_opencode_python_uninstall_removes_legacy_entries_from_every_scope_config(
-    monkeypatch, tmp_path
-) -> None:
-    package_root = tmp_path / "state" / "opencode" / "claude-smart"
-    (package_root / "plugin").mkdir(parents=True)
-    monkeypatch.setattr(cli, "_OPENCODE_LOCAL_PACKAGE_DIR", package_root)
-    monkeypatch.setattr(cli, "_run_service", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "_repair_plugin_root", lambda host: None)
-    xdg = tmp_path / "xdg"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
-    (xdg / "opencode").mkdir(parents=True)
-    for name in ("opencode.json", "opencode.jsonc"):
-        (xdg / "opencode" / name).write_text(
-            json.dumps({"plugin": ["claude-smart@1.0.0"]}) + "\n"
-        )
-    project = tmp_path / "project"
-    project.mkdir()
-    monkeypatch.chdir(project)
-
-    rc = cli.cmd_uninstall(argparse.Namespace(host="opencode", global_config=True))
-
-    assert rc == 0
-    for name in ("opencode.json", "opencode.jsonc"):
-        assert json.loads((xdg / "opencode" / name).read_text())["plugin"] == []
-
-
-@pytest.mark.parametrize("occupant", ["non_utf8_file", "directory"])
-def test_opencode_python_install_reports_unusable_loader_path_as_conflict(
-    monkeypatch, tmp_path, capsys, occupant: str
-) -> None:
-    package_root = tmp_path / "pkg"
-    (package_root / "plugin").mkdir(parents=True)
-    _stub_opencode_install(monkeypatch, package_root)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    project = tmp_path / "project"
-    loader = project / ".opencode" / "plugins" / "claude-smart.js"
-    loader.parent.mkdir(parents=True)
-    config = project / "opencode.json"
-    config.write_text(json.dumps({"plugin": ["claude-smart"]}) + "\n")
-    if occupant == "directory":
-        loader.mkdir()
-    else:
-        # Invalid UTF-8 (and invalid in many locales): must be reported, not crash.
-        loader.write_bytes(b"// hand-written\nexport default \xff\xfe\x80;\n")
-    original = loader.read_bytes() if loader.is_file() else None
-    monkeypatch.chdir(project)
-
-    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
-
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert f"left an existing OpenCode plugin in place at {loader}" in err
-    if occupant == "directory":
-        assert "cannot be read as a file" in err
-        assert loader.is_dir()
-    else:
-        assert "not a claude-smart loader" in err
-        assert loader.read_bytes() == original
-    # Found before any config change.
-    assert json.loads(config.read_text())["plugin"] == ["claude-smart"]
-
-
-def test_opencode_python_loader_write_and_remove_spare_unusable_paths(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    project = tmp_path / "project"
-    loader = project / ".opencode" / "plugins" / "claude-smart.js"
-    loader.mkdir(parents=True)
-
-    assert cli._write_opencode_v2_plugin(package_root, cwd=project) == (
-        loader,
-        "conflict",
-    )
-    assert cli._remove_opencode_v2_plugin(cwd=project) is False
-    assert loader.is_dir()
-
-    loader.rmdir()
-    loader.write_bytes(b"\xff\xfe foreign\n")
-    assert cli._write_opencode_v2_plugin(package_root, cwd=project)[1] == "conflict"
-    assert cli._remove_opencode_v2_plugin(cwd=project) is False
-    assert loader.read_bytes() == b"\xff\xfe foreign\n"
-
-
-def test_opencode_python_install_writes_loader_and_removes_legacy_entry(
-    monkeypatch, tmp_path
-) -> None:
-    package_root = tmp_path / "pkg"
-    (package_root / "plugin").mkdir(parents=True)
-    monkeypatch.setattr(cli, "_OPENCODE_LOCAL_PACKAGE_DIR", package_root)
-    monkeypatch.setattr(cli, "_opencode_install_supported_from_this_package", lambda: True)
-    monkeypatch.setattr(cli, "_opencode_prerequisite_error", lambda: None)
-    monkeypatch.setattr(cli, "_configure_reflexio_setup", lambda host: False)
-    monkeypatch.setattr(cli, "_persist_opencode_path", lambda: [])
-    monkeypatch.setattr(cli, "_has_extraction_provider", lambda: True)
-    monkeypatch.setattr(
-        cli, "_bootstrap_opencode_install", lambda read_only: (True, str(package_root))
-    )
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    project = tmp_path / "project"
-    project.mkdir()
-    # A legacy install left a config entry behind; install must migrate to the
-    # loader as the single load path.
-    (project / "opencode.json").write_text(
-        json.dumps({"plugin": [package_root.as_uri()]}) + "\n"
-    )
-    monkeypatch.chdir(project)
-
-    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
-
-    assert rc == 0
-    loader = project / ".opencode" / "plugins" / "claude-smart.js"
-    assert loader.read_text() == cli._opencode_v2_plugin_body(package_root)
-    assert json.loads((project / "opencode.json").read_text())["plugin"] == []
-
-    # A fresh project gets the loader and no config file at all.
-    fresh = tmp_path / "fresh"
-    fresh.mkdir()
-    monkeypatch.chdir(fresh)
-    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
-    assert rc == 0
-    assert not (fresh / "opencode.json").exists()
-    assert (fresh / ".opencode" / "plugins" / "claude-smart.js").is_file()
-
-
-def test_opencode_python_uninstall_removes_loader_and_keeps_shared_package_per_scope(
-    monkeypatch, tmp_path
-) -> None:
-    package_root = tmp_path / "state" / "opencode" / "claude-smart"
-    (package_root / "plugin").mkdir(parents=True)
-    (package_root / "plugin" / "keep.txt").write_text("keep\n")
-    monkeypatch.setattr(cli, "_OPENCODE_LOCAL_PACKAGE_DIR", package_root)
-    monkeypatch.setattr(cli, "_run_service", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "_repair_plugin_root", lambda host: None)
-    xdg = tmp_path / "xdg"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
-    project = tmp_path / "project"
-    project.mkdir()
-    monkeypatch.chdir(project)
-    cli._write_opencode_v2_plugin(package_root, global_config=False)
-    cli._write_opencode_v2_plugin(package_root, global_config=True)
-    # The global config references the package in the object form.
-    global_config = xdg / "opencode" / "opencode.json"
-    global_config.parent.mkdir(parents=True, exist_ok=True)
-    global_config.write_text(
-        json.dumps({"plugin": [{"package": package_root.as_uri()}]}) + "\n"
-    )
-
-    rc = cli.cmd_uninstall(argparse.Namespace(host="opencode", global_config=False))
-    assert rc == 0
-    # The project loader is gone; the global install keeps working, so the
-    # shared package stays.
-    assert not (project / ".opencode" / "plugins" / "claude-smart.js").exists()
-    assert (xdg / "opencode" / "plugins" / "claude-smart.js").is_file()
-    assert (package_root / "plugin" / "keep.txt").read_text() == "keep\n"
-
-    # Mirror direction: with the project loader back, a --global uninstall must
-    # keep the package the project loader still imports.
-    cli._write_opencode_v2_plugin(package_root, global_config=False)
-    rc = cli.cmd_uninstall(argparse.Namespace(host="opencode", global_config=True))
-    assert rc == 0
-    # The object-form entry is recognized and removed with the global loader.
-    assert json.loads(global_config.read_text())["plugin"] == []
-    assert not (xdg / "opencode" / "plugins" / "claude-smart.js").exists()
-    assert (package_root / "plugin" / "keep.txt").read_text() == "keep\n"
-
-    # Nothing references the package any more: it goes.
-    rc = cli.cmd_uninstall(argparse.Namespace(host="opencode", global_config=False))
-    assert rc == 0
-    assert not (project / ".opencode" / "plugins" / "claude-smart.js").exists()
-    assert not package_root.exists()
-
-
-def test_opencode_python_loader_body_matches_node_loader(tmp_path: Path) -> None:
-    if shutil_which_node() is None:
-        pytest.skip("node is not installed")
-    package_root = tmp_path / "pkg"
-    (package_root / "plugin" / "opencode" / "dist").mkdir(parents=True)
-    script = f"""
-      const installer = require({json.dumps(str(REPO_ROOT / "bin" / "claude-smart.js"))});
-      const result = installer.writeOpenCodeV2Plugin([], {json.dumps(str(package_root))}, {json.dumps(str(tmp_path / "proj"))});
-      process.stdout.write(require("fs").readFileSync(result.path, "utf8"));
-    """
-
-    result = _run_node_script(script)
-    assert result is not None
-
-    assert result.returncode == 0, result.stderr
-    # Both installers must write (and recognize) the same loader bytes, or
-    # whichever runs second would treat the other's loader as a conflict.
-    assert cli._opencode_v2_plugin_body(package_root) == result.stdout
-
-
-def test_opencode_install_from_python_wheel_path_points_to_npm(
-    monkeypatch, tmp_path, capsys
-) -> None:
-    monkeypatch.setattr(cli, "_SCRIPTS_DIR", tmp_path)
-
-    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
-
-    assert rc == 1
-    assert "npx claude-smart install --host opencode" in capsys.readouterr().err
-
-
-def test_opencode_python_install_conflict_fails_loudly(
-    monkeypatch, tmp_path, capsys
-) -> None:
-    package_root = tmp_path / "state" / "opencode" / "claude-smart"
-    (package_root / "plugin").mkdir(parents=True)
-    loader_path = tmp_path / "project" / ".opencode" / "plugins" / "claude-smart.js"
-    monkeypatch.setattr(cli, "_opencode_install_supported_from_this_package", lambda: True)
-    monkeypatch.setattr(cli, "_opencode_prerequisite_error", lambda: None)
-    monkeypatch.setattr(cli, "_configure_reflexio_setup", lambda host: False)
-    monkeypatch.setattr(cli, "_persist_opencode_path", lambda: None)
-    monkeypatch.setattr(cli, "_has_extraction_provider", lambda: True)
-    monkeypatch.setattr(
-        cli, "_bootstrap_opencode_install", lambda read_only: (True, str(package_root))
-    )
-    patched: list[bool] = []
-    monkeypatch.setattr(
-        cli,
-        "_remove_opencode_legacy_entries",
-        lambda global_config: (patched.append(global_config), [])[1],
-    )
-    monkeypatch.setattr(
-        cli,
-        "_opencode_v2_loader_conflicts",
-        lambda global_config: (loader_path, "It is not a claude-smart loader"),
-    )
-
-    rc = cli.cmd_install_opencode(argparse.Namespace(global_config=False))
-
-    # The loader is the only load path: a conflict must fail, not report an
-    # installed host.
-    assert rc == 1
-    captured = capsys.readouterr()
-    assert "not a claude-smart loader" in captured.err
-    assert "Wrote the OpenCode loader" not in captured.out
-    assert "Restart OpenCode" not in captured.out
-    # The conflict is found before the config is touched, so nothing needs restoring.
-    assert patched == []
-
-    # The same flow with a written loader still succeeds.
-    monkeypatch.setattr(cli, "_opencode_v2_loader_conflicts", lambda global_config: None)
-    monkeypatch.setattr(
-        cli,
-        "_write_opencode_v2_plugin",
-        lambda package_root, global_config: (loader_path, "written"),
-    )
-    rc = cli.cmd_install_opencode(argparse.Namespace(global_config=False))
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "Wrote the OpenCode loader" in out
-    assert "Restart OpenCode" in out
-
-
-def test_opencode_bootstrap_guard_rejects_unsupported_package(
-    monkeypatch, tmp_path
-) -> None:
-    monkeypatch.setattr(cli, "_SCRIPTS_DIR", tmp_path)
-
-    bootstrapped, message = cli._bootstrap_opencode_install(read_only=False)
-
-    assert bootstrapped is False
-    assert "npx claude-smart install --host opencode" in message
-
-
-def test_opencode_install_fails_without_extraction_provider(monkeypatch, tmp_path) -> None:
-    env_path = tmp_path / ".claude-smart" / ".env"
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
-    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
-
-    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
-
-    assert rc == 1
-
-
-def test_opencode_install_requires_opencode_cli_even_with_other_provider(
-    monkeypatch, tmp_path, capsys
-) -> None:
-    env_path = tmp_path / ".claude-smart" / ".env"
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", env_path)
-    monkeypatch.setenv(cli.env_config.REFLEXIO_API_KEY_ENV, "rk-test")
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/bin/claude" if name == "claude" else None)
-
-    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
-
-    assert rc == 1
-    assert "OpenCode CLI not found on PATH" in capsys.readouterr().err
-
-
-def test_opencode_install_requires_git_bash_on_windows(monkeypatch, tmp_path, capsys) -> None:
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
-    monkeypatch.setattr(cli, "_has_opencode_cli", lambda: True)
-    monkeypatch.setattr(cli, "os", SimpleNamespace(**(vars(os) | {"name": "nt"})))
-    monkeypatch.setattr(cli, "_resolve_bash", lambda: None)
-
-    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
-
-    assert rc == 1
-    assert "Git Bash is required for claude-smart OpenCode support on Windows" in capsys.readouterr().err
-
-
-def test_opencode_prerequisite_accepts_git_bash_on_windows(monkeypatch) -> None:
-    monkeypatch.setattr(cli, "_has_opencode_cli", lambda: True)
-    monkeypatch.setattr(cli, "os", SimpleNamespace(**(vars(os) | {"name": "nt"})))
-    monkeypatch.setattr(cli, "_resolve_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
-
-    assert cli._opencode_prerequisite_error() is None
-
-
-def test_opencode_extraction_provider_requires_executable_cli_path(
-    monkeypatch, tmp_path
-) -> None:
-    cli_path = tmp_path / "claude-smart-provider"
-    cli_path.write_text("#!/bin/sh\nexit 0\n")
-    cli_path.chmod(0o644)
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
-    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(cli_path))
-    monkeypatch.delenv(cli.env_config.REFLEXIO_API_KEY_ENV, raising=False)
-    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
-
-    assert cli._has_extraction_provider() is False
-
-    cli_path.chmod(0o755)
-    assert cli._has_extraction_provider() is True
-
-
-def test_opencode_extraction_provider_accepts_opencode_only(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
-    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
-    monkeypatch.delenv(cli._OPENCODE_PATH_ENV, raising=False)
-    monkeypatch.delenv(cli.env_config.REFLEXIO_API_KEY_ENV, raising=False)
-    monkeypatch.setattr(
-        cli.shutil, "which", lambda name: f"/bin/{name}" if name == "opencode" else None
-    )
-
-    assert cli._has_extraction_provider() is True
-
-
-def test_opencode_extraction_provider_accepts_explicit_opencode_path(
-    monkeypatch, tmp_path
-) -> None:
-    opencode = tmp_path / "opencode"
-    opencode.write_text("#!/bin/sh\nexit 0\n")
-    opencode.chmod(0o755)
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
-    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
-    monkeypatch.delenv(cli.env_config.REFLEXIO_API_KEY_ENV, raising=False)
-    monkeypatch.setenv(cli._OPENCODE_PATH_ENV, str(opencode))
-    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
-
-    assert cli._has_extraction_provider() is True
-
-
 def test_opencode_backend_service_uses_bridge_without_opencode_path_probe() -> None:
     service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
     assert 'if [ "$learning_provider" = "opencode" ]' in service
-    assert 'CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"' in service
+    assert (
+        'CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"'
+        in service
+    )
     assert "command -v opencode" not in service
     assert 'export CLAUDE_SMART_HOST="$learning_provider"' in service
 
@@ -1312,7 +604,7 @@ def test_opencode_cli_bridge_failure_surfaces_error_event(tmp_path: Path) -> Non
         "process.stdout.write(JSON.stringify({ type: 'text',"
         " part: { type: 'text', text: 'SECRET-MODEL-TEXT' } }) + '\\n');\n"
         "process.stdout.write('plain diagnostic line\\n');\n"
-        "process.stdout.write('{\"type\":\"text\",\"part\":{\"text\":\"SECRET-CUT');\n"
+        'process.stdout.write(\'{"type":"text","part":{"text":"SECRET-CUT\');\n'
         "process.exit(1);\n"
     )
     result = run_bridge()
@@ -1326,7 +618,7 @@ def test_opencode_cli_bridge_failure_surfaces_error_event(tmp_path: Path) -> Non
         "#!/usr/bin/env node\n"
         f"process.stdout.write({json.dumps(padding)} + '\\n');\n"
         "process.stdout.write('[ERROR] Provider unavailable\\n');\n"
-        "process.stdout.write('[{\"type\":\"text\",\"part\":{\"text\":\"SECRET-CUT');\n"
+        'process.stdout.write(\'[{"type":"text","part":{"text":"SECRET-CUT\');\n'
         "process.exit(1);\n"
     )
     result = run_bridge()
@@ -1335,7 +627,9 @@ def test_opencode_cli_bridge_failure_surfaces_error_event(tmp_path: Path) -> Non
     assert "SECRET" not in result.stderr
 
 
-def test_node_installer_accepts_opencode_only_extraction_provider(tmp_path: Path) -> None:
+def test_node_installer_accepts_opencode_only_extraction_provider(
+    tmp_path: Path,
+) -> None:
     if shutil_which_node() is None:
         pytest.skip("node is not installed")
     fake_opencode = tmp_path / "opencode"
@@ -1524,11 +818,16 @@ def test_node_opencode_install_from_npx_root_writes_scoped_loader_only(
     local_package = Path(
         entry.removeprefix("file://").removesuffix("/plugin/opencode/dist/server.mjs")
     )
-    assert local_package == Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
+    assert (
+        local_package
+        == Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
+    )
     assert (local_package / "plugin" / "scripts" / "smart-install.sh").exists()
     # A project install must not write the user-wide loader: OpenCode loads that
     # directory in every project, which would widen capture beyond this project.
-    assert not (Path(env["XDG_CONFIG_HOME"]) / "opencode" / "plugins" / "claude-smart.js").exists()
+    assert not (
+        Path(env["XDG_CONFIG_HOME"]) / "opencode" / "plugins" / "claude-smart.js"
+    ).exists()
 
 
 def test_node_opencode_loader_conflict_restores_the_previous_package(
@@ -1555,7 +854,13 @@ def test_node_opencode_loader_conflict_restores_the_previous_package(
     (previous / "plugin" / "owner").write_text("older\n")
 
     result = subprocess.run(
-        [node, str(package_root / "bin" / "claude-smart.js"), "install", "--host", "opencode"],
+        [
+            node,
+            str(package_root / "bin" / "claude-smart.js"),
+            "install",
+            "--host",
+            "opencode",
+        ],
         cwd=project,
         env=env,
         text=True,
@@ -1648,7 +953,10 @@ def test_node_opencode_install_requires_bash_on_windows(
     )
 
     assert result.returncode == 1
-    assert "Git Bash is required for claude-smart OpenCode support on Windows" in result.stderr
+    assert (
+        "Git Bash is required for claude-smart OpenCode support on Windows"
+        in result.stderr
+    )
     assert not (project / "opencode.json").exists()
 
 
@@ -1684,9 +992,10 @@ def test_node_opencode_prerequisite_rejects_windows_wsl_bash_stub(
     assert result is not None
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
-    assert "Git Bash is required for claude-smart OpenCode support on Windows" in parsed[
-        "withSystemBash"
-    ]
+    assert (
+        "Git Bash is required for claude-smart OpenCode support on Windows"
+        in parsed["withSystemBash"]
+    )
     assert parsed["withGitBash"] is None
 
 
@@ -1729,7 +1038,13 @@ def test_node_opencode_install_preserves_existing_claude_and_codex_state_on_wind
             'CLAUDE_SMART_READ_ONLY="1"\n'
         )
     claude_cache = (
-        home / ".claude" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.46"
+        home
+        / ".claude"
+        / "plugins"
+        / "cache"
+        / "reflexioai"
+        / "claude-smart"
+        / "0.2.46"
     )
     codex_cache = (
         home / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / "0.2.46"
@@ -1740,9 +1055,7 @@ def test_node_opencode_install_preserves_existing_claude_and_codex_state_on_wind
     codex_config = home / ".codex" / "config.toml"
     codex_config.parent.mkdir(parents=True, exist_ok=True)
     codex_config.write_text(
-        '[plugins."claude-smart@reflexioai"]\n'
-        'enabled = true\n'
-        'source = "reflexioai"\n'
+        '[plugins."claude-smart@reflexioai"]\nenabled = true\nsource = "reflexioai"\n'
     )
     reflexio_data = home / ".reflexio" / "data" / "reflexio.db"
     reflexio_data.parent.mkdir(parents=True, exist_ok=True)
@@ -1786,17 +1099,13 @@ def test_node_opencode_install_preserves_existing_claude_and_codex_state_on_wind
     assert 'CLAUDE_SMART_READ_ONLY="1"' in runtime_env
     # ~/.reflexio/.env belongs to other Reflexio tools and is never rewritten.
     assert (home / ".reflexio" / ".env").read_text() == (
-        "# existing host state\n"
-        "CLAUDE_SMART_HOST=codex\n"
-        'CLAUDE_SMART_READ_ONLY="1"\n'
+        '# existing host state\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_READ_ONLY="1"\n'
     )
     assert f'CLAUDE_SMART_OPENCODE_PATH="{opencode_cmd}"' in runtime_env
     assert (claude_cache / "keep.txt").read_text() == "keep\n"
     assert (codex_cache / "keep.txt").read_text() == "keep\n"
     assert codex_config.read_text() == (
-        '[plugins."claude-smart@reflexioai"]\n'
-        'enabled = true\n'
-        'source = "reflexioai"\n'
+        '[plugins."claude-smart@reflexioai"]\nenabled = true\nsource = "reflexioai"\n'
     )
     assert reflexio_data.read_text() == "learned data\n"
     assert session_file.read_text() == "{}\n"
@@ -1835,118 +1144,6 @@ def test_node_opencode_install_stable_root_bootstrap_failure_leaves_config_uncha
     assert result.returncode != 0
     assert "could not prepare claude-smart OpenCode package" in result.stderr
     assert config.read_text() == original
-
-
-def test_opencode_install_copy_failure_preserves_existing_local_package(
-    monkeypatch, tmp_path: Path
-) -> None:
-    repo_root = tmp_path / "repo"
-    plugin_scripts = repo_root / "plugin" / "scripts"
-    plugin_scripts.mkdir(parents=True)
-    (repo_root / "package.json").write_text('{"name":"claude-smart"}\n')
-    (plugin_scripts / "smart-install.sh").write_text("#!/bin/sh\nexit 0\n")
-    local_package = tmp_path / "home" / ".claude-smart" / "opencode" / "claude-smart"
-    local_package.mkdir(parents=True)
-    marker = local_package / "marker.txt"
-    marker.write_text("keep\n")
-
-    def failing_copytree(src: Path, dst: Path, **_kwargs: object) -> Path:
-        assert src == repo_root
-        dst.mkdir(parents=True, exist_ok=True)
-        (dst / "partial.txt").write_text("partial\n")
-        raise OSError("copy failed")
-
-    monkeypatch.setattr(cli, "_REPO_ROOT", repo_root)
-    monkeypatch.setattr(cli, "_PLUGIN_ROOT", repo_root / "plugin")
-    monkeypatch.setattr(cli, "_OPENCODE_LOCAL_PACKAGE_DIR", local_package)
-    monkeypatch.setattr(cli.shutil, "copytree", failing_copytree)
-
-    with pytest.raises(OSError, match="copy failed"):
-        cli._install_opencode_plugin_package()
-
-    assert marker.read_text() == "keep\n"
-    assert not (local_package / "partial.txt").exists()
-    assert not (local_package.parent / ".install.lock").exists()
-    assert list(local_package.parent.iterdir()) == [local_package]
-
-
-def test_opencode_install_writes_project_loader_after_bootstrap(
-    monkeypatch, tmp_path, capsys
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
-    # Simulate the CLI branch, not the OS used by pathlib and native file locks.
-    monkeypatch.setattr(cli, "os", SimpleNamespace(**(vars(os) | {"name": "nt"})))
-    monkeypatch.setattr(cli, "Path", PosixPath)
-    monkeypatch.setattr(cli, "_resolve_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
-    monkeypatch.setattr(
-        cli.shutil,
-        "which",
-        lambda name: f"/bin/{name}" if name in {"codex", "opencode"} else None,
-    )
-    monkeypatch.setattr(cli, "_bootstrap_opencode_install", lambda _read_only: (True, "/plugin"))
-
-    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
-
-    assert rc == 0
-    # One load path: the loader is written and no config file is created.
-    assert not (tmp_path / "opencode.json").exists()
-    loader = tmp_path / ".opencode" / "plugins" / "claude-smart.js"
-    assert loader.read_text() == cli._opencode_v2_plugin_body(PosixPath("/plugin"))
-    assert "CLAUDE_SMART_HOST=opencode" in (
-        tmp_path / ".claude-smart" / ".env"
-    ).read_text()
-    assert "Restart OpenCode" in capsys.readouterr().out
-
-
-def test_opencode_install_patches_existing_dot_opencode_config(
-    monkeypatch, tmp_path
-) -> None:
-    legacy_config = tmp_path / ".opencode" / "opencode.json"
-    legacy_config.parent.mkdir()
-    legacy_config.write_text(json.dumps({"plugin": ["other-plugin"]}))
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
-    monkeypatch.setattr(
-        cli.shutil,
-        "which",
-        lambda name: f"/bin/{name}" if name in {"codex", "opencode"} else None,
-    )
-    monkeypatch.setattr(cli, "_bootstrap_opencode_install", lambda _read_only: (True, "/plugin"))
-
-    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
-
-    assert rc == 0
-    assert not (tmp_path / "opencode.json").exists()
-    # The unrelated legacy entry stays untouched; claude-smart loads through
-    # the loader alone.
-    assert json.loads(legacy_config.read_text())["plugin"] == ["other-plugin"]
-    assert (tmp_path / ".opencode" / "plugins" / "claude-smart.js").is_file()
-
-
-def test_opencode_install_migrates_existing_plugins_field(
-    monkeypatch, tmp_path
-) -> None:
-    config = tmp_path / "opencode.json"
-    config.write_text(json.dumps({"plugins": ["other-plugin"], "theme": "system"}))
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env")
-    monkeypatch.setattr(
-        cli.shutil,
-        "which",
-        lambda name: f"/bin/{name}" if name in {"codex", "opencode"} else None,
-    )
-    monkeypatch.setattr(cli, "_bootstrap_opencode_install", lambda _read_only: (True, "/plugin"))
-
-    rc = cli.cmd_install(argparse.Namespace(host="opencode", global_config=False))
-
-    parsed = json.loads(config.read_text())
-    assert rc == 0
-    # The legacy `plugins` field is still normalized, but claude-smart adds no
-    # config entry any more — the loader is the single load path.
-    assert parsed["plugin"] == ["other-plugin"]
-    assert "plugins" not in parsed
-    assert (tmp_path / ".opencode" / "plugins" / "claude-smart.js").is_file()
 
 
 def test_node_installer_patches_opencode_jsonc(tmp_path: Path) -> None:
@@ -2100,9 +1297,7 @@ def test_node_opencode_install_copy_failure_preserves_existing_local_package(
     package_root = tmp_path / "global" / "node_modules" / "claude-smart"
     _write_minimal_node_package_root(package_root)
     env = _isolated_installer_env(tmp_path)
-    local_package = (
-        Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
-    )
+    local_package = Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
     local_package.mkdir(parents=True)
     (local_package / "marker.txt").write_text("keep\n")
     script = (
@@ -2156,9 +1351,7 @@ def test_node_opencode_install_replaces_broken_local_package_symlink(
     package_root = tmp_path / "global" / "node_modules" / "claude-smart"
     _write_minimal_node_package_root(package_root)
     env = _isolated_installer_env(tmp_path)
-    local_package = (
-        Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
-    )
+    local_package = Path(env["HOME"]) / ".claude-smart" / "opencode" / "claude-smart"
     local_package.parent.mkdir(parents=True)
     local_package.symlink_to(tmp_path / "missing-package")
     script = (
@@ -2226,11 +1419,15 @@ def test_node_installer_migrates_existing_plugins_field(tmp_path: Path) -> None:
     assert parsed["theme"] == "system"
 
 
-def test_node_installer_uninstall_migrates_existing_plugins_field(tmp_path: Path) -> None:
+def test_node_installer_uninstall_migrates_existing_plugins_field(
+    tmp_path: Path,
+) -> None:
     if shutil_which_node() is None:
         pytest.skip("node is not installed")
     config = tmp_path / "opencode.json"
-    config.write_text(json.dumps({"plugins": ["claude-smart", "other", "claude-smart"]}))
+    config.write_text(
+        json.dumps({"plugins": ["claude-smart", "other", "claude-smart"]})
+    )
     script = (
         f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
         f"installer.patchOpenCodePluginConfig({json.dumps(str(config))}, {{install: false}});"
@@ -2267,7 +1464,7 @@ def test_node_installer_uninstall_noops_without_plugin_array(tmp_path: Path) -> 
 def test_node_jsonc_parser_preserves_comma_brace_inside_strings() -> None:
     script = (
         f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
-        "process.stdout.write(installer.stripJsonc('{\"prompt\":\"keep,}\",\"plugin\":[\"claude-smart\",],}\\n'));"
+        'process.stdout.write(installer.stripJsonc(\'{"prompt":"keep,}","plugin":["claude-smart",],}\\n\'));'
     )
 
     result = _run_node_script(script)
@@ -2282,7 +1479,7 @@ def test_node_jsonc_parser_skips_comments_after_trailing_commas() -> None:
         pytest.skip("node is not installed")
     script = (
         f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
-        "process.stdout.write(installer.stripJsonc('{\"plugin\":[\"other\", // note\\n], /* end */}\\n'));"
+        'process.stdout.write(installer.stripJsonc(\'{"plugin":["other", // note\\n], /* end */}\\n\'));'
     )
 
     result = _run_node_script(script)
@@ -2315,30 +1512,6 @@ def test_node_installer_backs_up_jsonc_config(tmp_path: Path) -> None:
     assert parsed["result"]["backupPath"] == f"{config}.bak"
     assert parsed["backup"] == original
     assert json.loads(parsed["text"])["plugin"] == ["other", local_package.as_uri()]
-
-
-def test_node_installer_scope_config_paths_match_python(tmp_path: Path) -> None:
-    if shutil_which_node() is None:
-        pytest.skip("node is not installed")
-    script = (
-        f"process.env.XDG_CONFIG_HOME = {json.dumps(str(tmp_path / 'xdg'))};"
-        f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
-        "process.stdout.write(JSON.stringify({"
-        " project: installer.opencodeScopeConfigPaths([], process.argv[1]),"
-        " global: installer.opencodeScopeConfigPaths(['--global'], process.argv[1]) }));"
-    )
-
-    result = _run_node_script(script, str(tmp_path))
-    assert result is not None
-
-    assert result.returncode == 0, result.stderr
-    parsed = json.loads(result.stdout)
-    assert [Path(p) for p in parsed["project"]] == cli._opencode_scope_config_paths(
-        cwd=tmp_path
-    )
-    assert [Path(p) for p in parsed["global"]] == [
-        tmp_path / "xdg" / "opencode" / name for name in cli._OPENCODE_CONFIG_NAMES
-    ]
 
 
 def test_node_installer_removes_legacy_entries_from_every_scope_config(
@@ -2415,6 +1588,7 @@ def test_node_installer_reports_unusable_loader_path_as_conflict(
     assert parsed["bytesWrite"] == "conflict"
     assert parsed["free"] is None
     assert foreign.read_bytes() == b"\xff\xfe foreign\n"
+
 
 def test_node_installer_skips_backup_for_plain_json(tmp_path: Path) -> None:
     if shutil_which_node() is None:
@@ -2508,7 +1682,10 @@ def test_node_opencode_payload_normalizes_tool_contracts() -> None:
     assert parsed["edit"]["tool_response"] == {"output": "edited", "stdout": "edited"}
     assert parsed["patch"]["tool_name"] == "apply_patch"
     assert parsed["patch"]["tool_input"]["command"] == "*** Begin Patch"
-    assert parsed["patch"]["tool_response"] == {"output": "patched", "stdout": "patched"}
+    assert parsed["patch"]["tool_response"] == {
+        "output": "patched",
+        "stdout": "patched",
+    }
     assert parsed["shell"]["tool_name"] == "Bash"
     assert parsed["shell"]["tool_input"]["command"] == "npm test"
     assert parsed["shell"]["tool_response"] == {
@@ -2560,8 +1737,8 @@ def test_node_opencode_v2_setup_registers_prompt_and_keeps_cache_header(
     fake_bash.write_text(
         "#!/bin/sh\n"
         "cat >/dev/null || true\n"
-        "if [ \"${3:-}\" = \"user-prompt\" ]; then\n"
-        "  printf '%s\\n' '{\"hookSpecificOutput\":{\"additionalContext\":\"learned context\"}}'\n"
+        'if [ "${3:-}" = "user-prompt" ]; then\n'
+        '  printf \'%s\\n\' \'{"hookSpecificOutput":{"additionalContext":"learned context"}}\'\n'
         "else\n"
         "  printf '%s\\n' '{}'\n"
         "fi\n"
@@ -2636,20 +1813,31 @@ def test_node_opencode_v2_loader_round_trip(tmp_path: Path) -> None:
         f"const globalWritten = installer.writeOpenCodeV2Plugin(['--global'], {json.dumps(str(package))}, project);"
         "const kept = installer.removeOpenCodeV2Plugin([], project);"
         "const keptGlobal = installer.removeOpenCodeV2Plugin(['--global'], project);"
-        "const again = installer.writeOpenCodeV2Plugin([], " + json.dumps(str(package)) + ", project);"
+        "const again = installer.writeOpenCodeV2Plugin([], "
+        + json.dumps(str(package))
+        + ", project);"
         "require('fs').writeFileSync(written.path, '// claude-smart OpenCode V2 loader\\nuser edit\\n');"
         "const spared = installer.removeOpenCodeV2Plugin([], project);"
         "require('fs').writeFileSync(written.path, 'other plugin\\n');"
-        "const conflict = installer.writeOpenCodeV2Plugin([], " + json.dumps(str(package)) + ", project);"
+        "const conflict = installer.writeOpenCodeV2Plugin([], "
+        + json.dumps(str(package))
+        + ", project);"
         "process.stdout.write(JSON.stringify({ written: written.path, globalWritten: globalWritten.path, kept, keptGlobal, spared, conflict: conflict.status, still: require('fs').readFileSync(written.path, 'utf8') }));"
     )
-    result = subprocess.run([node, "-e", script], text=True, capture_output=True, check=False)
+    result = subprocess.run(
+        [node, "-e", script], text=True, capture_output=True, check=False
+    )
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
     # A project install stays inside the project; only --global writes the user-wide
     # loader that OpenCode loads in every project.
-    assert Path(parsed["written"]) == project / ".opencode" / "plugins" / "claude-smart.js"
-    assert Path(parsed["globalWritten"]) == tmp_path / "xdg" / "opencode" / "plugins" / "claude-smart.js"
+    assert (
+        Path(parsed["written"]) == project / ".opencode" / "plugins" / "claude-smart.js"
+    )
+    assert (
+        Path(parsed["globalWritten"])
+        == tmp_path / "xdg" / "opencode" / "plugins" / "claude-smart.js"
+    )
     assert parsed["kept"] is True
     assert parsed["keptGlobal"] is True
     assert parsed["spared"] is False
@@ -2666,8 +1854,8 @@ def test_node_opencode_server_injects_cached_context_for_session_ids(
     fake_bash.write_text(
         "#!/bin/sh\n"
         "cat >/dev/null || true\n"
-        "if [ \"${3:-}\" = \"user-prompt\" ]; then\n"
-        "  printf '%s\\n' '{\"hookSpecificOutput\":{\"additionalContext\":\"learned context\"}}'\n"
+        'if [ "${3:-}" = "user-prompt" ]; then\n'
+        '  printf \'%s\\n\' \'{"hookSpecificOutput":{"additionalContext":"learned context"}}\'\n'
         "else\n"
         "  printf '%s\\n' '{}'\n"
         "fi\n"
@@ -2893,7 +2081,9 @@ def test_node_opencode_server_dispatches_lifecycle_tool_idle_and_dispose(
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
     assert parsed["systemOutput"] == {"system": ["learned context"]}
-    command_pairs = [(Path(call["script"]).name, call["args"]) for call in parsed["calls"]]
+    command_pairs = [
+        (Path(call["script"]).name, call["args"]) for call in parsed["calls"]
+    ]
     assert ("backend-service.sh", ["start"]) in command_pairs
     assert ("dashboard-service.sh", ["start"]) in command_pairs
     assert ("hook_entry.sh", ["opencode", "session-start"]) in command_pairs
@@ -2905,10 +2095,15 @@ def test_node_opencode_server_dispatches_lifecycle_tool_idle_and_dispose(
     stop_calls = [
         json.loads(call["payload"])
         for call in parsed["calls"]
-        if Path(call["script"]).name == "hook_entry.sh" and call["args"] == ["opencode", "stop"]
+        if Path(call["script"]).name == "hook_entry.sh"
+        and call["args"] == ["opencode", "stop"]
     ]
     assert stop_calls == [
-        {"session_id": "s-life", "cwd": "/repo", "last_assistant_message": "final answer"}
+        {
+            "session_id": "s-life",
+            "cwd": "/repo",
+            "last_assistant_message": "final answer",
+        }
     ]
 
 
@@ -2943,10 +2138,15 @@ def test_node_opencode_server_dispose_flushes_active_session_without_idle(
     stop_calls = [
         json.loads(call["payload"])
         for call in calls
-        if Path(call["script"]).name == "hook_entry.sh" and call["args"] == ["opencode", "stop"]
+        if Path(call["script"]).name == "hook_entry.sh"
+        and call["args"] == ["opencode", "stop"]
     ]
     assert stop_calls == [
-        {"session_id": "s-dispose", "cwd": "/repo", "last_assistant_message": "remembered"}
+        {
+            "session_id": "s-dispose",
+            "cwd": "/repo",
+            "last_assistant_message": "remembered",
+        }
     ]
 
 
@@ -2981,7 +2181,8 @@ def test_node_opencode_server_text_complete_flushes_once(
     stop_calls = [
         json.loads(call["payload"])
         for call in calls
-        if Path(call["script"]).name == "hook_entry.sh" and call["args"] == ["opencode", "stop"]
+        if Path(call["script"]).name == "hook_entry.sh"
+        and call["args"] == ["opencode", "stop"]
     ]
     assert stop_calls == [
         {"session_id": "s-complete", "cwd": "/repo", "last_assistant_message": "done"}
@@ -3023,10 +2224,15 @@ def test_node_opencode_server_keeps_multi_segment_assistant_text(
     stop_calls = [
         json.loads(call["payload"])
         for call in calls
-        if Path(call["script"]).name == "hook_entry.sh" and call["args"] == ["opencode", "stop"]
+        if Path(call["script"]).name == "hook_entry.sh"
+        and call["args"] == ["opencode", "stop"]
     ]
     assert stop_calls == [
-        {"session_id": "s-multi", "cwd": "/repo", "last_assistant_message": "first\n\nsecond"}
+        {
+            "session_id": "s-multi",
+            "cwd": "/repo",
+            "last_assistant_message": "first\n\nsecond",
+        }
     ]
 
 
@@ -3845,7 +3051,9 @@ def test_opencode_dist_files_are_packaged() -> None:
     package = _read_json("package.json")
 
     assert "plugin" in package["files"]
-    assert package["exports"]["./server"]["import"] == "./plugin/opencode/dist/server.mjs"
+    assert (
+        package["exports"]["./server"]["import"] == "./plugin/opencode/dist/server.mjs"
+    )
 
 
 def test_opencode_dist_matches_typescript_sources(tmp_path: Path) -> None:
@@ -3876,7 +3084,13 @@ def test_opencode_dist_matches_typescript_sources(tmp_path: Path) -> None:
         f"run `npm ci` if @types/node is missing.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
-    for filename in ("assistant-buffer.js", "internal.js", "payload.js", "server.mjs", "v2.js"):
+    for filename in (
+        "assistant-buffer.js",
+        "internal.js",
+        "payload.js",
+        "server.mjs",
+        "v2.js",
+    ):
         expected = REPO_ROOT / "plugin" / "opencode" / "dist" / filename
         generated = out_dir / filename
         assert filecmp.cmp(expected, generated, shallow=False), filename

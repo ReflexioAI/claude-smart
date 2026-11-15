@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run once on plugin install. Syncs the Python env and flips on the
-# claude-code LiteLLM provider in reflexio's .env so extraction works with no
-# external API key.
+# Prepare the plugin Python runtime, repair only missing local defaults,
+# then verify and start the selected services. Connection selection belongs
+# to the npm installer; dependency repair never retargets saved endpoints.
 #
 # On failure, writes the reason to ~/.claude-smart/install-failed so
 # hook_entry.sh can short-circuit and surface a user-visible message
@@ -14,7 +14,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 claude_smart_source_login_path
 claude_smart_prepend_astral_bins
 claude_smart_prepend_node_bins
-claude_smart_source_reflexio_env
 
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "smart-install.sh" "$@"
@@ -126,6 +125,7 @@ verify_windows_local_embedding_runtime() {
 if [ "${1:-}" = "verify-windows-embedding" ]; then
   # Node bootstrap runs this after uv sync so install-failed markers stay
   # consistent with the shell installer path.
+  claude_smart_source_reflexio_env
   verify_windows_local_embedding_runtime
   exit 0
 fi
@@ -134,23 +134,18 @@ install_fingerprint() {
   claude_smart_install_fingerprint "$PLUGIN_ROOT" "$HERE"
 }
 
-# Managed means a key AND a remote URL, as the runtime decides it
-# (claude_smart_reflexio_url_is_remote); a keyed loopback URL is local mode.
-claude_smart_managed_env_active() {
-  [ -n "${REFLEXIO_API_KEY:-}" ] && claude_smart_reflexio_url_is_remote
-}
-
 install_complete() {
   [ -f "$SUCCESS_MARKER" ] || return 1
   [ "$(cat "$SUCCESS_MARKER" 2>/dev/null || true)" = "$(install_fingerprint)" ] || return 1
   command -v uv >/dev/null 2>&1 || return 1
   [ -d "$PLUGIN_ROOT/.venv" ] || return 1
   claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook || return 1
-  if ! claude_smart_managed_env_active; then
+  if ! claude_smart_reflexio_url_is_remote; then
     [ -f "$HOME/.claude-smart/.env" ] || return 1
     grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI[[:space:]]*=' "$HOME/.claude-smart/.env" || return 1
     grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY[[:space:]]*=' "$HOME/.claude-smart/.env" || return 1
     grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_HOST[[:space:]]*=' "$HOME/.claude-smart/.env" || return 1
+    grep -qE '^[[:space:]]*(export[[:space:]]+)?REFLEXIO_ROW_LIMIT_INTERACTIONS[[:space:]]*=' "$HOME/.claude-smart/.env" || return 1
   fi
   if [ -d "$PLUGIN_ROOT/dashboard" ]; then
     [ -d "$PLUGIN_ROOT/dashboard/.next" ] || [ -f "$MARKER_DIR/dashboard-build.pid" ] || [ -f "$(claude_smart_dashboard_unavailable_marker)" ] || return 1
@@ -502,13 +497,15 @@ install_private_node() {
 }
 
 if [ "${CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY:-}" = "1" ]; then
+  claude_smart_source_reflexio_env
   install_private_node
   exit $?
 fi
 
 preflight_supported_runtime_platform
 
-if install_complete; then
+if (claude_smart_source_reflexio_env; install_complete); then
+  claude_smart_source_reflexio_env
   verify_windows_local_embedding_runtime
   start_backend_service
   claude_smart_emit_continue
@@ -636,132 +633,23 @@ if ! claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook; then
   write_failure "claude-smart package is not importable after vendored Reflexio install in $PLUGIN_ROOT/.venv"
 fi
 
-# claude-smart's backend loads ~/.claude-smart/.env (backend-service.sh exports
-# REFLEXIO_ENV_FILE so reflexio's CLI reads it instead of ~/.reflexio/.env);
-# append our opt-in flags there so `reflexio services start` picks them up. Keep
-# this path in sync with env_config.CLAUDE_SMART_ENV_PATH and backend-service.sh.
-REFLEXIO_ENV="$HOME/.claude-smart/.env"
-mkdir -p "$(dirname "$REFLEXIO_ENV")"
-claude_smart_env_quote() {
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
-}
-
-claude_smart_env_value() {
-  local key line value
-  key="$1"
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [ -n "$line" ] || continue
-    case "$line" in
-      \#*) continue ;;
-      export\ *) line="${line#export }" ;;
-    esac
-    [ "${line%%=*}" = "$key" ] || continue
-    value="${line#*=}"
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
-    claude_smart_env_unquote "$value"
-    return 0
-  done < "$REFLEXIO_ENV"
-  return 1
-}
-
-claude_smart_env_upsert() {
-  local key value quoted
-  key="$1"
-  value="$2"
-  quoted="$(claude_smart_env_quote "$value")"
-  if grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$REFLEXIO_ENV"; then
-    sed -i.bak -E "s|^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=.*$|${key}=\"${quoted}\"|" "$REFLEXIO_ENV"
-    rm -f "$REFLEXIO_ENV.bak"
-  else
-    printf '%s="%s"\n' "$key" "$quoted" >> "$REFLEXIO_ENV"
+# Dependency preparation does not choose or rewrite the user's connection.
+# The prepared runtime supplies missing defaults under its native settings lock.
+# Discard metadata stdout so the hook emits only its own continuation payload.
+PLUGIN_PYTHON="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
+if "$PLUGIN_PYTHON" -I -m claude_smart.env_config bootstrap-repair >/dev/null; then
+  :
+else
+  repair_status=$?
+  if [ "$repair_status" -eq 75 ]; then
+    echo "[claude-smart] settings are busy; retry setup after the active save" >&2
+    claude_smart_emit_continue
+    exit "$repair_status"
   fi
-}
-
-claude_smart_env_append_raw_if_missing() {
-  local key value
-  key="$1"
-  value="$2"
-  if ! grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$REFLEXIO_ENV"; then
-    printf '%s=%s\n' "$key" "$value" >> "$REFLEXIO_ENV"
-  fi
-}
-
-claude_smart_prune_managed_env_keys_for_local() {
-  local tmp line raw_key key
-  [ -f "$REFLEXIO_ENV" ] || return 0
-  tmp="$(mktemp "${REFLEXIO_ENV}.tmp.XXXXXX")"
-  while IFS= read -r line || [ -n "$line" ]; do
-    raw_key="$line"
-    raw_key="${raw_key#"${raw_key%%[![:space:]]*}"}"
-    case "$raw_key" in
-      export\ *) raw_key="${raw_key#export }" ;;
-    esac
-    key="${raw_key%%=*}"
-    key="${key%"${key##*[![:space:]]}"}"
-    case "$key" in
-      REFLEXIO_URL|REFLEXIO_API_KEY|REFLEXIO_USER_ID)
-        continue
-        ;;
-    esac
-    printf '%s\n' "$line" >> "$tmp"
-  done < "$REFLEXIO_ENV"
-  mv "$tmp" "$REFLEXIO_ENV"
-}
-
-claude_smart_ensure_local_env_defaults() {
-  local local_cli_default
-  local_cli_default="${CLAUDE_SMART_USE_LOCAL_CLI:-1}"
-  claude_smart_managed_env_active && return 0
-  mkdir -p "$(dirname "$REFLEXIO_ENV")"
-  touch "$REFLEXIO_ENV"
-  chmod 600 "$REFLEXIO_ENV"
-  # A key next to a plain http loopback URL is local mode that keeps its URL;
-  # A guided setup also keeps its explicitly chosen local URL and sharing scope;
-  # only a keyless legacy setup has managed keys to prune.
-  if [ -z "${REFLEXIO_API_KEY:-}" ] && [ -z "${CLAUDE_SMART_LEARNING_PROVIDER:-}" ] && [ "${CLAUDE_SMART_GUIDED_CONFIG:-}" != "1" ]; then
-    claude_smart_prune_managed_env_keys_for_local
-    unset REFLEXIO_URL REFLEXIO_API_KEY REFLEXIO_USER_ID CLAUDE_SMART_MANAGED_SETUP
-  fi
-  if ! grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI[[:space:]]*=' "$REFLEXIO_ENV"; then
-    printf '# Route reflexio generation through the configured local host CLI\n' >> "$REFLEXIO_ENV"
-    claude_smart_env_append_raw_if_missing CLAUDE_SMART_USE_LOCAL_CLI "$local_cli_default"
-    echo "[claude-smart] appended CLAUDE_SMART_USE_LOCAL_CLI=$local_cli_default to $REFLEXIO_ENV" >&2
-  fi
-  if ! grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY[[:space:]]*=' "$REFLEXIO_ENV"; then
-    claude_smart_env_upsert CLAUDE_SMART_READ_ONLY "0"
-    echo "[claude-smart] appended CLAUDE_SMART_READ_ONLY=0 to $REFLEXIO_ENV" >&2
-  fi
-  if ! grep -qE '^[[:space:]]*(export[[:space:]]+)?REFLEXIO_ROW_LIMIT_INTERACTIONS[[:space:]]*=' "$REFLEXIO_ENV"; then
-    # Preserve the local history budget as visible SDK configuration. Never
-    # export a launcher default over a cap already saved in the selected file.
-    printf '# Local interaction history row cap; 0 disables cap cleanup\n' >> "$REFLEXIO_ENV"
-    claude_smart_env_append_raw_if_missing REFLEXIO_ROW_LIMIT_INTERACTIONS "${REFLEXIO_ROW_LIMIT_INTERACTIONS:-500}"
-  fi
-  if ! grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_HOST[[:space:]]*=' "$REFLEXIO_ENV"; then
-    claude_smart_env_upsert CLAUDE_SMART_HOST "claude-code"
-    echo "[claude-smart] appended CLAUDE_SMART_HOST=claude-code to $REFLEXIO_ENV" >&2
-  fi
-  chmod 600 "$REFLEXIO_ENV"
-}
-
-claude_smart_ensure_local_env_defaults
-# No-op outside Git Bash/MSYS/Cygwin; non-Windows installs must not depend on it.
-verify_windows_local_embedding_runtime
-
-# Migrate stale REFLEXIO_URL from reflexio's library default (8081) to the
-# plugin backend port (8071). Matches the quoted and unquoted forms but
-# requires paired quotes, so malformed or deliberately different values
-# (e.g. a remote reflexio URL) are preserved.
-if [ -f "$REFLEXIO_ENV" ] && grep -qE '^REFLEXIO_URL=("http://localhost:8081/?"|http://localhost:8081/?)$' "$REFLEXIO_ENV"; then
-  sed -i.bak -E \
-    -e 's|^REFLEXIO_URL="http://localhost:8081(/?)"$|REFLEXIO_URL="http://localhost:8071\1"|' \
-    -e 's|^REFLEXIO_URL=http://localhost:8081(/?)$|REFLEXIO_URL=http://localhost:8071\1|' \
-    "$REFLEXIO_ENV"
-  echo "[claude-smart] migrated REFLEXIO_URL 8081 → 8071 in $REFLEXIO_ENV (backup at $REFLEXIO_ENV.bak)" >&2
+  write_failure "Unable to repair startup settings; check the settings error above before retrying."
 fi
+claude_smart_source_reflexio_env
+verify_windows_local_embedding_runtime
 
 case "${CLAUDE_SMART_HOST:-claude-code}" in
   opencode)

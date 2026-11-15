@@ -10,9 +10,11 @@ must stay in sync with the ``REFLEXIO_ENV_FILE`` export in
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import stat
+import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -22,11 +24,7 @@ from filelock import Timeout, UnixFileLock, WindowsFileLock
 from claude_smart import runtime
 
 CLAUDE_SMART_ENV_PATH = Path.home() / ".claude-smart" / ".env"
-# Deprecated internal alias kept so older imports do not fail abruptly.
-REFLEXIO_ENV_PATH = CLAUDE_SMART_ENV_PATH
-MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/"
 REFLEXIO_URL_ENV = "REFLEXIO_URL"
-REFLEXIO_API_KEY_ENV = "REFLEXIO_API_KEY"
 CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY"
 CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
 CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST"
@@ -34,10 +32,8 @@ DEFAULT_CLAUDE_SMART_HOST = runtime.HOST_CLAUDE_CODE
 
 _LOCAL_DEFAULT_ENTRIES = (
     (
-        "# Set to 1 to route reflexio generation through the active host CLI "
-        "(claude for Claude Code, the host compatibility bridge for OpenCode/Codex). "
-        "Set to 0 to disable that provider so reflexio auto-detects a cloud LLM "
-        "key (anthropic, minimax, openai, etc.) from ~/.claude-smart/.env instead.",
+        "# Route local generation through the selected host CLI; "
+        "0 uses configured cloud LLM credentials instead.",
         CLAUDE_SMART_USE_LOCAL_CLI_ENV,
         "1",
     ),
@@ -53,13 +49,6 @@ _ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS = {
     CLAUDE_SMART_USE_LOCAL_CLI_ENV,
     "REFLEXIO_ROW_LIMIT_INTERACTIONS",
 }
-_LOCAL_MODE_PRUNE_KEYS = {
-    REFLEXIO_URL_ENV,
-    REFLEXIO_API_KEY_ENV,
-    "REFLEXIO_USER_ID",
-}
-
-
 _LOCAL_REFLEXIO_URL_RE = re.compile(
     r"http://(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(/?|:.*)"
 )
@@ -116,123 +105,45 @@ def load_reflexio_env(path: Path | None = None) -> None:
         os.environ.setdefault(key, value)
 
 
-def set_env_vars(path: Path, values: dict[str, str]) -> list[str]:
-    """Upsert dotenv keys in one private, serialized publication."""
-    # Validate before creating even the parent directory; never interpolate
-    # caller-supplied newlines into extra settings.
-    for key, value in values.items():
-        if re.fullmatch(
-            r"[A-Za-z_][A-Za-z0-9_]*", key
-        ) is None or not _single_line_value(value):
-            raise ValueError("Invalid environment assignment")
-    return _edit_env_file(path, lambda text: _upsert_env(text, values))
+class SettingsBusyError(RuntimeError):
+    """Another cooperating settings transaction is currently publishing."""
 
 
-def _upsert_env(existing: str, values: dict[str, str]) -> tuple[str, list[str]]:
-    lines = existing.splitlines()
-    seen: set[str] = set()
-    out: list[str] = []
-    for line in lines:
-        parsed = parse_env_line(line)
-        if parsed is None:
-            out.append(line)
-            continue
-        key, _old = parsed
-        if key in values:
-            out.append(f'{key}="{_escape_env_value(values[key])}"')
-            seen.add(key)
-        else:
-            out.append(line)
+def repair_bootstrap_env(path: Path | None = None) -> list[str]:
+    """Supply missing local defaults without selecting or changing a connection.
 
-    added: list[str] = []
-    for key, value in values.items():
-        if key in seen:
-            continue
-        out.append(f'{key}="{_escape_env_value(value)}"')
-        added.append(key)
-
-    content = "\n".join(out)
-    return content + ("\n" if content else ""), added
-
-
-def ensure_local_env_defaults(
-    path: Path | None = None,
-    host: str = DEFAULT_CLAUDE_SMART_HOST,
-    *,
-    prune: bool = True,
-) -> list[str]:
-    """Create or augment ``~/.claude-smart/.env`` for claude-smart local mode.
-
-    Existing active assignments win except ``CLAUDE_SMART_HOST``, which is
-    install-selected state and must follow the host currently being installed.
-    This repairs first installs and deleted env files without clobbering
-    explicit user overrides such as ``CLAUDE_SMART_READ_ONLY=1``.
+    Setup owns the URL, credentials, sharing and installed host. Dependency
+    repair preserves those decisions, including explicit empties and duplicates.
+    Remote URL alone means attached mode, even when its credentials need repair.
     """
-    if host not in {
-        runtime.HOST_CLAUDE_CODE,
-        runtime.HOST_CODEX,
-        runtime.HOST_OPENCODE,
-    }:
-        raise ValueError("Invalid integration host")
-    return _edit_env_file(
-        path or CLAUDE_SMART_ENV_PATH,
-        lambda text: _local_env_defaults(text, host, prune=prune),
-    )
+    return _edit_env_file(path or CLAUDE_SMART_ENV_PATH, _bootstrap_defaults)
 
 
-def _local_env_defaults(
-    existing: str, install_host: str, *, prune: bool
-) -> tuple[str, list[str]]:
-    present: set[str] = set()
-    kept_lines: list[str] = []
-    pruned = False
-    changed = False
-    host_written = False
+def _bootstrap_defaults(existing: str) -> tuple[str | None, list[str]]:
+    current = {}
     for line in existing.splitlines():
-        parsed = parse_env_line(line)
-        if parsed is not None:
-            key, _value = parsed
-            if prune and key in _LOCAL_MODE_PRUNE_KEYS:
-                pruned = True
-                continue
-            if key == CLAUDE_SMART_HOST_ENV:
-                present.add(key)
-                if not host_written:
-                    replacement = (
-                        f"{CLAUDE_SMART_HOST_ENV}={_escape_env_value(install_host)}"
-                    )
-                    kept_lines.append(replacement)
-                    host_written = True
-                    if line != replacement or _value != install_host:
-                        changed = True
-                else:
-                    changed = True
-                continue
-            present.add(key)
-        kept_lines.append(line)
-
-    additions: list[str] = []
-    added_keys: list[str] = []
-    for comment, key, value in _LOCAL_DEFAULT_ENTRIES:
-        if key in present:
+        if (entry := parse_env_line(line)) is not None:
+            current[entry[0]] = entry[1]
+    url = current.get(REFLEXIO_URL_ENV, os.environ.get(REFLEXIO_URL_ENV, ""))
+    if reflexio_url_is_remote(url):
+        return None, []
+    additions = []
+    added = []
+    for comment, key, default in _LOCAL_DEFAULT_ENTRIES:
+        if key in current:
             continue
-        effective_value = _resolve_local_env_default(key, value, install_host)
+        value = _resolve_local_env_default(key, default)
         if comment:
             additions.append(comment)
-        if key == CLAUDE_SMART_READ_ONLY_ENV:
-            additions.append(f'{key}="{_escape_env_value(effective_value)}"')
+        if key in {CLAUDE_SMART_READ_ONLY_ENV, CLAUDE_SMART_HOST_ENV}:
+            additions.append(f'{key}="{value}"')
         else:
-            additions.append(f"{key}={_escape_env_value(effective_value)}")
-        added_keys.append(key)
-
-    if additions or pruned or changed:
-        content = "\n".join(kept_lines)
-        if additions:
-            prefix = "" if not content or content.endswith("\n") else "\n"
-            content = content + prefix + "\n".join(additions)
-        content = content + ("\n" if content else "")
-        return content, added_keys
-    return existing, added_keys
+            additions.append(f"{key}={value}")
+        added.append(key)
+    if not additions:
+        return existing, added
+    separator = "" if not existing or existing.endswith(("\n", "\r")) else "\n"
+    return existing + separator + "\n".join(additions) + "\n", added
 
 
 def _regular_env_file(path: Path) -> bool:
@@ -249,7 +160,7 @@ def _regular_env_file(path: Path) -> bool:
 
 
 def _edit_env_file[Result](
-    path: Path, edit: Callable[[str], tuple[str, Result]]
+    path: Path, edit: Callable[[str], tuple[str | None, Result]]
 ) -> Result:
     """Own one helper's read/transform/publication, not an entire installation.
 
@@ -291,6 +202,8 @@ def _edit_env_file[Result](
             else:
                 original = ""
             content, result = edit(original)
+            if content is None:
+                return result
             # No-op operations still repair the original private mode, as before.
             if exists and content == original:
                 path.chmod(0o600)
@@ -316,14 +229,12 @@ def _edit_env_file[Result](
                 temporary.replace(path)
             return result
     except Timeout:
-        raise RuntimeError(
+        raise SettingsBusyError(
             "Environment settings are busy; retry after the other save finishes"
         ) from None
 
 
-def _resolve_local_env_default(key: str, fallback: str, install_host: str) -> str:
-    if key == CLAUDE_SMART_HOST_ENV:
-        return install_host
+def _resolve_local_env_default(key: str, fallback: str) -> str:
     if key in _ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS:
         explicit = os.environ.get(key, "").strip()
         if explicit:
@@ -338,21 +249,34 @@ def env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def mask_secret(value: str) -> str:
-    """Return a display-safe API key preview."""
-    if not value:
-        return ""
-    if len(value) <= 8:
-        return "*" * len(value)
-    prefix = value[:5] if "-" in value[:8] else value[:4]
-    return f"{prefix}****{value[-4:]}"
-
-
 def _single_line_value(value: str) -> bool:
     # Readers use str.splitlines(), whose boundaries include Unicode separators
     # as well as CR/LF. Values must never become additional assignments there.
     return "\0" not in value and value.splitlines() in ([], [value])
 
 
-def _escape_env_value(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+def main(argv: list[str] | None = None) -> int:
+    """Internal prepared-runtime entrypoint; no bootstrap or provider imports."""
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments != ["bootstrap-repair"]:
+        print(
+            "Usage: python -m claude_smart.env_config bootstrap-repair", file=sys.stderr
+        )
+        return 2
+    try:
+        added = repair_bootstrap_env()
+    except SettingsBusyError as error:
+        print(str(error), file=sys.stderr)
+        return 75
+    except (OSError, ValueError):
+        print(
+            "Cannot repair settings; check file access and single-line UTF-8 defaults.",
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps({"ok": True, "added": added}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
