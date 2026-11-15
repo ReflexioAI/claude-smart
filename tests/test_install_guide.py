@@ -1216,14 +1216,15 @@ def test_confirmed_local_endpoint_is_saved_in_runtime_loopback_form(
         [
             "bash",
             "-c",
-            '. "$1"; claude_smart_reflexio_url_is_remote "$2"',
+            '. "$1"; if claude_smart_reflexio_url_is_remote; then exit 2; fi; '
+            "REFLEXIO_URL=https://owned-remote.example/; "
+            "claude_smart_reflexio_url_is_remote",
             "bash",
             str(LIB),
-            normalized,
         ],
-        env=env,
+        env={**env, "REFLEXIO_URL": normalized},
         text=True,
         capture_output=True,
         timeout=10,
     )
-    assert shell.returncode == 1, shell.stdout + shell.stderr
+    assert shell.returncode == 0, shell.stdout + shell.stderr
