@@ -100,13 +100,8 @@ const CODEX_CONFIG_PATH = join(CODEX_HOME, "config.toml");
 const CODEX_RUNTIME_PACKAGE_DIR = join(CODEX_HOME, "claude-smart", "runtime");
 const CODEX_RUNTIME_PLUGIN_ROOT = join(CODEX_RUNTIME_PACKAGE_DIR, "plugin");
 const PACKAGE_ROOT = dirname(dirname(__filename));
-const CODEX_MARKETPLACE_DIR = join(
-  homedir(),
-  ".claude",
-  "plugins",
-  "marketplaces",
-  CODEX_MARKETPLACE_NAME,
-);
+// Account-owned staging must never replace Claude's legacy marketplace runtime.
+const CODEX_MARKETPLACE_DIR = join(CODEX_HOME, "claude-smart", "marketplace");
 const CODEX_MARKETPLACE_PLUGIN_PATH = "plugin";
 const CODEX_PLUGIN_CACHE_DIR = join(
   CODEX_HOME,

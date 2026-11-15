@@ -364,3 +364,59 @@ def test_missing_codex_package_file_fails_before_service_effects(tmp_path):
     assert "published package is missing" in result.stderr
     assert not _calls(tmp_path)
     assert (root / "identity").read_text() == "old"
+
+
+@pytest.mark.parametrize("phase", ["registration", "bootstrap", "success", "uninstall"])
+def test_codex_marketplace_never_replaces_legacy_claude_runtime(tmp_path, phase):
+    package, root, uv, env = _fixture(
+        tmp_path, "codex", installed=False, running="both"
+    )
+    legacy = tmp_path / ".claude/plugins/marketplaces/reflexioai/plugin"
+    shutil.copytree(package / "plugin", legacy)
+    (legacy / "identity").write_text("legacy-claude")
+    (legacy / "prepared-only").write_text("prior environment and dashboard build")
+    link = tmp_path / ".reflexio/plugin-root"
+    link.parent.mkdir()
+    link.symlink_to(legacy, target_is_directory=True)
+    if phase == "registration":
+        fake = tmp_path / "fake-bin/codex"
+        fake.write_text(
+            fake.read_text().replace(
+                'if (args[0] === "features"',
+                'if (args[0] === "plugin" && args[1] === "marketplace" && args[2] === "add") process.exit(3);\nif (args[0] === "features"',
+            )
+        )
+    elif phase in {"success", "uninstall"}:
+        _write_bootstrap_uv(uv, mode="fresh")
+    before = {
+        str(f.relative_to(legacy)): f.read_bytes()
+        for f in legacy.rglob("*")
+        if f.is_file()
+    }
+    result = _run(tmp_path, package, "codex", env)
+    assert result.returncode == (
+        0
+        if phase in {"success", "uninstall"}
+        else (3 if phase == "registration" else 1)
+    ), result.stderr
+    if phase == "uninstall":
+        result = _run(tmp_path, package, "codex", env, "uninstall")
+        assert result.returncode == 0, result.stderr
+    after = {
+        str(f.relative_to(legacy)): f.read_bytes()
+        for f in legacy.rglob("*")
+        if f.is_file()
+    }
+    assert after == before
+    starts = [row for row in _calls(tmp_path) if row["action"] == "start"]
+    if phase in {"registration", "bootstrap"}:
+        assert len(starts) == 2
+        assert all(
+            row["root"] == str(legacy)
+            and row["identity"] == "legacy-claude"
+            and row["selected_root"] == str(legacy)
+            for row in starts
+        )
+        assert not root.exists()
+    else:
+        assert not starts

@@ -6293,7 +6293,7 @@ def test_node_installer_codex_marketplace_cache_uses_manifest_plugin_path(
     payload = json.loads(result.stdout)
     assert payload["path"] == "./plugin"
     assert payload["pluginRoot"] == str(
-        tmp_path / ".claude" / "plugins" / "marketplaces" / "reflexioai" / "plugin"
+        tmp_path / ".codex" / "claude-smart" / "marketplace" / "plugin"
     )
     assert payload["hasManifest"] is True
     assert payload["legacyPathExists"] is False
@@ -6463,8 +6463,8 @@ process.stdin.on("data", (chunk) => {
         }
       };
       // Real Codex validates the installed version, not inactive cache entries.
-      const manifest = JSON.parse(fs.readFileSync(path.join(home,
-        ".claude/plugins/marketplaces/reflexioai/plugin/.codex-plugin/plugin.json"), "utf8"));
+      const manifest = JSON.parse(fs.readFileSync(path.join(process.env.CODEX_HOME || `${home}/.codex`,
+        "claude-smart/marketplace/plugin/.codex-plugin/plugin.json"), "utf8"));
       validate(path.join(cache, manifest.version));
       process.stdout.write(JSON.stringify({
         id: message.id,
@@ -6851,9 +6851,7 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
     version = json.loads(
         (REPO_ROOT / "plugin" / ".codex-plugin" / "plugin.json").read_text()
     )["version"]
-    marketplace_plugin = (
-        home / ".claude" / "plugins" / "marketplaces" / "reflexioai" / "plugin"
-    )
+    marketplace_plugin = codex_home / "claude-smart" / "marketplace" / "plugin"
     cache_plugin = (
         codex_home / "plugins" / "cache" / "reflexioai" / "claude-smart" / version
     )

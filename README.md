@@ -163,6 +163,10 @@ install metadata are restored before restarting only services that were running.
 A failed first install leaves no candidate runtime selected. Incomplete recovery
 keeps backups and warns rather than starting an unverified runtime.
 
+Codex stages its marketplace under `CODEX_HOME/claude-smart/marketplace` (default
+`~/.codex/claude-smart/marketplace`), separate from Claude's legacy marketplace.
+Installing or removing Codex leaves that legacy runtime intact.
+
 Codex commits its prepared runtime and hook cache before asking Codex to trust the
 hooks. A later trust failure keeps that new runtime; follow the reported `/hooks`
 recovery instructions. Registration, account configuration, and trust changes are
