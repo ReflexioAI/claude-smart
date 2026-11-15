@@ -3,6 +3,21 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const { configure, parseOptions, describe, validateManagedUrl } = require("../bin/install-guide");
+// Contracts supply intentional caller overrides in dedicated child processes.
+const learningKeys = [
+  "CLAUDE_SMART_LEARNING_MODEL",
+  "CLAUDE_SMART_LEARNING_PROVIDER",
+  "CLAUDE_SMART_USE_LOCAL_CLI",
+  "CLAUDE_SMART_CLI_PATH",
+];
+const callerLearning = new Map(learningKeys.map((key) => [key, process.env[key]]));
+for (const key of learningKeys) delete process.env[key];
+test.after(() => {
+  for (const [key, value] of callerLearning) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
 const inventory = [
   { host: "claude-code", available: true, installed: true },
   { host: "codex", available: true, installed: false },

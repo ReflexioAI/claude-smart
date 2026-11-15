@@ -156,6 +156,22 @@ Run `/reload-plugins` in your existing Claude Code session, or use the update in
 Start a new Codex session to load the update; you can finish your existing session first. If hook trust needs review, use `/hooks`.
 Then restart OpenCode in your project so it loads the plugin. The installer writes a loader into the selected scope's `plugins` directory — the project's `.opencode/plugins/` for a project install — and both OpenCode lines load the plugin from there: OpenCode 1.x auto-loads the plugins directory, and OpenCode V2 rejects the old `file://` config-entry shape. Any legacy `opencode.json` entry is removed so the package loads exactly once. `--global` installs for all OpenCode projects on this machine instead, writing the loader under your user config directory.
 
+Install and update use the same tracked service lifecycle for every coding agent.
+Validation of the platform, settings, and OpenCode loader/config happens before
+services stop. If preparation fails before commit, the previous packages and
+install metadata are restored before restarting only services that were running.
+A failed first install leaves no candidate runtime selected. Incomplete recovery
+keeps backups and warns rather than starting an unverified runtime.
+
+Codex stages its marketplace under `CODEX_HOME/claude-smart/marketplace` (default
+`~/.codex/claude-smart/marketplace`), separate from Claude's legacy marketplace.
+Installing or removing Codex leaves that legacy runtime intact.
+
+Codex commits its prepared runtime and hook cache before asking Codex to trust the
+hooks. A later trust failure keeps that new runtime; follow the reported `/hooks`
+recovery instructions. Registration, account configuration, and trust changes are
+not an all-or-nothing transaction.
+
 ### Check an update
 
 ```bash

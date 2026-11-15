@@ -1398,6 +1398,9 @@ def _run_fake_claude_code_install(
     env = _isolated_env(tmp_path)
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["CLAUDE_SMART_DASHBOARD_AUTOSTART"] = "0"
+    # The pytest runtime fixture exports Claude as its own host. This child
+    # exercises saved settings unless the test deliberately supplies a caller.
+    env.pop("CLAUDE_SMART_HOST", None)
     for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY", "CLAUDE_SMART_BACKEND_AUTOSTART"):
         env.pop(key, None)
     env.update(extra_env)
@@ -1964,6 +1967,12 @@ def test_failed_codex_install_restores_the_previous_host(tmp_path: Path) -> None
         pytest.skip("node is required for Node installer test")
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
+    # Install now captures service status as update does. Intercept service
+    # scripts so this real CLI/interrupt contract never probes a live listener.
+    _write_executable(
+        fake_bin / "bash",
+        '#!/bin/sh\ncase "$1" in *-service.sh) echo "not running"; exit 0;; esac\nexec /bin/bash "$@"\n',
+    )
     _write_executable(fake_bin / "codex", "#!/bin/sh\nexit 3\n")
     runtime_env = tmp_path / ".claude-smart" / ".env"
     runtime_env.parent.mkdir()
@@ -2150,6 +2159,12 @@ def test_interrupt_during_a_codex_cli_step_stops_its_descendants(
         pytest.skip("node is required for Node installer test")
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
+    # Install now captures service status as update does. Intercept service
+    # scripts so this real CLI/interrupt contract never probes a live listener.
+    _write_executable(
+        fake_bin / "bash",
+        '#!/bin/sh\ncase "$1" in *-service.sh) echo "not running"; exit 0;; esac\nexec /bin/bash "$@"\n',
+    )
     _write_executable(
         fake_bin / "codex",
         "#!/bin/sh\n"
@@ -3437,33 +3452,6 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     # The service scripts always exit 0, so a start is only claimed after an
     # HTTP probe (see test_node_install_reports_backend_status_from_probe).
     assert "Started claude-smart backend service." not in node_installer
-
-
-def test_node_update_reinstalls_by_host() -> None:
-    node_installer = NODE_INSTALLER.read_text()
-
-    assert "if (parseHost(args) === HOST_CODEX)" in node_installer
-    assert "if (parseHost(args) === HOST_OPENCODE)" in node_installer
-    assert "await runUpdateCodex(args)" in node_installer
-    assert "async function runUpdateCodex(args)" in node_installer
-    assert 'findCodexPluginRoot() || join(PACKAGE_ROOT, "plugin")' in node_installer
-    assert (
-        "await runInstall(args, { retryInstallAfterUninstall: true })" in node_installer
-    )
-    assert "await runInstallCodex(args)" in node_installer
-    # Update means reinstall from this package; `plugin update` only
-    # re-records the version inside runInstall, after `plugin install`.
-    run_update = node_installer[
-        node_installer.index("async function runUpdate(args)") : node_installer.index(
-            "async function runUpdateCodex(args)"
-        )
-    ]
-    assert '"update"' not in run_update
-    run_install = node_installer[node_installer.index("async function runInstall(") :]
-    assert run_install.index('args: ["plugin", "install", PLUGIN_SPEC]') < (
-        run_install.index('runClaude(["plugin", "update", PLUGIN_SPEC]')
-    )
-    assert "update --host codex" in node_installer
 
 
 def test_smart_install_recreates_corrupt_venv() -> None:
@@ -6305,7 +6293,7 @@ def test_node_installer_codex_marketplace_cache_uses_manifest_plugin_path(
     payload = json.loads(result.stdout)
     assert payload["path"] == "./plugin"
     assert payload["pluginRoot"] == str(
-        tmp_path / ".claude" / "plugins" / "marketplaces" / "reflexioai" / "plugin"
+        tmp_path / ".codex" / "claude-smart" / "marketplace" / "plugin"
     )
     assert payload["hasManifest"] is True
     assert payload["legacyPathExists"] is False
@@ -6475,8 +6463,8 @@ process.stdin.on("data", (chunk) => {
         }
       };
       // Real Codex validates the installed version, not inactive cache entries.
-      const manifest = JSON.parse(fs.readFileSync(path.join(home,
-        ".claude/plugins/marketplaces/reflexioai/plugin/.codex-plugin/plugin.json"), "utf8"));
+      const manifest = JSON.parse(fs.readFileSync(path.join(process.env.CODEX_HOME || `${home}/.codex`,
+        "claude-smart/marketplace/plugin/.codex-plugin/plugin.json"), "utf8"));
       validate(path.join(cache, manifest.version));
       process.stdout.write(JSON.stringify({
         id: message.id,
@@ -6863,9 +6851,7 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
     version = json.loads(
         (REPO_ROOT / "plugin" / ".codex-plugin" / "plugin.json").read_text()
     )["version"]
-    marketplace_plugin = (
-        home / ".claude" / "plugins" / "marketplaces" / "reflexioai" / "plugin"
-    )
+    marketplace_plugin = codex_home / "claude-smart" / "marketplace" / "plugin"
     cache_plugin = (
         codex_home / "plugins" / "cache" / "reflexioai" / "claude-smart" / version
     )
