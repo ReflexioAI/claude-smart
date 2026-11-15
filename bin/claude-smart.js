@@ -1462,7 +1462,11 @@ function pluginServiceStatus(root, scriptName) {
   );
 }
 
-function stopServicesForInstall(root, host) {
+function stopServicesForInstall(installedRoot, host) {
+  // Shared services may belong to another integration. Never use a candidate
+  // npm source as the recovery runtime for a first installation.
+  const root = installStateSnapshot.pluginRoot || installedRoot;
+  if (!root || !existsSync(join(root, "scripts", "backend-service.sh"))) return;
   // Only what was actually running is restarted if the install fails.
   const running = (scriptName) => pluginServiceStatus(root, scriptName).startsWith("running on");
   stoppedServices = {
@@ -3069,7 +3073,7 @@ function parseHost(args) {
   return value;
 }
 
-function copyCodexMarketplace() {
+function validateCodexPackage() {
   for (const rel of CODEX_REQUIRED_FILES) {
     const path = join(PACKAGE_ROOT, rel);
     if (!existsSync(path)) {
@@ -3079,7 +3083,10 @@ function copyCodexMarketplace() {
       process.exit(1);
     }
   }
+}
 
+function copyCodexMarketplace() {
+  validateCodexPackage();
   rmSync(CODEX_MARKETPLACE_DIR, { recursive: true, force: true });
   mkdirSync(join(CODEX_MARKETPLACE_DIR, ".agents", "plugins"), { recursive: true });
   mkdirSync(join(CODEX_MARKETPLACE_DIR, "plugins"), { recursive: true });
@@ -3678,9 +3685,10 @@ async function runInstallCodex(args) {
   const setup = configureReflexioSetup(HOST_CODEX);
   const readOnly = setup.readOnly;
 
+  validateCodexPackage();
   const previousRoot = existsSync(CODEX_RUNTIME_PLUGIN_ROOT)
     ? CODEX_RUNTIME_PLUGIN_ROOT
-    : findCodexPluginRoot() || join(PACKAGE_ROOT, "plugin");
+    : findCodexPluginRoot();
   stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
   const marketplaceRoot = copyCodexMarketplace();
   if (readOnly) {
@@ -3819,7 +3827,7 @@ async function runInstallOpenCode(args) {
 
   assertOpenCodeInstallConfiguration(args);
   const installedRoot = join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin");
-  const previousRoot = existsSync(installedRoot) ? installedRoot : join(PACKAGE_ROOT, "plugin");
+  const previousRoot = existsSync(installedRoot) ? installedRoot : null;
   stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
   let packageRoot;
   try {

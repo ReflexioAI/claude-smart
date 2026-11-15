@@ -309,3 +309,58 @@ def test_failed_update_repairs_previously_broken_root_to_restored_install(
     assert len(starts) == 1
     assert starts[0]["identity"] == "old"
     assert starts[0]["selected_root"] == str(root)
+
+
+@pytest.mark.parametrize("host", ["codex", "opencode"])
+@pytest.mark.parametrize("command", ["install", "update"])
+@pytest.mark.parametrize("running", ["both", "dashboard"])
+def test_first_integration_failure_recovers_existing_other_integration(
+    tmp_path, host, command, running
+):
+    package, candidate, _, env = _fixture(
+        tmp_path, host, running=running, installed=False
+    )
+    old = tmp_path / ".claude-smart/claude-code/claude-smart/plugin"
+    shutil.copytree(package / "plugin", old)
+    (old / "identity").write_text("previous-claude")
+    link = tmp_path / ".reflexio/plugin-root"
+    link.parent.mkdir()
+    link.symlink_to(old, target_is_directory=True)
+    result = _run(tmp_path, package, host, env, command)
+    assert result.returncode != 0
+    assert "uv sync failed" in result.stderr, result.stderr
+    calls = _calls(tmp_path)
+    assert {row["root"] for row in calls} == {str(old)}
+    starts = [row for row in calls if row["action"] == "start"]
+    assert [row["kind"] for row in starts] == (
+        ["backend", "dashboard"] if running == "both" else ["dashboard"]
+    )
+    assert all(
+        row["identity"] == "previous-claude"
+        and row["selected_root"] == str(old)
+        and row["marker"] == "prior marker"
+        for row in starts
+    )
+    assert not candidate.exists()
+
+
+@pytest.mark.parametrize("host", ["codex", "opencode"])
+def test_no_previous_runtime_never_uses_unprepared_source_for_service_recovery(
+    tmp_path, host
+):
+    package, root, _, env = _fixture(tmp_path, host, installed=False, running="both")
+    result = _run(tmp_path, package, host, env)
+    assert result.returncode != 0
+    assert "uv sync failed" in result.stderr, result.stderr
+    assert not _calls(tmp_path)
+    assert not root.exists()
+
+
+def test_missing_codex_package_file_fails_before_service_effects(tmp_path):
+    package, root, _, env = _fixture(tmp_path, "codex")
+    (package / "plugin/scripts/codex-hook.js").unlink()
+    result = _run(tmp_path, package, "codex", env)
+    assert result.returncode != 0
+    assert "published package is missing" in result.stderr
+    assert not _calls(tmp_path)
+    assert (root / "identity").read_text() == "old"
