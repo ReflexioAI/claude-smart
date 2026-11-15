@@ -77,7 +77,7 @@ if action == "status":
     _write_bootstrap_uv(uv, mode="non_lock_failure")
     env_file = tmp_path / ".claude-smart/.env"
     env_file.write_text(
-        'CLAUDE_SMART_HOST="claude-code"\nCLAUDE_SMART_LEARNING_PROVIDER="codex"\n'
+        'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\nCLAUDE_SMART_READ_ONLY="0"\nCLAUDE_SMART_HOST="claude-code"\nCLAUDE_SMART_LEARNING_PROVIDER="codex"\n'
     )
     marker = tmp_path / ".claude-smart/install-failed"
     marker.write_text("prior marker")
@@ -260,7 +260,9 @@ def test_restart_without_caller_host_uses_saved_host_or_existing_default(
     env["CLAUDE_SMART_HOST"] = ""
     env_file = tmp_path / ".claude-smart/.env"
     if saved_host is None:
-        env_file.write_text('CLAUDE_SMART_LEARNING_PROVIDER="codex"\n')
+        env_file.write_text(
+            'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\nCLAUDE_SMART_READ_ONLY="0"\nCLAUDE_SMART_LEARNING_PROVIDER="codex"\n'
+        )
     result = _run(tmp_path, package, host, env)
     assert result.returncode != 0
     assert "uv sync failed" in result.stderr, result.stderr

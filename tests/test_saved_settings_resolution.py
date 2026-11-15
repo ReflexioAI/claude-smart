@@ -144,14 +144,22 @@ def test_legacy_migration_preserves_present_empty_and_raw_values(
         'CLAUDE_SMART_CLI_PATH=""\n'
         + ('CLAUDE_SMART_CLI_TIMEOUT=""\n' if destination_empty else "")
     )
-    # Real exported setup interface runs migration/default policy, not a parser copy.
-    program = 'require(process.argv[1]).configureReflexioSetup("claude-code");'
+    # Public confirmation owns migration; workers consume the confirmed policy.
     result = subprocess.run(
-        [node_bin(), "-e", program, str(installer)],
+        [
+            node_bin(),
+            str(installer),
+            "setup",
+            "--host",
+            "claude-code",
+            "--backend",
+            "local",
+            "--yes",
+        ],
         env=env,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
     keys = ["CLAUDE_SMART_CLI_TIMEOUT", "CLAUDE_SMART_CLI_PATH"]

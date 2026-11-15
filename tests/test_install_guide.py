@@ -23,6 +23,7 @@ from tests.test_install_scripts import (
     _write_executable,
     _write_fake_claude_installer,
     _write_fake_codex,
+    _write_bootstrap_uv,
     node_bin,
 )
 
@@ -44,6 +45,8 @@ def fake_guide(tmp_path: Path, *, delay: bool = False) -> tuple[Path, dict[str, 
         tmp_path,
         "#!/bin/sh\n"
         + ("sleep 6\n" if delay else "")
+        + "uv sync --locked --python 3.12 --quiet || exit $?\n"
+        + '"$PWD/.venv/bin/python" -I -m claude_smart.env_config bootstrap-repair >/dev/null || exit $?\n'
         + 'printf \'{"continue":true,"suppressOutput":true}\\n\'\n',
     )
     (package / "package.json").write_text('{"name":"claude-smart","version":"0.3.6"}\n')
@@ -51,6 +54,7 @@ def fake_guide(tmp_path: Path, *, delay: bool = False) -> tuple[Path, dict[str, 
     fake_bin.mkdir()
     _write_executable(fake_bin / "claude", _fake_claude_install_script())
     _write_executable(fake_bin / "codex", "#!/bin/sh\nexit 0\n")
+    _write_bootstrap_uv(fake_bin / "uv", mode="fresh")
     env = guide_env(tmp_path)
     # Managed configuration discovery is read-only, but installer tests must
     # not contact a real managed account or depend on network availability.
@@ -185,14 +189,29 @@ def test_guided_install_progress_is_visible_while_worker_is_waiting(
 
 
 @pytest.mark.parametrize("hosts", ["claude-code", "claude-code,codex"])
+@pytest.mark.parametrize(
+    "policy", ["valid", "missing", "directory", "invalid", "invalid-utf8"]
+)
 def test_guided_uninstall_keeps_data_configuration_and_remaining_integration(
     tmp_path: Path,
     hosts: str,
+    policy: str,
 ) -> None:
     installer, env = fake_guide(tmp_path)
     state = tmp_path / ".claude-smart"
     state.mkdir()
-    (state / ".env").write_text('CLAUDE_SMART_LEARNING_PROVIDER="claude-code"\n')
+    selected = state / ".env"
+    if policy == "directory":
+        selected.mkdir()
+    elif policy != "missing":
+        original = (
+            b'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\nCLAUDE_SMART_LEARNING_PROVIDER="claude-code"\n'
+            if policy in {"valid", "invalid-utf8"}
+            else b'REFLEXIO_URL="invalid-endpoint"\nREFLEXIO_API_KEY=""\n'
+        )
+        if policy == "invalid-utf8":
+            original += b"OPAQUE=\xff\n"
+        selected.write_bytes(original)
     data = tmp_path / ".reflexio" / "data"
     data.mkdir(parents=True)
     (data / "sentinel").write_text("learned memories")
@@ -235,9 +254,17 @@ def test_guided_uninstall_keeps_data_configuration_and_remaining_integration(
         assert "Codex: removed" in result.stdout
         assert not remaining.exists()
         assert not (tmp_path / ".reflexio" / "plugin-root").exists()
-    assert (
-        'CLAUDE_SMART_LEARNING_PROVIDER="claude-code"' in (state / ".env").read_text()
-    )
+    if policy == "missing":
+        assert not selected.exists()
+    elif policy == "directory":
+        assert selected.is_dir()
+    else:
+        assert selected.read_bytes() == original
+    if hosts == "claude-code" and policy != "valid":
+        assert "Removal completed; repair saved settings" in result.stdout
+        assert (
+            "start" not in (tmp_path / "backend-service.log").read_text().splitlines()
+        )
     assert (data / "sentinel").read_text() == "learned memories"
 
 
@@ -421,6 +448,7 @@ def test_managed_key_is_hidden_and_final_cancel_does_not_save_it(
             if not chunk:
                 break
             output += chunk
+        proc.wait(timeout=5)
         assert proc.poll() is not None, output.decode(errors="replace")
         assert proc.returncode == 0, output.decode(errors="replace")
         assert b"secret-terminal-sentinel" not in output
@@ -540,6 +568,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         "cloud": "configured cloud LLM",
     }[provider_mode]
     installer = prefix / "bin" / "claude-smart"
+    env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
     result = subprocess.run(
         [
             str(installer),
@@ -566,7 +595,8 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     assert f"Background learning: {expected_learning}" in result.stdout
     assert '"continue"' not in result.stdout
     settings = config_path.read_text()
-    assert 'CLAUDE_SMART_GUIDED_CONFIG="1"' in settings
+    assert "CLAUDE_SMART_GUIDED_CONFIG" not in settings
+    assert "CLAUDE_SMART_HOST=" not in settings
     assert 'REFLEXIO_URL="http://localhost:9090/"' in settings
     assert 'REFLEXIO_USER_ID="global_user"' in settings
     if provider_mode == "named":
@@ -1115,3 +1145,86 @@ def test_interactive_setup_confirmation_preserves_effective_learning_intent(
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
         os.close(master)
+
+
+@pytest.mark.parametrize("remembered", [False, True])
+@pytest.mark.parametrize(
+    ("supplied", "normalized"),
+    [
+        ("http://127.1:9090", "http://127.0.0.1:9090/"),
+        ("http://LOCALHOST:9090", "http://localhost:9090/"),
+        ("http://0x7f000001:9090", "http://127.0.0.1:9090/"),
+        ("http://0177.0.0.1:9090", "http://127.0.0.1:9090/"),
+        ("http://localhost:80/api/", "http://localhost:80/api/"),
+        ("http://localhost/api", "http://localhost:80/api"),
+        ("http://LOCALHOST:80/api", "http://localhost:80/api"),
+        ("http://127.1:80/api", "http://127.0.0.1:80/api"),
+        ("http://[::1]:80/api", "http://[::1]:80/api"),
+        ("http://localhost:9090/api", "http://localhost:9090/api"),
+        ("http://localhost:80/", "http://localhost/"),
+        ("http://localhost/%2Fapi", "http://localhost:80/%2Fapi"),
+        ("http://localhost?", "http://localhost:80/?"),
+        ("http://localhost#", "http://localhost:80/#"),
+        ("http://localhost:80/api?", "http://localhost:80/api?"),
+        ("http://localhost:80/api#", "http://localhost:80/api#"),
+    ],
+)
+def test_confirmed_local_endpoint_is_saved_in_runtime_loopback_form(
+    tmp_path: Path, remembered: bool, supplied: str, normalized: str
+) -> None:
+    installer, env = fake_guide(tmp_path)
+    env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
+    selected = tmp_path / ".claude-smart/.env"
+    arguments = ["--url", supplied]
+    if remembered:
+        selected.parent.mkdir()
+        selected.write_text(
+            'REFLEXIO_URL="https://managed.example/"\nREFLEXIO_API_KEY="fake-key"\n'
+            f'CLAUDE_SMART_LOCAL_URL="{supplied}"\n'
+            'CLAUDE_SMART_LEARNING_PROVIDER="codex"\n'
+        )
+        arguments = []
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            "setup",
+            "--host",
+            "claude-code",
+            "--backend",
+            "local",
+            "--provider",
+            "codex",
+            *arguments,
+            "--yes",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f'REFLEXIO_URL="{normalized}"' in selected.read_text()
+    assert 'REFLEXIO_API_KEY=""' in selected.read_text()
+    assert "Claude Code: installed" in result.stdout
+    assert "incomplete or invalid" not in result.stderr
+    # Public confirmation must agree with all three real runtime readers.
+    from claude_smart.env_config import reflexio_url_is_remote
+
+    assert not reflexio_url_is_remote(normalized)
+    shell = subprocess.run(
+        [
+            "bash",
+            "-c",
+            '. "$1"; if claude_smart_reflexio_url_is_remote; then exit 2; fi; '
+            "REFLEXIO_URL=https://owned-remote.example/; "
+            "claude_smart_reflexio_url_is_remote",
+            "bash",
+            str(LIB),
+        ],
+        env={**env, "REFLEXIO_URL": normalized},
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert shell.returncode == 0, shell.stdout + shell.stderr

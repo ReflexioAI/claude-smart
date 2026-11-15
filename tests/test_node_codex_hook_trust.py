@@ -15,6 +15,7 @@ import pytest
 
 from tests.test_install_scripts import (
     _isolated_env,
+    _seed_prepared_policy,
     _write_bootstrap_uv,
     _write_executable,
 )
@@ -46,6 +47,11 @@ def node_install(tmp_path):
         '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 10.0.0; fi\nexit 0\n',
     )
     _write_bootstrap_uv(uv_bin / "uv", mode="fresh")
+    # This fixture exercises the private prepared-host boundary, after the
+    # public guide has selected connection and learning policy.
+    _seed_prepared_policy(home, "codex")
+    policy = home / ".claude-smart" / ".env"
+    prepared = policy.read_text()
     account = home / ".codex"
     account.mkdir()
     config = account / "config.toml"
@@ -110,6 +116,8 @@ def node_install(tmp_path):
                 child.communicate(timeout=10)
                 raise
         result = subprocess.CompletedProcess(command, child.returncode, output, errors)
+        assert policy.read_text().startswith(prepared)
+        assert "CLAUDE_SMART_HOST=" not in policy.read_text()
         return result, config
 
     return run

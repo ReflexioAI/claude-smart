@@ -157,6 +157,24 @@ Explicit caller and setup choices retain their existing precedence. Reading or
 cancelling setup does not rewrite the file; legacy migration preserves the
 selected original row, including Windows path quoting.
 
+The confirmed guide owns connection, learning, sharing, and read-only choices.
+Host workers consume those saved choices; installing or removing another agent
+does not rewrite a shared learning host. Each prepared runtime uses the same
+Python repair owner to supply only missing local defaults, with native locking
+and private atomic publication. Existing values, including zero and explicit
+empty values, are preserved. Ordinary standalone self-repair remains supported.
+The old guided-config marker is no longer needed.
+
+Legacy saved HOST fallback is preserved as explicit learning intent at confirmation,
+also when switching to managed storage with a native optimizer. Existing HOST
+text remains available to the pinned SDK; this does not retire its compatibility
+input or grant a new optimizer capability. A private worker without confirmed
+connection settings refuses with the public setup command. Confirmation saves a
+validated local endpoint in its normalized loopback spelling, so accepted numeric
+or uppercase hostnames retain local mode. Reading an existing file does not
+normalize it. Uninstall still completes with broken settings and skips speculative
+shared-service refresh.
+
 ### Activate each integration
 
 Run `/reload-plugins` in your existing Claude Code session, or use the update in your next session.
@@ -319,7 +337,7 @@ Advanced users can tune claude-smart via environment variables — see [DEVELOPE
 | Path | What |
 | --- | --- |
 | `~/.reflexio/data/reflexio.db` | Source of truth for learned preferences, skills, interactions, full-text indexes, and embedding tables (plus `.db-shm` / `.db-wal` WAL sidecars). Inspect with `sqlite3`. |
-| `~/.claude-smart/.env` | claude-smart config read by the hooks, backend, installer, and `npx claude-smart setup` — `CLAUDE_SMART_HOST`, `CLAUDE_SMART_USE_LOCAL_CLI`, `CLAUDE_SMART_OPENCODE_PATH`, and in managed mode `REFLEXIO_URL` / `REFLEXIO_API_KEY`. |
+| `~/.claude-smart/.env` | claude-smart config read by the hooks, backend, installer, and `npx claude-smart setup` — connection and learning policy (`REFLEXIO_URL` / `REFLEXIO_API_KEY`, `CLAUDE_SMART_LEARNING_PROVIDER` / `CLAUDE_SMART_LEARNING_MODEL`), plus execution overrides. Existing `CLAUDE_SMART_HOST` rows remain legacy fallback; installers no longer default or rewrite them. |
 | `~/.claude-smart/claude-code/claude-smart/` | Claude Code's stable local copy of the active npm package, registered as the `reflexioai` marketplace. Claude Code runs the plugin in place from its `plugin/` dir. |
 | `.claude/settings.local.json` or `~/.claude/settings.json` | Claude Code hook environment, such as `CLAUDE_SMART_CITATIONS`; use project-local settings for one repo or user settings for all projects. |
 | `~/.codex/config.toml` | Codex plugin state, hook feature flags, and per-hook trust entries after `claude-smart install --host codex`. |

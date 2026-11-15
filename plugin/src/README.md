@@ -9,7 +9,7 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 |------|---------|
 | `hook.py` | Hook dispatcher. Parses the stdin JSON payload and routes each event (Setup, SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd) to its handler in `events/`. |
 | `cli.py` | Prepared-runtime commands: `show`, `learn`, `load`, `restart`, `clear-all`, `clear-user`. Integration management belongs to `bin/claude-smart.js` (npm). |
-| `env_config.py` | Dotenv readers and append-only bootstrap repair: native OS lock, private staging and atomic publication. Shell repair delegates here after core Python preparation; npm/dashboard writers remain separate. |
+| `env_config.py` | Dotenv readers and append-only bootstrap repair: native OS lock, private staging and atomic publication. All host preparation delegates missing-default repair here after core Python preparation; confirmed npm/dashboard choice writers remain separate. |
 | `state.py` | Per-session JSONL buffer at `~/.claude-smart/sessions/{session_id}.jsonl`; high-water mark for idempotent publish retries. |
 | `publish.py` | Drains the session buffer, calls the Reflexio adapter, and stamps the watermark. Used by Stop, SessionEnd, and `learn`. |
 | `publish_outbox.py` | Private, destination-bound Codex publish intents and one detached worker; reuses the existing publisher and recovers on startup/Stop. |
@@ -30,7 +30,6 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 
 | File | Purpose |
 |------|---------|
-| `env_config.py` | Parses `~/.claude-smart/.env` (`REFLEXIO_URL`, `REFLEXIO_API_KEY`, `CLAUDE_SMART_READ_ONLY`, `CLAUDE_SMART_HOST`, local embedding/CLI flags). |
 | `runtime.py` | Host detection (Claude Code vs Codex); shared agent version. |
 | `ids.py` | Session / project ID generation and resolution. |
 | `context_inject.py`, `context_format.py`, `query_compose.py`, `cs_cite.py` | Build search queries, format learned skills as markdown, inject into context, format citations. |
@@ -91,3 +90,12 @@ Public `npx claude-smart setup` uses the same guide and per-host install workers
 as install/update. The former root Bash wizard and private setup worker were
 retired; they no longer parse or write settings. Internal host workers accept
 installation/removal operations, not another setup prompt flow.
+
+The confirmed npm guide owns installation connection/learning/read-only/sharing
+choices. Host workers read fresh prepared policy and preserve saved choices;
+they never select a shared host from the integration being installed/removed.
+The prepared Python owner supplies only missing local defaults under its native
+lock, preserving present values and remote no-op behavior. Coding identity remains
+per hook; saved learning intent remains independent, including managed storage
+with a native optimizer. Existing legacy HOST text is preserved for the pinned
+SDK, without being defaulted or rewritten during installation.
