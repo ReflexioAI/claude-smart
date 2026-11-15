@@ -155,7 +155,7 @@ test("updates retain custom local settings and cloud-provider opt-out", async ()
     neverAsk,
     false,
   );
-  assert.equal(config.url, saved.url);
+  assert.equal(config.url, new URL(saved.url).href);
   assert.equal(config.apiKey, saved.apiKey);
   assert.equal(config.cliPath, saved.cliPath);
   assert.match(describe(config), /configured cloud LLM/);
@@ -177,7 +177,7 @@ test("updates retain custom local settings and cloud-provider opt-out", async ()
       neverAsk,
       false,
     );
-    assert.equal(config.url, url);
+    assert.equal(config.url, new URL(url).href);
   }
 });
 

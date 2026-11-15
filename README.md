@@ -169,8 +169,11 @@ Legacy saved HOST fallback is preserved as explicit learning intent at confirmat
 also when switching to managed storage with a native optimizer. Existing HOST
 text remains available to the pinned SDK; this does not retire its compatibility
 input or grant a new optimizer capability. A private worker without confirmed
-connection settings refuses with the public setup command. Uninstall still
-completes with broken settings and skips speculative shared-service refresh.
+connection settings refuses with the public setup command. Confirmation saves a
+validated local endpoint in its normalized loopback spelling, so accepted numeric
+or uppercase hostnames retain local mode. Reading an existing file does not
+normalize it. Uninstall still completes with broken settings and skips speculative
+shared-service refresh.
 
 ### Activate each integration
 

@@ -348,6 +348,9 @@ async function configure(
           "Local endpoint must use an HTTP loopback address without credentials, query parameters, or a fragment",
         );
       }
+      // Persist the validated loopback spelling that the runtime's raw-string
+      // classifier recognizes; do not reclassify existing files when reading.
+      config.url = parsed.href;
     }
     config.apiKey =
       config.url && sameOrigin(config.url, savedLocalUrl)

@@ -1145,3 +1145,54 @@ def test_interactive_setup_confirmation_preserves_effective_learning_intent(
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
         os.close(master)
+
+
+@pytest.mark.parametrize("remembered", [False, True])
+@pytest.mark.parametrize(
+    ("supplied", "normalized"),
+    [
+        ("http://127.1:9090", "http://127.0.0.1:9090/"),
+        ("http://LOCALHOST:9090", "http://localhost:9090/"),
+        ("http://0x7f000001:9090", "http://127.0.0.1:9090/"),
+        ("http://0177.0.0.1:9090", "http://127.0.0.1:9090/"),
+    ],
+)
+def test_confirmed_local_endpoint_is_saved_in_runtime_loopback_form(
+    tmp_path: Path, remembered: bool, supplied: str, normalized: str
+) -> None:
+    installer, env = fake_guide(tmp_path)
+    env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
+    selected = tmp_path / ".claude-smart/.env"
+    arguments = ["--url", supplied]
+    if remembered:
+        selected.parent.mkdir()
+        selected.write_text(
+            'REFLEXIO_URL="https://managed.example/"\nREFLEXIO_API_KEY="fake-key"\n'
+            f'CLAUDE_SMART_LOCAL_URL="{supplied}"\n'
+            'CLAUDE_SMART_LEARNING_PROVIDER="codex"\n'
+        )
+        arguments = []
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            "setup",
+            "--host",
+            "claude-code",
+            "--backend",
+            "local",
+            "--provider",
+            "codex",
+            *arguments,
+            "--yes",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f'REFLEXIO_URL="{normalized}"' in selected.read_text()
+    assert 'REFLEXIO_API_KEY=""' in selected.read_text()
+    assert "Claude Code: installed" in result.stdout
+    assert "incomplete or invalid" not in result.stderr
