@@ -1293,16 +1293,25 @@ function stopServicesForInstall(installedRoot, host) {
   // npm source as the recovery runtime for a first installation.
   const root = installStateSnapshot.pluginRoot || installedRoot;
   if (!root || !existsSync(join(root, "scripts", "backend-service.sh"))) return;
-  // Only what was actually running is restarted if the install fails.
-  const running = (scriptName) => pluginServiceStatus(root, scriptName).startsWith("running on");
-  stoppedServices = {
-    root,
-    host,
-    backend: running("backend-service.sh"),
-    dashboard: running("dashboard-service.sh"),
-  };
-  stopClaudeSmartServices(root);
+  stoppedServices = { root, host, backend: false, dashboard: false };
   ensureRollbackOnExit();
+  const failed = [];
+  for (const kind of ["dashboard", "backend"]) {
+    const scriptName = `${kind}-service.sh`;
+    if (!existsSync(join(root, "scripts", scriptName))) continue;
+    const wasRunning = pluginServiceStatus(root, scriptName).startsWith("running on");
+    if (runPluginService(root, scriptName, "stop")) {
+      // Failed/unknown stops never authorize a speculative restart.
+      stoppedServices[kind] = wasRunning;
+    } else {
+      failed.push(kind);
+    }
+  }
+  if (failed.length)
+    throw new Error(
+      `Could not stop the previous ${failed.join(" and ")} service; ` +
+        "the runtime was not replaced. Resolve the service shutdown failure and retry installation.",
+    );
 }
 
 function restartStoppedServices() {

@@ -185,6 +185,9 @@ Install and update use the same tracked service lifecycle for every coding agent
 Validation of the platform, settings, and OpenCode loader/config happens before
 services stop. If preparation fails before commit, the previous packages and
 install metadata are restored before restarting only services that were running.
+If an installed service reports that stopping failed, installation aborts before
+replacing its runtime. Resolve the shutdown failure and retry; only services
+whose stop succeeded are eligible for automatic restart.
 A failed first install leaves no candidate runtime selected. Incomplete recovery
 keeps backups and warns rather than starting an unverified runtime.
 
