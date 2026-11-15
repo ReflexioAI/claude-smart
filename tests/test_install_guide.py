@@ -290,6 +290,7 @@ def test_terminal_cancel_before_install_makes_no_changes(
     import pty
 
     original = b'REFLEXIO_URL="http://localhost:9000/"\nREFLEXIO_API_KEY="saved-secret"\nCLAUDE_SMART_READ_ONLY=1\nREFLEXIO_ROW_LIMIT_INTERACTIONS=0\n'
+    original += b"CLAUDE_SMART_USE_LOCAL_CLI=0\nCLAUDE_SMART_USE_LOCAL_CLI=1\nCLAUDE_SMART_CLI_PATH=/first\nCLAUDE_SMART_CLI_PATH=/last\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_HOST=claude-code\n"
     if seeded:
         for folder in (".claude-smart", ".reflexio"):
             (tmp_path / folder).mkdir()
@@ -978,7 +979,17 @@ def test_setup_rejects_empty_supplied_managed_key_before_writes(tmp_path, creden
 @pytest.mark.skipif(os.name == "nt", reason="PTY terminal fixtures require POSIX")
 @pytest.mark.parametrize(
     "runtime_kind",
-    ["cloud", "custom", "native", "caller-custom", "caller-cloud", "caller-model"],
+    [
+        "cloud",
+        "custom",
+        "native",
+        "caller-custom",
+        "caller-cloud",
+        "caller-model",
+        "duplicate-cloud",
+        "duplicate-custom",
+        "duplicate-host",
+    ],
 )
 def test_interactive_setup_confirmation_preserves_effective_learning_intent(
     tmp_path, runtime_kind
@@ -997,12 +1008,27 @@ def test_interactive_setup_confirmation_preserves_effective_learning_intent(
         env.pop(name, None)
     selected = tmp_path / ".claude-smart/.env"
     selected.parent.mkdir()
-    saved_path = "/saved/custom-native" if runtime_kind == "custom" else ""
-    saved_enable = "0" if runtime_kind == "cloud" else "1"
+    saved_path = (
+        "/saved/custom-native" if runtime_kind in {"custom", "duplicate-custom"} else ""
+    )
+    saved_enable = "0" if runtime_kind in {"cloud", "duplicate-cloud"} else "1"
     selected.write_text(
         'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\nCLAUDE_SMART_LEARNING_PROVIDER="codex"\nCLAUDE_SMART_LEARNING_MODEL="native/kept-model"\nCLAUDE_SMART_READ_ONLY="1"\nREFLEXIO_USER_ID="custom-shared-user"\nREFLEXIO_ROW_LIMIT_INTERACTIONS=0\n'
         + f'CLAUDE_SMART_CLI_PATH="{saved_path}"\nCLAUDE_SMART_USE_LOCAL_CLI="{saved_enable}"\n'
     )
+    if runtime_kind == "duplicate-cloud":
+        selected.write_text(selected.read_text() + 'CLAUDE_SMART_USE_LOCAL_CLI="1"\n')
+    elif runtime_kind == "duplicate-custom":
+        selected.write_text(
+            selected.read_text() + 'CLAUDE_SMART_CLI_PATH="/later/custom"\n'
+        )
+    elif runtime_kind == "duplicate-host":
+        selected.write_text(
+            selected.read_text().replace(
+                'CLAUDE_SMART_LEARNING_PROVIDER="codex"\n',
+                'CLAUDE_SMART_HOST="codex"\nCLAUDE_SMART_HOST="claude-code"\n',
+            )
+        )
     expected_path, expected_enable, expected_model = (
         saved_path,
         saved_enable,
@@ -1056,11 +1082,31 @@ def test_interactive_setup_confirmation_preserves_effective_learning_intent(
                 output += chunk
         process.wait(timeout=5)
         assert process.returncode == 0, output.decode(errors="replace")
+        if expected_path and expected_enable != "0":
+            assert f"custom executable ({expected_path})".encode() in output
         config = dotenv_values(selected)
         assert config["CLAUDE_SMART_LEARNING_PROVIDER"] == "codex"
         assert config["CLAUDE_SMART_LEARNING_MODEL"] == expected_model
         assert config["CLAUDE_SMART_USE_LOCAL_CLI"] == expected_enable
-        assert config["CLAUDE_SMART_CLI_PATH"] == expected_path
+        # Check the actual reader: dotenv_values would use the last duplicate,
+        # while runtime caller-first execution flags retain the first nonempty.
+        loaded = subprocess.run(
+            [
+                "/bin/bash",
+                "--noprofile",
+                "--norc",
+                "-c",
+                '. "$1"; claude_smart_source_reflexio_env; printf "%s" "$CLAUDE_SMART_CLI_PATH"',
+                "reload",
+                str(LIB),
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+        assert loaded.stdout == expected_path
         assert config["CLAUDE_SMART_READ_ONLY"] == "1"
         assert config["REFLEXIO_USER_ID"] == "custom-shared-user"
         assert config["REFLEXIO_ROW_LIMIT_INTERACTIONS"] == "0"

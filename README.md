@@ -150,6 +150,13 @@ or saved. For multiple local agents, specify `--provider` unless one is already 
 Use `--read-only` to retrieve memories without publishing interactions, or `--learn`
 to resume learning. The interactive guide offers both modes for either backend.
 
+Setup reads legacy duplicate settings with the same field rules as the runtime:
+shared connection/learning fields use the last assignment (including empty), while
+caller-overridable execution flags use the first nonempty saved assignment.
+Explicit caller and setup choices retain their existing precedence. Reading or
+cancelling setup does not rewrite the file; legacy migration preserves the
+selected original row, including Windows path quoting.
+
 ### Activate each integration
 
 Run `/reload-plugins` in your existing Claude Code session, or use the update in your next session.
