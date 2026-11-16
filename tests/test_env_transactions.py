@@ -500,13 +500,9 @@ def test_rechecked_read_dependencies_and_unrelated_updates(tmp_path: Path) -> No
         "\nINJECT=1",
         "x\u2028INJECT=1",
         "x\0y",
-        " leading",
-        "trailing ",
-        '"quoted"',
-        "value # comment",
         "${OTHER}",
-        "\ufeffowned",
-        "owned\ufeff",
+        "'a\"b",
+        r" \\server\share ",
     ],
 )
 def test_non_roundtrippable_value_is_rejected_before_mutation(
@@ -517,6 +513,71 @@ def test_non_roundtrippable_value_is_rejected_before_mutation(
     with pytest.raises(ValueError, match="consistently"):
         env_config.update_settings({"MODEL": value}, {"MODEL": []}, path)
     assert path.read_text() == "KEEP=original\n"
+    assert not path.with_name(".env.lock").exists()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
+    "value",
+    [
+        " leading",
+        "trailing ",
+        '"quoted"',
+        "'quoted'",
+        "value # comment",
+        "\ufeffowned",
+        "owned\ufeff",
+        "'literal\\q",
+        r" C:\temp\owned ",
+        "plain\\",
+    ],
+)
+def test_literal_publication_preserves_exact_value_and_original_preconditions(
+    tmp_path: Path, value: str, existing: bool
+) -> None:
+    path = tmp_path / ".env"
+    prefix = b"# keep\r\nUNRELATED=opaque\\path\r\n"
+    path.write_bytes(prefix + (b"MODEL=old\r\n" if existing else b""))
+    previous = ["MODEL=old"] if existing else []
+    env_config.update_settings({"MODEL": value}, {"MODEL": previous}, path)
+    published = path.read_bytes()
+    assert published.startswith(prefix)
+    lines = [line.removesuffix("\r") for line in published.decode().split("\n")]
+    assert [
+        entry[1]
+        for line in lines
+        if (entry := env_config.parse_env_line(line)) is not None
+        and entry[0] == "MODEL"
+    ] == [value]
+    originals = [
+        line
+        for line in lines
+        if (entry := env_config.parse_env_line(line)) and entry[0] == "MODEL"
+    ]
+    env_config.update_settings({"MODEL": value}, {"MODEL": originals}, path)
+    assert path.read_bytes() == published
+    with pytest.raises(env_config.SettingsConflictError):
+        env_config.update_settings({"MODEL": "stale"}, {"MODEL": previous}, path)
+    assert path.read_bytes() == published
+
+
+@pytest.mark.parametrize(
+    "value", [" private-owned-slash\\", "'private-owned-literal\\"]
+)
+@pytest.mark.parametrize(
+    "following", ["", "AFTER='owned-keep'\r\n", 'AFTER="owned-keep"\r\n']
+)
+def test_quoted_dangling_backslash_is_rejected_before_mutation(
+    tmp_path: Path, value: str, following: str
+) -> None:
+    path = tmp_path / ".env"
+    original = ("MODEL=old\r\n" + following).encode()
+    path.write_bytes(original)
+    # A later quoted row can change how a dangling backslash is parsed.
+    # Even a currently healthy EOF encoding must remain safe to extend.
+    with pytest.raises(ValueError, match="consistently"):
+        env_config.update_settings({"MODEL": value}, {"MODEL": ["MODEL=old"]}, path)
+    assert path.read_bytes() == original
     assert not path.with_name(".env.lock").exists()
 
 

@@ -109,6 +109,29 @@ class SettingsConflictError(RuntimeError):
     """Relevant assignments changed after the caller confirmed an edit."""
 
 
+def _literal_env_value(value: str) -> str:
+    """Encode without the escape/interpolation differences between readers."""
+    if not isinstance(value, str) or not _single_line_value(value) or "${" in value:
+        raise ValueError("Settings value cannot be represented consistently")
+    if (
+        value == value.strip()
+        and not value.startswith(("'", '"', "\ufeff"))
+        and not value.endswith("\ufeff")
+        and re.search(r"\s#", value) is None
+    ):
+        return value
+    # A trailing backslash escapes the added quote and can consume later rows.
+    if value.endswith("\\"):
+        raise ValueError("Settings value cannot be represented consistently")
+    # dotenv decodes backslash pairs inside single quotes. The shell/Node
+    # readers only remove the outer quotes, so never introduce escaping.
+    if "'" not in value and "\\\\" not in value:
+        return "'" + value + "'"
+    if '"' not in value and re.search(r"""\\[\\'"abfnrtv]""", value) is None:
+        return '"' + value + '"'
+    raise ValueError("Settings value cannot be represented consistently")
+
+
 def update_settings(
     updates: dict[str, str | None],
     expected: dict[str, list[str]],
@@ -140,20 +163,10 @@ def update_settings(
             for line in lines
         ):
             raise ValueError("Invalid original settings assignments")
-    for value in updates.values():
-        # Use the shared lossless unquoted subset. Escaped quoted writes have
-        # different meanings to the shell/Node readers and python-dotenv.
-        # Existing unrelated values are retained verbatim, not re-encoded.
-        if value is not None and (
-            not isinstance(value, str)
-            or not _single_line_value(value)
-            or value != value.strip()
-            or value.startswith(("'", '"', "\ufeff"))
-            or value.endswith("\ufeff")
-            or "${" in value
-            or re.search(r"\s#", value)
-        ):
-            raise ValueError("Settings value cannot be represented consistently")
+    encoded = {
+        key: _literal_env_value(value) if value is not None else None
+        for key, value in updates.items()
+    }
 
     def edit(existing: str) -> tuple[str | None, None]:
         # Match the shell/Node physical-line boundary, retaining every original
@@ -181,7 +194,7 @@ def update_settings(
                 continue
             key = entry[0]
             if key not in seen and updates[key] is not None:
-                output.append(f"{key}={updates[key]}" + span[len(line) :])
+                output.append(f"{key}={encoded[key]}" + span[len(line) :])
             seen.add(key)
         if not updates:
             return None, None
@@ -194,7 +207,7 @@ def update_settings(
             ),
             "\n",
         )
-        for key, value in updates.items():
+        for key, value in encoded.items():
             if key not in seen and value is not None:
                 if content and not content.endswith("\n"):
                     content += newline
