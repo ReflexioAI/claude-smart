@@ -100,11 +100,17 @@ claude_smart_source_reflexio_env() {
   [ -f "$env_file" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line#"${line%%[![:space:]]*}"}"
+    # UTF-8 BOM metadata must not become part of the first assignment's key.
+    line="${line#$'\xEF\xBB\xBF'}"
+    line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
     [ -n "$line" ] || continue
     case "$line" in
       \#*) continue ;;
-      export\ *) line="${line#export }" ;;
+      export[[:space:]]*)
+        line="${line#export}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        ;;
     esac
     key="${line%%=*}"
     [ "$key" != "$line" ] || continue

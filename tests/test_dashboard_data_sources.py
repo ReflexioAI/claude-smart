@@ -4,24 +4,29 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
+
+from tests.test_env_bootstrap import owner_python as owner_python
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(scope="module")
-def compiled_dashboard(tmp_path_factory):
-    target = tmp_path_factory.mktemp("dashboard-modules")
+def compiled_dashboard(tmp_path_factory, owner_python):
+    runtime = tmp_path_factory.mktemp("dashboard-runtime")
+    target = runtime / "dashboard"
+    target.mkdir()
+    (runtime / ".venv").symlink_to(owner_python.parent.parent, target_is_directory=True)
     node = shutil.which("node")
     compiler = ROOT / "node_modules/typescript/bin/tsc"
     assert node and compiler.is_file(), (
         "npm ci is required for dashboard contract tests"
     )
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603 — repository-controlled test command.
         [
             node,
             str(compiler),
@@ -46,7 +51,7 @@ def compiled_dashboard(tmp_path_factory):
     assert result.returncode == 0, result.stdout + result.stderr
     # Transpile the actual Next route; framework response behavior is the only stub.
     route = ROOT / "plugin/dashboard/app/api/reflexio/[...path]/route.ts"
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603 — repository-controlled test command.
         [
             node,
             "-e",
@@ -74,8 +79,10 @@ def run_module(compiled, home, script):
         if not k.startswith(("REFLEXIO_", "CLAUDE_SMART_"))
     }
     env["HOME"] = str(home)
-    result = subprocess.run(
-        [shutil.which("node"), "-e", script],
+    node = shutil.which("node")
+    assert node is not None
+    result = subprocess.run(  # noqa: S603 — repository-controlled test command.
+        [node, "-e", script],
         cwd=compiled,
         env=env,
         text=True,

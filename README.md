@@ -165,6 +165,14 @@ and private atomic publication. Existing values, including zero and explicit
 empty values, are preserved. Ordinary standalone self-repair remains supported.
 The old guided-config marker is no longer needed.
 
+Dashboard saves use the prepared Python settings owner too. They share the
+repair lock and publish privately with one atomic file replacement. An explicit
+empty value stays present; omitted settings stay unchanged. If relevant settings
+change while a save is being prepared, reload and retry rather than overwriting
+the newer choices. A busy repair also leaves the file unchanged. Saving requires
+the dashboard's prepared sibling `.venv`; run `npx claude-smart update` if that
+runtime needs repair. Existing unrelated assignments and comments are retained.
+
 Legacy saved HOST fallback is preserved as explicit learning intent at confirmation,
 also when switching to managed storage with a native optimizer. Existing HOST
 text remains available to the pinned SDK; this does not retire its compatibility
