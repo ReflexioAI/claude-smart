@@ -2581,7 +2581,7 @@ function resolveCommand(names, extraDirs = []) {
   for (const dir of pathParts) {
     for (const name of names) {
       const candidate = join(dir, name);
-      if (existsSync(candidate)) return candidate;
+      if (isExecutableFile(candidate)) return candidate;
     }
   }
   return null;

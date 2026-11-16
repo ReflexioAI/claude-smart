@@ -14,10 +14,13 @@ test("registered Claude runtime discovery respects source metadata and native sh
   const bin = path.join(root, "tools with spaces");
   fs.mkdirSync(bin);
   const windows = process.platform === "win32";
-  const relay = "const fs=require('node:fs');process.stdout.write(fs.readFileSync(process.env.USERPROFILE+'/inventory.json'));process.exit(fs.existsSync(process.env.USERPROFILE+'/exit-nonzero')?1:0)";
+  const relay = "if(JSON.stringify(process.argv.slice(1))!==JSON.stringify(['plugin','list','--json']))process.exit(91);const fs=require('node:fs');process.stdout.write(fs.readFileSync(process.env.USERPROFILE+'/inventory.json'));process.exit(fs.existsSync(process.env.USERPROFILE+'/exit-nonzero')?1:0)";
   fs.writeFileSync(path.join(bin, windows ? "claude.cmd" : "claude"), windows
-    ? `@echo off\r\n"${process.execPath}" -e "${relay}"\r\n`
-    : '#!/bin/sh\ncat "$HOME/inventory.json"\n[ ! -f "$HOME/exit-nonzero" ]\n', {mode:0o700});
+    ? `@echo off\r\n"${process.execPath}" -e "${relay}" %*\r\n`
+    : '#!/bin/sh\n[ "$#" -eq 3 ] && [ "$1" = plugin ] && [ "$2" = list ] && [ "$3" = --json ] || exit 91\ncat "$HOME/inventory.json"\n[ ! -f "$HOME/exit-nonzero" ]\n', {mode:0o700});
+  fs.mkdirSync(path.join(root,"shadow directory",windows ? "claude.exe" : "claude"), {recursive:true});
+  fs.mkdirSync(path.join(root,"shadow file"));
+  fs.writeFileSync(path.join(root,"shadow file","claude"), "not executable", {mode:0o600});
   const cacheRoot = path.join(root, "registered cache");
   const folder = path.join(root, "source folder λ");
   for (const source of [cacheRoot, folder]) {
@@ -37,13 +40,17 @@ test("registered Claude runtime discovery respects source metadata and native sh
     {data:[{...record,installPath:"relative/source"}], expected:[]},
     {data:[{...record,errors:{message:"invalid"}}], expected:[]},
     {data:[{...record,readFromFolder:null}], expected:[]},
+    {data:[record], shadow:"shadow directory", expected:[cacheRoot]},
+    ...(!windows ? [{data:[record],shadow:"shadow file",expected:[cacheRoot]}] : []),
   ];
   fs.writeFileSync(path.join(root, "cases.json"), JSON.stringify(cases));
   const script = `
 const fs=require('node:fs'),path=require('node:path');
 const root=process.env.HOME,owner=require(process.argv[1]);
+const basePath=process.env.PATH;
 const result=[];
 for(const item of JSON.parse(fs.readFileSync(path.join(root,'cases.json'),'utf8'))) {
+  process.env.PATH=item.shadow ? path.join(root,item.shadow)+path.delimiter+basePath : basePath;
   fs.writeFileSync(path.join(root,'inventory.json'),item.raw ?? JSON.stringify(item.data));
   const exit=path.join(root,'exit-nonzero');
   if(item.nonzero) fs.writeFileSync(exit,''); else fs.rmSync(exit,{force:true});
