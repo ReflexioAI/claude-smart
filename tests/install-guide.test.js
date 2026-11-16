@@ -196,6 +196,34 @@ test("partial failures continue to the next integration and exit nonzero", () =>
   assert.equal(result.stdout.match(/SERVICES ONCE/g).length, 1);
 });
 
+for (const fail of [false, true]) {
+  test(
+    "confirmed setup awaits publication before workers: " +
+      (fail ? "refused" : "saved"),
+    () => {
+      const script = [
+        "const {runGuide}=require('./bin/install-guide');",
+        "runGuide('install',['--host','claude-code','--backend','local','--provider','codex'],{",
+        "inventory:()=>" + JSON.stringify(inventory) + ",saved:()=>({}),",
+        "save:async()=>{await new Promise(setImmediate);" +
+          (fail ? "throw Error('SAVE_REFUSED');" : "console.log('SAVED');") +
+          "},",
+        "runHost:async()=>{console.log('HOST');return{code:0};},",
+        "finish:async()=>{console.log('FINISH');return[];}",
+        "}).catch(error=>{console.error(error.message);process.exitCode=1;});",
+      ].join("\n");
+      const result = spawnSync(process.execPath, ["-e", script], {
+        encoding: "utf8",
+      });
+      assert.equal(result.status, fail ? 1 : 0, result.stderr);
+      if (fail) {
+        assert.match(result.stderr, /SAVE_REFUSED/);
+        assert.doesNotMatch(result.stdout, /HOST|FINISH/);
+      } else assert.match(result.stdout, /SAVED[\s\S]*HOST[\s\S]*FINISH/);
+    },
+  );
+}
+
 test("unattended uninstall requires explicit integrations and keeps configuration", () => {
   for (const args of [[], ["--host", "codex"]]) {
     const script = `

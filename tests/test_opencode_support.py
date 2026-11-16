@@ -1,5 +1,8 @@
 """Tests for OpenCode host support."""
 
+# Contract subprocesses execute repository code or fixture scripts in owned homes.
+# ruff: noqa: S603, S607
+
 from __future__ import annotations
 
 import json
@@ -13,9 +16,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest  # type: ignore[reportMissingImports]
-
 from claude_smart import hook, runtime, state
 from claude_smart.events import post_tool, stop, user_prompt
+from dotenv import dotenv_values
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -268,7 +271,7 @@ def test_opencode_learning_loop_buffers_injects_tools_and_publishes(
         "publish_unpublished",
         # The Stop drain deadline is a monotonic instant; its bound is
         # covered by test_stop_bounds_its_synchronous_drain_inside_the_hook_limit.
-        lambda deadline, **kw: published.append(kw) or ("ok", 3),
+        lambda deadline, **kw: published.append(kw) or ("ok", 3),  # noqa: ARG005 -- Required named callback argument.
     )
 
     user_prompt.handle(
@@ -701,9 +704,16 @@ def test_public_confirmation_preserves_or_discovers_opencode_path(
         env_extra={} if saved else {"CLAUDE_SMART_OPENCODE_PATH": str(executable)},
     )
     assert result.returncode == 0, result.stderr
-    assert f'CLAUDE_SMART_OPENCODE_PATH="{executable}"' in selected.read_text()
     if saved:
-        assert 'CLAUDE_SMART_OPENCODE_PATH="/stale/other"' in selected.read_text()
+        # Existing caller-first duplicate rows retain their exact bytes/order.
+        assert (
+            f'CLAUDE_SMART_OPENCODE_PATH="{executable}"\n'
+            'CLAUDE_SMART_OPENCODE_PATH="/stale/other"\n'
+        ) in selected.read_text()
+    else:
+        assert dotenv_values(selected, interpolate=False)[
+            "CLAUDE_SMART_OPENCODE_PATH"
+        ] == str(executable)
     assert not (tmp_path / ".reflexio/.env").exists()
 
 

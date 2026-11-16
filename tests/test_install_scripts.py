@@ -1,5 +1,9 @@
 """Focused checks for shell install helpers used by claude-smart setup."""
 
+# Contract subprocesses run repository scripts or fixture executables in owned homes.
+# This is the same trusted-argv policy as the enterprise deploy-script tests.
+# ruff: noqa: S603, S607
+
 from __future__ import annotations
 
 import hashlib
@@ -17,9 +21,12 @@ import sys
 import tarfile
 import threading
 import time
+from contextlib import suppress
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from dotenv import dotenv_values
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "plugin" / "scripts" / "_lib.sh"
@@ -91,20 +98,39 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         "sys.argv = ['claude_smart.env_config', *sys.argv[3:]]; "
         "runpy.run_module('claude_smart.env_config', run_name='__main__', alter_sys=True)"
     )
+    direct_owner_program = (
+        "import sys, runpy; sys.path.insert(0, sys.argv[1]); "
+        "sys.argv = sys.argv[2:]; runpy.run_path(sys.argv[0], run_name='__main__')"
+    )
+    private_venv_program = (
+        "import os,sys,venv,shutil,subprocess;from pathlib import Path;"
+        "root=Path(sys.argv[1]);"
+        "venv.EnvBuilder(with_pip=False,symlinks=os.name!='nt').create(root);"
+        "python=root/('Scripts/python.exe' if os.name=='nt' else 'bin/python');"
+        "site=Path(subprocess.check_output([str(python),'-I','-c',"
+        "'import sysconfig;print(sysconfig.get_path(\"purelib\"))'],text=True).strip());"
+        "shutil.copytree(Path(sys.argv[2])/'filelock',site/'filelock')"
+    )
     _write_executable(
         path,
         "#!/bin/sh\n"
         f"mode={mode!r}\n"
         'printf "uv %s\\n" "$*" >> "$HOME/uv.log"\n'
         "create_python() {\n"
-        '  mkdir -p "$PWD/.venv/bin"\n'
-        '  mkdir -p "$PWD/.venv/Scripts"\n'
-        f"  cat > \"$PWD/.venv/bin/python\" <<'PYSH'\n"
+        '  python_root="$PWD/.venv"\n'
+        '  if [ "$#" -gt 0 ]; then python_root="$1"; fi\n'
+        '  mkdir -p "$python_root/bin"\n'
+        '  mkdir -p "$python_root/Scripts"\n'
+        f"  cat > \"$python_root/bin/python\" <<'PYSH'\n"
         "#!/bin/sh\n"
         'if [ "$1" = "-P" ]; then shift; fi\n'
         'if [ "$1" = "-I" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "claude_smart.env_config" ]; then\n'
         "  shift 3\n"
         f'  exec {shlex.quote(sys.executable)} -I -c {shlex.quote(owner_program)} "$PWD/src" {shlex.quote(str(lock_root))} "$@"\n'
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" != "-m" ]; then\n'
+        "  shift\n"
+        f'  exec {shlex.quote(sys.executable)} -I -c {shlex.quote(direct_owner_program)} {shlex.quote(str(lock_root))} "$@"\n'
         "fi\n"
         'case "$1" in */backend-inference-owner.py) [ "${CLAUDE_SMART_TEST_INFERENCE_OWNER:-}" != "exit" ] || exit 1; printf "%s\\n" "${CLAUDE_SMART_TEST_INFERENCE_OWNER:-colocated}"; exit 0 ;; esac\n'
         'if [ "$1" = "-" ] && [ "$2" = "onnxruntime" ] && [ -n "${CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS:-}" ]; then\n'
@@ -112,10 +138,14 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         "fi\n"
         f'exec {shlex.quote(sys.executable)} "$@"\n'
         "PYSH\n"
-        '  cp "$PWD/.venv/bin/python" "$PWD/.venv/Scripts/python.exe"\n'
-        '  chmod +x "$PWD/.venv/bin/python"\n'
-        '  chmod +x "$PWD/.venv/Scripts/python.exe"\n'
+        '  cp "$python_root/bin/python" "$python_root/Scripts/python.exe"\n'
+        '  chmod +x "$python_root/bin/python"\n'
+        '  chmod +x "$python_root/Scripts/python.exe"\n'
         "}\n"
+        'if [ "$1" = "venv" ]; then\n'
+        '  for python_root in "$@"; do :; done\n'
+        f'  exec {shlex.quote(sys.executable)} -I -c {shlex.quote(private_venv_program)} "$python_root" {shlex.quote(str(lock_root))}\n'
+        "fi\n"
         'case "$*" in\n'
         '  "sync --locked --python 3.12 --quiet")\n'
         '    if [ "$mode" = "fresh" ]; then create_python; exit 0; fi\n'
@@ -629,16 +659,12 @@ def test_detached_spawn_does_not_hold_caller_stdio(tmp_path: Path) -> None:
         if marker.exists():
             raw = marker.read_text().strip()
             if raw.isdigit():
-                try:
+                with suppress(ProcessLookupError, PermissionError):
                     os.kill(int(raw), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
         if timed_out:
             proc.kill()
-            try:
+            with suppress(subprocess.TimeoutExpired):  # Cleanup only.
                 proc.communicate(timeout=10)
-            except subprocess.TimeoutExpired:  # pragma: no cover - cleanup only
-                pass
 
     assert not timed_out, (
         "detached child kept the caller's stdout open: the spawning script "
@@ -1028,8 +1054,8 @@ _MODE_SCENARIOS = {
 def test_installer_mode_matches_runtime_resolution(
     tmp_path: Path, scenario: str
 ) -> None:
+
     from dotenv import dotenv_values
-    from io import StringIO
 
     file_text, exported = _MODE_SCENARIOS[scenario]
     path = tmp_path / ".claude-smart/.env"
@@ -1175,8 +1201,14 @@ def test_public_local_choice_preserves_other_tools_and_does_not_copy_shell_secre
     assert result.returncode == 0, result.stderr
     assert legacy.read_text() == original
     text = (tmp_path / ".claude-smart/.env").read_text()
-    assert 'REFLEXIO_URL="http://localhost:8071/"' in text
-    assert 'REFLEXIO_API_KEY=""' in text
+    assert (
+        dotenv_values(stream=StringIO(text), interpolate=False)["REFLEXIO_URL"]
+        == "http://localhost:8071/"
+    )
+    assert (
+        dotenv_values(stream=StringIO(text), interpolate=False).get("REFLEXIO_API_KEY")
+        == ""
+    )
     assert "shell-secret" not in text
     assert "CLAUDE_SMART_HOST=" not in text
 
@@ -1195,8 +1227,18 @@ def test_public_install_preserves_legacy_learning_host_across_integrations(
     assert legacy.read_bytes() == original
     text = selected.read_text()
     assert "CLAUDE_SMART_HOST=codex" in text
-    assert 'CLAUDE_SMART_LEARNING_PROVIDER="codex"' in text
-    assert 'CLAUDE_SMART_READ_ONLY="1"' in text
+    assert (
+        dotenv_values(stream=StringIO(text), interpolate=False).get(
+            "CLAUDE_SMART_LEARNING_PROVIDER"
+        )
+        == "codex"
+    )
+    assert (
+        dotenv_values(stream=StringIO(text), interpolate=False).get(
+            "CLAUDE_SMART_READ_ONLY"
+        )
+        == "1"
+    )
     assert "REFLEXIO_ROW_LIMIT_INTERACTIONS=500" in text
 
 
@@ -1271,9 +1313,8 @@ def _fake_claude_code_package(tmp_path: Path, smart_install: str) -> Path:
         package_root / "bin" / "install-guide.js",
     )
     (package_root / "package.json").write_text('{"name": "claude-smart"}\n')
-    (package_root / "plugin" / "pyproject.toml").write_text(
-        "[project]\nname='claude-smart'\n"
-    )
+    for name in ("pyproject.toml", "uv.lock", "settings-owner.requirements.txt"):
+        shutil.copy2(REPO_ROOT / "plugin" / name, package_root / "plugin" / name)
     # Shared Node preparation invokes the real import-light repair owner.
     _copy_prepared_policy_owner(package_root / "plugin")
     _write_executable(scripts / "smart-install.sh", smart_install)
@@ -1480,7 +1521,12 @@ def test_node_install_ignores_foreign_reflexio_env_and_probes_backend(
     assert legacy_env.read_text() == legacy_text
     runtime_text = (tmp_path / ".claude-smart" / ".env").read_text()
     assert 'REFLEXIO_URL="http://localhost:8071/"' in runtime_text
-    assert 'REFLEXIO_API_KEY=""' in runtime_text
+    assert (
+        dotenv_values(stream=StringIO(runtime_text), interpolate=False).get(
+            "REFLEXIO_API_KEY"
+        )
+        == ""
+    )
     assert "CLAUDE_SMART_HOST=" not in runtime_text
     assert (tmp_path / "backend-service.log").read_text().splitlines() == [
         "stop",
@@ -2335,8 +2381,7 @@ def test_node_opencode_global_uninstall_reads_every_project_config_form(
     (project / "opencode.json").write_text('{"plugin": []}\n')
     package_url = f"file://{package_root.parent}"
     (project / ".opencode" / "opencode.jsonc").write_text(
-        '{\n  // object-form entry\n  "plugins": [{ "package": "%s" }]\n}\n'
-        % package_url
+        f'{{\n  // object-form entry\n  "plugins": [{{ "package": "{package_url}" }}]\n}}\n'
     )
     env = _isolated_env(tmp_path)
     env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg")
@@ -2584,17 +2629,47 @@ def test_public_env_writes_are_private_before_content_lands(tmp_path: Path) -> N
     legacy.write_text(
         'REFLEXIO_URL="https://www.reflexio.ai/"\nREFLEXIO_API_KEY="rflx-legacy"\n'
     )
-    preload = tmp_path / "privacy.cjs"
-    preload.write_text(
-        "const fs=require('node:fs'); const write=fs.writeFileSync; fs.writeFileSync=function(p,...args){const result=write.call(fs,p,...args);if(String(p).endsWith('.claude-smart/.env'))fs.appendFileSync(process.env.HOME+'/modes.jsonl',JSON.stringify(fs.statSync(p).mode&0o777)+'\\n');return result;};global.fetch=async()=>({ok:false});"
+    from tests.test_install_guide import fake_guide
+
+    installer, _ = fake_guide(tmp_path)
+    owner = installer.parent.parent / "plugin/src/claude_smart/env_config.py"
+    # Observe the real writer's descriptor before its first content write, plus
+    # the same-volume replacement boundary. The old Node fs hook observed no
+    # Python writes and could not establish this invariant.
+    observer = """
+_real_open = os.open
+_real_replace = Path.replace
+_log = Path.home() / "modes.jsonl"
+def _observe_open(path, flags, mode=0o777, **kwargs):
+    fd = _real_open(path, flags, mode, **kwargs)
+    if Path(path).name == "settings":
+        record = ["before-content", os.fstat(fd).st_mode & 0o777,
+                  Path(path).parent.stat().st_mode & 0o777]
+        with _log.open("a") as output:
+            output.write(json.dumps(record) + "\\n")
+    return fd
+def _observe_replace(source, target):
+    if Path(target) == CLAUDE_SMART_ENV_PATH:
+        with _log.open("a") as output:
+            output.write(json.dumps(["replace", source.stat().st_mode & 0o777]) + "\\n")
+    return _real_replace(source, target)
+os.open = _observe_open
+Path.replace = _observe_replace
+"""
+    content = owner.read_text()
+    assert content.count('if __name__ == "__main__":') == 1
+    owner.write_text(
+        content.replace(
+            'if __name__ == "__main__":', observer + '\nif __name__ == "__main__":'
+        )
     )
-    result = _run_public_setup(
-        tmp_path, env_extra={"NODE_OPTIONS": f'--require "{preload}"'}
-    )
+    result = _run_public_setup(tmp_path)
     assert result.returncode == 0, result.stderr
     assert "rflx-legacy" not in result.stdout + result.stderr
     modes = [json.loads(x) for x in (tmp_path / "modes.jsonl").read_text().splitlines()]
-    assert modes and all(mode == 0o600 for mode in modes)
+    assert ["before-content", 0o600, 0o700] in modes
+    assert ["replace", 0o600] in modes
+    assert all(record[1] == 0o600 for record in modes)
 
 
 @pytest.mark.parametrize("other_host_installed", [True, False])
@@ -2749,8 +2824,11 @@ def test_legacy_key_only_managed_env_migrates_with_the_managed_url(
     assert "Migrated managed Reflexio settings" in result.stdout
     assert "Backend: Managed Reflexio" in result.stdout
     assert (
-        'REFLEXIO_URL="https://www.reflexio.ai/"'
-        in (tmp_path / ".claude-smart/.env").read_text()
+        dotenv_values(
+            stream=StringIO((tmp_path / ".claude-smart/.env").read_text()),
+            interpolate=False,
+        ).get("REFLEXIO_URL")
+        == "https://www.reflexio.ai/"
     )
 
 
@@ -2783,8 +2861,16 @@ def test_public_install_migrates_pre_split_managed_env(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert legacy.read_text() == original
     text = (tmp_path / ".claude-smart/.env").read_text()
-    assert 'REFLEXIO_API_KEY="rflx-secret"' in text
-    assert 'CLAUDE_SMART_READ_ONLY="1"' in text
+    assert (
+        dotenv_values(stream=StringIO(text), interpolate=False).get("REFLEXIO_API_KEY")
+        == "rflx-secret"
+    )
+    assert (
+        dotenv_values(stream=StringIO(text), interpolate=False).get(
+            "CLAUDE_SMART_READ_ONLY"
+        )
+        == "1"
+    )
     assert "REFLEXIO_STORAGE" not in text
 
 
@@ -2806,7 +2892,13 @@ def test_public_setup_migrates_once_and_honors_confirmed_local_choice(
         assert again.returncode == 0, again.stderr
         assert "Migrated" not in again.stdout
         assert "Backend: Local Reflexio" in again.stdout
-    assert 'REFLEXIO_API_KEY=""' in (tmp_path / ".claude-smart/.env").read_text()
+    assert (
+        dotenv_values(
+            stream=StringIO((tmp_path / ".claude-smart/.env").read_text()),
+            interpolate=False,
+        ).get("REFLEXIO_API_KEY")
+        == ""
+    )
 
 
 def test_setup_local_choice_blocks_first_legacy_reselection(tmp_path: Path) -> None:
@@ -2820,7 +2912,13 @@ def test_setup_local_choice_blocks_first_legacy_reselection(tmp_path: Path) -> N
         result = _run_public_setup(tmp_path, "--backend", "local")
         assert result.returncode == 0, result.stderr
         assert "Backend: Local Reflexio" in result.stdout
-    assert 'REFLEXIO_API_KEY=""' in (tmp_path / ".claude-smart/.env").read_text()
+    assert (
+        dotenv_values(
+            stream=StringIO((tmp_path / ".claude-smart/.env").read_text()),
+            interpolate=False,
+        ).get("REFLEXIO_API_KEY")
+        == ""
+    )
     assert legacy.read_text() == original
 
 
@@ -2884,7 +2982,12 @@ def test_npx_install_reads_managed_env(tmp_path: Path) -> None:
     )
     env_text = env_path.read_text()
     assert 'REFLEXIO_URL="https://www.reflexio.ai/"' in env_text
-    assert 'REFLEXIO_API_KEY="rflx-test-secret"' in env_text
+    assert (
+        dotenv_values(stream=StringIO(env_text), interpolate=False).get(
+            "REFLEXIO_API_KEY"
+        )
+        == "rflx-test-secret"
+    )
     assert "REFLEXIO_USER_ID=" not in env_text
     assert "CLAUDE_SMART_USE_LOCAL_CLI" not in env_text
     stable_plugin = (
@@ -2922,8 +3025,11 @@ def test_public_update_reuses_managed_settings_and_reinstalls(tmp_path: Path) ->
     )
     assert legacy.read_text() == original
     assert (
-        'REFLEXIO_API_KEY="rflx-test-secret"'
-        in (tmp_path / ".claude-smart/.env").read_text()
+        dotenv_values(
+            stream=StringIO((tmp_path / ".claude-smart/.env").read_text()),
+            interpolate=False,
+        ).get("REFLEXIO_API_KEY")
+        == "rflx-test-secret"
     )
 
 
@@ -4392,7 +4498,7 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
 
 
 @pytest.mark.parametrize("same_root", [False, True])
-@pytest.mark.parametrize("bind_host", [None, "", "0.0.0.0"])
+@pytest.mark.parametrize("bind_host", [None, "", "0.0.0.0"])  # noqa: S104 -- Wildcard configuration input under test.
 def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
     tmp_path: Path,
     same_root: bool,
@@ -6749,7 +6855,7 @@ def test_package_tarball_ships_generated_marketplace_manifest(tmp_path: Path) ->
     extract_dir = tmp_path / "extract"
     extract_dir.mkdir()
     with tarfile.open(tarball) as archive:
-        archive.extractall(extract_dir)
+        archive.extractall(extract_dir, filter="data")
 
     assert not (extract_dir / "package/scripts/setup-claude-smart.sh").exists()
 
@@ -6773,7 +6879,7 @@ def test_package_tarball_ships_fresh_uv_lock(tmp_path: Path) -> None:
     extract_dir = tmp_path / "extract"
     extract_dir.mkdir()
     with tarfile.open(tarball) as archive:
-        archive.extractall(extract_dir)
+        archive.extractall(extract_dir, filter="data")
 
     result = subprocess.run(
         [uv, "lock", "--check", "--python", "3.12", "--project", "plugin"],
@@ -7807,7 +7913,10 @@ def test_codex_hook_post_tool_fallback_omits_suppress_output(tmp_path: Path) -> 
 
     env = _isolated_env(tmp_path)
     env["PATH"] = ""
-    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT / "plugin")
+    root = tmp_path / "unprepared-plugin"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    env["CLAUDE_PLUGIN_ROOT"] = str(root)
     result = subprocess.run(
         [node, str(CODEX_HOOK), "hook", "post-tool"],
         env=env,
@@ -7818,7 +7927,11 @@ def test_codex_hook_post_tool_fallback_omits_suppress_output(tmp_path: Path) -> 
     )
 
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"continue": True}
+    assert json.loads(result.stdout) == {
+        "continue": True,
+        "systemMessage": "[claude-smart] Prepared Python is missing. Learning skipped "
+        "for this hook; check installer status or rerun installation.",
+    }
 
 
 def _prepared_hook_root(tmp_path: Path, body: str) -> Path:
@@ -8045,8 +8158,18 @@ def test_local_legacy_runtime_flags_migrate_without_connection_keys(
     assert result.returncode == 0, result.stderr
     text = selected.read_text()
     expected = runtime_read_only if runtime_read_only is not None else "1"
-    assert f'CLAUDE_SMART_READ_ONLY="{expected}"' in text
-    assert 'CLAUDE_SMART_CLI_TIMEOUT="90"' in text
+    assert (
+        dotenv_values(stream=StringIO(text), interpolate=False).get(
+            "CLAUDE_SMART_READ_ONLY"
+        )
+        == f"{expected}"
+    )
+    assert (
+        dotenv_values(stream=StringIO(text), interpolate=False).get(
+            "CLAUDE_SMART_CLI_TIMEOUT"
+        )
+        == "90"
+    )
     assert "other-server-key" not in text
     assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
     assert legacy.read_text() == original
@@ -8089,7 +8212,12 @@ def test_legacy_read_only_migration_keeps_last_assignment(
     assert result.returncode == 0, result.stderr
     text = (tmp_path / ".claude-smart/.env").read_text()
     assert text.count("CLAUDE_SMART_READ_ONLY=") == 1
-    assert f'CLAUDE_SMART_READ_ONLY="{last_value}"' in text
+    assert (
+        dotenv_values(stream=StringIO(text), interpolate=False).get(
+            "CLAUDE_SMART_READ_ONLY"
+        )
+        == f"{last_value}"
+    )
 
 
 @pytest.mark.parametrize("host", ["claude-code", "codex"])
@@ -8580,9 +8708,9 @@ def test_local_install_preserves_canonical_retention_budget(
 def test_local_retention_defaults_preserve_dotenv_policy_across_installers(
     tmp_path, monkeypatch, installer, assignment, exported
 ):
-    from claude_smart.env_config import repair_bootstrap_env, parse_env_line
+
+    from claude_smart.env_config import parse_env_line, repair_bootstrap_env
     from dotenv import dotenv_values
-    from io import StringIO
 
     selected = tmp_path / ".claude-smart/.env"
     selected.parent.mkdir()

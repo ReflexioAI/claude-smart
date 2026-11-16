@@ -30,7 +30,7 @@
 VERSION_FILES := package.json plugin/pyproject.toml \
                  plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
                  README.md
-LOCK_FILES    := package-lock.json plugin/uv.lock reflexio.lock.json
+LOCK_FILES    := package-lock.json plugin/uv.lock reflexio.lock.json plugin/settings-owner.requirements.txt
 PYPROJECT     := plugin/pyproject.toml
 
 help:

@@ -1,5 +1,9 @@
 """End-to-end guided CLI checks with isolated homes and fake host/runtime tools."""
 
+# Contract subprocesses run repository scripts or fixture executables in owned homes.
+# This is the same trusted-argv policy as the enterprise deploy-script tests.
+# ruff: noqa: S603, S607
+
 from __future__ import annotations
 
 import json
@@ -8,9 +12,11 @@ import select
 import shutil
 import subprocess
 import time
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from dotenv import dotenv_values
 
 from tests.test_install_scripts import (
     LIB,
@@ -20,10 +26,10 @@ from tests.test_install_scripts import (
     _fake_claude_install_script,
     _install_opencode_tarball_fixture,
     _isolated_env,
+    _write_bootstrap_uv,
     _write_executable,
     _write_fake_claude_installer,
     _write_fake_codex,
-    _write_bootstrap_uv,
     node_bin,
 )
 
@@ -38,6 +44,157 @@ def guide_env(tmp_path: Path) -> dict[str, str]:
     env["CLAUDE_SMART_BACKEND_AUTOSTART"] = "0"
     env["CLAUDE_SMART_DASHBOARD_AUTOSTART"] = "0"
     return env
+
+
+def test_public_setup_preserves_a_concurrent_edit_after_preview(tmp_path):
+    installer, env = fake_guide(tmp_path)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    selected.write_text(
+        "REFLEXIO_URL=https://managed.example/\nREFLEXIO_API_KEY=preview-canary\n"
+    )
+    changed = "REFLEXIO_URL=https://managed.example/\nREFLEXIO_API_KEY=concurrent-canary\nOTHER=keep\n"
+    stub = tmp_path / "change-after-preview.cjs"
+    stub.write_text(
+        "global.fetch=async()=>{require('node:fs').writeFileSync("
+        + json.dumps(str(selected))
+        + ","
+        + json.dumps(changed)
+        + ");return{ok:true,json:async()=>({})};};\n"
+    )
+    env["NODE_OPTIONS"] = f'--require "{stub}"'
+    result = subprocess.run(  # noqa: S603 -- Repository public CLI, owned HOME and fake host tools.
+        [
+            node_bin(),
+            str(installer),
+            "setup",
+            "--host",
+            "claude-code",
+            "--backend",
+            "managed",
+            "--yes",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 1
+    assert "changed after confirmation" in result.stderr
+    assert selected.read_text() == changed
+    assert not (selected.parent / "install-logs").exists()
+    assert "preview-canary" not in result.stdout + result.stderr
+    assert "concurrent-canary" not in result.stdout + result.stderr
+
+
+def test_inconsistent_settings_bundle_refuses_before_preparation(tmp_path):
+    installer, env = fake_guide(tmp_path)
+    metadata = installer.parent.parent / "plugin/pyproject.toml"
+    metadata.write_bytes(metadata.read_bytes() + b"\n# changed without regeneration\n")
+    result = subprocess.run(  # noqa: S603 -- Repository public CLI and owned tools/configuration.
+        [
+            node_bin(),
+            str(installer),
+            "setup",
+            "--host",
+            "claude-code",
+            "--backend",
+            "local",
+            "--yes",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 1
+    assert "bundle is inconsistent" in result.stderr
+    assert not (tmp_path / ".claude-smart/.env").exists()
+    assert not (tmp_path / "uv.log").exists()
+    assert not (tmp_path / ".claude-smart/install-logs").exists()
+
+
+@pytest.mark.parametrize("fault", ["exit", "timeout"])
+def test_lost_save_ack_stops_workers_and_retry_does_not_reimport_deleted_legacy(
+    tmp_path,
+    fault,
+):
+    installer, env = fake_guide(tmp_path)
+    owner = installer.parent.parent / "plugin/src/claude_smart/env_config.py"
+    original = owner.read_text()
+    acknowledgement = '    print(json.dumps({"ok": True, "added": added}))'
+    assert original.count(acknowledgement) == 1
+    interruption = (
+        "raise SystemExit(77)" if fault == "exit" else "__import__('time').sleep(30)"
+    )
+    if fault == "timeout":
+        stub = tmp_path / "managed-fetch-stub.cjs"
+        stub.write_text(
+            stub.read_text()
+            + "\nconst original=setTimeout;global.setTimeout=(fn,ms,...args)=>original(fn,ms===120000?2000:ms,...args);\n"
+        )
+    owner.write_text(
+        original.replace(
+            acknowledgement,
+            '    if arguments == ["publish-install"]:\n        '
+            + interruption
+            + "\n"
+            + acknowledgement,
+        )
+    )
+    legacy = tmp_path / ".reflexio/.env"
+    legacy.parent.mkdir()
+    legacy.write_text("CLAUDE_SMART_READ_ONLY=1\nCLAUDE_SMART_CLI_TIMEOUT=90\n")
+    command = [
+        node_bin(),
+        str(installer),
+        "setup",
+        "--host",
+        "claude-code",
+        "--backend",
+        "local",
+        "--yes",
+    ]
+    failed = subprocess.run(  # noqa: S603 -- Owned public flow with a post-commit acknowledgement fault.
+        command,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert failed.returncode == 1
+    assert (
+        "could not be confirmed"
+        if fault == "exit"
+        else "timed out and may have completed"
+    ) in failed.stderr
+    selected = tmp_path / ".claude-smart/.env"
+    saved = selected.read_text()
+    assert "# claude-smart: legacy-env checked" in saved.splitlines()
+    assert dotenv_values(selected)["CLAUDE_SMART_CLI_TIMEOUT"] == "90"
+    assert not (selected.parent / "install-logs").exists()
+    assert not (selected.parent / "legacy-reflexio-env-checked").exists()
+    selected.write_text(
+        "".join(
+            line
+            for line in saved.splitlines(keepends=True)
+            if not line.startswith("CLAUDE_SMART_CLI_TIMEOUT=")
+        )
+    )
+    owner.write_text(original)
+    retried = subprocess.run(  # noqa: S603 -- Same owned public flow after a fresh read/confirmation.
+        command,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert retried.returncode == 0, retried.stderr
+    assert "CLAUDE_SMART_CLI_TIMEOUT" not in dotenv_values(selected)
+    assert (
+        selected.read_text().splitlines().count("# claude-smart: legacy-env checked")
+        == 1
+    )
 
 
 def fake_guide(tmp_path: Path, *, delay: bool = False) -> tuple[Path, dict[str, str]]:
@@ -65,6 +222,47 @@ def fake_guide(tmp_path: Path, *, delay: bool = False) -> tuple[Path, dict[str, 
     env["NODE_OPTIONS"] = f'--require "{fetch_stub}"'
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     return package / "bin" / "claude-smart.js", env
+
+
+def test_setup_does_not_treat_completion_text_inside_a_value_as_metadata(tmp_path):
+    installer, env = fake_guide(tmp_path)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    comment = "# claude-smart: legacy-env checked"
+    opaque = 'OTHER="first\n' + comment + '\nlast"\n'
+    selected.write_text(opaque)
+    legacy = tmp_path / ".reflexio/.env"
+    legacy.parent.mkdir()
+    legacy.write_text("CLAUDE_SMART_CLI_TIMEOUT=90\n")
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            "setup",
+            "--host",
+            "claude-code",
+            "--backend",
+            "local",
+            "--provider",
+            "codex",
+            "--yes",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    content = selected.read_text()
+    assert content.startswith(comment + "\n")
+    assert opaque in content
+    assert (
+        dotenv_values(stream=StringIO(content), interpolate=False)[
+            "CLAUDE_SMART_CLI_TIMEOUT"
+        ]
+        == "90"
+    )
+    assert legacy.read_text() == "CLAUDE_SMART_CLI_TIMEOUT=90\n"
 
 
 @pytest.mark.parametrize("saved", [False, True])
@@ -116,10 +314,18 @@ def test_unattended_install_preserves_inherited_provider_overrides(
     if explicit_provider:
         assert "Background learning: Claude Code CLI" in result.stdout
         assert f'{key}="{value}"' not in settings
-        assert 'CLAUDE_SMART_USE_LOCAL_CLI="1"' in settings
+        assert (
+            dotenv_values(stream=StringIO(settings), interpolate=False).get(
+                "CLAUDE_SMART_USE_LOCAL_CLI"
+            )
+            == "1"
+        )
     else:
         assert summary in result.stdout
-        assert f'{key}="{value}"' in settings
+        assert (
+            dotenv_values(stream=StringIO(settings), interpolate=False).get(f"{key}")
+            == f"{value}"
+        )
 
 
 def test_guided_coordinator_reports_partial_success_and_keeps_provider(
@@ -151,7 +357,12 @@ def test_guided_coordinator_reports_partial_success_and_keeps_provider(
     assert "Background learning: Codex CLI" in result.stdout
     assert '"continue"' not in result.stdout
     config = (tmp_path / ".claude-smart" / ".env").read_text()
-    assert 'CLAUDE_SMART_LEARNING_PROVIDER="codex"' in config
+    assert (
+        dotenv_values(stream=StringIO(config), interpolate=False).get(
+            "CLAUDE_SMART_LEARNING_PROVIDER"
+        )
+        == "codex"
+    )
     logs = list((tmp_path / ".claude-smart" / "install-logs").glob("*.log"))
     assert len(logs) == 2
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in logs)
@@ -201,6 +412,7 @@ def test_guided_uninstall_keeps_data_configuration_and_remaining_integration(
     state = tmp_path / ".claude-smart"
     state.mkdir()
     selected = state / ".env"
+    original = None
     if policy == "directory":
         selected.mkdir()
     elif policy != "missing":
@@ -259,6 +471,7 @@ def test_guided_uninstall_keeps_data_configuration_and_remaining_integration(
     elif policy == "directory":
         assert selected.is_dir()
     else:
+        assert original is not None
         assert selected.read_bytes() == original
     if hosts == "claude-code" and policy != "valid":
         assert "Removal completed; repair saved settings" in result.stdout
@@ -456,8 +669,11 @@ def test_managed_key_is_hidden_and_final_cancel_does_not_save_it(
             assert b"Installation complete" in output
             assert b"Claude Code: installed" in output
             assert (
-                'REFLEXIO_API_KEY="secret-terminal-sentinel"'
-                in (tmp_path / ".claude-smart" / ".env").read_text()
+                dotenv_values(
+                    stream=StringIO((tmp_path / ".claude-smart" / ".env").read_text()),
+                    interpolate=False,
+                ).get("REFLEXIO_API_KEY")
+                == "secret-terminal-sentinel"
             )
         else:
             assert b"Cancelled; no changes made" in output
@@ -496,9 +712,24 @@ def test_guided_command_preserves_managed_key_read_only_and_sharing(
     assert "read-only" in result.stdout
     assert "secret-managed-sentinel" not in result.stdout
     config = (tmp_path / ".claude-smart" / ".env").read_text()
-    assert 'REFLEXIO_API_KEY="secret-managed-sentinel"' in config
-    assert 'CLAUDE_SMART_READ_ONLY="1"' in config
-    assert 'REFLEXIO_USER_ID="custom-shared-user"' in config
+    assert (
+        dotenv_values(stream=StringIO(config), interpolate=False).get(
+            "REFLEXIO_API_KEY"
+        )
+        == "secret-managed-sentinel"
+    )
+    assert (
+        dotenv_values(stream=StringIO(config), interpolate=False).get(
+            "CLAUDE_SMART_READ_ONLY"
+        )
+        == "1"
+    )
+    assert (
+        dotenv_values(stream=StringIO(config), interpolate=False).get(
+            "REFLEXIO_USER_ID"
+        )
+        == "custom-shared-user"
+    )
 
 
 def test_guided_update_keeps_claude_uninstall_and_retry_recovery(
@@ -597,10 +828,23 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     settings = config_path.read_text()
     assert "CLAUDE_SMART_GUIDED_CONFIG" not in settings
     assert "CLAUDE_SMART_HOST=" not in settings
-    assert 'REFLEXIO_URL="http://localhost:9090/"' in settings
-    assert 'REFLEXIO_USER_ID="global_user"' in settings
+    assert (
+        dotenv_values(stream=StringIO(settings), interpolate=False)["REFLEXIO_URL"]
+        == "http://localhost:9090/"
+    )
+    assert (
+        dotenv_values(stream=StringIO(settings), interpolate=False).get(
+            "REFLEXIO_USER_ID"
+        )
+        == "global_user"
+    )
     if provider_mode == "named":
-        assert 'CLAUDE_SMART_LEARNING_PROVIDER="codex"' in settings
+        assert (
+            dotenv_values(stream=StringIO(settings), interpolate=False)[
+                "CLAUDE_SMART_LEARNING_PROVIDER"
+            ]
+            == "codex"
+        )
     else:
         assert "CLAUDE_SMART_LEARNING_PROVIDER=" not in settings
     env.pop("CLAUDE_SMART_CLI_PATH", None)
@@ -635,8 +879,16 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"Background learning: {expected_learning}" in result.stdout
     settings = config_path.read_text()
-    assert 'REFLEXIO_URL="http://localhost:9090/"' in settings
-    assert 'REFLEXIO_USER_ID="global_user"' in settings
+    assert (
+        dotenv_values(stream=StringIO(settings), interpolate=False)["REFLEXIO_URL"]
+        == "http://localhost:9090/"
+    )
+    assert (
+        dotenv_values(stream=StringIO(settings), interpolate=False).get(
+            "REFLEXIO_USER_ID"
+        )
+        == "global_user"
+    )
 
 
 @pytest.mark.parametrize("provider", [None, "claude-code", "codex", "opencode"])
@@ -747,8 +999,11 @@ def test_learning_summary_and_sonnet_default_on_actual_guide(
     assert "Model version: not reported" in summary
     assert "npx claude-smart setup" in summary
     assert (
-        'CLAUDE_SMART_LEARNING_MODEL="sonnet"'
-        in (tmp_path / ".claude-smart/.env").read_text()
+        dotenv_values(
+            stream=StringIO((tmp_path / ".claude-smart/.env").read_text()),
+            interpolate=False,
+        ).get("CLAUDE_SMART_LEARNING_MODEL")
+        == "sonnet"
     )
 
 
@@ -904,7 +1159,8 @@ def test_public_setup_preserves_policy_and_connection_choices(tmp_path, scenario
         assert legacy.read_bytes() == before_legacy
     if scenario == "managed-to-local":
         assert config["CLAUDE_SMART_MANAGED_API_KEY"] == "managed-key"
-        assert (selected.parent / "legacy-reflexio-env-checked").exists()
+        assert "# claude-smart: legacy-env checked" in selected.read_text().splitlines()
+        assert not (selected.parent / "legacy-reflexio-env-checked").exists()
         again = subprocess.run(
             command, env=env, text=True, capture_output=True, timeout=30
         )
@@ -1026,6 +1282,7 @@ def test_interactive_setup_confirmation_preserves_effective_learning_intent(
 ):
     import pty
     import signal
+
     from dotenv import dotenv_values
 
     installer, env = fake_guide(tmp_path)
@@ -1204,8 +1461,18 @@ def test_confirmed_local_endpoint_is_saved_in_runtime_loopback_form(
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert f'REFLEXIO_URL="{normalized}"' in selected.read_text()
-    assert 'REFLEXIO_API_KEY=""' in selected.read_text()
+    assert (
+        dotenv_values(stream=StringIO(selected.read_text()), interpolate=False).get(
+            "REFLEXIO_URL"
+        )
+        == f"{normalized}"
+    )
+    assert (
+        dotenv_values(stream=StringIO(selected.read_text()), interpolate=False).get(
+            "REFLEXIO_API_KEY"
+        )
+        == ""
+    )
     assert "Claude Code: installed" in result.stdout
     assert "incomplete or invalid" not in result.stderr
     # Public confirmation must agree with all three real runtime readers.

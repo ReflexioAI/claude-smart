@@ -160,8 +160,25 @@ key. Legacy read-only and other runtime preferences still migrate independently.
 Setup, Codex hooks, the dashboard, and the shell/Python readers all accept plain
 assignments and `export` followed by spaces or tabs.
 Explicit caller and setup choices retain their existing precedence. Reading or
-cancelling setup does not rewrite the file; legacy migration preserves the
-selected original row, including Windows path quoting.
+cancelling setup does not rewrite the file or prepare a settings publisher.
+Legacy migration preserves the selected original value text, including Windows
+path quoting; only the assignment prefix is normalized.
+
+Confirmation uses the same native lock and private atomic settings owner as the
+dashboard and dependency repair. One captured preview drives the save; concurrent
+edits require a fresh preview. Setup prepares a small temporary Python writer from
+locked dependencies before changing settings. A preparation failure leaves settings
+unchanged. Confirmed settings remain available if a later integration install fails.
+Publisher child processes, including UV installation, have a two-minute deadline.
+On timeout, setup stops their owned process trees.
+If publication cannot be confirmed, setup stops before installing integrations;
+reload settings before retrying.
+
+Migration completion is recorded as a fixed first-line comment in that same atomic
+settings write, after an optional UTF-8 BOM. Matching text inside a value is not
+migration metadata. Existing
+migration sidecars are still recognized without rewriting them. Later setup runs
+do not reimport deleted legacy preferences after migration has completed.
 
 The confirmed guide owns connection, learning, sharing, and read-only choices.
 Host workers consume those saved choices; installing or removing another agent
@@ -169,7 +186,6 @@ does not rewrite a shared learning host. Each prepared runtime uses the same
 Python repair owner to supply only missing local defaults, with native locking
 and private atomic publication. Existing values, including zero and explicit
 empty values, are preserved. Ordinary standalone self-repair remains supported.
-The old guided-config marker is no longer needed.
 
 Dashboard saves use the prepared Python settings owner too. They share the
 repair lock and publish privately with one atomic file replacement. An explicit

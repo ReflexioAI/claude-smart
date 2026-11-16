@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from claude_smart import optimizer_assistant, runtime
+from dotenv import dotenv_values
 
 from tests.test_install_guide import fake_guide
 
@@ -141,6 +142,9 @@ def test_installer_preserves_model_on_update_and_adopts_new_provider_default(
         )
         assert result.returncode == 0, result.stdout + result.stderr
         assert (
-            f'CLAUDE_SMART_LEARNING_MODEL="{expected}"' in (state / ".env").read_text()
+            dotenv_values(state / ".env", interpolate=False)[
+                "CLAUDE_SMART_LEARNING_MODEL"
+            ]
+            == expected
         )
         assert f"Learning model: {expected}" in result.stdout

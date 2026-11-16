@@ -1,0 +1,4 @@
+# The generated settings publisher binds these authorities by byte hash.
+plugin/pyproject.toml text eol=lf
+plugin/uv.lock text eol=lf
+plugin/settings-owner.requirements.txt text eol=lf
