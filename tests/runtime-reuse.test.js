@@ -7,6 +7,68 @@ const path = require("node:path");
 const cache = require("../plugin/scripts/dashboard-cache");
 const { reusePreparedRuntime } = require("../bin/claude-smart");
 
+test("registered Claude runtime discovery respects source metadata and native shims", t => {
+  const {spawnSync} = require("node:child_process");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "registered runtime λ "));
+  t.after(() => fs.rmSync(root, {recursive:true, force:true}));
+  const bin = path.join(root, "tools with spaces");
+  fs.mkdirSync(bin);
+  const windows = process.platform === "win32";
+  const relay = "if(JSON.stringify(process.argv.slice(1))!==JSON.stringify(['plugin','list','--json']))process.exit(91);const fs=require('node:fs');process.stdout.write(fs.readFileSync(process.env.USERPROFILE+'/inventory.json'));process.exit(fs.existsSync(process.env.USERPROFILE+'/exit-nonzero')?1:0)";
+  fs.writeFileSync(path.join(bin, windows ? "claude.cmd" : "claude"), windows
+    ? `@echo off\r\n"${process.execPath}" -e "${relay}" %*\r\n`
+    : '#!/bin/sh\n[ "$#" -eq 3 ] && [ "$1" = plugin ] && [ "$2" = list ] && [ "$3" = --json ] || exit 91\ncat "$HOME/inventory.json"\n[ ! -f "$HOME/exit-nonzero" ]\n', {mode:0o700});
+  fs.mkdirSync(path.join(root,"shadow directory",windows ? "claude.exe" : "claude"), {recursive:true});
+  fs.mkdirSync(path.join(root,"shadow file"));
+  fs.writeFileSync(path.join(root,"shadow file","claude"), "not executable", {mode:0o600});
+  const cacheRoot = path.join(root, "registered cache");
+  const folder = path.join(root, "source folder λ");
+  for (const source of [cacheRoot, folder]) {
+    fs.mkdirSync(path.join(source, "scripts"), {recursive:true});
+    fs.writeFileSync(path.join(source, "scripts/backend-service.sh"), "owned sentinel");
+  }
+  const record = {id:"claude-smart@reflexioai", installPath:cacheRoot};
+  const cases = [
+    {data:[record], expected:[cacheRoot]},
+    {data:[{...record, readFromFolder:folder, errors:[]}], expected:[folder]},
+    {data:[{...record, readFromFolder:path.join(root, "missing")}], expected:[]},
+    {raw:"{bad JSON", expected:[]},
+    {data:[null, 42, "invalid", record], expected:[cacheRoot]},
+    {data:[{...record,id:"another@marketplace"}], expected:[]},
+    {data:[{...record,errors:["unavailable"]}], expected:[]},
+    {data:[record], nonzero:true, expected:[]},
+    {data:[{...record,installPath:"relative/source"}], expected:[]},
+    {data:[{...record,errors:{message:"invalid"}}], expected:[]},
+    {data:[{...record,readFromFolder:null}], expected:[]},
+    {data:[record], shadow:"shadow directory", expected:[cacheRoot]},
+    {data:[record],shadow:"shadow file",expected:[cacheRoot]},
+  ];
+  fs.writeFileSync(path.join(root, "cases.json"), JSON.stringify(cases));
+  const script = `
+const fs=require('node:fs'),path=require('node:path');
+const root=process.env.HOME,owner=require(process.argv[1]);
+const basePath=process.env.PATH;
+const result=[];
+for(const item of JSON.parse(fs.readFileSync(path.join(root,'cases.json'),'utf8'))) {
+  process.env.PATH=item.shadow ? path.join(root,item.shadow)+path.delimiter+basePath : basePath;
+  fs.writeFileSync(path.join(root,'inventory.json'),item.raw ?? JSON.stringify(item.data));
+  const exit=path.join(root,'exit-nonzero');
+  if(item.nonzero) fs.writeFileSync(exit,''); else fs.rmSync(exit,{force:true});
+  result.push(owner.installedPluginRoots());
+}
+process.stdout.write(JSON.stringify(result));`;
+  const env = {...process.env, HOME:root, USERPROFILE:root,
+    CLAUDE_CONFIG_DIR:path.join(root,".claude"), CODEX_HOME:path.join(root,".codex"),
+    XDG_CONFIG_HOME:path.join(root,"xdg"), PATH:bin+path.delimiter+process.env.PATH};
+  delete env.NODE_OPTIONS;
+  const result = spawnSync(process.execPath, ["-e", script, path.resolve(__dirname,"../bin/claude-smart.js")],
+    {env,encoding:"utf8",timeout:20000});
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), cases.map(item => item.expected));
+  for (const source of [cacheRoot, folder])
+    assert.equal(fs.readFileSync(path.join(source,"scripts/backend-service.sh"),"utf8"),"owned sentinel");
+});
+
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-reuse-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

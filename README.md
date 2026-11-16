@@ -260,6 +260,11 @@ Removing an integration does not uninstall its agent CLI. Remaining integrations
 can continue using the same learning provider. OpenCode removal applies to the
 current project config, or its global config with `--global`.
 
+If removing an integration breaks the shared command link, it is repaired from
+the remaining runtimes, including registered Claude Code caches and local source
+installs. A declared local source takes precedence over its older cache path;
+discovery does not modify or delete that source.
+
 For per-host details — what the installers and uninstallers touch, OpenCode config resolution and model/env overrides, and Windows notes — see [Host install notes](./DEVELOPER.md#host-install-notes) in DEVELOPER.md. Developing the plugin itself? See [Developing locally](./DEVELOPER.md#developing-locally).
 
 > **Not supported:** Claude Code Cowork, claude.ai/code web, or remote Codex environments without local plugin hooks — they run outside your local machine, so the local backend/dashboard and `~/.reflexio/` aren't reachable.
