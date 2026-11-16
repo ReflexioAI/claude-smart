@@ -360,7 +360,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         if arguments == ["publish"]:
-            request = json.load(sys.stdin)
+            # Node sends JSON bytes; a Windows console code page must not
+            # corrupt values or original-assignment comparisons under -I.
+            request = json.load(sys.stdin.buffer)
             if not isinstance(request, dict) or set(request) != {"updates", "expected"}:
                 raise ValueError("Invalid settings edit request")
             update_settings(request["updates"], request["expected"])

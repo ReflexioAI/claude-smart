@@ -529,8 +529,10 @@ def test_confirmed_publication_shares_native_repair_lock(tmp_path: Path) -> None
     assert path.read_text() == "MODEL=new\n"
 
 
+@pytest.mark.parametrize("stdin_encoding", ["utf-8", "cp1252"])
 def test_prepared_module_publishes_stdin_without_values_in_output(
     tmp_path: Path,
+    stdin_encoding: str,
 ) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -547,13 +549,19 @@ def test_prepared_module_publishes_stdin_without_values_in_output(
         ),
     )
     payload = {
-        "updates": {"REFLEXIO_API_KEY": "private-canary"},
+        "updates": {"REFLEXIO_API_KEY": "private-canary-λ"},
         "expected": {"REFLEXIO_API_KEY": []},
     }
-    args = [sys.executable, "-m", "claude_smart.env_config", "publish"]
+    program = (
+        "import runpy,sys;sys.stdin.reconfigure(encoding=" + repr(stdin_encoding) + ");"
+        "sys.argv=['claude_smart.env_config','publish'];"
+        "runpy.run_module('claude_smart.env_config',run_name='__main__')"
+    )
+    args = [sys.executable, "-c", program]
     result = subprocess.run(  # noqa: S603 — fixed prepared-module invocation.
         args,
-        input=json.dumps(payload),
+        input=json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
         env=environment,
         text=True,
         capture_output=True,
@@ -561,12 +569,13 @@ def test_prepared_module_publishes_stdin_without_values_in_output(
     )
     assert result.returncode == 0, result.stderr
     assert "private-canary" not in result.stdout + result.stderr
-    assert (
-        home / ".claude-smart/.env"
-    ).read_text() == "REFLEXIO_API_KEY=private-canary\n"
+    assert (home / ".claude-smart/.env").read_text(
+        encoding="utf-8"
+    ) == "REFLEXIO_API_KEY=private-canary-λ\n"
     result = subprocess.run(  # noqa: S603 — fixed prepared-module invocation.
         args,
-        input=json.dumps(payload),
+        input=json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
         env=environment,
         text=True,
         capture_output=True,
@@ -574,6 +583,24 @@ def test_prepared_module_publishes_stdin_without_values_in_output(
     )
     assert result.returncode == 73
     assert "private-canary" not in result.stdout + result.stderr
+    payload = {
+        "updates": {"REFLEXIO_API_KEY": "new-owned-key"},
+        "expected": {"REFLEXIO_API_KEY": ["REFLEXIO_API_KEY=private-canary-λ"]},
+    }
+    result = subprocess.run(  # noqa: S603 — same owned module invocation.
+        args,
+        input=json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "private-canary" not in result.stdout + result.stderr
+    assert (home / ".claude-smart/.env").read_text(
+        encoding="utf-8"
+    ) == "REFLEXIO_API_KEY=new-owned-key\n"
 
 
 @pytest.mark.parametrize(
