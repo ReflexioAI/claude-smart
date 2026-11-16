@@ -11,7 +11,6 @@ from pathlib import Path
 
 import filelock
 import pytest
-
 from claude_smart import env_config
 
 
@@ -21,7 +20,7 @@ def owner_python(tmp_path_factory):
     venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(root)
     python = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     site = Path(
-        subprocess.check_output(
+        subprocess.check_output(  # noqa: S603 — owned prepared interpreter and fixed argv.
             [
                 str(python),
                 "-I",
@@ -65,7 +64,7 @@ def _run(owner_python, home, *arguments, extra=None):
         REFLEXIO_ENV_FILE=str(home / "unrelated-sdk.env"),
     )
     environment.update(extra or {})
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603 — owned prepared interpreter and fixed internal action.
         [str(owner_python), "-I", "-m", "claude_smart.env_config", *arguments],
         env=environment,
         text=True,
@@ -171,3 +170,40 @@ def test_unknown_internal_action_rejects_before_settings_creation(
     assert "Usage:" in result.stderr
     assert "fake-secret" not in result.stderr
     assert not (tmp_path / ".claude-smart").exists()
+
+
+@pytest.mark.parametrize("separator", ["", "\u2028", "\v", "\r"])
+def test_repair_does_not_treat_literal_value_suffix_as_connection(
+    owner_python, tmp_path, separator
+):
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = (
+        "NOTE=literal" + separator + "REFLEXIO_URL=https://owned.example/\n"
+    ).encode()
+    selected.write_bytes(original)
+
+    result = _run(owner_python, tmp_path, "bootstrap-repair")
+
+    assert result.returncode == 0, result.stderr
+    assert "CLAUDE_SMART_USE_LOCAL_CLI" in json.loads(result.stdout)["added"]
+    assert selected.read_bytes().startswith(original)
+    before = selected.read_bytes()
+    retry = _run(owner_python, tmp_path, "bootstrap-repair")
+    assert retry.returncode == 0, retry.stderr
+    assert json.loads(retry.stdout)["added"] == []
+    assert selected.read_bytes() == before
+
+
+def test_repair_separates_additions_from_unterminated_literal_cr(
+    owner_python, tmp_path
+):
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = b"NOTE=literal\r"
+    selected.write_bytes(original)
+
+    result = _run(owner_python, tmp_path, "bootstrap-repair")
+
+    assert result.returncode == 0, result.stderr
+    assert selected.read_bytes().startswith(original + b"\n")

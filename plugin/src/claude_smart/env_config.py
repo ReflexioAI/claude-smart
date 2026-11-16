@@ -89,10 +89,11 @@ def load_reflexio_env(path: Path | None = None) -> None:
     """Load ``~/.claude-smart/.env`` into ``os.environ`` without overriding values."""
     path = path or CLAUDE_SMART_ENV_PATH
     try:
-        text = path.read_text()
+        # Text-mode universal newlines would turn a literal CR into a binding boundary.
+        text = path.read_bytes().decode("utf-8")
     except OSError:
         return
-    for line in text.splitlines():
+    for line in text.split("\n"):
         parsed = parse_env_line(line)
         if parsed is None:
             continue
@@ -215,7 +216,7 @@ def repair_bootstrap_env(path: Path | None = None) -> list[str]:
 
 def _bootstrap_defaults(existing: str) -> tuple[str | None, list[str]]:
     current = {}
-    for line in existing.splitlines():
+    for line in existing.split("\n"):
         if (entry := parse_env_line(line)) is not None:
             current[entry[0]] = entry[1]
     url = current.get(REFLEXIO_URL_ENV, os.environ.get(REFLEXIO_URL_ENV, ""))
@@ -236,7 +237,7 @@ def _bootstrap_defaults(existing: str) -> tuple[str | None, list[str]]:
         added.append(key)
     if not additions:
         return existing, added
-    separator = "" if not existing or existing.endswith(("\n", "\r")) else "\n"
+    separator = "" if not existing or existing.endswith("\n") else "\n"
     return existing + separator + "\n".join(additions) + "\n", added
 
 
@@ -344,8 +345,8 @@ def env_truthy(name: str) -> bool:
 
 
 def _single_line_value(value: str) -> bool:
-    # Readers use str.splitlines(), whose boundaries include Unicode separators
-    # as well as CR/LF. Values must never become additional assignments there.
+    # Keep newly published values in the portable single-line subset. Existing
+    # opaque spans are retained verbatim by the edit path.
     return "\0" not in value and value.splitlines() in ([], [value])
 
 

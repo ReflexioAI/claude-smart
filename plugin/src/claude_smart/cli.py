@@ -82,8 +82,9 @@ def _is_windows_system_bash(path: str) -> bool:
 
 
 def _resolve_candidate(candidate: str) -> str | None:
-    expanded = os.path.expandvars(os.path.expanduser(candidate))
-    if os.path.isfile(expanded):
+    # Keep unknown ~user text available for PATH lookup; Path.expanduser raises.
+    expanded = os.path.expandvars(os.path.expanduser(candidate))  # noqa: PTH111
+    if os.path.isfile(expanded):  # noqa: PTH113 — preserve native string command resolution.
         return expanded
     return shutil.which(expanded)
 
@@ -93,10 +94,10 @@ def _iter_path_candidates(names: tuple[str, ...]) -> list[str]:
     for raw_dir in os.environ.get("PATH", "").split(os.pathsep):
         if not raw_dir:
             continue
-        directory = os.path.expandvars(os.path.expanduser(raw_dir))
+        directory = os.path.expandvars(os.path.expanduser(raw_dir))  # noqa: PTH111 — keep unknown ~user literal.
         for name in names:
-            candidate = os.path.join(directory, name)
-            if os.path.isfile(candidate):
+            candidate = os.path.join(directory, name)  # noqa: PTH118 — preserve executable path spelling.
+            if os.path.isfile(candidate):  # noqa: PTH113 — native string command lookup.
                 found.append(candidate)
     return found
 
@@ -399,7 +400,9 @@ def _run_service(script: Path, subcmd: str) -> int:
         )
         return 1
     try:
-        subprocess.run([bash, str(script), subcmd], check=True)
+        subprocess.run(  # noqa: S603 — repository service script and fixed operation.
+            [bash, str(script), subcmd], check=True
+        )
         return 0
     except subprocess.CalledProcessError as exc:
         return exc.returncode or 1
@@ -429,7 +432,7 @@ def _service_status(script: Path, wait_ready_s: float = 3.0) -> str:
         return _SERVICE_STATUS_PROBE_FAILED
     deadline = time.monotonic() + wait_ready_s
     while True:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603 — repository service script and fixed status argv.
             [bash, str(script), "status"],
             capture_output=True,
             text=True,
@@ -467,22 +470,15 @@ def _read_dotenv_value(env_path: Path, key: str) -> str | None:
     if not env_path.is_file():
         return None
     try:
-        lines = env_path.read_text().splitlines()
+        # Match the shared settings grammar and physical LF boundaries: a
+        # Unicode line separator can be part of the configured storage path.
+        lines = env_path.read_bytes().decode("utf-8").split("\n")
     except OSError:
         return None
-    prefix = f"{key}="
     for raw_line in lines:
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].lstrip()
-        if not line.startswith(prefix):
-            continue
-        value = line[len(prefix) :].strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        return value.strip()
+        entry = env_config.parse_env_line(raw_line)
+        if entry is not None and entry[0] == key:
+            return entry[1].strip()
     return None
 
 
@@ -581,10 +577,10 @@ def _disk_org_targets(base_dir: Path) -> list[_ClearAllTarget]:
         raise _ClearAllError(
             f"configured disk storage path is not a directory: {base_dir}"
         )
-    targets: list[_ClearAllTarget] = []
-    for child in sorted(base_dir.glob("disk_*")):
-        targets.append(_ClearAllTarget(child, "dir", "disk org data"))
-    return targets
+    return [
+        _ClearAllTarget(child, "dir", "disk org data")
+        for child in sorted(base_dir.glob("disk_*"))
+    ]
 
 
 def _resolve_clear_all_targets() -> list[_ClearAllTarget]:
@@ -609,14 +605,14 @@ def _resolve_clear_all_targets() -> list[_ClearAllTarget]:
                 db_path = _resolve_absolute_path(
                     raw_db_path.strip(), source="configured SQLite db_path"
                 )
-                for suffix in ("", "-wal", "-shm", "-journal"):
-                    targets.append(
-                        _ClearAllTarget(
-                            Path(f"{db_path}{suffix}"),
-                            "file",
-                            "configured SQLite data",
-                        )
+                targets.extend(
+                    _ClearAllTarget(
+                        Path(f"{db_path}{suffix}"),
+                        "file",
+                        "configured SQLite data",
                     )
+                    for suffix in ("", "-wal", "-shm", "-journal")
+                )
         elif kind == "disk":
             raw_dir_path = storage_config.get("dir_path")
             if not isinstance(raw_dir_path, str) or not raw_dir_path.strip():
@@ -723,7 +719,7 @@ def cmd_restart(args: argparse.Namespace) -> int:
                     f"({install_label}, may take a minute)…\n"
                 )
                 try:
-                    subprocess.run(
+                    subprocess.run(  # noqa: S603 — resolved package manager and fixed install argv.
                         install_cmd,
                         cwd=_DASHBOARD_DIR,
                         check=True,
@@ -744,7 +740,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
                 "Rebuilding dashboard (npm run build, may take a minute)…\n"
             )
             try:
-                subprocess.run([npm, "run", "build"], cwd=_DASHBOARD_DIR, check=True)
+                subprocess.run(  # noqa: S603 — resolved package manager and fixed build argv.
+                    [npm, "run", "build"], cwd=_DASHBOARD_DIR, check=True
+                )
             except (subprocess.CalledProcessError, OSError) as exc:
                 returncode = getattr(exc, "returncode", 1) or 1
                 sys.stderr.write(

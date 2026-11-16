@@ -9,6 +9,24 @@ import sys
 from pathlib import Path
 
 import pytest
+from claude_smart import env_config
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\v", "\r"])
+def test_python_loader_preserves_literal_separators_without_creating_bindings(
+    tmp_path: Path, monkeypatch, separator: str
+) -> None:
+    path = tmp_path / ".env"
+    value = "literal" + separator + "OWNED_PHANTOM=not-a-binding"
+    path.write_bytes(("OWNED_LITERAL=" + value + "\n").encode())
+    for key in ("OWNED_LITERAL", "OWNED_PHANTOM"):
+        monkeypatch.setenv(key, "")
+        monkeypatch.delenv(key)
+
+    env_config.load_reflexio_env(path)
+
+    assert os.environ["OWNED_LITERAL"] == value
+    assert "OWNED_PHANTOM" not in os.environ
 
 
 @pytest.mark.parametrize(
