@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -98,10 +99,17 @@ def test_read_dotenv_value_keeps_unbalanced_quotes(tmp_path) -> None:
     assert cli._read_dotenv_value(env, "OTHER") == "\"x'"
 
 
-def test_storage_root_comes_from_dotenv_when_not_exported(harness) -> None:
+@pytest.mark.parametrize("export", ["", "export ", "export\t"])
+@pytest.mark.parametrize("prefix", ["", "\ufeff"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_storage_root_comes_from_dotenv_when_not_exported(
+    harness, export, prefix, newline
+) -> None:
     custom = harness.tmp / "custom-store"
     harness.env_path.parent.mkdir(parents=True)
-    harness.env_path.write_text(f"export LOCAL_STORAGE_PATH='{custom}'\n")
+    harness.env_path.write_bytes(
+        f"{prefix}{export}LOCAL_STORAGE_PATH='{custom}'{newline}".encode()
+    )
     custom.mkdir()
     (custom / "row.db").write_text("x")
     harness.data.mkdir(parents=True)
@@ -112,6 +120,39 @@ def test_storage_root_comes_from_dotenv_when_not_exported(harness) -> None:
     assert not custom.exists()
     # The default root is NOT the configured one, so it is left alone.
     assert (harness.data / "default.db").read_text() == "keep"
+
+
+@pytest.mark.parametrize(
+    "separator",
+    [
+        "\u2028",
+        pytest.param(
+            "\r",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="Windows forbids CR in filenames"
+            ),
+        ),
+    ],
+)
+def test_storage_root_preserves_literal_separators_in_path(
+    harness, monkeypatch, separator
+) -> None:
+    custom = harness.tmp / ("custom" + separator + "store")
+    truncated = harness.tmp / "custom"
+    for root in (custom, truncated, harness.data):
+        root.mkdir(parents=True)
+        (root / "row.db").write_text("keep unless configured")
+    harness.env_path.parent.mkdir(parents=True)
+    harness.env_path.write_bytes(f"LOCAL_STORAGE_PATH={custom}\n".encode())
+
+    monkeypatch.setattr(cli.env_config, "CLAUDE_SMART_ENV_PATH", harness.env_path)
+    monkeypatch.setenv("LOCAL_STORAGE_PATH", "")
+    monkeypatch.delenv("LOCAL_STORAGE_PATH")
+    assert cli.main(["clear-all", "--yes"]) == 0
+
+    assert not custom.exists()
+    assert (truncated / "row.db").read_text() == "keep unless configured"
+    assert (harness.data / "row.db").read_text() == "keep unless configured"
 
 
 def test_relative_storage_root_is_refused(harness, monkeypatch, capsys) -> None:
@@ -311,13 +352,13 @@ def test_kind_mismatch_during_removal_reports_error(harness, capsys) -> None:
 def test_remove_target_rejects_mismatched_and_unknown_kinds(tmp_path) -> None:
     file_path = tmp_path / "f"
     file_path.write_text("")
-    Target = cli._ClearAllTarget
+    target_type = cli._ClearAllTarget
 
     with pytest.raises(cli._ClearAllError, match="expected directory target"):
-        cli._remove_clear_all_target(Target(file_path, "dir", "x"))
+        cli._remove_clear_all_target(target_type(file_path, "dir", "x"))
     with pytest.raises(cli._ClearAllError, match="unknown clear-all target kind"):
-        cli._remove_clear_all_target(Target(file_path, "socket", "x"))
-    assert not cli._remove_clear_all_target(Target(tmp_path / "gone", "file", "x"))
+        cli._remove_clear_all_target(target_type(file_path, "socket", "x"))
+    assert not cli._remove_clear_all_target(target_type(tmp_path / "gone", "file", "x"))
     assert file_path.exists()
 
 

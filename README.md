@@ -153,6 +153,8 @@ to resume learning. The interactive guide offers both modes for either backend.
 Setup reads legacy duplicate settings with the same field rules as the runtime:
 shared connection/learning fields use the last assignment (including empty), while
 caller-overridable execution flags use the first nonempty saved assignment.
+Setup, Codex hooks, the dashboard, and the shell/Python readers all accept plain
+assignments and `export` followed by spaces or tabs.
 Explicit caller and setup choices retain their existing precedence. Reading or
 cancelling setup does not rewrite the file; legacy migration preserves the
 selected original row, including Windows path quoting.

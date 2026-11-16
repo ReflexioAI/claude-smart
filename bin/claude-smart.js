@@ -268,7 +268,7 @@ function runCodex(args) {
 function parseEnvLine(line) {
   let trimmed = String(line || "").trim();
   if (!trimmed || trimmed.startsWith("#")) return null;
-  if (trimmed.startsWith("export ")) trimmed = trimmed.slice("export ".length).trimStart();
+  trimmed = trimmed.replace(/^export\s+/, "");
   const eq = trimmed.indexOf("=");
   if (eq < 0) return null;
   const key = trimmed.slice(0, eq).trim();
