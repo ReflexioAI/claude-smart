@@ -30,6 +30,7 @@ const {
   accessSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -56,7 +57,7 @@ const OPENCODE_BARE_PLUGIN_SPEC = "claude-smart";
 const OPENCODE_CONFIG_NAMES = ["opencode.json", "opencode.jsonc"];
 // Pre-#85 installs kept claude-smart's managed settings here. It is also the
 // env file of any other Reflexio tool on the machine, so it is only ever read
-// for a one-time migration (see migrateLegacyManagedEnv), never written.
+// for a one-time migration (see captureInstallSnapshot), never written.
 const LEGACY_REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
 const CLAUDE_SMART_ENV_PATH = join(homedir(), ".claude-smart", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
@@ -76,8 +77,9 @@ const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const INSTALL_FAILURE_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-failed");
 // Written the first time install considers ~/.reflexio/.env, whatever the
 // outcome, so the migration runs once and a later local-mode choice sticks.
-// The public setup guide writes the same path before a local install.
+// New setup runs record completion in the settings header, in the same commit.
 const LEGACY_ENV_MIGRATION_MARKER = join(CLAUDE_SMART_STATE_DIR, "legacy-reflexio-env-checked");
+const INSTALL_COMPLETION_COMMENT = "# claude-smart: legacy-env checked";
 const OPENCODE_LOCAL_PACKAGE_DIR = join(CLAUDE_SMART_STATE_DIR, "opencode", "claude-smart");
 // Claude Code loads plugins from a local-directory marketplace in place
 // (<marketplace>/plugin), so this copy IS the runtime root, not a staging area.
@@ -129,6 +131,9 @@ const CODEX_REQUIRED_FILES = [
 ];
 const CODEX_CLI_TIMEOUT_MS = 30_000;
 const PLUGIN_SERVICE_TIMEOUT_MS = 45_000;
+// A publisher phase owns no interactive login; stop a stalled dependency/auth
+// helper or retained pipe, and require a fresh preview after an uncertain save.
+const SETTINGS_PUBLISHER_TIMEOUT_MS = 120_000;
 const COPYTREE_IGNORE_NAMES = new Set([
   "__pycache__",
   ".venv",
@@ -284,41 +289,12 @@ function parseEnvLine(line) {
   return { key, value };
 }
 
-function escapeEnvValue(value) {
-  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
 // The env file holds the managed API key: make it 0600 before any content
 // lands in it, so no other account can read it between write and chmod.
 function writePrivateFile(path, content) {
   if (existsSync(path)) chmodSync(path, 0o600);
   writeFileSync(path, content, { mode: 0o600 });
   chmodSync(path, 0o600);
-}
-
-function setEnvVars(path, values) {
-  mkdirSync(dirname(path), { recursive: true });
-  const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const seen = new Set();
-  const out = [];
-  for (const line of existing ? existing.split(/\r?\n/) : []) {
-    const parsed = parseEnvLine(line);
-    if (!parsed || !(parsed.key in values)) {
-      out.push(line);
-      continue;
-    }
-    out.push(`${parsed.key}="${escapeEnvValue(values[parsed.key])}"`);
-    seen.add(parsed.key);
-  }
-  const added = [];
-  for (const [key, value] of Object.entries(values)) {
-    if (seen.has(key)) continue;
-    out.push(`${key}="${escapeEnvValue(value)}"`);
-    added.push(key);
-  }
-  const content = out.join("\n").replace(/\n*$/, "");
-  writePrivateFile(path, content ? `${content}\n` : "");
-  return added;
 }
 
 // Match _lib.sh: caller-first flags retain their first nonempty saved value;
@@ -334,18 +310,43 @@ const CALLER_FIRST_ENV_KEYS = new Set([
   "CLAUDE_SMART_STATE_DIR",
 ]);
 
-function readEnvFile(path) {
+function readEnvSnapshot(path) {
+  const exists = existsSync(path);
+  const bytes = exists ? readFileSync(path) : Buffer.alloc(0);
   const values = new Map();
-  if (!existsSync(path)) return values;
-  for (const line of new TextDecoder("utf-8", { fatal: true })
-    .decode(readFileSync(path))
-    .split(/\r?\n/)) {
+  const rows = new Map();
+  const lines = new TextDecoder("utf-8", { fatal: true })
+    .decode(bytes)
+    .split("\n");
+  for (const [index, line] of lines.entries()) {
     const parsed = parseEnvLine(line);
-    if (parsed && (!CALLER_FIRST_ENV_KEYS.has(parsed.key) || !values.get(parsed.key))) {
+    if (
+      parsed &&
+      (!CALLER_FIRST_ENV_KEYS.has(parsed.key) || !values.get(parsed.key))
+    ) {
       values.set(parsed.key, parsed.value);
+      rows.set(parsed.key, index);
     }
   }
-  return values;
+  return { exists, bytes, values, rows, lines };
+}
+
+function readEnvFile(path) {
+  return readEnvSnapshot(path).values;
+}
+
+function captureInstallSnapshot() {
+  const runtime = readEnvSnapshot(CLAUDE_SMART_ENV_PATH);
+  const marker = existsSync(LEGACY_ENV_MIGRATION_MARKER);
+  const checked =
+    marker ||
+    runtime.lines[0].replace(/\r$/, "") === INSTALL_COMPLETION_COMMENT;
+  return {
+    runtime,
+    marker,
+    checked,
+    legacy: checked ? null : readEnvSnapshot(LEGACY_REFLEXIO_ENV_PATH),
+  };
 }
 
 // Mirrors claude_smart_reflexio_url_is_remote in plugin/scripts/_lib.sh, which
@@ -383,61 +384,6 @@ function legacyManagedConnection(runtime, legacy) {
   if (!runtime.has(REFLEXIO_USER_ID_ENV) && legacy.has(REFLEXIO_USER_ID_ENV))
     connection.set(REFLEXIO_USER_ID_ENV, legacy.get(REFLEXIO_USER_ID_ENV));
   return connection;
-}
-
-// Carry managed settings written by pre-#85 `claude-smart setup` over to the
-// runtime env file. A loopback URL there belongs to some other local Reflexio
-// server (e.g. a dev backend), not to claude-smart, so it is left alone.
-function migrateLegacyManagedEnv() {
-  if (existsSync(LEGACY_ENV_MIGRATION_MARKER)) return;
-  migrateLegacyManagedEnvOnce();
-  // Recorded only once the check has completed: a read or write error above
-  // aborts the install and the next run tries again.
-  mkdirSync(CLAUDE_SMART_STATE_DIR, { recursive: true });
-  writeFileSync(LEGACY_ENV_MIGRATION_MARKER, "");
-}
-
-function migrateLegacyManagedEnvOnce() {
-  const runtime = readEnvFile(CLAUDE_SMART_ENV_PATH);
-  const legacy = readEnvFile(LEGACY_REFLEXIO_ENV_PATH);
-  // Local pre-split installs also stored runtime flags here. Keep user choices
-  // (especially read-only) without importing another server's connection keys.
-  const runtimeLines = new Map();
-  if (existsSync(LEGACY_REFLEXIO_ENV_PATH)) {
-    for (const line of readFileSync(LEGACY_REFLEXIO_ENV_PATH, "utf8").split(/\r?\n/)) {
-      const parsed = parseEnvLine(line);
-      if (
-        parsed &&
-        /^CLAUDE_SMART_[A-Z0-9_]+$/.test(parsed.key) &&
-        parsed.key !== "CLAUDE_SMART_USE_LOCAL_EMBEDDING" &&
-        parsed.value === legacy.get(parsed.key) &&
-        !runtime.has(parsed.key)
-      ) {
-        runtimeLines.set(parsed.key, line);
-      }
-    }
-  }
-  if (runtimeLines.size) {
-    const existing = existsSync(CLAUDE_SMART_ENV_PATH)
-      ? readFileSync(CLAUDE_SMART_ENV_PATH, "utf8")
-      : "";
-    // Keep the original quoting: the readers do not decode doubled backslashes,
-    // so re-escaping a Windows path would change its value.
-    const separator = existing && !existing.endsWith("\n") ? "\n" : "";
-    mkdirSync(dirname(CLAUDE_SMART_ENV_PATH), { recursive: true });
-    writePrivateFile(
-      CLAUDE_SMART_ENV_PATH,
-      `${existing}${separator}${[...runtimeLines.values()].join("\n")}\n`,
-    );
-  }
-  // A key with no URL meant the managed service to older installers (and to
-  // the Reflexio client, whose default URL it is), so it migrates as such.
-  const connection = legacyManagedConnection(runtime, legacy);
-  if (!connection.size) return;
-  setEnvVars(CLAUDE_SMART_ENV_PATH, Object.fromEntries(connection));
-  process.stdout.write(
-    `Migrated managed Reflexio settings from ${LEGACY_REFLEXIO_ENV_PATH} to ${CLAUDE_SMART_ENV_PATH}.\n`,
-  );
 }
 
 // Workers consume confirmed policy. Missing defaults belong to the prepared
@@ -1096,6 +1042,31 @@ function acquirePackageInstallLock(packageRoot, label) {
 // backup on top of an uncommitted package. The lock's mtime is refreshed
 // while held, so a long dependency bootstrap is never mistaken for stale.
 const heldPackageLocks = new Map();
+// Invocation-owned resources only; never an account/runtime selection.
+const settingsRuntimes = new Set();
+
+function cleanupSettingsRuntimes() {
+  for (const runtime of settingsRuntimes) {
+    if (
+      runtime.children.some(
+        (entry) =>
+          !entry.hasClosed ||
+          (entry.group && processGroupAlive(entry.child.pid)),
+      )
+    )
+      continue;
+    try {
+      rmSync(runtime.directory, { recursive: true, force: true });
+      settingsRuntimes.delete(runtime);
+    } catch {
+      process.stderr.write(
+        "Temporary settings publisher cleanup failed: " +
+          runtime.directory +
+          "\n",
+      );
+    }
+  }
+}
 
 function holdPackageInstallLock(packageRoot, label) {
   const lockDir = acquirePackageInstallLock(packageRoot, label);
@@ -1121,6 +1092,7 @@ function ensureRollbackOnExit() {
   if (rollbackOnExitRegistered) return;
   rollbackOnExitRegistered = true;
   process.once("exit", rollbackLocalPluginPackages);
+  process.once("exit", cleanupSettingsRuntimes);
   for (const [signal, code] of [
     ["SIGINT", 130],
     ["SIGTERM", 143],
@@ -1128,10 +1100,29 @@ function ensureRollbackOnExit() {
   ]) {
     process.once(signal, async () => {
       terminatingOnSignal = true;
+      if ([...settingsRuntimes].some((runtime) => runtime.publishing))
+        process.stderr.write(
+          "Settings save was interrupted and may have completed; reload before retrying.\n",
+        );
       // Stop and await children first: an orphaned smart-install or Claude
       // CLI step must not keep writing after the rollback restores the
       // previous package.
       await terminateActiveChildren();
+      // close follows pipe/handle release. Never delete under a child whose
+      // termination cannot be confirmed; this directory holds no credentials.
+      let timeout;
+      await Promise.race([
+        Promise.all(
+          [...settingsRuntimes].flatMap((runtime) =>
+            runtime.children.map((entry) => entry.closed),
+          ),
+        ),
+        new Promise((resolve) => {
+          timeout = setTimeout(resolve, 5000);
+        }),
+      ]);
+      clearTimeout(timeout);
+      cleanupSettingsRuntimes();
       rollbackLocalPluginPackages();
       process.exit(code);
     });
@@ -1645,11 +1636,14 @@ function runChecked(command, args, options = {}) {
 const activeChildren = new Map();
 let terminatingOnSignal = false;
 
-function trackChild(child, group) {
+function trackChild(child, group, untilReleased = false) {
   activeChildren.set(child, group);
   const forget = () => activeChildren.delete(child);
-  child.on("exit", forget);
-  child.on("error", forget);
+  if (!untilReleased) {
+    child.on("exit", forget);
+    child.on("error", forget);
+  }
+  return forget;
 }
 
 function processGroupAlive(pgid) {
@@ -1808,12 +1802,9 @@ function hostRegistrationExists(host) {
   }
 }
 
-function savedInstallConfiguration() {
-  // Read without migration/writes: cancelling the guide must leave files untouched.
-  const env = readEnvFile(CLAUDE_SMART_ENV_PATH);
-  const legacy = existsSync(LEGACY_ENV_MIGRATION_MARKER)
-    ? new Map()
-    : readEnvFile(LEGACY_REFLEXIO_ENV_PATH);
+function installEnvironment(captured) {
+  const env = new Map(captured.runtime.values);
+  const legacy = captured.legacy?.values || new Map();
   for (const [key, value] of legacy) {
     if (
       key.startsWith("CLAUDE_SMART_") &&
@@ -1822,7 +1813,14 @@ function savedInstallConfiguration() {
     )
       env.set(key, value);
   }
-  for (const [key, value] of legacyManagedConnection(env, legacy)) env.set(key, value);
+  for (const [key, value] of legacyManagedConnection(env, legacy))
+    env.set(key, value);
+  return env;
+}
+
+function savedInstallConfiguration(captured) {
+  // The same immutable bytes drive preview, discovery and confirmed publication.
+  const env = installEnvironment(captured);
   const url =
     env.get("REFLEXIO_URL") ||
     (env.get("REFLEXIO_API_KEY")?.trim()
@@ -1831,11 +1829,7 @@ function savedInstallConfiguration() {
   const apiKey = env.get("REFLEXIO_API_KEY") ?? "";
   const userId = env.get(REFLEXIO_USER_ID_ENV) ?? "";
   return {
-    backend: env.size
-      ? isRemoteReflexioUrl(url)
-        ? "managed"
-        : "local"
-      : null,
+    backend: env.size ? (isRemoteReflexioUrl(url) ? "managed" : "local") : null,
     url,
     apiKey,
     provider: env.get(LEARNING_PROVIDER_ENV) || env.get(CLAUDE_SMART_HOST_ENV),
@@ -1855,18 +1849,17 @@ function savedInstallConfiguration() {
   };
 }
 
-function saveInstallConfiguration(config) {
-  // Preserve legacy runtime flags after confirmation, before recording migration.
-  migrateLegacyManagedEnv();
+async function saveInstallConfiguration(config, captured) {
   const values = {
     REFLEXIO_URL: config.url || localBackendUrl(),
     REFLEXIO_API_KEY: config.apiKey || "",
     CLAUDE_SMART_READ_ONLY: config.readOnly ? "1" : "0",
-    REFLEXIO_USER_ID: config.sharing === "global" ? config.userId || "global_user" : "",
+    REFLEXIO_USER_ID:
+      config.sharing === "global" ? config.userId || "global_user" : "",
   };
   // Keep both dashboard connections when the runtime switches modes. Viewing
   // either source must not rewrite the active hook/learning configuration.
-  const previous = readEnvFile(CLAUDE_SMART_ENV_PATH);
+  const previous = installEnvironment(captured);
   const previousProvider =
     previous.get(LEARNING_PROVIDER_ENV) || previous.get(CLAUDE_SMART_HOST_ENV);
   if (previousProvider) values[LEARNING_PROVIDER_ENV] = previousProvider;
@@ -1892,18 +1885,242 @@ function saveInstallConfiguration(config) {
     // Make the explicit CLI choice effective even after a previous cloud setup.
     values[CLAUDE_SMART_USE_LOCAL_CLI_ENV] = config.useLocalCli;
     values.CLAUDE_SMART_LEARNING_MODEL = config.model || "";
-    if (
-      (readEnvFile(CLAUDE_SMART_ENV_PATH).get("CLAUDE_SMART_CLI_PATH") || "") !== config.cliPath
-    ) {
+    if ((previous.get("CLAUDE_SMART_CLI_PATH") || "") !== config.cliPath) {
       values.CLAUDE_SMART_CLI_PATH = config.cliPath;
     }
   }
-  setEnvVars(CLAUDE_SMART_ENV_PATH, values);
+  const legacyRows = {};
+  for (const [key, index] of captured.legacy?.rows || []) {
+    if (
+      /^CLAUDE_SMART_[A-Z0-9_]+$/.test(key) &&
+      key !== "CLAUDE_SMART_USE_LOCAL_EMBEDDING" &&
+      !captured.runtime.values.has(key) &&
+      !Object.hasOwn(values, key)
+    )
+      legacyRows[key] = index;
+  }
+  const digest = (bytes) =>
+    crypto.createHash("sha256").update(bytes).digest("hex");
+  await publishInstallSettings({
+    updates: values,
+    snapshot: {
+      exists: captured.runtime.exists,
+      sha256: digest(captured.runtime.bytes),
+      legacy_marker: captured.marker,
+    },
+    legacy: captured.legacy?.exists
+      ? { sha256: digest(captured.legacy.bytes), rows: legacyRows }
+      : null,
+  });
   // Hooks launched later read the saved values. This install must use them too,
   // rather than inherited settings for another provider from the invoking shell.
   for (const [key, value] of Object.entries(values)) process.env[key] = value;
-  if (config.backend === "local") process.env.CLAUDE_SMART_CLI_PATH = config.cliPath;
-  writePrivateFile(LEGACY_ENV_MIGRATION_MARKER, "checked\n");
+  if (config.backend === "local")
+    process.env.CLAUDE_SMART_CLI_PATH = config.cliPath;
+  if (
+    captured.legacy &&
+    legacyManagedConnection(captured.runtime.values, captured.legacy.values)
+      .size
+  )
+    process.stdout.write(
+      "Migrated managed Reflexio settings to claude-smart.\n",
+    );
+}
+
+function runSettingsProcess(command, args, runtime, environment, input) {
+  const group = !isWindows();
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: runtime.directory,
+      env: environment,
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: group,
+      windowsHide: true,
+    });
+    const release = trackChild(child, group, true);
+    let close;
+    const entry = {
+      child,
+      group,
+      hasClosed: false,
+      closed: new Promise((done) => {
+        close = done;
+      }),
+    };
+    runtime.children.push(entry);
+    let failed = false;
+    let timedOut = false;
+    const timeout = setTimeout(async () => {
+      timedOut = true;
+      try {
+        await terminateChildren([[child, group]]);
+      } finally {
+        child.stdin?.destroy();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        child.unref();
+        if (!terminatingOnSignal)
+          reject(new Error(runtime.publishing
+            ? "Settings save timed out and may have completed; reload settings before retrying."
+            : "Settings publisher preparation timed out; no settings were saved."));
+      }
+    }, SETTINGS_PUBLISHER_TIMEOUT_MS);
+    let output = "";
+    child.on("error", () => {
+      failed = true;
+    });
+    child.stderr?.resume();
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      if (!input) return;
+      // The owner acknowledges with a tiny fixed JSON object, never values.
+      if (output.length + chunk.length > 4096) {
+        failed = true;
+        void terminateChildren([[child, group]]);
+      } else output += chunk;
+    });
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(input);
+    child.once("close", async (code) => {
+      clearTimeout(timeout);
+      entry.hasClosed = true;
+      close();
+      try {
+        await terminateChildren([[child, group]]);
+        if (group && processGroupAlive(child.pid))
+          throw new Error("Settings publisher process group did not stop");
+        release();
+        if (!terminatingOnSignal && !timedOut) resolve({ code: failed ? 1 : code, output });
+      } catch (error) {
+        if (!terminatingOnSignal && !timedOut) reject(error);
+      }
+    });
+  });
+}
+
+async function publishInstallSettings(request) {
+  ensureRollbackOnExit();
+  const plugin = join(PACKAGE_ROOT, "plugin");
+  const requirements = join(plugin, "settings-owner.requirements.txt");
+  const generated = readFileSync(requirements, "utf8");
+  for (const name of ["pyproject.toml", "uv.lock"]) {
+    const digest = crypto
+      .createHash("sha256")
+      .update(readFileSync(join(plugin, name)))
+      .digest("hex");
+    if (!generated.split("\n").includes("# " + name + " sha256: " + digest))
+      throw new Error(
+        "Settings publisher bundle is inconsistent; update claude-smart before retrying.",
+      );
+  }
+  const pythonRequirement = generated.match(/^# requires-python: (.+)$/m)?.[1];
+  if (!pythonRequirement)
+    throw new Error(
+      "Settings publisher bundle is incomplete; update claude-smart before retrying.",
+    );
+  const uv = await ensureUv();
+  const runtime = {
+    directory: mkdtempSync(join(tmpdir(), "claude-smart-settings-")),
+    children: [],
+  };
+  settingsRuntimes.add(runtime);
+  const environment = {
+    ...process.env,
+    UV_PROJECT_ENVIRONMENT: runtime.directory,
+    // This invocation installs only the locked settings-owner dependency group.
+    UV_VENV_SEED: "false",
+  };
+  delete environment.VIRTUAL_ENV;
+  const python = join(
+    runtime.directory,
+    isWindows() ? "Scripts/python.exe" : "bin/python",
+  );
+  try {
+    // The generated constraint avoids discovering an enclosing enterprise
+    // workspace or syncing either the source or caller's active environment.
+    const prepared = await runSettingsProcess(
+      uv,
+      [
+        "venv",
+        "--no-project",
+        "--python",
+        pythonRequirement,
+        runtime.directory,
+      ],
+      runtime,
+      environment,
+    );
+    if (prepared.code !== 0)
+      throw new Error(
+        "Cannot prepare settings publisher; no settings were saved.",
+      );
+    const inspected = await runSettingsProcess(
+      python,
+      [
+        "-I", "-c",
+        "import json,sys,sysconfig;from pathlib import Path;print(json.dumps(str(Path(sysconfig.get_path('purelib')).resolve().relative_to(Path(sys.argv[1]).resolve()))))",
+        runtime.directory,
+      ],
+      runtime, environment, Buffer.alloc(0),
+    );
+    let destination;
+    try {
+      if (inspected.code !== 0) throw new Error();
+      const relative = JSON.parse(inspected.output);
+      if (typeof relative !== "string") throw new Error();
+      destination = realpathSync(resolve(runtime.directory, relative));
+      if (!destination.startsWith(realpathSync(runtime.directory) + sep)) throw new Error();
+    } catch {
+      throw new Error("Cannot identify the private settings environment; no settings were saved.");
+    }
+    const installed = await runSettingsProcess(
+      uv,
+      [
+        "pip",
+        "sync",
+        "--python",
+        python,
+        // Bind the actual interpreter's site directory, overriding caller pip
+        // target/prefix settings without discarding index/auth configuration.
+        "--target",
+        destination,
+        "--require-hashes",
+        "--no-build",
+        requirements,
+      ],
+      runtime,
+      environment,
+    );
+    if (installed.code !== 0)
+      throw new Error(
+        "Cannot install settings publisher dependencies; no settings were saved.",
+      );
+    runtime.publishing = true;
+    const saved = await runSettingsProcess(
+      python,
+      ["-I", join(plugin, "src/claude_smart/env_config.py"), "publish-install"],
+      runtime,
+      environment,
+      Buffer.from(JSON.stringify(request), "utf8"),
+    );
+    if (saved.code === 73)
+      throw new Error("Settings changed after confirmation; reload and retry.");
+    if (saved.code === 75)
+      throw new Error(
+        "Settings are busy; retry after the other save finishes.",
+      );
+    let acknowledged = false;
+    try {
+      acknowledged = saved.code === 0 && JSON.parse(saved.output).ok === true;
+    } catch {}
+    if (!acknowledged)
+      throw new Error(
+        "Settings save could not be confirmed; reload settings before retrying.",
+      );
+    runtime.publishing = false;
+  } finally {
+    cleanupSettingsRuntimes();
+  }
 }
 
 async function runGuidedHost(command, host, options, label) {
@@ -1998,8 +2215,10 @@ async function runGuidedCommand(command, args) {
     printHelp();
     return;
   }
+  const captured = command === "uninstall" ? null : captureInstallSnapshot();
+  const saved = captured ? savedInstallConfiguration(captured) : {};
   if (command !== "uninstall" && !process.env[CLAUDE_SMART_OPENCODE_PATH_ENV]) {
-    const savedPath = savedInstallConfiguration().opencodePath;
+    const savedPath = saved.opencodePath;
     if (savedPath) process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] = savedPath;
   }
   ensureRollbackOnExit();
@@ -2009,9 +2228,11 @@ async function runGuidedCommand(command, args) {
   await guide
     .runGuide(command, args, {
       inventory: installInventory,
-      saved: savedInstallConfiguration,
-      save: saveInstallConfiguration,
-      version: JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version,
+      saved: () => saved,
+      save: (config) => saveInstallConfiguration(config, captured),
+      version: JSON.parse(
+        readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8"),
+      ).version,
       providerVersion: learningProviderVersion,
       learningModel: async (config) => {
         try {
@@ -2022,7 +2243,8 @@ async function runGuidedCommand(command, args) {
           if (!response.ok) return;
           const data = await response.json();
           const model = data.llm_config?.generation_model_name;
-          return typeof model === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(model)
+          return typeof model === "string" &&
+            /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(model)
             ? `${model} (managed configuration)`
             : undefined;
         } catch {
@@ -2032,7 +2254,8 @@ async function runGuidedCommand(command, args) {
       runHost: runGuidedHost,
       finish: async (action, config, results) => {
         const root = activePluginRoot();
-        if (!root || !existsSync(join(root, "scripts", "backend-service.sh"))) return;
+        if (!root || !existsSync(join(root, "scripts", "backend-service.sh")))
+          return;
         if (action === "uninstall") {
           const current = installInventory();
           const global = installInventory({ global: true });
@@ -2044,7 +2267,9 @@ async function runGuidedCommand(command, args) {
           }
           // Removal stops only owned services. Repointing lets remaining integrations
           // serve their hooks again without selecting a different learning provider.
-          process.stdout.write("\nRefreshing shared services for remaining integrations…\n");
+          process.stdout.write(
+            "\nRefreshing shared services for remaining integrations…\n",
+          );
         } else if (!results.some((result) => result.code === 0)) return;
         let setup;
         try {
@@ -2057,7 +2282,9 @@ async function runGuidedCommand(command, args) {
         }
         const host = setup.provider || hostForPluginRoot(root);
         startDeferredDashboardBuild(root);
-        return await startAndReportServices(root, host, setup, { summaryOnly: true });
+        return await startAndReportServices(root, host, setup, {
+          summaryOnly: true,
+        });
       },
     })
     .finally(() => {
@@ -3043,7 +3270,10 @@ function removeTomlSections(path, { exact, prefixes = [] }) {
 
 function cleanupCodexInstallState() {
   removeTomlSections(CODEX_CONFIG_PATH, {
-    exact: new Set([`plugins."${CODEX_PLUGIN_ID}"`, `marketplaces.${CODEX_MARKETPLACE_NAME}`]),
+    exact: new Set([
+      `plugins."${CODEX_PLUGIN_ID}"`,
+      `marketplaces.${CODEX_MARKETPLACE_NAME}`,
+    ]),
     prefixes: [`hooks.state."${CODEX_PLUGIN_ID}:`],
   });
   rmSync(CODEX_MARKETPLACE_DIR, { recursive: true, force: true });
@@ -4090,6 +4320,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  publishInstallSettings,
   reusePreparedRuntime,
   learningProviderVersion,
   assertSupportedRuntimePlatform,

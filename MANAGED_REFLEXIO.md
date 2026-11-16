@@ -25,13 +25,15 @@ itself (and any other Reflexio tool on the machine) and is never written.
 
 Older releases kept managed settings in `~/.reflexio/.env`. On the next
 `npx claude-smart install` or `update`, a managed setup found there is copied
-into `~/.claude-smart/.env` once, and the installer prints
-`Migrated managed Reflexio settings from …`. A loopback `REFLEXIO_URL` there is
+into `~/.claude-smart/.env` after confirmation, and the installer prints
+`Migrated managed Reflexio settings to claude-smart.` A loopback `REFLEXIO_URL` there is
 treated as another local Reflexio server's config and is not migrated. A key
 with no `REFLEXIO_URL` meant the managed service to older releases, so it
 migrates with `https://www.reflexio.ai/`. The
-installer records that it has checked (`~/.claude-smart/legacy-reflexio-env-checked`)
-and never reads the legacy file again, so choosing local mode in
+installer records completion as the fixed first-line comment
+`# claude-smart: legacy-env checked` in the same atomic settings write. The old
+`~/.claude-smart/legacy-reflexio-env-checked` sidecar is still recognized but is
+never created or rewritten. Later runs skip the legacy file, so choosing local mode in
 `npx claude-smart setup` stays local.
 
 Only a key saved in `~/.claude-smart/.env` makes install use managed mode. A

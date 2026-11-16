@@ -10,6 +10,7 @@ must stay in sync with the ``REFLEXIO_ENV_FILE`` export in
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,8 @@ from pathlib import Path
 from filelock import Timeout, UnixFileLock, WindowsFileLock
 
 CLAUDE_SMART_ENV_PATH = Path.home() / ".claude-smart" / ".env"
+LEGACY_REFLEXIO_ENV_PATH = Path.home() / ".reflexio" / ".env"
+INSTALL_COMPLETION_COMMENT = "# claude-smart: legacy-env checked"
 REFLEXIO_URL_ENV = "REFLEXIO_URL"
 CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY"
 CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
@@ -144,6 +147,13 @@ def update_settings(
     an existing empty assignment remains present. Unrelated edits survive.
     Values travel on stdin to the prepared module, never command arguments.
     """
+    _edit_env_file(path or CLAUDE_SMART_ENV_PATH, _settings_editor(updates, expected))
+
+
+def _settings_editor(
+    updates: dict[str, str | None], expected: dict[str, list[str]]
+) -> Callable[[str], tuple[str | None, None]]:
+    """Build the same pure edit for dashboard and confirmed installation."""
     if not isinstance(updates, dict) or not isinstance(expected, dict):
         raise ValueError("Settings edits require updates and original assignments")
     for key in updates.keys() | expected.keys():
@@ -214,7 +224,158 @@ def update_settings(
                 content += f"{key}={value}" + newline
         return content, None
 
-    _edit_env_file(path or CLAUDE_SMART_ENV_PATH, edit)
+    return edit
+
+
+def publish_install(
+    updates: dict[str, str | None],
+    snapshot: dict[str, object],
+    legacy: dict[str, object] | None,
+) -> None:
+    """Publish a confirmed guide snapshot, imports and completion atomically.
+
+    Node selects provenance while building its one preview. This owner verifies
+    that source and destination have not changed; it does not reinterpret the
+    guide's effective-value or connection-selection policies.
+    """
+    if not isinstance(snapshot, dict) or set(snapshot) != {
+        "exists",
+        "sha256",
+        "legacy_marker",
+    }:
+        raise ValueError("Invalid installation snapshot")
+    existed, digest, marker = (
+        snapshot["exists"],
+        snapshot["sha256"],
+        snapshot["legacy_marker"],
+    )
+    if (
+        not isinstance(existed, bool)
+        or not isinstance(marker, bool)
+        or not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+    ):
+        raise ValueError("Invalid installation snapshot")
+    if not isinstance(updates, dict):
+        raise ValueError("Invalid installation updates")
+    # Validate canonical edits before entering the transaction, as publish does.
+    _settings_editor(updates, {key: [] for key in updates})
+    legacy_digest = None
+    selected_rows = {}
+    if legacy is not None:
+        if not isinstance(legacy, dict) or set(legacy) != {"sha256", "rows"}:
+            raise ValueError("Invalid legacy selection")
+        source_digest, source_rows = legacy["sha256"], legacy["rows"]
+        if (
+            not isinstance(source_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", source_digest) is None
+            or not isinstance(source_rows, dict)
+        ):
+            raise ValueError("Invalid legacy selection")
+        legacy_digest, selected_rows = source_digest, dict(source_rows)
+
+    path = CLAUDE_SMART_ENV_PATH
+    marker_path = path.parent / "legacy-reflexio-env-checked"
+
+    def edit(existing: str) -> tuple[str, None]:
+        if _regular_env_file(marker_path) != marker:
+            raise SettingsConflictError("Migration status changed; reload and retry")
+        checked = (
+            existing.removeprefix("\ufeff").partition("\n")[0].removesuffix("\r")
+            == INSTALL_COMPLETION_COMMENT
+        )
+        content = existing
+        newline = "\r\n" if "\r\n" in existing else "\n"
+        if legacy_digest is not None:
+            if marker or checked:
+                raise SettingsConflictError(
+                    "Legacy migration completed; reload and retry"
+                )
+            for row in _legacy_import_rows(
+                legacy_digest, selected_rows, existing, updates
+            ):
+                if content and not content.endswith("\n"):
+                    content += newline
+                content += row + newline
+        expected = {key: [] for key in updates}
+        for line in content.split("\n"):
+            line = line.removesuffix("\r")
+            if (entry := parse_env_line(line)) is not None and entry[0] in expected:
+                expected[entry[0]].append(line)
+        edited, _ = _settings_editor(updates, expected)(content)
+        if edited is not None:
+            content = edited
+        if not checked:
+            bom = "\ufeff" if existing.startswith("\ufeff") else ""
+            content = (
+                bom
+                + INSTALL_COMPLETION_COMMENT
+                + newline
+                + content.removeprefix("\ufeff")
+            )
+        return content, None
+
+    _edit_env_file(path, edit, expected_snapshot=(existed, digest))
+
+
+def _legacy_import_rows(
+    legacy_digest: str,
+    selected_rows: dict[object, object],
+    existing: str,
+    updates: dict[str, str | None],
+) -> list[str]:
+    """Validate the captured fixed source and retain only selected raw RHS bytes."""
+    source_exists, source = _read_env_file(LEGACY_REFLEXIO_ENV_PATH)
+    if not source_exists or hashlib.sha256(source).hexdigest() != legacy_digest:
+        raise SettingsConflictError("Legacy settings changed; reload and retry")
+    rows = source.decode("utf-8").split("\n")
+    present = {
+        entry[0]
+        for line in existing.split("\n")
+        if (entry := parse_env_line(line)) is not None
+    }
+    imported = []
+    for key, index in selected_rows.items():
+        if (
+            not isinstance(key, str)
+            or re.fullmatch(r"CLAUDE_SMART_[A-Z0-9_]+", key) is None
+            or key == "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
+            or key in updates
+            or not isinstance(index, int)
+            or isinstance(index, bool)
+            or not 0 <= index < len(rows)
+        ):
+            raise ValueError("Invalid legacy row selection")
+        if key in present:
+            raise SettingsConflictError("Legacy destination exists; reload and retry")
+        row = rows[index].removesuffix("\r")
+        entry = parse_env_line(row)
+        if entry is None or entry[0] != key or not _composable_legacy_row(row):
+            raise ValueError("Legacy row cannot be transferred safely")
+        imported.append(key + "=" + row.partition("=")[2])
+    return imported
+
+
+def _composable_legacy_row(row: str) -> bool:
+    """Refuse cross-row quotes and interpolation dependent on the old file."""
+    # Horizontal tabs are valid export/assignment whitespace; other control
+    # bytes cannot be safely carried into another consumer's settings.
+    if (
+        not _single_line_value(row)
+        or re.search(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", row)
+        or "${" in row
+    ):
+        return False
+    rhs = row.partition("=")[2].strip()
+    if rhs.startswith(("'", '"')):
+        quote = rhs[0]
+        return (
+            len(rhs) >= 2
+            and rhs[-1] == quote
+            and quote not in rhs[1:-1]
+            and not rhs[1:-1].endswith("\\")
+        )
+    return True
 
 
 def repair_bootstrap_env(path: Path | None = None) -> list[str]:
@@ -267,8 +428,23 @@ def _regular_env_file(path: Path) -> bool:
     return True
 
 
+def _read_env_file(path: Path) -> tuple[bool, bytes]:
+    """Read the same regular, unlinked file contract for target and provenance."""
+    if not _regular_env_file(path):
+        return False, b""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    with os.fdopen(os.open(path, flags), "rb") as source:
+        info = os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("Environment settings must be a regular, unlinked file")
+        return True, source.read()
+
+
 def _edit_env_file[Result](
-    path: Path, edit: Callable[[str], tuple[str | None, Result]]
+    path: Path,
+    edit: Callable[[str], tuple[str | None, Result]],
+    *,
+    expected_snapshot: tuple[bool, str] | None = None,
 ) -> Result:
     """Own one helper's read/transform/publication, not an entire installation.
 
@@ -291,24 +467,18 @@ def _edit_env_file[Result](
     )
     try:
         with lock:
-            exists = _regular_env_file(path)
-            if exists:
-                flags = (
-                    os.O_RDONLY
-                    | getattr(os, "O_NOFOLLOW", 0)
-                    | getattr(os, "O_NONBLOCK", 0)
+            exists, source = _read_env_file(path)
+            if expected_snapshot is not None and expected_snapshot != (
+                exists,
+                hashlib.sha256(source).hexdigest(),
+            ):
+                raise SettingsConflictError(
+                    "Settings changed after confirmation; reload and retry"
                 )
-                with os.fdopen(os.open(path, flags), "rb") as source:
-                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
-                        raise ValueError("Environment settings must be a regular file")
-                    try:
-                        original = source.read().decode("utf-8")
-                    except UnicodeDecodeError:
-                        raise ValueError(
-                            "Environment settings must be valid UTF-8"
-                        ) from None
-            else:
-                original = ""
+            try:
+                original = source.decode("utf-8")
+            except UnicodeDecodeError:
+                raise ValueError("Environment settings must be valid UTF-8") from None
             content, result = edit(original)
             if content is None:
                 return result
@@ -366,20 +536,30 @@ def _single_line_value(value: str) -> bool:
 def main(argv: list[str] | None = None) -> int:
     """Internal prepared-runtime entrypoint; no bootstrap or provider imports."""
     arguments = sys.argv[1:] if argv is None else argv
-    if arguments not in (["bootstrap-repair"], ["publish"]):
+    if arguments not in (["bootstrap-repair"], ["publish"], ["publish-install"]):
         print(
-            "Usage: python -m claude_smart.env_config {bootstrap-repair|publish}",
+            "Usage: python -m claude_smart.env_config {bootstrap-repair|publish|publish-install}",
             file=sys.stderr,
         )
         return 2
     try:
-        if arguments == ["publish"]:
+        if arguments in (["publish"], ["publish-install"]):
             # Node sends JSON bytes; a Windows console code page must not
             # corrupt values or original-assignment comparisons under -I.
             request = json.load(sys.stdin.buffer)
-            if not isinstance(request, dict) or set(request) != {"updates", "expected"}:
+            fields = (
+                {"updates", "expected"}
+                if arguments == ["publish"]
+                else {"updates", "snapshot", "legacy"}
+            )
+            if not isinstance(request, dict) or set(request) != fields:
                 raise ValueError("Invalid settings edit request")
-            update_settings(request["updates"], request["expected"])
+            if arguments == ["publish"]:
+                update_settings(request["updates"], request["expected"])
+            else:
+                publish_install(
+                    request["updates"], request["snapshot"], request["legacy"]
+                )
             added = []
         else:
             added = repair_bootstrap_env()

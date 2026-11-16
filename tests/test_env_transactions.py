@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -14,6 +15,9 @@ from pathlib import Path
 
 import pytest
 from claude_smart import env_config
+
+from tests.settings_owner_cases import assert_real_settings_owner
+from tests.settings_owner_cases import locked_owner_wheel as locked_owner_wheel
 
 
 def _append_settings(path, values):
@@ -106,18 +110,21 @@ def test_repair_preserves_caps_read_only_and_host_and_is_idempotent(
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize("operation", ["upsert", "defaults"])
+@pytest.mark.parametrize("operation", ["upsert", "defaults", "install"])
 def test_both_mutators_reject_a_live_transaction_then_read_latest_state(
-    tmp_path, operation
+    tmp_path, operation, monkeypatch
 ):
     path = tmp_path / ".env"
     path.write_text("ORIGINAL=keep\n")
+    monkeypatch.setattr(env_config, "CLAUDE_SMART_ENV_PATH", path)
 
     def save():
         if operation == "upsert":
             _append_settings(path, {"SECOND": "two"})
-        else:
+        elif operation == "defaults":
             env_config.repair_bootstrap_env(path)
+        else:
+            env_config.publish_install({"SECOND": "two"}, _install_snapshot(path), None)
 
     with _paused_writer(path) as child:
         with pytest.raises(RuntimeError, match="settings are busy"):
@@ -131,9 +138,15 @@ def test_both_mutators_reject_a_live_transaction_then_read_latest_state(
     text = path.read_text()
     assert 'FIRST="one"\n' in text
     assert "ORIGINAL=keep\n" in text
-    assert (
-        'SECOND="two"\n' if operation == "upsert" else 'CLAUDE_SMART_READ_ONLY="0"\n'
-    ) in text
+    if operation == "defaults":
+        assert 'CLAUDE_SMART_READ_ONLY="0"\n' in text
+    else:
+        values = dict(
+            entry
+            for line in text.split("\n")
+            if (entry := env_config.parse_env_line(line)) is not None
+        )
+        assert values["SECOND"] == "two"
 
 
 def test_process_death_before_replace_preserves_original_and_releases_lock(tmp_path):
@@ -720,3 +733,216 @@ def test_publication_compares_original_bom_assignment_and_preserves_it(
             path,
         )
     assert path.read_bytes() == before
+
+
+INSTALL_COMPLETION = "# claude-smart: legacy-env checked"
+
+
+@pytest.fixture
+def install_files(tmp_path, monkeypatch):
+    target = tmp_path / ".claude-smart/.env"
+    source = tmp_path / ".reflexio/.env"
+    target.parent.mkdir()
+    source.parent.mkdir()
+    monkeypatch.setattr(env_config, "CLAUDE_SMART_ENV_PATH", target)
+    monkeypatch.setattr(env_config, "LEGACY_REFLEXIO_ENV_PATH", source)
+    return target, source
+
+
+def _install_snapshot(target):
+    return {
+        "exists": target.exists(),
+        "sha256": hashlib.sha256(
+            target.read_bytes() if target.exists() else b""
+        ).hexdigest(),
+        "legacy_marker": (target.parent / "legacy-reflexio-env-checked").exists(),
+    }
+
+
+def _legacy_selection(source, rows):
+    return {"sha256": hashlib.sha256(source.read_bytes()).hexdigest(), "rows": rows}
+
+
+def test_setup_import_and_completion_share_the_existing_replacement(
+    install_files, monkeypatch
+):
+    target, source = install_files
+    original = b"# unrelated\r\n"
+    target.write_bytes(original)
+    legacy = b'\xef\xbb\xbfexport\tCLAUDE_SMART_CLI_PATH="C:\\\\Users\\\\owned"\r\n'
+    source.write_bytes(legacy)
+    replacements = []
+    replace = env_config.Path.replace
+
+    def observe(staging, destination):
+        assert destination == target
+        content = staging.read_bytes()
+        assert b"CLAUDE_SMART_CLI_PATH=" in content
+        assert INSTALL_COMPLETION.encode() in content
+        assert b"REFLEXIO_URL=https://current.example/" in content
+        replacements.append(content)
+        return replace(staging, destination)
+
+    monkeypatch.setattr(env_config.Path, "replace", observe)
+    env_config.publish_install(
+        {"REFLEXIO_URL": "https://current.example/"},
+        _install_snapshot(target),
+        _legacy_selection(source, {"CLAUDE_SMART_CLI_PATH": 0}),
+    )
+    assert len(replacements) == 1
+    assert target.read_bytes().startswith(
+        INSTALL_COMPLETION.encode() + b"\r\n" + original
+    )
+    assert b'CLAUDE_SMART_CLI_PATH="C:\\\\Users\\\\owned"\r\n' in target.read_bytes()
+    assert source.read_bytes() == legacy
+    assert not (target.parent / "legacy-reflexio-env-checked").exists()
+
+
+@pytest.mark.parametrize("existed_before", [True, False])
+def test_setup_distinguishes_missing_from_existing_empty_settings(
+    install_files, existed_before
+):
+    target, _ = install_files
+    if existed_before:
+        target.touch()
+    captured = _install_snapshot(target)
+    if existed_before:
+        target.unlink()
+    else:
+        target.touch()
+    with pytest.raises(env_config.SettingsConflictError):
+        env_config.publish_install({"REFLEXIO_API_KEY": ""}, captured, None)
+    assert target.exists() is not existed_before
+    if target.exists():
+        assert target.read_bytes() == b""
+
+
+@pytest.mark.parametrize("prefix", ["", "\ufeff"])
+def test_completion_prevents_reimport_after_an_intervening_deletion(
+    install_files, prefix
+):
+    target, source = install_files
+    target.write_text(prefix + INSTALL_COMPLETION + "\n")
+    source.write_text("CLAUDE_SMART_READ_ONLY=1\n")
+    original = target.read_bytes()
+    with pytest.raises(env_config.SettingsConflictError):
+        env_config.publish_install(
+            {},
+            _install_snapshot(target),
+            _legacy_selection(source, {"CLAUDE_SMART_READ_ONLY": 0}),
+        )
+    assert target.read_bytes() == original
+
+
+def test_completion_metadata_is_not_recognized_inside_an_opaque_value(install_files):
+    target, source = install_files
+    opaque = 'OTHER="first\n' + INSTALL_COMPLETION + '\nlast"\n'
+    target.write_text(opaque)
+    source.write_text("CLAUDE_SMART_CLI_TIMEOUT=90\n")
+    env_config.publish_install(
+        {},
+        _install_snapshot(target),
+        _legacy_selection(source, {"CLAUDE_SMART_CLI_TIMEOUT": 0}),
+    )
+    assert target.read_text().startswith(INSTALL_COMPLETION + "\n")
+    assert opaque in target.read_text()
+    assert "CLAUDE_SMART_CLI_TIMEOUT=90\n" in target.read_text()
+
+
+def test_completion_survives_dashboard_edit_and_native_repair(install_files):
+    target, _ = install_files
+    env_config.publish_install(
+        {"REFLEXIO_URL": "http://localhost:8071/", "REFLEXIO_API_KEY": ""},
+        _install_snapshot(target),
+        None,
+    )
+    env_config.update_settings(
+        {"REFLEXIO_API_KEY": "owned"},
+        {"REFLEXIO_API_KEY": ["REFLEXIO_API_KEY="]},
+        target,
+    )
+    env_config.repair_bootstrap_env(target)
+    assert target.read_text().splitlines().count(INSTALL_COMPLETION) == 1
+
+
+@pytest.mark.parametrize(
+    "rhs",
+    [
+        "'unfinished",
+        "'ends\\'",
+        '"ends\\"',
+        "$" + "{DEPENDENT}",
+        "path\x1b[2J",
+        "path\x08name",
+        "path\x7fname",
+        "path\x9bname",
+    ],
+)
+def test_legacy_transfer_refuses_context_dependent_or_noncomposable_values(
+    install_files, rhs
+):
+    target, source = install_files
+    target.write_text("# keep\n")
+    source.write_text("DEPENDENT=90\nCLAUDE_SMART_CLI_TIMEOUT=" + rhs + "\n")
+    with pytest.raises(ValueError):
+        env_config.publish_install(
+            {},
+            _install_snapshot(target),
+            _legacy_selection(source, {"CLAUDE_SMART_CLI_TIMEOUT": 1}),
+        )
+    assert target.read_text() == "# keep\n"
+
+
+@pytest.mark.parametrize("changed", ["source", "destination", "sidecar", "row-key"])
+def test_legacy_transfer_validates_snapshot_and_provenance(install_files, changed):
+    target, source = install_files
+    target.write_text("OTHER=keep\n")
+    source.write_text("CLAUDE_SMART_CLI_TIMEOUT=90\n")
+    original = _install_snapshot(target)
+    legacy = _legacy_selection(source, {"CLAUDE_SMART_CLI_TIMEOUT": 0})
+    error = env_config.SettingsConflictError
+    if changed == "source":
+        source.write_text("CLAUDE_SMART_CLI_TIMEOUT=120\n")
+    elif changed == "destination":
+        target.write_text("CLAUDE_SMART_CLI_TIMEOUT=60\n")
+    elif changed == "sidecar":
+        (target.parent / "legacy-reflexio-env-checked").touch()
+    else:
+        legacy["rows"] = {"CLAUDE_SMART_CLI_PATH": 0}
+        error = ValueError
+    before = target.read_bytes()
+    with pytest.raises(error):
+        env_config.publish_install({}, original, legacy)
+    assert target.read_bytes() == before
+
+
+def test_existing_sidecar_is_read_only_and_does_not_read_legacy_again(install_files):
+    target, source = install_files
+    source.write_bytes(b"\xff")
+    marker = target.parent / "legacy-reflexio-env-checked"
+    marker.write_text("existing checked state\n")
+    env_config.publish_install(
+        {"REFLEXIO_API_KEY": ""}, _install_snapshot(target), None
+    )
+    assert marker.read_text() == "existing checked state\n"
+    assert source.read_bytes() == b"\xff"
+    assert INSTALL_COMPLETION in target.read_text()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "success",
+        "bad-hash",
+        "cancel",
+        "target-config",
+        "prefix-config",
+        "no-verify-hash",
+        "seed-config",
+        "timeout",
+    ],
+)
+def test_real_settings_owner_preparation_and_publication(
+    tmp_path, case, locked_owner_wheel
+):
+    assert_real_settings_owner(tmp_path, case, locked_owner_wheel)
