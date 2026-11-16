@@ -822,7 +822,7 @@ def test_completion_prevents_reimport_after_an_intervening_deletion(
     install_files, prefix
 ):
     target, source = install_files
-    target.write_text(prefix + INSTALL_COMPLETION + "\n")
+    target.write_text(prefix + INSTALL_COMPLETION + "\n", encoding="utf-8")
     source.write_text("CLAUDE_SMART_READ_ONLY=1\n")
     original = target.read_bytes()
     with pytest.raises(env_config.SettingsConflictError):
@@ -883,7 +883,9 @@ def test_legacy_transfer_refuses_context_dependent_or_noncomposable_values(
 ):
     target, source = install_files
     target.write_text("# keep\n")
-    source.write_text("DEPENDENT=90\nCLAUDE_SMART_CLI_TIMEOUT=" + rhs + "\n")
+    source.write_text(
+        "DEPENDENT=90\nCLAUDE_SMART_CLI_TIMEOUT=" + rhs + "\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError):
         env_config.publish_install(
             {},
