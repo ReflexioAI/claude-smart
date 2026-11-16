@@ -4,14 +4,15 @@ import os
 import subprocess
 
 import pytest
+from dotenv import dotenv_values
 
 from tests.test_install_scripts import (
     _fake_claude_code_package,
     _fake_claude_install_script,
     _isolated_env,
     _run_fake_claude_code_install,
-    _write_executable,
     _write_bootstrap_uv,
+    _write_executable,
     node_bin,
 )
 
@@ -81,7 +82,7 @@ def test_private_worker_refuses_unprepared_policy_before_bootstrap(tmp_path, pol
         selected.write_text(policy)
     env = _isolated_env(tmp_path)
     env["PATH"] = str(fake) + os.pathsep + env["PATH"]
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603 -- Node and repository fixture in an owned HOME.
         [node_bin(), str(package / "bin/claude-smart.js"), "install"],
         env=env,
         capture_output=True,
@@ -141,7 +142,7 @@ def test_successful_install_starts_stored_learning_target_not_coding_identity(
             self.end_headers()
             self.wfile.write(b"{}")
 
-        def log_message(self, *_args):
+        def log_message(self, format: str, *_args: object) -> None:
             pass
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Health)
@@ -188,7 +189,7 @@ def test_managed_confirmation_preserves_independent_legacy_learning_intent(
         original += f'CLAUDE_SMART_LEARNING_PROVIDER="{stored_provider}"\n'
     selected.write_text(original)
     env["OWNED_MANAGED_KEY"] = "fake-secret"
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603 -- Node and repository fixture in an owned HOME.
         [
             node_bin(),
             str(installer),
@@ -210,7 +211,9 @@ def test_managed_confirmation_preserves_independent_legacy_learning_intent(
     )
     assert result.returncode == 0, result.stderr
     text = selected.read_text()
-    assert f'CLAUDE_SMART_LEARNING_PROVIDER="{stored_provider or "codex"}"' in text
+    assert dotenv_values(selected, interpolate=False)[
+        "CLAUDE_SMART_LEARNING_PROVIDER"
+    ] == (stored_provider or "codex")
     assert 'CLAUDE_SMART_LEARNING_MODEL="kept/native-model"' in text
     assert 'CLAUDE_SMART_CLI_PATH="/kept/custom"' in text
     assert "CLAUDE_SMART_USE_LOCAL_CLI=0" in text

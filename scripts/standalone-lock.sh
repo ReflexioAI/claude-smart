@@ -84,7 +84,7 @@ fi
 (cd "$tmp" && uv export --locked --only-group settings-owner \
   --no-header --no-annotate --format requirements-txt \
   --output-file settings-owner.requirements.txt >&2)
-python3 - "$tmp" "$plugin_dir" "$mode" <<'PY'
+uv run --no-project --python 3.12 python - "$tmp" "$plugin_dir" "$mode" <<'PY'
 import hashlib
 import sys
 import tomllib

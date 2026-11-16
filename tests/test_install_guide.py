@@ -828,7 +828,10 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     settings = config_path.read_text()
     assert "CLAUDE_SMART_GUIDED_CONFIG" not in settings
     assert "CLAUDE_SMART_HOST=" not in settings
-    assert 'REFLEXIO_URL="http://localhost:9090/"' in settings
+    assert (
+        dotenv_values(stream=StringIO(settings), interpolate=False)["REFLEXIO_URL"]
+        == "http://localhost:9090/"
+    )
     assert (
         dotenv_values(stream=StringIO(settings), interpolate=False).get(
             "REFLEXIO_USER_ID"
@@ -836,7 +839,12 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         == "global_user"
     )
     if provider_mode == "named":
-        assert 'CLAUDE_SMART_LEARNING_PROVIDER="codex"' in settings
+        assert (
+            dotenv_values(stream=StringIO(settings), interpolate=False)[
+                "CLAUDE_SMART_LEARNING_PROVIDER"
+            ]
+            == "codex"
+        )
     else:
         assert "CLAUDE_SMART_LEARNING_PROVIDER=" not in settings
     env.pop("CLAUDE_SMART_CLI_PATH", None)
@@ -871,7 +879,10 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"Background learning: {expected_learning}" in result.stdout
     settings = config_path.read_text()
-    assert 'REFLEXIO_URL="http://localhost:9090/"' in settings
+    assert (
+        dotenv_values(stream=StringIO(settings), interpolate=False)["REFLEXIO_URL"]
+        == "http://localhost:9090/"
+    )
     assert (
         dotenv_values(stream=StringIO(settings), interpolate=False).get(
             "REFLEXIO_USER_ID"

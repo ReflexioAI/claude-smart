@@ -169,7 +169,8 @@ dashboard and dependency repair. One captured preview drives the save; concurren
 edits require a fresh preview. Setup prepares a small temporary Python writer from
 locked dependencies before changing settings. A preparation failure leaves settings
 unchanged. Confirmed settings remain available if a later integration install fails.
-Each publisher phase has a two-minute deadline and stops its owned children on timeout.
+Publisher child processes, including UV installation, have a two-minute deadline.
+On timeout, setup stops their owned process trees.
 If publication cannot be confirmed, setup stops before installing integrations;
 reload settings before retrying.
 

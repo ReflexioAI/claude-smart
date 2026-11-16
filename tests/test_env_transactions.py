@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -948,3 +949,74 @@ def test_real_settings_owner_preparation_and_publication(
     tmp_path, case, locked_owner_wheel
 ):
     assert_real_settings_owner(tmp_path, case, locked_owner_wheel)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX missing-UV installer process")
+def test_missing_uv_bootstrap_has_the_publisher_deadline(tmp_path):
+    node = shutil.which("node")
+    shell = shutil.which("sh")
+    sleep = shutil.which("sleep")
+    assert node and shell and sleep
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "sh").symlink_to(shell)
+    (tools / "sleep").symlink_to(sleep)
+    temporary = tmp_path / "temporary"
+    temporary.mkdir()
+    driver = r"""
+const {EventEmitter} = require('node:events');
+const {PassThrough} = require('node:stream');
+require('node:https').get = (url, callback) => {
+  if (url !== 'https://astral.sh/uv/install.sh') throw Error('Unexpected network');
+  const request = new EventEmitter();
+  request.setTimeout = () => request;
+  setImmediate(() => {
+    const response = new PassThrough();
+    response.statusCode = 200;
+    callback(response);
+    response.end('echo $$ > "$HOME/bootstrap.pid"\nsleep 30\n');
+  });
+  return request;
+};
+const original = setTimeout;
+global.setTimeout = (fn, ms, ...args) => original(fn, ms === 120000 ? 1000 : ms, ...args);
+require(process.argv[1]).publishInstallSettings({}).then(
+  () => { throw Error('Unexpected save'); },
+  error => { process.stderr.write(error.message); process.exitCode = 1; }
+);
+"""
+    # The bundle validation precedes preparation; use the real packaged owner.
+    environment = {
+        "PATH": str(tools),
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
+        "TMPDIR": str(temporary),
+        "TEMP": str(temporary),
+        "TMP": str(temporary),
+    }
+    child = subprocess.Popen(  # noqa: S603 -- Owned HOME, repository source, no external network.
+        [
+            node,
+            "-e",
+            driver,
+            str(Path(__file__).resolve().parents[1] / "bin/claude-smart.js"),
+        ],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        output, errors = child.communicate(timeout=10)
+    finally:
+        if child.poll() is None:
+            os.killpg(child.pid, signal.SIGKILL)
+            child.communicate(timeout=5)
+    assert child.returncode == 1, output + errors
+    assert "preparation timed out" in errors
+    assert not (tmp_path / ".claude-smart/.env").exists()
+    assert not list(temporary.glob("claude-smart-settings-*"))
+    pid = int((tmp_path / "bootstrap.pid").read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)

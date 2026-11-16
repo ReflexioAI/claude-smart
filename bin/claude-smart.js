@@ -2018,7 +2018,6 @@ async function publishInstallSettings(request) {
     throw new Error(
       "Settings publisher bundle is incomplete; update claude-smart before retrying.",
     );
-  const uv = await ensureUv();
   const runtime = {
     directory: mkdtempSync(join(tmpdir(), "claude-smart-settings-")),
     children: [],
@@ -2036,6 +2035,10 @@ async function publishInstallSettings(request) {
     isWindows() ? "Scripts/python.exe" : "bin/python",
   );
   try {
+    const uv = await ensureUv(async (command, args) => {
+      const result = await runSettingsProcess(command, args, runtime, environment);
+      return result.code;
+    });
     // The generated constraint avoids discovering an enclosing enterprise
     // workspace or syncing either the source or caller's active environment.
     const prepared = await runSettingsProcess(
@@ -2736,7 +2739,7 @@ function resolveUv() {
   ]);
 }
 
-async function ensureUv() {
+async function ensureUv(run = runChecked) {
   let uv = resolveUv();
   if (uv) return uv;
   assertSupportedRuntimePlatform();
@@ -2744,7 +2747,7 @@ async function ensureUv() {
   if (isWindows()) {
     const powershell = resolveCommand(["powershell.exe", "powershell", "pwsh"]);
     if (!powershell) throw new Error("PowerShell is required to install uv on Windows");
-    code = await runChecked(powershell, [
+    code = await run(powershell, [
       "-NoProfile",
       "-ExecutionPolicy",
       "Bypass",
@@ -2758,7 +2761,7 @@ async function ensureUv() {
     await downloadFile("https://astral.sh/uv/install.sh", installer);
     const sh = resolveCommand(["sh"]);
     if (!sh) throw new Error("sh is required to install uv on macOS");
-    code = await runChecked(sh, [installer]);
+    code = await run(sh, [installer]);
     if (code !== 0) throw new Error("uv install failed");
   }
   uv = resolveUv();
