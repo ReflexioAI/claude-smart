@@ -17,7 +17,7 @@ def capture_discovery(tmp_path, env):
     preload.write_text(
         'const fs = require("node:fs");\n'
         "global.fetch = async (url, options) => {\n"
-        f"fs.writeFileSync({json.dumps(str(capture))}, JSON.stringify({{url: String(url), authorization: options.headers.authorization}}));\n"
+        f"fs.appendFileSync({json.dumps(str(capture))}, JSON.stringify({{url: String(url), authorization: options.headers.authorization}}) + '\\n');\n"
         "return {ok: true, json: async () => ({})}; };\n"
     )
     env["NODE_OPTIONS"] = f'--require "{preload}"'
@@ -102,10 +102,12 @@ def test_public_setup_uses_one_connection_source(
         if backend == "local":
             assert "CLAUDE_SMART_MANAGED_URL" not in actual
     if backend == "managed":
-        assert json.loads(capture.read_text()) == {
-            "url": expected_url + "api/get_config",
-            "authorization": f"Bearer {expected_key}",
-        }
+        assert [json.loads(line) for line in capture.read_text().splitlines()] == [
+            {
+                "url": expected_url + "api/get_config",
+                "authorization": f"Bearer {expected_key}",
+            }
+        ]
     else:
         assert not capture.exists()
     assert legacy.read_text() == original
