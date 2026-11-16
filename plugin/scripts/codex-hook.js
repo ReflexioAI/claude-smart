@@ -270,7 +270,7 @@ function loadReflexioEnv() {
   for (const rawLine of text.split(/\r?\n/)) {
     let line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
-    if (line.startsWith("export ")) line = line.slice("export ".length).trimStart();
+    line = line.replace(/^export\s+/, "");
     const eq = line.indexOf("=");
     if (eq < 0) continue;
     const key = line.slice(0, eq).trim();
