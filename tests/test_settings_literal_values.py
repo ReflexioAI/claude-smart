@@ -35,6 +35,43 @@ def locked_dotenv_reader() -> None:
     )
 
 
+@pytest.fixture(scope="module")
+def compiled_reader(tmp_path_factory) -> tuple[str, Path]:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Actual reader probe requires Node")
+    root = Path(__file__).resolve().parents[1]
+    compiler = root / "node_modules/typescript/bin/tsc"
+    assert compiler.is_file(), "npm ci is required for dashboard contract tests"
+    target = tmp_path_factory.mktemp("literal-settings-reader")
+    result = subprocess.run(  # noqa: S603 — repository compiler/source and owned output directory.
+        [
+            node,
+            str(compiler),
+            "plugin/dashboard/lib/config-file.ts",
+            "--outDir",
+            str(target),
+            "--module",
+            "commonjs",
+            "--target",
+            "ES2022",
+            "--esModuleInterop",
+            "--skipLibCheck",
+            "--strict",
+            "--typeRoots",
+            str(root / "node_modules/@types"),
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    reader = target / "config-file.js"
+    assert reader.is_file()
+    return node, reader
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Actual Bash reader qualification")
 @pytest.mark.parametrize(
     "value",
@@ -52,11 +89,12 @@ def locked_dotenv_reader() -> None:
     ],
 )
 def test_published_literal_roundtrips_actual_readers(
-    tmp_path: Path, value: str
+    tmp_path: Path, value: str, compiled_reader: tuple[str, Path]
 ) -> None:
-    bash, node = shutil.which("bash"), shutil.which("node")
-    if bash is None or node is None:
-        pytest.skip("Actual reader probe requires Bash and Node")
+    node, reader = compiled_reader
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("Actual reader probe requires Bash")
     home = tmp_path / "home"
     settings = home / ".claude-smart/.env"
     settings.parent.mkdir(parents=True)
@@ -105,20 +143,16 @@ def test_published_literal_roundtrips_actual_readers(
     assert shell.returncode == 0, shell.stderr
     assert shell.stdout == value
     script = (
-        "import fs from 'node:fs';"
-        "const m=await import("
-        + json.dumps(str(root / "plugin/dashboard/lib/config-file.ts"))
-        + ");"
-        "const row=fs.readFileSync(process.argv[1],'utf8').split('\\n').map(m.parseLine).find(p=>p?.key===process.argv[2]);"
+        "const fs=require('node:fs'),m=require(process.argv[1]);"
+        "const row=fs.readFileSync(process.argv[2],'utf8').split('\\n').map(m.parseLine).find(p=>p?.key===process.argv[3]);"
         "process.stdout.write(JSON.stringify(row.value));"
     )
     result = subprocess.run(  # noqa: S603 — actual repository Node reader and owned settings.
         [
             node,
-            "--no-warnings",
-            "--input-type=module",
             "-e",
             script,
+            str(reader),
             str(settings),
             key,
         ],
