@@ -66,7 +66,8 @@ def parse_env_line(line: str) -> tuple[str, str] | None:
     Reflexio env writer emits plain quoted assignments, which is all
     claude-smart needs here.
     """
-    stripped = line.strip()
+    # A UTF-8 BOM is file metadata, matching Node's leading trim behavior.
+    stripped = line.strip().removeprefix("\ufeff").lstrip()
     if not stripped or stripped.startswith("#"):
         return None
     stripped = re.sub(r"^export\s+", "", stripped)
@@ -146,7 +147,8 @@ def update_settings(
             not isinstance(value, str)
             or not _single_line_value(value)
             or value != value.strip()
-            or value.startswith(("'", '"'))
+            or value.startswith(("'", '"', "\ufeff"))
+            or value.endswith("\ufeff")
             or "${" in value
             or re.search(r"\s#", value)
         ):

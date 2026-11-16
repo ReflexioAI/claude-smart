@@ -505,6 +505,8 @@ def test_rechecked_read_dependencies_and_unrelated_updates(tmp_path: Path) -> No
         '"quoted"',
         "value # comment",
         "${OTHER}",
+        "\ufeffowned",
+        "owned\ufeff",
     ],
 )
 def test_non_roundtrippable_value_is_rejected_before_mutation(
@@ -611,3 +613,22 @@ def test_publication_does_not_edit_assignment_text_inside_unicode_value(tmp_path
     path.write_bytes(original.encode())
     env_config.update_settings({"MODEL": "new"}, {"MODEL": []}, path)
     assert path.read_bytes() == (original + "\nMODEL=new\n").encode()
+
+
+@pytest.mark.parametrize("export", ["", "export\t"])
+def test_publication_compares_original_bom_assignment_and_preserves_it(
+    tmp_path, export
+):
+    path = tmp_path / ".env"
+    original = "\ufeff" + export + "MODEL=old"
+    path.write_bytes((original + "\r\n").encode())
+    env_config.update_settings({"NEW": "value"}, {"NEW": [], "MODEL": [original]}, path)
+    assert path.read_bytes() == (original + "\r\nNEW=value\r\n").encode()
+    before = path.read_bytes()
+    with pytest.raises(env_config.SettingsConflictError):
+        env_config.update_settings(
+            {"NEW": "other"},
+            {"NEW": ["NEW=value"], "MODEL": [original.replace("old", "stale")]},
+            path,
+        )
+    assert path.read_bytes() == before

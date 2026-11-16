@@ -408,3 +408,33 @@ def test_dashboard_save_respects_the_live_python_publisher_lock(tmp_path: Path) 
         tmp_path, "await m.writeConfig({CLAUDE_SMART_READ_ONLY:true});", {}
     )
     assert "CLAUDE_SMART_READ_ONLY=1\n" in selected.read_text()
+
+
+@pytest.mark.parametrize("first", ["REFLEXIO_URL", "CLAUDE_SMART_READ_ONLY", "OTHER"])
+@pytest.mark.parametrize("export", ["", "export\t"])
+def test_dashboard_accepts_bom_prefixed_first_assignment(
+    tmp_path: Path, first: str, export: str
+) -> None:
+    state = tmp_path / ".claude-smart"
+    state.mkdir()
+    selected = state / ".env"
+    values = {
+        "REFLEXIO_URL": "http://localhost:8071/",
+        "CLAUDE_SMART_READ_ONLY": "0",
+        "OTHER": "keep",
+    }
+    content = "\ufeff" + export + first + "=" + values[first] + "\n"
+    content += "".join(
+        key + "=" + value + "\n" for key, value in values.items() if key != first
+    )
+    selected.write_bytes(content.encode())
+    output = _run_config_module(
+        tmp_path,
+        "await m.writeConfig({CLAUDE_SMART_READ_ONLY:true}); process.stdout.write(JSON.stringify(await m.readConfig()));",
+        {},
+    )
+    assert json.loads(output)["CLAUDE_SMART_READ_ONLY"] is True
+    if first != "CLAUDE_SMART_READ_ONLY":
+        assert selected.read_bytes().startswith(
+            ("\ufeff" + export + first + "=" + values[first] + "\n").encode()
+        )
