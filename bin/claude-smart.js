@@ -369,6 +369,22 @@ function localBackendUrl() {
   return `http://localhost:${(process.env.BACKEND_PORT || "").trim() || "8071"}/`;
 }
 
+// An endpoint and its credential are one fallback decision. Even an empty
+// runtime assignment is deliberate; never fill its other half from another file.
+function legacyManagedConnection(runtime, legacy) {
+  if (runtime.has("REFLEXIO_URL") || runtime.has("REFLEXIO_API_KEY")) return new Map();
+  const apiKey = (legacy.get("REFLEXIO_API_KEY") || "").trim();
+  const url = (legacy.get("REFLEXIO_URL") || "").trim() || MANAGED_REFLEXIO_URL;
+  if (!apiKey || isLoopbackUrl(url)) return new Map();
+  const connection = new Map([
+    ["REFLEXIO_URL", url],
+    ["REFLEXIO_API_KEY", apiKey],
+  ]);
+  if (!runtime.has(REFLEXIO_USER_ID_ENV) && legacy.has(REFLEXIO_USER_ID_ENV))
+    connection.set(REFLEXIO_USER_ID_ENV, legacy.get(REFLEXIO_USER_ID_ENV));
+  return connection;
+}
+
 // Carry managed settings written by pre-#85 `claude-smart setup` over to the
 // runtime env file. A loopback URL there belongs to some other local Reflexio
 // server (e.g. a dev backend), not to claude-smart, so it is left alone.
@@ -414,18 +430,11 @@ function migrateLegacyManagedEnvOnce() {
       `${existing}${separator}${[...runtimeLines.values()].join("\n")}\n`,
     );
   }
-  if ((runtime.get("REFLEXIO_API_KEY") || "").trim()) return;
-  const apiKey = (legacy.get("REFLEXIO_API_KEY") || "").trim();
   // A key with no URL meant the managed service to older installers (and to
   // the Reflexio client, whose default URL it is), so it migrates as such.
-  const url = (legacy.get("REFLEXIO_URL") || "").trim() || MANAGED_REFLEXIO_URL;
-  if (!apiKey || isLoopbackUrl(url)) return;
-  const values = {};
-  for (const key of ["REFLEXIO_API_KEY", REFLEXIO_USER_ID_ENV, CLAUDE_SMART_READ_ONLY_ENV]) {
-    if (legacy.has(key) && !runtime.has(key)) values[key] = legacy.get(key);
-  }
-  values.REFLEXIO_URL = url;
-  setEnvVars(CLAUDE_SMART_ENV_PATH, values);
+  const connection = legacyManagedConnection(runtime, legacy);
+  if (!connection.size) return;
+  setEnvVars(CLAUDE_SMART_ENV_PATH, Object.fromEntries(connection));
   process.stdout.write(
     `Migrated managed Reflexio settings from ${LEGACY_REFLEXIO_ENV_PATH} to ${CLAUDE_SMART_ENV_PATH}.\n`,
   );
@@ -1813,28 +1822,20 @@ function savedInstallConfiguration() {
     )
       env.set(key, value);
   }
-  const legacyKey = legacy.get("REFLEXIO_API_KEY");
-  const legacyUrl = legacy.get("REFLEXIO_URL") || MANAGED_REFLEXIO_URL;
-  const legacyManaged =
-    !env.has("REFLEXIO_API_KEY") && Boolean(legacyKey?.trim()) && !isLoopbackUrl(legacyUrl);
+  for (const [key, value] of legacyManagedConnection(env, legacy)) env.set(key, value);
   const url =
     env.get("REFLEXIO_URL") ||
     (env.get("REFLEXIO_API_KEY")?.trim()
       ? process.env.REFLEXIO_URL || MANAGED_REFLEXIO_URL
-      : legacyManaged
-        ? legacyUrl
-        : "");
-  const apiKey = env.get("REFLEXIO_API_KEY") ?? (legacyManaged ? legacyKey : "");
-  const userId =
-    env.get(REFLEXIO_USER_ID_ENV) ?? (legacyManaged ? legacy.get(REFLEXIO_USER_ID_ENV) : "");
+      : "");
+  const apiKey = env.get("REFLEXIO_API_KEY") ?? "";
+  const userId = env.get(REFLEXIO_USER_ID_ENV) ?? "";
   return {
     backend: env.size
       ? isRemoteReflexioUrl(url)
         ? "managed"
         : "local"
-      : legacyManaged
-        ? "managed"
-        : null,
+      : null,
     url,
     apiKey,
     provider: env.get(LEARNING_PROVIDER_ENV) || env.get(CLAUDE_SMART_HOST_ENV),

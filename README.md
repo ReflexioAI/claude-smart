@@ -153,6 +153,10 @@ to resume learning. The interactive guide offers both modes for either backend.
 Setup reads legacy duplicate settings with the same field rules as the runtime:
 shared connection/learning fields use the last assignment (including empty), while
 caller-overridable execution flags use the first nonempty saved assignment.
+Legacy connection fallback treats the endpoint and API key as a pair. If the
+current settings contain either assignment, even empty, setup does not borrow
+the other from `~/.reflexio/.env`. An incomplete managed connection needs its own
+key. Legacy read-only and other runtime preferences still migrate independently.
 Setup, Codex hooks, the dashboard, and the shell/Python readers all accept plain
 assignments and `export` followed by spaces or tabs.
 Explicit caller and setup choices retain their existing precedence. Reading or
