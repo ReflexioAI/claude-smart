@@ -61,6 +61,17 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
     env = os.environ.copy()
     env["HOME"] = str(tmp_path)
     env["USERPROFILE"] = str(tmp_path)
+    # Host metadata discovery must use this fixture's HOME, never an inherited
+    # account/config override belonging to the developer running the suite.
+    for key in (
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+    ):
+        env.pop(key, None)
     env["SHELL"] = "/bin/sh"
     env.pop("BASH_ENV", None)
     env.pop("ENV", None)
@@ -2233,21 +2244,62 @@ def _seed_opencode_v2_loader(target: Path) -> Path:
     return target
 
 
+@pytest.mark.parametrize(
+    "remaining_layout", ["stable", "registered-cache", "registered-folder"]
+)
 def test_node_opencode_uninstall_preserves_learning_host_and_repairs_root(
     tmp_path: Path,
+    remaining_layout: str,
 ) -> None:
-    # SessionStart reads CLAUDE_SMART_HOST from the file; after removing the
-    # OpenCode install it must name the remaining Claude Code runtime.
+    # The shared helper root follows the remaining runtime. Removing an adapter
+    # must preserve the independent, explicitly selected learning host.
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for Node installer test")
-    claude_root = tmp_path / ".claude-smart" / "claude-code" / "claude-smart" / "plugin"
+    package = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    cache = tmp_path / ".claude/plugins/cache/reflexioai/claude-smart/0.3.14"
+    claude_root = (
+        tmp_path / ".claude-smart/claude-code/claude-smart/plugin"
+        if remaining_layout == "stable"
+        else cache
+    )
+    if remaining_layout == "registered-folder":
+        claude_root = tmp_path / "source checkout/plugin"
+    rows = (
+        []
+        if remaining_layout == "stable"
+        else [
+            {
+                "id": "claude-smart@reflexioai",
+                "scope": "user",
+                "installPath": str(cache),
+                **(
+                    {"readFromFolder": str(claude_root)}
+                    if remaining_layout == "registered-folder"
+                    else {}
+                ),
+            }
+        ]
+    )
+    (tmp_path / "claude-inventory.json").write_text(json.dumps(rows))
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "claude",
+        '#!/bin/sh\n[ "$*" = "plugin list --json" ] || exit 91\ncat "$HOME/claude-inventory.json"\n',
+    )
     opencode_root = tmp_path / ".claude-smart" / "opencode" / "claude-smart" / "plugin"
     for root in (claude_root, opencode_root):
         (root / "scripts").mkdir(parents=True)
         _write_executable(
             root / "scripts" / "backend-service.sh", "#!/bin/sh\nexit 0\n"
         )
+    if remaining_layout == "registered-folder":
+        (cache / "scripts").mkdir(parents=True)
+        (cache / "scripts/backend-service.sh").write_text(
+            "# stale source must not win\n"
+        )
+    source_before = (claude_root / "scripts/backend-service.sh").read_bytes()
     link = tmp_path / ".reflexio" / "plugin-root"
     link.parent.mkdir()
     link.symlink_to(opencode_root, target_is_directory=True)
@@ -2259,12 +2311,15 @@ def test_node_opencode_uninstall_preserves_learning_host_and_repairs_root(
     (project / "opencode.json").write_text('{"plugin": []}\n')
     env = _isolated_env(tmp_path)
     env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg")
+    env["CODEX_HOME"] = str(tmp_path / ".codex")
+    env["CLAUDE_CONFIG_DIR"] = str(tmp_path / ".claude")
+    env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
     project_loader = _seed_opencode_v2_loader(
         project / ".opencode" / "plugins" / "claude-smart.js"
     )
 
     result = subprocess.run(
-        [node, str(NODE_INSTALLER), "uninstall", "--host", "opencode"],
+        [node, str(package / "bin/claude-smart.js"), "uninstall", "--host", "opencode"],
         cwd=project,
         env=env,
         text=True,
@@ -2274,6 +2329,7 @@ def test_node_opencode_uninstall_preserves_learning_host_and_repairs_root(
 
     assert result.returncode == 0, result.stderr
     assert link.resolve() == claude_root.resolve()
+    assert (claude_root / "scripts/backend-service.sh").read_bytes() == source_before
     assert runtime_env.read_text() == "CLAUDE_SMART_HOST=opencode\n"
     # Nothing else references the shared package, so uninstall removes it.
     assert not project_loader.exists()

@@ -261,6 +261,14 @@ existing `reflexioai` entry at the packaged copy, which carries the vendor bundl
 `reflexioai` marketplace, and deletes the copy; learned data under `~/.reflexio/`
 and `~/.claude-smart/` is preserved.
 
+Broken `~/.reflexio/plugin-root` repair also reads Claude's bounded
+`plugin list --json` inventory, using `readFromFolder` when declared and otherwise
+`installPath`, before the existing stable/Codex fallbacks. Malformed, foreign,
+errored or unavailable source records do not supply a root; an unavailable declared
+folder does not fall back to that record's older cache. This is read-only source
+discovery, not ownership for source deletion, a complete list of already-running
+sessions, or qualification for a configuration-format cutover.
+
 ### Codex
 
 Installers and hook discovery use `CODEX_HOME` when set, falling back to `~/.codex`. Configuration, plugin caches, and hook trust remain in that account home. Run the installer with the same `CODEX_HOME` as the Codex session you want to update.

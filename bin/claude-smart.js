@@ -45,7 +45,7 @@ const {
 const http = require("http");
 const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
-const { dirname, join, resolve, sep } = require("path");
+const { dirname, isAbsolute, join, resolve, sep } = require("path");
 const { fileURLToPath, pathToFileURL } = require("url");
 const guide = require("./install-guide");
 
@@ -871,11 +871,25 @@ function activePluginRoot() {
 // Installed runtime roots other integrations may still use, newest host
 // first. Codex keeps one cache dir per version.
 function installedPluginRoots() {
-  const roots = [
+  // The host owns its effective load source. A local marketplace can report
+  // readFromFolder alongside an older installPath; prefer its declared source.
+  // Discovery is read-only and does not establish ownership for deletion.
+  const roots = [];
+  for (const plugin of claudeInstallations()) {
+    if (
+      plugin.errors !== undefined &&
+      (!Array.isArray(plugin.errors) || plugin.errors.length)
+    ) continue;
+    const root = Object.hasOwn(plugin, "readFromFolder")
+      ? plugin.readFromFolder
+      : plugin.installPath;
+    if (typeof root === "string" && isAbsolute(root)) roots.push(root);
+  }
+  roots.push(
     join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin"),
     join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"),
     CODEX_RUNTIME_PLUGIN_ROOT,
-  ];
+  );
   try {
     const versions = readdirSync(CODEX_PLUGIN_CACHE_DIR).map((name) =>
       join(CODEX_PLUGIN_CACHE_DIR, name),
@@ -1776,29 +1790,35 @@ function installInventory(options = {}) {
       available: hasClaudeCli(),
       installed:
         existsSync(join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin")) ||
-        hostRegistrationExists(HOST_CLAUDE_CODE),
+        claudeInstallations().length > 0,
     },
     { host: HOST_CODEX, available: hasCli("codex"), installed: Boolean(findCodexPluginRoot()) },
     { host: HOST_OPENCODE, available: hasOpenCodeCli(), installed: openCodeInstalled },
   ];
 }
 
-function hostRegistrationExists(host) {
-  const cli = host === HOST_CODEX ? "codex" : "claude";
-  if (!hasCli(cli)) return false;
-  const result = spawnSync(cli, ["plugin", "list", "--json"], {
+function claudeInstallations() {
+  const executable = resolveCommand(
+    isWindows() ? ["claude.exe", "claude.cmd", "claude.bat", "claude"] : ["claude"],
+  );
+  if (!executable) return [];
+  const shell = isWindows() && /\.(?:cmd|bat)$/i.test(executable);
+  const result = spawnSync(shell ? `"${executable}"` : executable, ["plugin", "list", "--json"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
     timeout: 5000,
     windowsHide: true,
+    shell,
   });
+  if (result.error || result.status !== 0) return [];
   try {
     const data = JSON.parse(result.stdout);
-    return (
-      Array.isArray(data) && data.some((plugin) => (plugin.id || plugin.pluginId) === PLUGIN_SPEC)
-    );
+    return Array.isArray(data)
+      ? data.filter((plugin) => plugin && typeof plugin === "object" &&
+          !Array.isArray(plugin) && (plugin.id || plugin.pluginId) === PLUGIN_SPEC)
+      : [];
   } catch {
-    return false;
+    return [];
   }
 }
 
@@ -4323,6 +4343,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  installedPluginRoots,
   publishInstallSettings,
   reusePreparedRuntime,
   learningProviderVersion,
