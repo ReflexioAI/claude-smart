@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -11,7 +13,6 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-
 from claude_smart import env_config
 
 
@@ -51,7 +52,7 @@ env_config._edit_env_file(path, lambda previous: (previous + 'FIRST="one"\\n', N
     environment["PYTHONPATH"] = os.pathsep.join(
         [str(Path(__file__).resolve().parents[1] / "plugin/src"), *sys.path]
     )
-    with subprocess.Popen(
+    with subprocess.Popen(  # noqa: S603 — owned test child.
         [
             sys.executable,
             "-c",
@@ -343,9 +344,11 @@ def _native_powershell(script):
     import base64
     import json
 
+    powershell = shutil.which("powershell.exe")
+    assert powershell is not None
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+    result = subprocess.run(  # noqa: S603 — repository-controlled test command.
+        [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
         capture_output=True,
         text=True,
         timeout=30,
@@ -429,3 +432,182 @@ ConvertTo-Json -InputObject $true
         assert set(acl["allowed"]) <= privileged
     assert 'KEY="fake-secret"' in path.read_text()
     assert not list(parent.glob(".env-*"))
+
+
+def test_publication_distinguishes_absent_empty_and_deleted(tmp_path: Path) -> None:
+    path = tmp_path / ".env"
+    original = "# preserve\nOTHER=opaque\\path\nREMOVE=old\n"
+    path.write_text(original)
+    env_config.update_settings(
+        {"REFLEXIO_NATIVE_CLI_MODEL": "", "REMOVE": None},
+        {"REFLEXIO_NATIVE_CLI_MODEL": [], "REMOVE": ["REMOVE=old"]},
+        path,
+    )
+    assert (
+        path.read_text()
+        == "# preserve\nOTHER=opaque\\path\nREFLEXIO_NATIVE_CLI_MODEL=\n"
+    )
+    before = path.read_bytes()
+    env_config.update_settings({}, {}, path)
+    assert path.read_bytes() == before
+
+
+def test_confirmed_edit_collapses_duplicates_without_touching_other_choices(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / ".env"
+    path.write_text("export\tMODEL=first\nOTHER=keep\nMODEL=second\nMODEL=\n")
+    env_config.update_settings(
+        {"MODEL": "local-cli/opencode/provider/model#high"},
+        {"MODEL": ["export\tMODEL=first", "MODEL=second", "MODEL="]},
+        path,
+    )
+    assert (
+        path.read_text() == "MODEL=local-cli/opencode/provider/model#high\nOTHER=keep\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "latest", ["", "MODEL=\n", "MODEL=other\n", "MODEL=old\nMODEL=other\n"]
+)
+def test_stale_confirmation_never_overwrites_relevant_changes(
+    tmp_path: Path, latest: str
+) -> None:
+    path = tmp_path / ".env"
+    path.write_text(latest)
+    with pytest.raises(env_config.SettingsConflictError, match="reload and retry"):
+        env_config.update_settings({"MODEL": "new"}, {"MODEL": ["MODEL=old"]}, path)
+    assert path.read_text() == latest
+
+
+def test_rechecked_read_dependencies_and_unrelated_updates(tmp_path: Path) -> None:
+    path = tmp_path / ".env"
+    path.write_text("MODE=local\nMODEL=old\nUNRELATED=newer\n")
+    expected = {"MODEL": ["MODEL=old"], "MODE": ["MODE=local"]}
+    env_config.update_settings({"MODEL": "new"}, expected, path)
+    assert "UNRELATED=newer\n" in path.read_text()
+    before = path.read_bytes()
+    with pytest.raises(env_config.SettingsConflictError):
+        env_config.update_settings(
+            {"MODEL": "other"}, {"MODEL": ["MODEL=new"], "MODE": ["MODE=managed"]}, path
+        )
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "\nINJECT=1",
+        "x\u2028INJECT=1",
+        "x\0y",
+        " leading",
+        "trailing ",
+        '"quoted"',
+        "value # comment",
+        "${OTHER}",
+    ],
+)
+def test_non_roundtrippable_value_is_rejected_before_mutation(
+    tmp_path: Path, value: str
+) -> None:
+    path = tmp_path / ".env"
+    path.write_text("KEEP=original\n")
+    with pytest.raises(ValueError, match="consistently"):
+        env_config.update_settings({"MODEL": value}, {"MODEL": []}, path)
+    assert path.read_text() == "KEEP=original\n"
+    assert not path.with_name(".env.lock").exists()
+
+
+def test_confirmed_publication_shares_native_repair_lock(tmp_path: Path) -> None:
+    path = tmp_path / ".env"
+    path.write_text("MODEL=old\n")
+    with _paused_writer(path), pytest.raises(env_config.SettingsBusyError):
+        env_config.update_settings({"MODEL": "new"}, {"MODEL": ["MODEL=old"]}, path)
+    env_config.update_settings({"MODEL": "new"}, {"MODEL": ["MODEL=old"]}, path)
+    assert path.read_text() == "MODEL=new\n"
+
+
+def test_prepared_module_publishes_stdin_without_values_in_output(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    environment = {
+        key: os.environ[key]
+        for key in ("PATH", "SystemRoot", "LANG", "TMPDIR")
+        if key in os.environ
+    }
+    environment.update(
+        HOME=str(home),
+        USERPROFILE=str(home),
+        PYTHONPATH=os.pathsep.join(
+            [str(Path(__file__).resolve().parents[1] / "plugin/src"), *sys.path]
+        ),
+    )
+    payload = {
+        "updates": {"REFLEXIO_API_KEY": "private-canary"},
+        "expected": {"REFLEXIO_API_KEY": []},
+    }
+    args = [sys.executable, "-m", "claude_smart.env_config", "publish"]
+    result = subprocess.run(  # noqa: S603 — fixed prepared-module invocation.
+        args,
+        input=json.dumps(payload),
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "private-canary" not in result.stdout + result.stderr
+    assert (
+        home / ".claude-smart/.env"
+    ).read_text() == "REFLEXIO_API_KEY=private-canary\n"
+    result = subprocess.run(  # noqa: S603 — fixed prepared-module invocation.
+        args,
+        input=json.dumps(payload),
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 73
+    assert "private-canary" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "separator", ["\u2028", "\u2029", "\x85", "\v", "\f", "\x1c", "\x1d", "\x1e", "\r"]
+)
+@pytest.mark.parametrize("quoted", [False, True])
+def test_publication_preserves_unrelated_physical_value_bytes(
+    tmp_path, separator, quoted
+):
+    path = tmp_path / ".env"
+    value = f"left{separator}right"
+    if quoted:
+        value = f'"{value}"'
+    original = f"# keep\nOTHER={value}\nMODEL=old\n".encode()
+    path.write_bytes(original)
+    env_config.update_settings({"MODEL": "new"}, {"MODEL": ["MODEL=old"]}, path)
+    assert path.read_bytes() == original.replace(b"MODEL=old", b"MODEL=new")
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize("terminated", [False, True])
+def test_publication_preserves_line_endings_and_final_unrelated_span(
+    tmp_path, newline, terminated
+):
+    path = tmp_path / ".env"
+    original = f"# keep{newline}MODEL=old{newline}OTHER=untouched" + (
+        newline if terminated else ""
+    )
+    path.write_bytes(original.encode())
+    env_config.update_settings({"MODEL": "new"}, {"MODEL": ["MODEL=old"]}, path)
+    assert path.read_bytes() == original.replace("MODEL=old", "MODEL=new").encode()
+
+
+def test_publication_does_not_edit_assignment_text_inside_unicode_value(tmp_path):
+    path = tmp_path / ".env"
+    original = "OTHER=left\u2028MODEL=inside-value"
+    path.write_bytes(original.encode())
+    env_config.update_settings({"MODEL": "new"}, {"MODEL": []}, path)
+    assert path.read_bytes() == (original + "\nMODEL=new\n").encode()

@@ -4,9 +4,10 @@
  * lines. Used by the Configure page.
  */
 
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
-import path from "node:path";
 import os from "node:os";
+import path from "node:path";
 import type { ClaudeSmartConfig } from "./types";
 
 const KNOWN_KEYS = [
@@ -156,9 +157,7 @@ export async function writeConfig(
     existing = "";
   }
 
-  const lines = existing.split("\n");
-  const seen = new Set<string>();
-  const outLines: string[] = [];
+  const lines = existing.split(/\r?\n/);
 
   // Clearing the API key means local mode, but the hooks and service scripts
   // pick the mode from the URL: a remote URL left without a key would keep
@@ -226,39 +225,32 @@ export async function writeConfig(
     safeUpdate.CLAUDE_SMART_MANAGED_API_KEY = "";
   }
 
+  const updates: Record<string, string | null> = Object.fromEntries(
+    Object.entries(safeUpdate).map(([key, value]) => [
+      key,
+      formatValue(key, value),
+    ]),
+  );
+  if (dropUrl) updates.REFLEXIO_URL = null;
+  // Connection decisions above depend on these originals too. Compare them
+  // under the publisher's lock so a concurrent save cannot mix endpoint keys.
+  const dependencies = new Set([
+    ...Object.keys(updates),
+    "REFLEXIO_URL",
+    "REFLEXIO_API_KEY",
+    "CLAUDE_SMART_MANAGED_URL",
+    "CLAUDE_SMART_MANAGED_API_KEY",
+    "CLAUDE_SMART_LOCAL_URL",
+    "CLAUDE_SMART_LOCAL_API_KEY",
+  ]);
+  const expected: Record<string, string[]> = Object.fromEntries(
+    [...dependencies].map((key) => [key, []]),
+  );
   for (const line of lines) {
     const pair = parseLine(line);
-    if (dropUrl && pair?.key === "REFLEXIO_URL") continue;
-    if (!pair) {
-      outLines.push(line);
-      continue;
-    }
-    if (pair.key in safeUpdate) {
-      seen.add(pair.key);
-      const raw = safeUpdate[pair.key];
-      outLines.push(`${pair.key}=${formatValue(pair.key, raw)}`);
-    } else {
-      outLines.push(line);
-    }
+    if (pair && dependencies.has(pair.key)) expected[pair.key].push(line);
   }
-
-  for (const key of Object.keys(safeUpdate)) {
-    if (seen.has(key)) continue;
-    const raw = safeUpdate[key];
-    if (raw === undefined || raw === "") continue;
-    outLines.push(`${key}=${formatValue(key, raw)}`);
-  }
-
-  const content = outLines.join("\n");
-  try {
-    await fs.chmod(file, 0o600);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  await fs.writeFile(file, content.endsWith("\n") ? content : content + "\n", {
-    encoding: "utf-8",
-    mode: 0o600,
-  });
+  await publishSettings({ updates, expected });
 }
 
 /** Mirror of claude_smart_reflexio_url_is_remote in plugin/scripts/_lib.sh. */
@@ -277,3 +269,43 @@ function formatValue(key: string, raw: unknown): string {
 }
 
 export { KNOWN_KEYS };
+
+/** The service launches Next from <prepared plugin>/dashboard. */
+function publishSettings(request: {
+  updates: Record<string, string | null>;
+  expected: Record<string, string[]>;
+}): Promise<void> {
+  const pluginRoot = path.dirname(process.cwd());
+  const python = path.join(
+    pluginRoot,
+    ".venv",
+    process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
+  );
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      python,
+      ["-I", "-m", "claude_smart.env_config", "publish"],
+      { timeout: 10_000, maxBuffer: 65_536, windowsHide: true },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(
+            new Error(
+              stderr.trim() ||
+                "Settings publisher unavailable; run npx claude-smart update",
+            ),
+          );
+          return;
+        }
+        try {
+          if (JSON.parse(stdout).ok !== true)
+            throw new Error("Invalid publisher response");
+          resolve();
+        } catch {
+          reject(new Error("Settings publisher did not confirm the save"));
+        }
+      },
+    );
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(JSON.stringify(request));
+  });
+}

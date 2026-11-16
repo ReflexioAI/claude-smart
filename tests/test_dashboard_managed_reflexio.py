@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.test_env_bootstrap import owner_python as owner_python
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -98,6 +100,16 @@ def test_dashboard_settings_read_configured_reflexio_url_only() -> None:
     assert "Reflexio endpoint (dashboard)" not in page
 
 
+@pytest.fixture(autouse=True)
+def _prepared_dashboard_owner(tmp_path, owner_python):
+    # Match the service's actual cwd/venv relationship with an owned installed
+    # publisher, rather than falling back to ambient PATH/PYTHONPATH.
+    (tmp_path / "dashboard").mkdir(exist_ok=True)
+    (tmp_path / ".venv").symlink_to(
+        owner_python.parent.parent, target_is_directory=True
+    )
+
+
 def _run_config_module(
     tmp_path: Path,
     script: str,
@@ -108,7 +120,7 @@ def _run_config_module(
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required")
-    probe = subprocess.run(
+    probe = subprocess.run(  # noqa: S603 — repository-controlled test command.
         [node, "-p", "process.features.typescript"], capture_output=True, text=True
     )
     if probe.stdout.strip() in {"", "false", "undefined"}:
@@ -117,7 +129,7 @@ def _run_config_module(
     env["HOME"] = str(tmp_path)
     env.update(env_extra)
     module = REPO_ROOT / "plugin" / "dashboard" / "lib" / f"{module_name}.ts"
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603 — repository-controlled test command.
         [
             node,
             "--no-warnings",
@@ -126,6 +138,7 @@ def _run_config_module(
             f"const m = await import({json.dumps(str(module))});\n{script}",
         ],
         env=env,
+        cwd=tmp_path / "dashboard",
         text=True,
         capture_output=True,
         check=False,
@@ -323,3 +336,75 @@ def test_dashboard_does_not_advertise_or_write_retired_embedding_setting(
     assert original.strip() in saved
     assert "CLAUDE_SMART_READ_ONLY=1" in saved
     assert saved.count("CLAUDE_SMART_USE_LOCAL_EMBEDDING") == int(existing)
+
+
+def test_dashboard_explicit_empty_key_overrides_stale_launch_credentials(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / ".claude-smart"
+    state.mkdir()
+    (state / ".env").write_text("REFLEXIO_URL=http://localhost:8071/\n")
+    output = _run_config_module(
+        tmp_path,
+        'await m.writeConfig({REFLEXIO_API_KEY:""}); process.stdout.write(JSON.stringify(await m.managedReflexioSettings()));',
+        {"REFLEXIO_API_KEY": "stale-owned-key"},
+    )
+    assert json.loads(output)["apiKey"] == ""
+    assert "REFLEXIO_API_KEY=\n" in (state / ".env").read_text()
+
+
+def test_dashboard_rejects_concurrent_endpoint_credentials_after_snapshot(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / ".claude-smart"
+    state.mkdir()
+    selected = state / ".env"
+    selected.write_text(
+        "REFLEXIO_URL=http://localhost:8071/\nREFLEXIO_API_KEY=old-owned-key\n"
+    )
+    script = r"""
+      const fs = (await import('node:fs/promises')).default;
+      const originalRead = fs.readFile.bind(fs);
+      let raced = false;
+      fs.readFile = async (...args) => {
+        const result = await originalRead(...args);
+        if (!raced && String(args[0]).endsWith('/.claude-smart/.env')) {
+          raced = true;
+          await fs.writeFile(args[0], 'REFLEXIO_URL=http://localhost:8071/\nREFLEXIO_API_KEY=new-owned-key\n');
+        }
+        return result;
+      };
+      let error = '';
+      try { await m.writeConfig({CLAUDE_SMART_READ_ONLY:true}); }
+      catch (failure) { error = failure.message; }
+      process.stdout.write(JSON.stringify({raced,error}));
+    """
+    output = json.loads(_run_config_module(tmp_path, script, {}))
+    assert output["raced"] is True, "The real file must change after the snapshot read"
+    assert "changed after confirmation" in output["error"]
+    assert (
+        selected.read_text()
+        == "REFLEXIO_URL=http://localhost:8071/\nREFLEXIO_API_KEY=new-owned-key\n"
+    )
+
+
+def test_dashboard_save_respects_the_live_python_publisher_lock(tmp_path: Path) -> None:
+    from tests.test_env_transactions import _paused_writer
+
+    state = tmp_path / ".claude-smart"
+    state.mkdir()
+    selected = state / ".env"
+    original = "REFLEXIO_URL=http://localhost:8071/\nREFLEXIO_API_KEY=owned-key\n"
+    selected.write_text(original)
+    with _paused_writer(selected):
+        output = _run_config_module(
+            tmp_path,
+            "try { await m.writeConfig({CLAUDE_SMART_READ_ONLY:true}); } catch(error) { process.stdout.write(error.message); }",
+            {},
+        )
+        assert "busy" in output
+        assert selected.read_text() == original
+    _run_config_module(
+        tmp_path, "await m.writeConfig({CLAUDE_SMART_READ_ONLY:true});", {}
+    )
+    assert "CLAUDE_SMART_READ_ONLY=1\n" in selected.read_text()

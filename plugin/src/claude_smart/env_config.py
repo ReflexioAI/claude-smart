@@ -69,8 +69,7 @@ def parse_env_line(line: str) -> tuple[str, str] | None:
     stripped = line.strip()
     if not stripped or stripped.startswith("#"):
         return None
-    if stripped.startswith("export "):
-        stripped = stripped[len("export ") :].lstrip()
+    stripped = re.sub(r"^export\s+", "", stripped)
     key, sep, raw_value = stripped.partition("=")
     if not sep:
         return None
@@ -102,6 +101,104 @@ def load_reflexio_env(path: Path | None = None) -> None:
 
 class SettingsBusyError(RuntimeError):
     """Another cooperating settings transaction is currently publishing."""
+
+
+class SettingsConflictError(RuntimeError):
+    """Relevant assignments changed after the caller confirmed an edit."""
+
+
+def update_settings(
+    updates: dict[str, str | None],
+    expected: dict[str, list[str]],
+    path: Path | None = None,
+) -> None:
+    """Apply confirmed edits under the same lock as dependency repair.
+
+    Expected assignments are the original lines for every edited key and any
+    other keys the decision depended on. An empty list means absent, whereas
+    an existing empty assignment remains present. Unrelated edits survive.
+    Values travel on stdin to the prepared module, never command arguments.
+    """
+    if not isinstance(updates, dict) or not isinstance(expected, dict):
+        raise ValueError("Settings edits require updates and original assignments")
+    for key in updates.keys() | expected.keys():
+        if (
+            not isinstance(key, str)
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None
+        ):
+            raise ValueError("Invalid settings key")
+    if updates.keys() - expected.keys():
+        raise ValueError("Settings edits require the original edited assignments")
+    for key, lines in expected.items():
+        if not isinstance(lines, list) or any(
+            not isinstance(line, str)
+            or not _single_line_value(line)
+            or (entry := parse_env_line(line)) is None
+            or entry[0] != key
+            for line in lines
+        ):
+            raise ValueError("Invalid original settings assignments")
+    for value in updates.values():
+        # Use the shared lossless unquoted subset. Escaped quoted writes have
+        # different meanings to the shell/Node readers and python-dotenv.
+        # Existing unrelated values are retained verbatim, not re-encoded.
+        if value is not None and (
+            not isinstance(value, str)
+            or not _single_line_value(value)
+            or value != value.strip()
+            or value.startswith(("'", '"'))
+            or "${" in value
+            or re.search(r"\s#", value)
+        ):
+            raise ValueError("Settings value cannot be represented consistently")
+
+    def edit(existing: str) -> tuple[str | None, None]:
+        # Match the shell/Node physical-line boundary, retaining every original
+        # delimiter. str.splitlines() also splits valid unrelated value bytes
+        # such as U+2028 and must not turn those into new assignments.
+        spans = re.findall(r"[^\n]*\n|[^\n]+$", existing)
+        lines = [
+            span[:-2] if span.endswith("\r\n") else span.removesuffix("\n")
+            for span in spans
+        ]
+        originals: dict[str, list[str]] = {key: [] for key in expected}
+        for line in lines:
+            if (entry := parse_env_line(line)) is not None and entry[0] in originals:
+                originals[entry[0]].append(line)
+        if originals != expected:
+            raise SettingsConflictError(
+                "Settings changed after confirmation; reload and retry"
+            )
+        seen: set[str] = set()
+        output: list[str] = []
+        for span, line in zip(spans, lines, strict=True):
+            entry = parse_env_line(line)
+            if entry is None or entry[0] not in updates:
+                output.append(span)
+                continue
+            key = entry[0]
+            if key not in seen and updates[key] is not None:
+                output.append(f"{key}={updates[key]}" + span[len(line) :])
+            seen.add(key)
+        if not updates:
+            return None, None
+        content = "".join(output)
+        newline = next(
+            (
+                "\r\n" if span.endswith("\r\n") else "\n"
+                for span in spans
+                if span.endswith("\n")
+            ),
+            "\n",
+        )
+        for key, value in updates.items():
+            if key not in seen and value is not None:
+                if content and not content.endswith("\n"):
+                    content += newline
+                content += f"{key}={value}" + newline
+        return content, None
+
+    _edit_env_file(path or CLAUDE_SMART_ENV_PATH, edit)
 
 
 def repair_bootstrap_env(path: Path | None = None) -> list[str]:
@@ -253,19 +350,30 @@ def _single_line_value(value: str) -> bool:
 def main(argv: list[str] | None = None) -> int:
     """Internal prepared-runtime entrypoint; no bootstrap or provider imports."""
     arguments = sys.argv[1:] if argv is None else argv
-    if arguments != ["bootstrap-repair"]:
+    if arguments not in (["bootstrap-repair"], ["publish"]):
         print(
-            "Usage: python -m claude_smart.env_config bootstrap-repair", file=sys.stderr
+            "Usage: python -m claude_smart.env_config {bootstrap-repair|publish}",
+            file=sys.stderr,
         )
         return 2
     try:
-        added = repair_bootstrap_env()
+        if arguments == ["publish"]:
+            request = json.load(sys.stdin)
+            if not isinstance(request, dict) or set(request) != {"updates", "expected"}:
+                raise ValueError("Invalid settings edit request")
+            update_settings(request["updates"], request["expected"])
+            added = []
+        else:
+            added = repair_bootstrap_env()
+    except SettingsConflictError as error:
+        print(str(error), file=sys.stderr)
+        return 73
     except SettingsBusyError as error:
         print(str(error), file=sys.stderr)
         return 75
     except (OSError, ValueError):
         print(
-            "Cannot repair settings; check file access and single-line UTF-8 defaults.",
+            "Cannot update settings; check file access and single-line UTF-8 values.",
             file=sys.stderr,
         )
         return 1
