@@ -174,6 +174,10 @@ change while a save is being prepared, reload and retry rather than overwriting
 the newer choices. A busy repair also leaves the file unchanged. Saving requires
 the dashboard's prepared sibling `.venv`; run `npx claude-smart update` if that
 runtime needs repair. Existing unrelated assignments and comments are retained.
+Literal values use quotes only when needed to preserve the same value across
+the readers; backslashes are never rewritten as escapes. Expansion, line/control
+separators and quote combinations without a shared literal form are refused
+before publication.
 
 Legacy saved HOST fallback is preserved as explicit learning intent at confirmation,
 also when switching to managed storage with a native optimizer. Existing HOST
