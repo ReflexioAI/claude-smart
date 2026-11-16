@@ -41,7 +41,7 @@ test("registered Claude runtime discovery respects source metadata and native sh
     {data:[{...record,errors:{message:"invalid"}}], expected:[]},
     {data:[{...record,readFromFolder:null}], expected:[]},
     {data:[record], shadow:"shadow directory", expected:[cacheRoot]},
-    ...(!windows ? [{data:[record],shadow:"shadow file",expected:[cacheRoot]}] : []),
+    {data:[record],shadow:"shadow file",expected:[cacheRoot]},
   ];
   fs.writeFileSync(path.join(root, "cases.json"), JSON.stringify(cases));
   const script = `

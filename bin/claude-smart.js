@@ -1799,7 +1799,7 @@ function installInventory(options = {}) {
 
 function claudeInstallations() {
   const executable = resolveCommand(
-    isWindows() ? ["claude.exe", "claude.cmd", "claude.bat", "claude"] : ["claude"],
+    isWindows() ? ["claude.exe", "claude.cmd", "claude.bat"] : ["claude"],
   );
   if (!executable) return [];
   const shell = isWindows() && /\.(?:cmd|bat)$/i.test(executable);
