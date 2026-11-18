@@ -1410,6 +1410,11 @@ async function stopServicesForInstall(installedRoot, host) {
     const scriptName = `${kind}-service.sh`;
     if (!existsSync(join(root, "scripts", scriptName))) continue;
     const before = pluginServiceStatus(root, scriptName);
+    if (!before) {
+      // An interrupted or failed initial status gives no recovery baseline.
+      failed.push(kind);
+      break;
+    }
     const observed = reportsActiveService.test(before);
     const stopped = runPluginService(root, scriptName, "stop");
     const after = pluginServiceStatus(root, scriptName);
@@ -1422,18 +1427,16 @@ async function stopServicesForInstall(installedRoot, host) {
       failed.push(kind);
     }
   }
-  if (failed.length) {
-    // No package or selector writes have occurred. Preserve their original
-    // files and let exit recovery restart only the services confirmed stopped.
-    commitInstallState();
+  // A refusal has no package or selector changes to roll back.
+  if (failed.length) commitInstallState();
+  // Let a queued interruption restore the old services before any package write.
+  await new Promise(setImmediate);
+  if (terminatingOnSignal) await new Promise(() => {});
+  if (failed.length)
     throw new Error(
       `Could not confirm shutdown of the previous ${failed.join(" and ")} service; ` +
         "the runtime was not replaced. Resolve the service shutdown failure and retry installation.",
     );
-  }
-  // Let a queued interruption restore the old services before any package write.
-  await new Promise(setImmediate);
-  if (terminatingOnSignal) await new Promise(() => {});
 }
 
 function restartStoppedServices() {

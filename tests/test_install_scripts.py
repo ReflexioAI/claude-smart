@@ -1668,7 +1668,8 @@ def test_node_first_migration_keeps_old_registration_when_bootstrap_fails(
     old_root = tmp_path / "npx-old" / "plugin"
     (old_root / "scripts").mkdir(parents=True)
     _write_executable(
-        old_root / "scripts" / "backend-service.sh", "#!/bin/sh\nexit 0\n"
+        old_root / "scripts" / "backend-service.sh",
+        '#!/bin/sh\n[ "$1" != status ] || echo "not running"\nexit 0\n',
     )
     link = tmp_path / ".reflexio" / "plugin-root"
     link.parent.mkdir()

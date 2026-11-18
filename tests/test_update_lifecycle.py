@@ -42,7 +42,7 @@ def _fixture(
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO_ROOT / name, target)
     (package / "plugin/identity").write_text("new")
-    record = """import json, os, signal, sys
+    record = """import json, os, signal, sys, time
 from pathlib import Path
 home = Path(os.environ["HOME"])
 kind, action = sys.argv[1:]
@@ -63,6 +63,10 @@ if action == "stop" and os.environ.get("FIXTURE_UNSTOPPABLE") != kind:
     stopped.touch()
 if action == "status":
     running = os.environ["FIXTURE_RUNNING"]
+    pre_probe = os.environ.get("FIXTURE_INITIAL_PROBE_STARTED")
+    if pre_probe and kind == "backend" and not stopped.exists():
+        Path(pre_probe).touch()
+        time.sleep(0.5)
     if stopped.exists():
         if os.environ.get("FIXTURE_UNVERIFIABLE") == kind:
             sys.exit(1)
@@ -245,7 +249,8 @@ def test_interrupt_during_post_stop_probe_recovers_observed_service(tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX foreground process-group signal")
-def test_terminal_interrupt_during_tcp_probe_recovers_observed_service(tmp_path):
+@pytest.mark.parametrize("phase", ["status", "tcp"])
+def test_terminal_interrupt_preserves_previous_service(tmp_path, phase):
     package, root, uv, env = _fixture(tmp_path, "codex", running="backend")
     _write_bootstrap_uv(uv, mode="fresh")
     started = tmp_path / "tcp-probe-started"
@@ -266,8 +271,11 @@ def test_terminal_interrupt_during_tcp_probe_recovers_observed_service(tmp_path)
         };
         """
     )
-    env["NODE_OPTIONS"] = f'--require "{preload}"'
-    env["FIXTURE_PROBE_STARTED"] = str(started)
+    if phase == "tcp":
+        env["NODE_OPTIONS"] = f'--require "{preload}"'
+        env["FIXTURE_PROBE_STARTED"] = str(started)
+    else:
+        env["FIXTURE_INITIAL_PROBE_STARTED"] = str(started)
     with subprocess.Popen(
         [node_bin(), str(package / "bin/claude-smart.js"), "update", "--host", "codex"],
         cwd=tmp_path,
@@ -285,7 +293,7 @@ def test_terminal_interrupt_during_tcp_probe_recovers_observed_service(tmp_path)
                 and time.monotonic() < deadline
             ):
                 time.sleep(0.01)
-            assert started.exists(), "installer never started the TCP check"
+            assert started.exists(), f"installer never started the {phase} check"
             os.killpg(installer.pid, signal.SIGINT)
             _, stderr = installer.communicate(timeout=10)
         finally:
@@ -296,9 +304,12 @@ def test_terminal_interrupt_during_tcp_probe_recovers_observed_service(tmp_path)
     assert installer.returncode == 130, stderr
     assert (root / "identity").read_text() == "old"
     assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
-    assert [row["kind"] for row in _calls(tmp_path) if row["action"] == "start"] == [
-        "backend"
+    actions = [
+        row["action"]
+        for row in _calls(tmp_path)
+        if row["kind"] == "backend" and row["action"] != "status"
     ]
+    assert actions == (["stop", "start"] if phase == "tcp" else [])
 
 
 def test_update_rejects_timeout_even_when_status_exits_zero(tmp_path):
