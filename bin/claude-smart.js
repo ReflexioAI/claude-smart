@@ -1595,7 +1595,6 @@ function installOpenCodePluginPackage() {
 
 async function bootstrapClaudeCodeInstall(pluginRoot) {
   process.stdout.write("[phase] Preparing Python and runtime dependencies…\n");
-  forcePluginRoot(pluginRoot);
   const bash = resolveCommand(isWindows() ? ["bash.exe", "bash"] : ["bash"]);
   if (!bash) {
     throw new Error("bash is required to bootstrap claude-smart dependencies");
@@ -3771,6 +3770,7 @@ async function runInstall(args, options = {}) {
         "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
       );
     }
+    forcePluginRoot(pluginRoot);
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
     markLocalPluginPackagePrepared(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
   } catch (err) {
