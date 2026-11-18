@@ -7,6 +7,7 @@ import pytest
 
 from tests.test_install_scripts import (
     _fake_claude_code_package,
+    _free_port,
     _run_fake_claude_code_install,
     _write_executable,
 )
@@ -15,15 +16,19 @@ from tests.test_update_lifecycle import _fixture, _run
 
 def _services(root: Path, failed: str, *, signaled: bool = False) -> None:
     for kind in ("backend", "dashboard"):
+        port = _free_port()
         _write_executable(
             root / f"scripts/{kind}-service.sh",
-            '#!/bin/sh\ncase "$1" in\n'
-            f'status) case "$FIXTURE_RUNNING" in both|{kind}) echo "running on http://localhost:1";; *) echo "not running";; esac;;\n'
+            f'#!/bin/sh\nstate="$HOME/{kind}-stopped"\ncase "$1" in\n'
+            "status)\n"
+            '  if [ -f "$state" ]; then echo "not running"; else\n'
+            f'    case "$FIXTURE_RUNNING" in both|{kind}) echo "running on http://localhost:{port}";; *) echo "not running";; esac\n'
+            "  fi;;\n"
             f'stop) echo "{kind}:stop" >> "$HOME/admission-calls"; '
             + (
                 ("kill -TERM $$" if signaled else "exit 23")
                 if failed in ("both", kind)
-                else "exit 0"
+                else 'touch "$state"'
             )
             + ";;\n"
             f'start) echo "{kind}:start" >> "$HOME/admission-calls";;\nesac\n',
@@ -38,7 +43,7 @@ def _assert_rejected(
     running: str,
 ) -> None:
     assert result.returncode != 0
-    assert "Could not stop the previous" in result.stderr, result.stderr
+    assert "Could not confirm shutdown of the previous" in result.stderr, result.stderr
     assert "runtime was not replaced" in result.stderr
     calls = (home / "admission-calls").read_text().splitlines()
     assert calls[:2] == ["dashboard:stop", "backend:stop"]
