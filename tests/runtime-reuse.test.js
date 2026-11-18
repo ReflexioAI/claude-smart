@@ -218,7 +218,7 @@ test("private Node archive preparation leaves current intact until tools are com
   `;
   function install() {
     const build = spawnSync("tar", windows
-      ? ["-a", "-cf", archive, stem] : ["-czf", archive, stem],
+      ? ["-a", "-cf", path.basename(archive), stem] : ["-czf", path.basename(archive), stem],
     { cwd: root, encoding: "utf8" });
     assert.equal(build.status, 0, build.stderr || build.error);
     return spawnSync(process.execPath, ["-e", script, archive, require.resolve("../bin/claude-smart")], {
