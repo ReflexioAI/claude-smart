@@ -113,6 +113,13 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         "import sys, runpy; sys.path.insert(0, sys.argv[1]); "
         "sys.argv = sys.argv[2:]; runpy.run_path(sys.argv[0], run_name='__main__')"
     )
+    # The installer controls the interpreter. Model the fake uv install by
+    # exposing the copied fixture wheel source under the candidate's prefix.
+    source_check_program = (
+        "import sys; root, program, *argv = sys.argv[1:];"
+        "sys.prefix = root; sys.path.insert(0, root + '/fixture-site-packages');"
+        "sys.argv = ['-c', *argv]; exec(program)"
+    )
     private_venv_program = (
         "import os,sys,venv,shutil,subprocess;from pathlib import Path;"
         "root=Path(sys.argv[1]);"
@@ -138,6 +145,10 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         'if [ "$1" = "-I" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "claude_smart.env_config" ]; then\n'
         "  shift 3\n"
         f'  exec {shlex.quote(sys.executable)} -I -c {shlex.quote(owner_program)} "$PWD/src" {shlex.quote(str(lock_root))} "$@"\n'
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-X" ] && [ "$3" = "utf8" ] && [ "$4" = "-c" ]; then\n'
+        "  shift 4\n"
+        f'  exec {shlex.quote(sys.executable)} -I -c {shlex.quote(source_check_program)} "$PWD/.venv" "$@"\n'
         "fi\n"
         'if [ "$1" = "-I" ] && [ "$2" != "-m" ]; then\n'
         "  shift\n"
@@ -182,6 +193,10 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         "    exit 0\n"
         "    ;;\n"
         "esac\n"
+        'if [ "$1" = "pip" ] && [ "$2" = "install" ] && [ -d "$PWD/vendor/reflexio/reflexio" ]; then\n'
+        '  mkdir -p "$PWD/.venv/fixture-site-packages"\n'
+        '  cp -R "$PWD/vendor/reflexio/reflexio" "$PWD/.venv/fixture-site-packages/"\n'
+        "fi\n"
         'if [ "$1" = "pip" ]; then exit 0; fi\n'
         "exit 0\n",
     )
@@ -3943,6 +3958,83 @@ def test_node_installer_aborts_when_vendored_requirement_is_missing(
     uv_log = (tmp_path / "uv.log").read_text()
     assert "--reinstall --no-deps" in uv_log
     assert "pip check --python" in uv_log
+
+
+def test_node_installer_rejects_wrong_sdk_even_when_dependency_check_passes(
+    tmp_path: Path,
+) -> None:
+    import venv
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the installer test")
+    plugin = tmp_path / "candidate λ"
+    vendor = plugin / "vendor/reflexio"
+    (vendor / "reflexio").mkdir(parents=True)
+    (vendor / "pyproject.toml").write_text("[project]\nname='reflexio-ai'\n")
+    bundled = vendor / "reflexio/__init__.py"
+    bundled.write_text("VERSION = 'bundled'\n")
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(plugin / ".venv")
+    python = plugin / ".venv/bin/python"
+    purelib = Path(
+        subprocess.check_output(
+            [
+                str(python),
+                "-I",
+                "-c",
+                "import sysconfig;print(sysconfig.get_path('purelib'))",
+            ],
+            text=True,
+        ).strip()
+    )
+    installed = purelib / "reflexio/__init__.py"
+    installed.parent.mkdir()
+    installed.write_text("VERSION = 'foreign'\n")
+    uv = tmp_path / "uv"
+    _write_executable(uv, "#!/bin/sh\nexit 0\n")
+    script = (
+        f"const {{ installVendoredReflexio }} = require({json.dumps(str(NODE_INSTALLER))});"
+        f"installVendoredReflexio({json.dumps(str(plugin))}, {json.dumps(str(uv))}, process.env)"
+        ".catch(error => { console.error(error.message); process.exitCode = 1; });"
+    )
+    env = _isolated_env(tmp_path)
+    env["PYTHONPATH"] = str(vendor)
+    command = [node, "-e", script]
+    rejected = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=30
+    )
+    assert rejected.returncode == 1
+    assert (
+        "installed Python source differs from the bundle: __init__.py"
+        in rejected.stderr
+    )
+
+    # uv's symlink install mode can link source files into its cache.
+    installed.unlink()
+    installed.symlink_to(bundled)
+    accepted = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=30
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+    # A linked initializer doesn't change Python's submodule search path.
+    (installed.parent / "unexpected.py").write_text("unexpected = True\n")
+    rejected = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=30
+    )
+    assert rejected.returncode == 1
+    assert "installed Python source paths differ from the bundle" in rejected.stderr
+    (installed.parent / "unexpected.py").unlink()
+
+    foreign = tmp_path / "foreign package"
+    foreign.mkdir()
+    (foreign / "__init__.py").write_text("")
+    (installed.parent / "linked").symlink_to(foreign, target_is_directory=True)
+    rejected = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=30
+    )
+    assert rejected.returncode == 1
+    assert "linked subdirectory" in rejected.stderr
 
 
 def _managed_claude_code_plugin_root(tmp_path: Path) -> Path:

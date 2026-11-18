@@ -3087,6 +3087,60 @@ async function installVendoredReflexio(pluginRoot, uv, env) {
   }
   if (code !== 0) throw new Error(`vendored Reflexio install failed in ${pluginRoot}`);
   verifyVendoredReflexioRequirements(pluginRoot, uv, pythonPath, env);
+  verifyVendoredReflexioIdentity(pluginRoot, pythonPath, vendorRoot, env);
+}
+
+// The installed hook imports Reflexio from Python's own environment. Check
+// the bundled Python sources using that interpreter and isolated resolution.
+function verifyVendoredReflexioIdentity(pluginRoot, pythonPath, vendorRoot, env) {
+  const script = `
+import filecmp
+from importlib.util import find_spec
+import os
+from pathlib import Path
+import sys
+
+def sources(root):
+    if root.is_symlink() or root.is_junction():
+        raise SystemExit("Reflexio source directory is linked")
+    files = set()
+    for directory, children, entries in os.walk(root):
+        folder = Path(directory)
+        subdirs = (folder / child for child in children)
+        if any(child.is_symlink() or child.is_junction() for child in subdirs):
+            raise SystemExit("Reflexio source directory contains a linked subdirectory")
+        files.update((folder / item).relative_to(root) for item in entries if item.endswith(".py"))
+    return files
+
+vendor = Path(sys.argv[1]) / "reflexio"
+prefix = Path(sys.prefix)
+spec = find_spec("reflexio")
+roots = list(spec.submodule_search_locations or ()) if spec else []
+if prefix.resolve() != Path(sys.argv[2]).resolve() or len(roots) != 1:
+    raise SystemExit("the candidate interpreter does not resolve a single Reflexio package")
+installed = Path(roots[0])
+if (not installed.is_relative_to(prefix) or not installed.resolve().is_relative_to(prefix.resolve())
+        or not spec.origin or Path(spec.origin) != installed / "__init__.py"):
+    raise SystemExit("the candidate resolves Reflexio outside its environment")
+expected = sources(vendor)
+if not expected or expected != sources(installed):
+    raise SystemExit("installed Python source paths differ from the bundle")
+for source in sorted(expected):
+    if not filecmp.cmp(vendor / source, installed / source, shallow=False):
+        raise SystemExit(f"installed Python source differs from the bundle: {source}")
+`;
+  const result = spawnSync(pythonPath, ["-I", "-X", "utf8", "-c", script, vendorRoot, join(pluginRoot, ".venv")], {
+    cwd: pluginRoot,
+    env,
+    encoding: "utf8",
+    timeout: 15_000,
+    killSignal: "SIGKILL",
+    windowsHide: true,
+  });
+  if (result.status !== 0 || result.error) {
+    const detail = result.error?.message || result.stderr?.trim() || "Python verification failed";
+    throw new Error(`bundled Reflexio identity check failed in ${pluginRoot}: ${detail}`);
+  }
 }
 
 // --no-deps skips the bundled Reflexio's own requirements, so a requirement
