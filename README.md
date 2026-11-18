@@ -227,7 +227,9 @@ keeps backups and warns rather than starting an unverified runtime.
 
 Codex stages its marketplace under `CODEX_HOME/claude-smart/marketplace` (default
 `~/.codex/claude-smart/marketplace`), separate from Claude's legacy marketplace.
-Installing or removing Codex leaves that legacy runtime intact.
+Installing or removing Codex leaves that legacy runtime intact. Codex writes
+the commands for its prepared runtime to the marketplace and cache manifests.
+The prepared package retains the bundled manifests.
 
 Codex commits its prepared runtime and hook cache before asking Codex to trust the
 hooks. A later trust failure keeps that new runtime; follow the reported `/hooks`
