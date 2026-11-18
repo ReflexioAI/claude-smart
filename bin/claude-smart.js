@@ -625,6 +625,12 @@ function writeOpenCodeV2Plugin(
       // Refresh on the existing inode, including directories where the
       // installer can write the generated file but cannot replace its entry.
       writableLoader = openSync(target, "r+");
+      const previous = Buffer.from(existing);
+      const opened = Buffer.alloc(previous.length + 1);
+      const count = readSync(writableLoader, opened, 0, opened.length, 0);
+      if (!opened.subarray(0, count).equals(previous)) {
+        return { path: target, status: "conflict" };
+      }
     }
     beforePublish();
     if (readOpenCodeV2Loader(target) !== existing) {
@@ -638,12 +644,6 @@ function writeOpenCodeV2Plugin(
         throw err;
       }
     } else if (writableLoader !== undefined) {
-      const previous = Buffer.from(existing);
-      const opened = Buffer.alloc(previous.length + 1);
-      const count = readSync(writableLoader, opened, 0, opened.length, 0);
-      if (!opened.subarray(0, count).equals(previous)) {
-        return { path: target, status: "conflict" };
-      }
       const bytes = Buffer.from(body);
       writeFileSync(writableLoader, bytes);
       ftruncateSync(writableLoader, bytes.length);

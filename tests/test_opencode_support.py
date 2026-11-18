@@ -1935,6 +1935,31 @@ def test_opencode_dangling_loader_blocks_configuration_changes(tmp_path: Path):
     assert not missing.exists()
 
 
+def test_opencode_unreadable_loader_bytes_block_config_changes(tmp_path: Path):
+    script = f"""
+        const fs = require("node:fs");
+        const assert = require("node:assert/strict");
+        const {{ join }} = require("node:path");
+        const installer = require({json.dumps(str(REPO_ROOT / "bin/claude-smart.js"))});
+        const project = {json.dumps(str(tmp_path))};
+        const original = installer.writeOpenCodeV2Plugin([], project, project);
+        const corrupt = fs.readFileSync(original.path);
+        const leaf = corrupt.indexOf("server.mjs");
+        assert.ok(leaf > 0);
+        corrupt[leaf] = 0xff;
+        fs.writeFileSync(original.path, corrupt);
+        const result = installer.writeOpenCodeV2Plugin([], join(project, "pkg"), project, () => {{
+            assert.fail("invalid loader bytes must be detected before config changes");
+        }});
+        assert.equal(result.status, "conflict");
+        assert.deepEqual(fs.readFileSync(original.path), corrupt);
+    """
+    result = _run_node_script(script)
+    if result is None:
+        pytest.skip("node is not installed")
+    assert result.returncode == 0, result.stderr
+
+
 def test_opencode_loader_refresh_updates_existing_file_in_place(tmp_path: Path):
     script = f"""
         const fs = require("node:fs");
