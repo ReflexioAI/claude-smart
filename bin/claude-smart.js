@@ -1144,7 +1144,7 @@ function cleanupSettingsRuntimes() {
     )
       continue;
     try {
-      rmSync(runtime.directory, { recursive: true, force: true });
+      if (runtime.temporary) rmSync(runtime.directory, { recursive: true, force: true });
       settingsRuntimes.delete(runtime);
     } catch {
       process.stderr.write(
@@ -1982,7 +1982,7 @@ function savedInstallConfiguration(captured) {
   };
 }
 
-async function saveInstallConfiguration(config, captured) {
+function planInstallSettings(config, captured) {
   const values = {
     REFLEXIO_URL: config.url || localBackendUrl(),
     REFLEXIO_API_KEY: config.apiKey || "",
@@ -2034,7 +2034,7 @@ async function saveInstallConfiguration(config, captured) {
   }
   const digest = (bytes) =>
     crypto.createHash("sha256").update(bytes).digest("hex");
-  await publishInstallSettings({
+  const request = {
     updates: values,
     snapshot: {
       exists: captured.runtime.exists,
@@ -2044,20 +2044,28 @@ async function saveInstallConfiguration(config, captured) {
     legacy: captured.legacy?.exists
       ? { sha256: digest(captured.legacy.bytes), rows: legacyRows }
       : null,
-  });
-  // Hooks launched later read the saved values. This install must use them too,
-  // rather than inherited settings for another provider from the invoking shell.
-  for (const [key, value] of Object.entries(values)) process.env[key] = value;
-  if (config.backend === "local")
-    process.env.CLAUDE_SMART_CLI_PATH = config.cliPath;
-  if (
-    captured.legacy &&
-    legacyManagedConnection(captured.runtime.values, captured.legacy.values)
-      .size
-  )
-    process.stdout.write(
-      "Migrated managed Reflexio settings to claude-smart.\n",
-    );
+  };
+  return {
+    request,
+    cliPath: config.backend === "local" ? config.cliPath : null,
+    migrated: Boolean(
+      captured.legacy &&
+        legacyManagedConnection(captured.runtime.values, captured.legacy.values).size,
+    ),
+  };
+}
+
+function usePublishedSettings({ request, cliPath }) {
+  // Subsequent operations must inherit the confirmed choices, including the
+  // caller-first learning settings and an explicitly cleared custom CLI path.
+  Object.assign(process.env, request.updates);
+  if (cliPath !== null) process.env.CLAUDE_SMART_CLI_PATH = cliPath;
+}
+
+function acceptGuideSettings(settings) {
+  usePublishedSettings(settings);
+  if (settings.migrated)
+    process.stdout.write("Migrated managed Reflexio settings to claude-smart.\n");
 }
 
 function runSettingsProcess(command, args, runtime, environment, input) {
@@ -2153,6 +2161,7 @@ async function publishInstallSettings(request) {
     );
   const runtime = {
     directory: mkdtempSync(join(tmpdir(), "claude-smart-settings-")),
+    temporary: true,
     children: [],
   };
   settingsRuntimes.add(runtime);
@@ -2231,35 +2240,71 @@ async function publishInstallSettings(request) {
       throw new Error(
         "Cannot install settings publisher dependencies; no settings were saved.",
       );
-    runtime.publishing = true;
-    const saved = await runSettingsProcess(
+    await writeConfirmedSettings(
       python,
       ["-I", join(plugin, "src/claude_smart/env_config.py"), "publish-install"],
       runtime,
       environment,
-      Buffer.from(JSON.stringify(request), "utf8"),
+      request,
     );
-    if (saved.code === 73)
-      throw new Error("Settings changed after confirmation; reload and retry.");
-    if (saved.code === 75)
-      throw new Error(
-        "Settings are busy; retry after the other save finishes.",
-      );
-    let acknowledged = false;
-    try {
-      acknowledged = saved.code === 0 && JSON.parse(saved.output).ok === true;
-    } catch {}
-    if (!acknowledged)
-      throw new Error(
-        "Settings save could not be confirmed; reload settings before retrying.",
-      );
-    runtime.publishing = false;
   } finally {
     cleanupSettingsRuntimes();
   }
 }
 
-async function runGuidedHost(command, host, options, label) {
+async function writeConfirmedSettings(python, args, runtime, environment, request) {
+  runtime.publishing = true;
+  const saved = await runSettingsProcess(
+    python,
+    args,
+    runtime,
+    environment,
+    Buffer.from(JSON.stringify(request), "utf8"),
+  );
+  if (saved.code === 73)
+    throw new Error("Settings changed after confirmation; reload and retry.");
+  if (saved.code === 75)
+    throw new Error(
+      "Settings are busy; retry after the other save finishes.",
+    );
+  let acknowledged = false;
+  try {
+    acknowledged = saved.code === 0 && JSON.parse(saved.output).ok === true;
+  } catch {}
+  if (!acknowledged)
+    throw new Error(
+      "Settings save could not be confirmed; reload settings before retrying.",
+    );
+  runtime.publishing = false;
+}
+
+async function publishFromPreparedRuntime(pluginRoot, settings) {
+  if (!process.connected)
+    throw new Error("Installation guide disconnected before settings publication.");
+  const runtime = { directory: pluginRoot, children: [] };
+  settingsRuntimes.add(runtime);
+  try {
+    await writeConfirmedSettings(
+      pluginPythonPath(pluginRoot),
+      ["-I", "-m", "claude_smart.env_config", "publish-install"],
+      runtime,
+      runtimeEnv(),
+      settings.request,
+    );
+    usePublishedSettings(settings);
+    // A lost acknowledgement cannot undo the settings owner's committed save.
+    if (process.connected) process.send("settings-published", () => {});
+  } finally {
+    cleanupSettingsRuntimes();
+  }
+}
+
+function reportRuntimePhase(label, settings) {
+  process.stdout.write(`[phase] ${label}\n`);
+  if (settings && process.connected) process.send({ phase: label }, () => {});
+}
+
+async function runGuidedHost(command, host, options, label, settings) {
   mkdirSync(join(CLAUDE_SMART_STATE_DIR, "install-logs"), { recursive: true });
   const log = join(
     CLAUDE_SMART_STATE_DIR,
@@ -2276,6 +2321,12 @@ async function runGuidedHost(command, host, options, label) {
     () => process.stdout.write(`  ${label}… ${Math.floor((Date.now() - started) / 1000)}s\n`),
     5000,
   );
+  let accepted = false;
+  const acceptSettings = () => {
+    if (accepted) return;
+    accepted = true;
+    acceptGuideSettings(settings);
+  };
   try {
     const code = await new Promise((resolve) => {
       const child = spawn(process.execPath, args, {
@@ -2284,13 +2335,24 @@ async function runGuidedHost(command, host, options, label) {
           CLAUDE_SMART_INSTALL_CHILD: "1",
           CLAUDE_SMART_DEFER_SHARED_SERVICES: "1",
         },
-        stdio: ["ignore", "pipe", fd],
+        // A committed settings worker and its subprocesses must be able to
+        // finish logging and registering even if the guide exits.
+        stdio: settings ? ["ignore", fd, fd, "ipc"] : ["ignore", "pipe", fd],
         detached: !isWindows(),
         windowsHide: true,
       });
       trackChild(child, !isWindows());
+      if (settings) {
+        child.on("message", (message) => {
+          if (message === "settings-published") acceptSettings();
+          else if (typeof message?.phase === "string") process.stdout.write(`  ${message.phase}\n`);
+        });
+        child.send({ request: settings.request, cliPath: settings.cliPath }, (error) => {
+          if (error && child.connected) child.disconnect();
+        });
+      }
       let pending = "";
-      child.stdout.on("data", (chunk) => {
+      child.stdout?.on("data", (chunk) => {
         require("fs").writeSync(fd, chunk);
         pending += chunk.toString();
         const lines = pending.split(/\r?\n/);
@@ -2302,11 +2364,19 @@ async function runGuidedHost(command, host, options, label) {
         process.stderr.write(`  ${label} failed: ${err.message}\n`);
         resolve(1);
       });
-      // close follows all stdout data; exit can precede the final pipe chunks.
-      child.once("close", (code) => {
+      // Wait for the log stream independently of IPC. After an explicit
+      // disconnect Node can omit ChildProcess's combined close event.
+      const exited = new Promise((done) => child.once("exit", done));
+      const logClosed = child.stdout
+        ? new Promise((done) => child.stdout.once("close", done))
+        : Promise.resolve();
+      Promise.all([exited, logClosed]).then(([code]) => {
         if (!terminatingOnSignal) resolve(typeof code === "number" ? code : 1);
       });
     });
+    // A successful Codex worker requires a confirmed save, even if the
+    // guide disconnected before receiving the acknowledgement.
+    if (settings && code === 0) acceptSettings();
     if (code !== 0) process.stderr.write(`  ${label} failed. Details: ${log}\n`);
     return { code, log };
   } finally {
@@ -2361,11 +2431,21 @@ async function runGuidedCommand(command, args) {
   process.stdout.write(
     `claude-smart ${JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version} · ${command}\n`,
   );
+  let deferredSettings;
   await guide
     .runGuide(command, args, {
       inventory: installInventory,
       saved: () => saved,
-      save: (config) => saveInstallConfiguration(config, captured),
+      save: async (config) => {
+        const settings = planInstallSettings(config, captured);
+        // The native Windows embedding check still reads the live settings.
+        if (!isWindows() && config.hosts.length === 1 && config.hosts[0] === HOST_CODEX) {
+          deferredSettings = settings;
+          return;
+        }
+        await publishInstallSettings(settings.request);
+        acceptGuideSettings(settings);
+      },
       version: JSON.parse(
         readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8"),
       ).version,
@@ -2387,7 +2467,8 @@ async function runGuidedCommand(command, args) {
           return;
         }
       },
-      runHost: runGuidedHost,
+      runHost: (action, host, options, label) =>
+        runGuidedHost(action, host, options, label, deferredSettings),
       finish: async (action, config, results) => {
         const root = activePluginRoot();
         if (!root || !existsSync(join(root, "scripts", "backend-service.sh")))
@@ -3264,10 +3345,10 @@ async function preparePluginPython(pluginRoot, uv, inherited) {
   await installVendoredReflexio(pluginRoot, uv, env);
 }
 
-async function preparePluginDashboard(pluginRoot, nodeRuntime, env) {
+async function preparePluginDashboard(pluginRoot, nodeRuntime, env, settings) {
   const dashboardDir = join(pluginRoot, "dashboard");
   if (existsSync(dashboardDir)) {
-    process.stdout.write("[phase] Preparing dashboard dependencies and build…\n");
+    reportRuntimePhase("Preparing dashboard dependencies and build…", settings);
     const helper = join(PACKAGE_ROOT, "plugin", "scripts", "dashboard-cache.js");
     const cache = existsSync(helper) ? require(helper) : null;
     const nodeVersion = spawnSync(nodeRuntime.node, ["--version"], {
@@ -3289,13 +3370,19 @@ async function preparePluginDashboard(pluginRoot, nodeRuntime, env) {
 
 async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   assertSupportedRuntimePlatform();
-  process.stdout.write("[phase] Preparing Python and runtime dependencies…\n");
+  reportRuntimePhase("Preparing Python and runtime dependencies…", options.settings);
   rmSync(INSTALL_FAILURE_MARKER, { force: true });
   const nodeRuntime = await ensurePrivateNode();
   if (options.readOnly) prunePublishHooksForReadOnly(pluginRoot);
   const uv = await ensureUv();
-  const env = runtimeEnv([dirname(uv), ...privateNodeBinDirs()]);
+  const toolPaths = [dirname(uv), ...privateNodeBinDirs()];
+  let env = runtimeEnv(toolPaths);
   await preparePluginPython(pluginRoot, uv, env);
+  if (options.settings) {
+    await preparePluginDashboard(pluginRoot, nodeRuntime, env, options.settings);
+    await publishFromPreparedRuntime(pluginRoot, options.settings);
+    env = runtimeEnv(toolPaths);
+  }
   const repairCode = await runChecked(
     pluginPythonPath(pluginRoot),
     ["-I", "-m", "claude_smart.env_config", "bootstrap-repair"],
@@ -3306,7 +3393,7 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
       "Could not repair missing installation defaults; resolve the settings error above and retry setup.",
     );
   verifyWindowsLocalEmbeddingRuntime(pluginRoot, env);
-  await preparePluginDashboard(pluginRoot, nodeRuntime, env);
+  if (!options.settings) await preparePluginDashboard(pluginRoot, nodeRuntime, env);
   return nodeRuntime;
 }
 
@@ -3860,7 +3947,20 @@ async function runUninstall(args) {
 
 async function runInstall(args, options = {}) {
   if (parseHost(args) === HOST_CODEX) {
-    await runInstallCodex(args);
+    // process.send identifies an IPC-launched worker even after its channel
+    // closes. Such a worker must never fall back to standalone installation.
+    const settings = typeof process.send === "function"
+      ? await new Promise((resolve, reject) => {
+          const disconnected = () => reject(new Error("Installation guide disconnected before passing settings."));
+          if (!process.connected) return disconnected();
+          process.once("disconnect", disconnected);
+          process.once("message", (message) => {
+            process.removeListener("disconnect", disconnected);
+            resolve(message);
+          });
+        })
+      : null;
+    await runInstallCodex(settings);
     return;
   }
   if (parseHost(args) === HOST_OPENCODE) {
@@ -3989,15 +4089,14 @@ async function runInstall(args, options = {}) {
   );
 }
 
-async function runInstallCodex(args) {
+async function runInstallCodex(settings) {
   if (!hasCli("codex")) {
     process.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n");
     process.exit(1);
   }
   assertSupportedRuntimePlatform();
   snapshotInstallState();
-  const setup = readInstallPolicy();
-  const readOnly = setup.readOnly;
+  let setup = settings ? null : readInstallPolicy();
 
   validateCodexPackage();
   const previousRoot = existsSync(CODEX_RUNTIME_PLUGIN_ROOT)
@@ -4007,13 +4106,14 @@ async function runInstallCodex(args) {
   let renderedHooks;
   try {
     installLocalPluginPackage(CODEX_RUNTIME_PACKAGE_DIR, "Codex runtime");
-    const { node } = await bootstrapPluginRuntime(CODEX_RUNTIME_PLUGIN_ROOT);
+    const { node } = await bootstrapPluginRuntime(CODEX_RUNTIME_PLUGIN_ROOT, { settings });
+    if (settings) setup = readInstallPolicy();
     const bundled = join(PACKAGE_ROOT, "plugin", "hooks", "codex-hooks.json");
     renderedHooks = renderCodexHooksForNode(
       JSON.parse(readFileSync(bundled, "utf8")),
       CODEX_RUNTIME_PLUGIN_ROOT,
       node,
-      readOnly,
+      setup.readOnly,
     );
   } catch (err) {
     process.stderr.write(
@@ -4021,6 +4121,7 @@ async function runInstallCodex(args) {
     );
     process.exit(1);
   }
+  const readOnly = setup.readOnly;
   const marketplaceRoot = copyCodexMarketplace();
   if (readOnly) {
     prunePublishHooksForReadOnly(codexMarketplacePluginRoot(marketplaceRoot));

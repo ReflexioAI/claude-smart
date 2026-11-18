@@ -153,6 +153,197 @@ def _run(tmp_path, package, host, env, command="update"):
     )
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "success",
+        "preparation-fails",
+        "stale-settings",
+        "guide-disconnects",
+        "early-disconnect",
+        "ack-disconnects",
+        pytest.param(
+            "guide-exits-after-save",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="POSIX uncatchable signal"
+            ),
+        ),
+    ],
+)
+def test_guided_codex_uses_prepared_interpreter_for_settings(tmp_path, outcome):
+    package, root, uv, env = _fixture(tmp_path, "codex", running="none")
+    env.pop("CLAUDE_SMART_INSTALL_CHILD")
+    env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
+    settings = tmp_path / ".claude-smart/.env"
+    before = settings.read_bytes()
+    node = tmp_path / ".claude-smart/node/current/bin/node"
+    _write_executable(node, f'#!/bin/sh\nexec {shlex.quote(node_bin())} "$@"\n')
+    if outcome != "preparation-fails":
+        _write_bootstrap_uv(uv, mode="fresh")
+    uv_source = uv.read_text()
+    change = ":"
+    if outcome == "stale-settings":
+        change = 'printf "# concurrent edit\\n" >> "$HOME/.claude-smart/.env"'
+    if outcome == "guide-disconnects":
+        change = (
+            "for attempt in 1 2 3 4 5 6 7 8 9 10; do "
+            '[ ! -e "$HOME/guide-disconnected" ] || break; sleep 0.5; done; '
+            '[ -e "$HOME/guide-disconnected" ] || exit 97'
+        )
+        preload = tmp_path / "disconnect-guide.cjs"
+        preload.write_text("""
+const {existsSync, writeFileSync} = require("node:fs");
+const {join} = require("node:path");
+const childProcess = require("node:child_process");
+const spawn = childProcess.spawn;
+if (typeof process.send === "function") {
+  process.once("disconnect", () => writeFileSync(join(process.env.HOME, "guide-disconnected"), ""));
+}
+childProcess.spawn = function(command, args, options) {
+  const child = spawn(command, args, options);
+  if (options?.stdio?.includes?.("ipc")) {
+    const timer = setInterval(() => {
+      if (existsSync(join(process.env.HOME, "settings-at-sync"))) {
+        child.disconnect();
+        clearInterval(timer);
+      }
+    }, 10);
+    child.once("exit", () => clearInterval(timer));
+  }
+  return child;
+};
+""")
+        env["NODE_OPTIONS"] = f'--require "{preload}"'
+    if outcome == "early-disconnect":
+        preload = tmp_path / "early-disconnect.mjs"
+        preload.write_text("""
+import {createRequire} from "node:module";
+if (typeof process.send === "function") {
+  if (process.connected) await new Promise(resolve => process.once("disconnect", resolve));
+} else {
+  const childProcess = createRequire(import.meta.url)("node:child_process");
+  const spawn = childProcess.spawn;
+  childProcess.spawn = function(command, args, options) {
+    const child = spawn(command, args, options);
+    if (options?.stdio?.includes?.("ipc")) {
+      setTimeout(() => { if (child.connected) child.disconnect(); }, 50);
+    }
+    return child;
+  };
+}
+""")
+        env["NODE_OPTIONS"] = f'--import "{preload.as_uri()}"'
+    if outcome == "ack-disconnects":
+        preload = tmp_path / "disconnect-ack.cjs"
+        preload.write_text("""
+if (process.send) {
+  const send = process.send;
+  process.send = function(message, ...args) {
+    if (message === "settings-published") process.disconnect();
+    return send.call(this, message, ...args);
+  };
+}
+""")
+        env["NODE_OPTIONS"] = f'--require "{preload}"'
+    if outcome == "guide-exits-after-save":
+        preload = tmp_path / "kill-guide.cjs"
+        preload.write_text("""
+const {writeFileSync} = require("node:fs");
+const {join} = require("node:path");
+if (typeof process.send === "function") {
+  const send = process.send;
+  process.send = function(message, ...args) {
+    if (message !== "settings-published") return send.call(this, message, ...args);
+    process.once("exit", (code) =>
+      writeFileSync(join(process.env.HOME, "worker-exit"), String(code)));
+    const guide = process.ppid;
+    process.kill(guide, "SIGKILL");
+    const deadline = Date.now() + 5000;
+    const wait = new Int32Array(new SharedArrayBuffer(4));
+    while (process.ppid === guide && Date.now() < deadline)
+      Atomics.wait(wait, 0, 0, 10);
+    if (process.ppid === guide) throw new Error("Fixture failed to kill guide");
+  };
+}
+""")
+        env["NODE_OPTIONS"] = f'--require "{preload}"'
+    _write_executable(
+        uv,
+        uv_source.replace(
+            "#!/bin/sh\n",
+            "#!/bin/sh\n"
+            'if [ "$1" = sync ] && [ ! -e "$HOME/settings-at-sync" ]; then\n'
+            '  cp "$HOME/.claude-smart/.env" "$HOME/settings-at-sync"\n'
+            f"  {change}\n"
+            "fi\n",
+            1,
+        ),
+    )
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(package / "bin/claude-smart.js"),
+            "update",
+            "--host",
+            "codex",
+            "--backend",
+            "local",
+            "--provider",
+            "codex",
+            "--read-only",
+            "--yes",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    at_sync = tmp_path / "settings-at-sync"
+    if outcome == "early-disconnect":
+        assert not at_sync.exists()
+        assert not (tmp_path / "uv.log").exists()
+    else:
+        assert at_sync.read_bytes() == before
+        assert "uv venv" not in (tmp_path / "uv.log").read_text()
+    if outcome == "guide-exits-after-save":
+        assert result.returncode == -signal.SIGKILL, (result.stdout, result.stderr)
+        worker_exit = tmp_path / "worker-exit"
+        deadline = time.monotonic() + 10
+        while (
+            not worker_exit.exists() or not worker_exit.stat().st_size
+        ) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert worker_exit.read_text() == "0"
+        assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
+        assert (root / "identity").read_text() == "new"
+        assert (tmp_path / ".codex/claude-smart/marketplace").is_dir()
+        return
+    if outcome in ("success", "ack-disconnects"):
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert "Preparing Python and runtime dependencies" in result.stdout
+        assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
+        assert (root / "identity").read_text() == "new"
+        return
+
+    assert result.returncode != 0
+    expected = (
+        before + b"# concurrent edit\n" if outcome == "stale-settings" else before
+    )
+    assert settings.read_bytes() == expected
+    assert (root / "identity").read_text() == "old"
+    assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
+    log = next((tmp_path / ".claude-smart/install-logs").glob("update-codex-*.log"))
+    expected_error = {
+        "stale-settings": "Settings changed after confirmation",
+        "guide-disconnects": "Installation guide disconnected before settings publication",
+        "early-disconnect": "Installation guide disconnected before passing settings",
+        "preparation-fails": "uv sync failed",
+    }[outcome]
+    assert expected_error in log.read_text()
+
+
 def _calls(tmp_path):
     path = tmp_path / "service-calls.jsonl"
     return (
