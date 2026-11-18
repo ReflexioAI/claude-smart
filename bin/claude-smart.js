@@ -3937,9 +3937,12 @@ async function runUninstall(args) {
 
 async function runInstall(args, options = {}) {
   if (parseHost(args) === HOST_CODEX) {
-    const settings = process.connected
+    // process.send identifies an IPC-launched worker even after its channel
+    // closes. Such a worker must never fall back to standalone installation.
+    const settings = typeof process.send === "function"
       ? await new Promise((resolve, reject) => {
           const disconnected = () => reject(new Error("Installation guide disconnected before passing settings."));
+          if (!process.connected) return disconnected();
           process.once("disconnect", disconnected);
           process.once("message", (message) => {
             process.removeListener("disconnect", disconnected);

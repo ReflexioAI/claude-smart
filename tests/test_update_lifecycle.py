@@ -160,6 +160,7 @@ def _run(tmp_path, package, host, env, command="update"):
         "preparation-fails",
         "stale-settings",
         "guide-disconnects",
+        "early-disconnect",
         "ack-disconnects",
     ],
 )
@@ -200,6 +201,25 @@ childProcess.spawn = function(command, args, options) {
 };
 """)
         env["NODE_OPTIONS"] = f'--require "{preload}"'
+    if outcome == "early-disconnect":
+        preload = tmp_path / "early-disconnect.mjs"
+        preload.write_text("""
+import {createRequire} from "node:module";
+if (typeof process.send === "function") {
+  if (process.connected) await new Promise(resolve => process.once("disconnect", resolve));
+} else {
+  const childProcess = createRequire(import.meta.url)("node:child_process");
+  const spawn = childProcess.spawn;
+  childProcess.spawn = function(command, args, options) {
+    const child = spawn(command, args, options);
+    if (options?.stdio?.includes?.("ipc")) {
+      setTimeout(() => { if (child.connected) child.disconnect(); }, 50);
+    }
+    return child;
+  };
+}
+""")
+        env["NODE_OPTIONS"] = f'--import "{preload.as_uri()}"'
     if outcome == "ack-disconnects":
         preload = tmp_path / "disconnect-ack.cjs"
         preload.write_text("""
@@ -245,8 +265,13 @@ if (process.send) {
         timeout=30,
         check=False,
     )
-    assert (tmp_path / "settings-at-sync").read_bytes() == before
-    assert "uv venv" not in (tmp_path / "uv.log").read_text()
+    at_sync = tmp_path / "settings-at-sync"
+    if outcome == "early-disconnect":
+        assert not at_sync.exists()
+        assert not (tmp_path / "uv.log").exists()
+    else:
+        assert at_sync.read_bytes() == before
+        assert "uv venv" not in (tmp_path / "uv.log").read_text()
     if outcome in ("success", "ack-disconnects"):
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
@@ -264,6 +289,7 @@ if (process.send) {
     expected_error = {
         "stale-settings": "Settings changed after confirmation",
         "guide-disconnects": "Installation guide disconnected before settings publication",
+        "early-disconnect": "Installation guide disconnected before passing settings",
         "preparation-fails": "uv sync failed",
     }[outcome]
     assert expected_error in log.read_text()
