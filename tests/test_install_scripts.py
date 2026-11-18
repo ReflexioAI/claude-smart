@@ -1840,6 +1840,7 @@ def test_node_first_install_removes_an_unprepared_copy_on_failure(
         ("08073", "http://localhost:08073/", True),
         ("08073", "http://127.0.0.1:08073/x/?q=1", True),
         ("08073", "http://localhost:8073/", False),
+        ("8073", "http://localhost:08073/", False),
         ("9000", "http://localhost:8071", True),
         ("9000", "http://localhost:8071/x/", False),
         ("8071", "http://localhost:8071#dev", True),

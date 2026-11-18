@@ -2642,7 +2642,7 @@ function isBundledBackendUrl(url) {
   // Match the shell's literal authority for configured port spellings such as
   // 08073. A URL object normalizes the digits before exposing its port.
   const literal = value.match(/^http:\/\/(?:localhost|127\.0\.0\.1)(?::([0-9]+))?(?=[/?#]|$)/);
-  if (literal && (literal[1] || "80") === port) return true;
+  if (literal) return (literal[1] || "80") === port;
   try {
     const parsed = new URL(value);
     return (
