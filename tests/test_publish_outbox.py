@@ -354,24 +354,33 @@ def test_concurrent_producers_admit_only_one_booting_child(
 ):
     for session in ("s1", "s2"):
         _turn(session)
-    spawn = Mock()
+    launching = threading.Event()
+    finish_launch = threading.Event()
+
+    def hold_launch(_token):
+        launching.set()
+        assert finish_launch.wait(5), "producer did not release the launch"
+
+    spawn = Mock(side_effect=hold_launch)
     monkeypatch.setattr(outbox, "_spawn_worker", spawn)
-    ready = threading.Barrier(2)
     results = []
 
-    def enqueue(session):
-        ready.wait(2)
-        results.append(outbox.enqueue(session, "project"))
-
-    threads = [
-        threading.Thread(target=enqueue, args=(session,)) for session in ("s1", "s2")
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(2)
-        assert not thread.is_alive()
-    assert results == [True, True]
+    producer = threading.Thread(
+        target=lambda: results.append(outbox.enqueue("s1", "project"))
+    )
+    producer.start()
+    try:
+        assert launching.wait(5)
+        # The first producer still owns the real gate. The second can retry
+        # the same session after its bounded acquisition fails.
+        assert not outbox.enqueue("s2", "project")
+        assert len(_jobs(session_dir)) == 1
+    finally:
+        finish_launch.set()
+        producer.join(5)
+    assert not producer.is_alive()
+    assert results == [True]
+    assert outbox.enqueue("s2", "project")
     assert len(_jobs(session_dir)) == 2
     spawn.assert_called_once()
 
