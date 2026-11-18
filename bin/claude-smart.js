@@ -3965,6 +3965,15 @@ async function runInstallCodex(args) {
     ? CODEX_RUNTIME_PLUGIN_ROOT
     : findCodexPluginRoot();
   stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
+  try {
+    installLocalPluginPackage(CODEX_RUNTIME_PACKAGE_DIR, "Codex runtime");
+    await bootstrapPluginRuntime(CODEX_RUNTIME_PLUGIN_ROOT, { readOnly });
+  } catch (err) {
+    process.stderr.write(
+      `error: could not prepare claude-smart Codex runtime: ${err && err.message ? err.message : err}\n`,
+    );
+    process.exit(1);
+  }
   const marketplaceRoot = copyCodexMarketplace();
   if (readOnly) {
     prunePublishHooksForReadOnly(codexMarketplacePluginRoot(marketplaceRoot));
@@ -4007,8 +4016,6 @@ async function runInstallCodex(args) {
   let trustedHookCount = 0;
   let trustError = null;
   try {
-    installLocalPluginPackage(CODEX_RUNTIME_PACKAGE_DIR, "Codex runtime");
-    await bootstrapPluginRuntime(CODEX_RUNTIME_PLUGIN_ROOT, { readOnly });
     ensurePluginRoot(CODEX_RUNTIME_PLUGIN_ROOT);
     // Only the patched manifest enters the marketplace/cache. Its commands
     // execute the account runtime even when Codex supplies PLUGIN_ROOT=cache.
