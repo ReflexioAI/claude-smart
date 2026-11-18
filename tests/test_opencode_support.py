@@ -1882,6 +1882,110 @@ def test_node_opencode_v2_loader_round_trip(tmp_path: Path) -> None:
     assert parsed["still"] == "other plugin\n"
 
 
+def test_opencode_loader_preserves_file_created_during_preparation(tmp_path: Path):
+    script = f"""
+        const fs = require("node:fs");
+        const assert = require("node:assert/strict");
+        const {{ join }} = require("node:path");
+        const installer = require({json.dumps(str(REPO_ROOT / "bin/claude-smart.js"))});
+        const project = {json.dumps(str(tmp_path))};
+        const directory = join(project, ".opencode", "plugins");
+        const target = join(directory, "claude-smart.js");
+        const installed = installer.writeOpenCodeV2Plugin([], project, project, () => {{
+            assert.deepEqual(fs.readdirSync(directory).map(name => name.slice(-4)), [".tmp"]);
+            fs.writeFileSync(target, "foreign loader", {{flag: "wx"}});
+        }});
+        assert.equal(installed.status, "conflict");
+        assert.equal(fs.readFileSync(target, "utf8"), "foreign loader");
+        assert.deepEqual(fs.readdirSync(directory), ["claude-smart.js"]);
+    """
+    result = _run_node_script(script)
+    if result is None:
+        pytest.skip("node is not installed")
+    assert result.returncode == 0, result.stderr
+
+
+def test_opencode_dangling_loader_blocks_configuration_changes(tmp_path: Path):
+    directory = tmp_path / ".opencode" / "plugins"
+    directory.mkdir(parents=True)
+    target = directory / "claude-smart.js"
+    missing = tmp_path / "missing.js"
+    try:
+        target.symlink_to(missing)
+    except OSError as err:
+        if os.name == "nt" and getattr(err, "winerror", None) == 1314:
+            pytest.skip("Windows runner lacks permission to create symlinks")
+        raise
+    script = f"""
+        const assert = require("node:assert/strict");
+        const installer = require({json.dumps(str(REPO_ROOT / "bin/claude-smart.js"))});
+        const project = {json.dumps(str(tmp_path))};
+        assert.match(installer.openCodeV2LoaderConflicts([], project), /cannot be read/);
+        const result = installer.writeOpenCodeV2Plugin([], project, project, () => {{
+            assert.fail("blocked loader must be detected before config changes");
+        }});
+        assert.equal(result.status, "conflict");
+    """
+    result = _run_node_script(script)
+    if result is None:
+        pytest.skip("node is not installed")
+    assert result.returncode == 0, result.stderr
+    assert list(directory.iterdir()) == [target]
+    assert target.readlink() == missing
+    assert not missing.exists()
+
+
+def test_opencode_unreadable_loader_bytes_block_config_changes(tmp_path: Path):
+    script = f"""
+        const fs = require("node:fs");
+        const assert = require("node:assert/strict");
+        const {{ join }} = require("node:path");
+        const installer = require({json.dumps(str(REPO_ROOT / "bin/claude-smart.js"))});
+        const project = {json.dumps(str(tmp_path))};
+        const original = installer.writeOpenCodeV2Plugin([], project, project);
+        const corrupt = fs.readFileSync(original.path);
+        const leaf = corrupt.indexOf("server.mjs");
+        assert.ok(leaf > 0);
+        corrupt[leaf] = 0xff;
+        fs.writeFileSync(original.path, corrupt);
+        const result = installer.writeOpenCodeV2Plugin([], join(project, "pkg"), project, () => {{
+            assert.fail("invalid loader bytes must be detected before config changes");
+        }});
+        assert.equal(result.status, "conflict");
+        assert.deepEqual(fs.readFileSync(original.path), corrupt);
+    """
+    result = _run_node_script(script)
+    if result is None:
+        pytest.skip("node is not installed")
+    assert result.returncode == 0, result.stderr
+
+
+def test_opencode_loader_refresh_updates_existing_file_in_place(tmp_path: Path):
+    script = f"""
+        const fs = require("node:fs");
+        const assert = require("node:assert/strict");
+        const {{ join }} = require("node:path");
+        const {{ pathToFileURL }} = require("node:url");
+        const installer = require({json.dumps(str(REPO_ROOT / "bin/claude-smart.js"))});
+        const project = {json.dumps(str(tmp_path))};
+        const oldRoot = join(project, "much-longer-original-package-path");
+        const newRoot = join(project, "pkg");
+        const original = installer.writeOpenCodeV2Plugin([], oldRoot, project);
+        assert.equal(original.status, "wrote");
+        const identity = fs.statSync(original.path).ino;
+        const refreshed = installer.writeOpenCodeV2Plugin([], newRoot, project);
+        assert.equal(refreshed.status, "wrote");
+        assert.equal(fs.statSync(original.path).ino, identity);
+        const body = fs.readFileSync(original.path, "utf8");
+        const entry = pathToFileURL(join(newRoot, "plugin", "opencode", "dist", "server.mjs")).href;
+        assert.equal(body.split("\\n").at(-2), `export {{ default }} from ${{JSON.stringify(entry)}};`);
+    """
+    result = _run_node_script(script)
+    if result is None:
+        pytest.skip("node is not installed")
+    assert result.returncode == 0, result.stderr
+
+
 def test_node_opencode_server_injects_cached_context_for_session_ids(
     tmp_path: Path,
 ) -> None:

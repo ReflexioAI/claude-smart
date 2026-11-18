@@ -22,12 +22,14 @@ const {
   chmodSync,
   closeSync,
   fstatSync,
+  ftruncateSync,
   openSync,
   readSync,
   constants,
   cpSync,
   existsSync,
   accessSync,
+  copyFileSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -570,7 +572,7 @@ function readOpenCodeV2Loader(target) {
   try {
     return readFileSync(target, "utf8");
   } catch (err) {
-    if (err && err.code === "ENOENT") return null;
+    if (err && err.code === "ENOENT" && !pathEntryExists(target)) return null;
     throw err;
   }
 }
@@ -593,6 +595,7 @@ function writeOpenCodeV2Plugin(
   args = [],
   packageRoot = OPENCODE_LOCAL_PACKAGE_DIR,
   cwd = process.cwd(),
+  beforePublish = () => {},
 ) {
   const target = opencodeV2PluginFile(args, cwd);
   const body = opencodeV2PluginBody(packageRoot);
@@ -605,9 +608,60 @@ function writeOpenCodeV2Plugin(
   if (existing !== null && existing !== body && !isGeneratedOpenCodeV2Loader(existing)) {
     return { path: target, status: "conflict" };
   }
-  mkdirSync(dirname(target), { recursive: true });
-  if (existing !== body) writeFileSync(target, body);
-  return { path: target, status: existing === body ? "unchanged" : "wrote" };
+  let staged;
+  let writableLoader;
+  try {
+    if (existing === null) {
+      mkdirSync(dirname(target), { recursive: true });
+      const candidate = uniquePackagePath(target, ".claude-smart-loader") + ".tmp";
+      const file = openSync(candidate, "wx");
+      staged = candidate;
+      try {
+        writeFileSync(file, body);
+      } finally {
+        closeSync(file);
+      }
+    } else if (existing !== body) {
+      // Refresh on the existing inode, including directories where the
+      // installer can write the generated file but cannot replace its entry.
+      writableLoader = openSync(target, "r+");
+      const previous = Buffer.from(existing);
+      const opened = Buffer.alloc(previous.length + 1);
+      const count = readSync(writableLoader, opened, 0, opened.length, 0);
+      if (!opened.subarray(0, count).equals(previous)) {
+        return { path: target, status: "conflict" };
+      }
+    }
+    beforePublish();
+    if (readOpenCodeV2Loader(target) !== existing) {
+      return { path: target, status: "conflict" };
+    }
+    if (staged) {
+      try {
+        copyFileSync(staged, target, constants.COPYFILE_EXCL);
+      } catch (err) {
+        if (err?.code === "EEXIST") return { path: target, status: "conflict" };
+        throw err;
+      }
+    } else if (writableLoader !== undefined) {
+      const bytes = Buffer.from(body);
+      writeFileSync(writableLoader, bytes);
+      ftruncateSync(writableLoader, bytes.length);
+    } else {
+      return { path: target, status: "unchanged" };
+    }
+    return { path: target, status: "wrote" };
+  } finally {
+    if (writableLoader !== undefined) closeSync(writableLoader);
+    if (staged) {
+      try {
+        rmSync(staged, { force: true });
+      } catch {
+        // The temporary extension is ignored by OpenCode. Cleanup failure
+        // must not roll back a package its published loader now imports.
+      }
+    }
+  }
 }
 
 function removeOpenCodeV2Plugin(args = [], cwd = process.cwd()) {
@@ -3970,7 +4024,7 @@ async function runInstallOpenCode(args) {
   assertOpenCodeInstallConfiguration(args);
   // Fail while the original adapter still works if selecting the root fails.
   ensurePluginRoot(pluginRoot);
-  try {
+  const v2PluginFile = writeOpenCodeV2Plugin(args, packageRoot, process.cwd(), () => {
     // One load path per scope: OpenCode 1.x auto-loads {plugin,plugins}/*.{ts,js}
     // from its config directories and V2 loads the plugins directory, so the
     // loader written below is the single entry for both lines. A config entry
@@ -3980,18 +4034,12 @@ async function runInstallOpenCode(args) {
     // any entry left by earlier versions, from every config the scope loads,
     // instead of writing one.
     results = removeOpenCodeLegacyEntries(args);
-  } catch (err) {
-    process.stderr.write(
-      `error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`,
-    );
-    process.exit(1);
-  }
+  });
   if (readOnly) {
     process.stdout.write(
       "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
     );
   }
-  const v2PluginFile = writeOpenCodeV2Plugin(args, packageRoot);
   if (v2PluginFile.status === "conflict") {
     throw new Error(
       `OpenCode loader changed during install at ${v2PluginFile.path}; reinstall after resolving the conflict.`,
