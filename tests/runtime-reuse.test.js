@@ -7,6 +7,57 @@ const path = require("node:path");
 const cache = require("../plugin/scripts/dashboard-cache");
 const { reusePreparedRuntime } = require("../bin/claude-smart");
 
+test("probe runtime selection replacement on the native runner filesystem", t => {
+  const { spawnSync } = require("node:child_process");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-selector λ "));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const prior = path.join(root, "prior runtime");
+  const next = path.join(root, "next runtime");
+  fs.mkdirSync(prior);
+  fs.mkdirSync(next);
+  const junction = path.join(root, "plugin-root");
+  const candidate = path.join(root, "candidate");
+  const linkType = process.platform === "win32" ? "junction" : "dir";
+  fs.symlinkSync(prior, junction, linkType);
+  fs.symlinkSync(next, candidate, linkType);
+  let junctionReplace = "success";
+  try {
+    fs.renameSync(candidate, junction);
+  } catch (error) {
+    assert.ok(error.code);
+    junctionReplace = error.code;
+  }
+  assert.equal(fs.realpathSync(junction), fs.realpathSync(
+    junctionReplace === "success" ? next : prior,
+  ));
+  assert.ok(fs.statSync(prior).isDirectory());
+  assert.ok(fs.statSync(next).isDirectory());
+
+  const record = path.join(root, "plugin-root.txt");
+  fs.writeFileSync(record, prior);
+  const stageAndTerminate = `
+const fs = require("node:fs");
+const [record, next, boundary] = process.argv.slice(1);
+fs.writeFileSync(record + ".tmp", next, { flag: "wx" });
+if (boundary === "after") fs.renameSync(record + ".tmp", record);
+process.exit(87);
+`;
+  const textSelection = {};
+  for (const boundary of ["before", "after"]) {
+    const result = spawnSync(process.execPath, ["-e", stageAndTerminate, record, next, boundary], {
+      encoding: "utf8", timeout: 10000,
+    });
+    assert.equal(result.status, 87, result.stderr || String(result.error || result.signal));
+    const expected = boundary === "before" ? prior : next;
+    assert.equal(fs.readFileSync(record, "utf8"), expected);
+    textSelection[boundary] = boundary === "before" ? "prior" : "next";
+    if (boundary === "before") fs.unlinkSync(record + ".tmp");
+  }
+  t.diagnostic("RUNTIME_SELECTOR_PROBE " + JSON.stringify({
+    platform: process.platform, node: process.version, junctionReplace, textSelection,
+  }));
+});
+
 test("registered Claude runtime discovery respects source metadata and native shims", t => {
   const {spawnSync} = require("node:child_process");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "registered runtime λ "));
