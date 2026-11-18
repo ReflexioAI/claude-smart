@@ -28,12 +28,10 @@ claude_smart_source_reflexio_env
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "cli.sh" "$@"
 
-# If the Setup hook recorded an install failure, surface that reason
-# instead of falling through to a generic "uv not found" — mirrors the
-# branch at hook_entry.sh so slash commands and hooks behave consistently
-# on a broken install.
+# This account-wide diagnostic may come from another host. Only an
+# unprepared runtime should be blocked by it.
 FAILURE_MARKER="$HOME/.claude-smart/install-failed"
-if [ -f "$FAILURE_MARKER" ]; then
+if [ -f "$FAILURE_MARKER" ] && ! claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.cli; then
   msg="$(head -n 1 "$FAILURE_MARKER" 2>/dev/null || echo "")"
   [ -n "$msg" ] || msg="unknown error"
   echo "claude-smart is not installed correctly: $msg" >&2

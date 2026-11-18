@@ -761,7 +761,8 @@ def _install_snapshot(target):
 
 
 @pytest.mark.parametrize(
-    "case", ["attached", "colocated", "unchanged", "stale", "shadow", "timeout"]
+    "case",
+    ["attached", "colocated", "unchanged", "stale", "shadow", "timeout", "editor"],
 )
 def test_prepared_settings_verify_staged_windows_backend_before_commit(
     tmp_path, monkeypatch, case
@@ -787,6 +788,15 @@ def test_prepared_settings_verify_staged_windows_backend_before_commit(
         'sys.exit(0 if b"REFLEXIO_EMBEDDING_SERVICE_URL=" in content else 77)\n',
         encoding="utf-8",
     )
+    if case == "editor":
+        importer.write_text(
+            importer.read_text(encoding="utf-8").replace(
+                "sys.exit(",
+                f"with Path({str(target)!r}).open('ab') as live:\n"
+                "    live.write(b'# external editor\\n')\nsys.exit(",
+            ),
+            encoding="utf-8",
+        )
     if case == "timeout":
         importer.write_text(
             importer.read_text(encoding="utf-8").replace(
@@ -809,7 +819,7 @@ def test_prepared_settings_verify_staged_windows_backend_before_commit(
         )
     else:
         target.write_bytes(b"REFLEXIO_URL=https://old.example.invalid/\n")
-    if case == "attached":
+    if case in {"attached", "editor"}:
         with target.open("ab") as settings:
             settings.write(b"REFLEXIO_EMBEDDING_SERVICE_URL=http://localhost:8093/\n")
     if case == "shadow":
@@ -827,7 +837,7 @@ def test_prepared_settings_verify_staged_windows_backend_before_commit(
     if case == "attached":
         env_config.publish_install(*args, prepared=True, check_windows_embedding=True)
         assert f"REFLEXIO_URL={local}\n".encode() in target.read_bytes()
-    elif case == "stale":
+    elif case in {"stale", "editor"}:
         with pytest.raises(env_config.SettingsConflictError):
             env_config.publish_install(
                 *args, prepared=True, check_windows_embedding=True
@@ -839,7 +849,9 @@ def test_prepared_settings_verify_staged_windows_backend_before_commit(
             )
         assert rejected.value.code == {"shadow": 79, "timeout": 78}.get(case, 77)
     if case != "attached":
-        assert target.read_bytes() == original
+        assert target.read_bytes() == original + (
+            b"# external editor\n" if case == "editor" else b""
+        )
     if case in {"stale", "shadow"}:
         assert not observed.exists()
     elif case in {"attached", "unchanged"}:

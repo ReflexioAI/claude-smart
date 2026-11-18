@@ -527,6 +527,12 @@ def _edit_env_file[Result](
                     os.fsync(target.fileno())
                 if validate is not None:
                     validate(temporary)
+                    # An external editor does not participate in this lock.
+                    # Recheck the original after the potentially slow probe.
+                    if _read_env_file(path) != (exists, source):
+                        raise SettingsConflictError(
+                            "Settings changed after confirmation; reload and retry"
+                        )
                 if unchanged or (exists and os.name == "nt"):
                     # Match the old in-place writer's read-only-attribute repair.
                     path.chmod(0o600)
