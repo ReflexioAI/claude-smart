@@ -2279,6 +2279,8 @@ async function writeConfirmedSettings(python, args, runtime, environment, reques
 }
 
 async function publishFromPreparedRuntime(pluginRoot, settings) {
+  if (!process.connected)
+    throw new Error("Installation guide disconnected before settings publication.");
   const runtime = { directory: pluginRoot, children: [] };
   settingsRuntimes.add(runtime);
   try {
@@ -2290,7 +2292,8 @@ async function publishFromPreparedRuntime(pluginRoot, settings) {
       settings.request,
     );
     usePublishedSettings(settings);
-    process.send("settings-published");
+    // A lost acknowledgement cannot undo the settings owner's committed save.
+    if (process.connected) process.send("settings-published", () => {});
   } finally {
     cleanupSettingsRuntimes();
   }
@@ -2313,6 +2316,12 @@ async function runGuidedHost(command, host, options, label, settings) {
     () => process.stdout.write(`  ${label}… ${Math.floor((Date.now() - started) / 1000)}s\n`),
     5000,
   );
+  let accepted = false;
+  const acceptSettings = () => {
+    if (accepted) return;
+    accepted = true;
+    acceptGuideSettings(settings);
+  };
   try {
     const code = await new Promise((resolve) => {
       const child = spawn(process.execPath, args, {
@@ -2328,7 +2337,7 @@ async function runGuidedHost(command, host, options, label, settings) {
       trackChild(child, !isWindows());
       if (settings) {
         child.once("message", (message) => {
-          if (message === "settings-published") acceptGuideSettings(settings);
+          if (message === "settings-published") acceptSettings();
         });
         child.send({ request: settings.request, cliPath: settings.cliPath }, (error) => {
           if (error && child.connected) child.disconnect();
@@ -2347,11 +2356,17 @@ async function runGuidedHost(command, host, options, label, settings) {
         process.stderr.write(`  ${label} failed: ${err.message}\n`);
         resolve(1);
       });
-      // close follows all stdout data; exit can precede the final pipe chunks.
-      child.once("close", (code) => {
+      // Wait for the log stream independently of IPC. After an explicit
+      // disconnect Node can omit ChildProcess's combined close event.
+      const exited = new Promise((done) => child.once("exit", done));
+      const logClosed = new Promise((done) => child.stdout.once("close", done));
+      Promise.all([exited, logClosed]).then(([code]) => {
         if (!terminatingOnSignal) resolve(typeof code === "number" ? code : 1);
       });
     });
+    // A successful Codex worker requires a confirmed save, even if the
+    // guide disconnected before receiving the acknowledgement.
+    if (settings && code === 0) acceptSettings();
     if (code !== 0) process.stderr.write(`  ${label} failed. Details: ${log}\n`);
     return { code, log };
   } finally {
@@ -2413,7 +2428,8 @@ async function runGuidedCommand(command, args) {
       saved: () => saved,
       save: async (config) => {
         const settings = planInstallSettings(config, captured);
-        if (config.hosts.length === 1 && config.hosts[0] === HOST_CODEX) {
+        // The native Windows embedding check still reads the live settings.
+        if (!isWindows() && config.hosts.length === 1 && config.hosts[0] === HOST_CODEX) {
           deferredSettings = settings;
           return;
         }

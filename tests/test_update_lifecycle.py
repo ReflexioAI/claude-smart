@@ -153,7 +153,16 @@ def _run(tmp_path, package, host, env, command="update"):
     )
 
 
-@pytest.mark.parametrize("outcome", ["success", "preparation-fails", "stale-settings"])
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "success",
+        "preparation-fails",
+        "stale-settings",
+        "guide-disconnects",
+        "ack-disconnects",
+    ],
+)
 def test_guided_codex_uses_prepared_interpreter_for_settings(tmp_path, outcome):
     package, root, uv, env = _fixture(tmp_path, "codex", running="none")
     env.pop("CLAUDE_SMART_INSTALL_CHILD")
@@ -165,11 +174,44 @@ def test_guided_codex_uses_prepared_interpreter_for_settings(tmp_path, outcome):
     if outcome != "preparation-fails":
         _write_bootstrap_uv(uv, mode="fresh")
     uv_source = uv.read_text()
-    change = (
-        'printf "# concurrent edit\\n" >> "$HOME/.claude-smart/.env"'
-        if outcome == "stale-settings"
-        else ":"
-    )
+    change = ":"
+    if outcome == "stale-settings":
+        change = 'printf "# concurrent edit\\n" >> "$HOME/.claude-smart/.env"'
+    if outcome == "guide-disconnects":
+        change = "sleep 0.5"
+        preload = tmp_path / "disconnect-guide.cjs"
+        preload.write_text("""
+const {existsSync} = require("node:fs");
+const {join} = require("node:path");
+const childProcess = require("node:child_process");
+const spawn = childProcess.spawn;
+childProcess.spawn = function(command, args, options) {
+  const child = spawn(command, args, options);
+  if (options?.stdio?.includes?.("ipc")) {
+    const timer = setInterval(() => {
+      if (existsSync(join(process.env.HOME, "settings-at-sync"))) {
+        child.disconnect();
+        clearInterval(timer);
+      }
+    }, 10);
+    child.once("exit", () => clearInterval(timer));
+  }
+  return child;
+};
+""")
+        env["NODE_OPTIONS"] = f'--require "{preload}"'
+    if outcome == "ack-disconnects":
+        preload = tmp_path / "disconnect-ack.cjs"
+        preload.write_text("""
+if (process.send) {
+  const send = process.send;
+  process.send = function(message, ...args) {
+    if (message === "settings-published") process.disconnect();
+    return send.call(this, message, ...args);
+  };
+}
+""")
+        env["NODE_OPTIONS"] = f'--require "{preload}"'
     _write_executable(
         uv,
         uv_source.replace(
@@ -205,7 +247,7 @@ def test_guided_codex_uses_prepared_interpreter_for_settings(tmp_path, outcome):
     )
     assert (tmp_path / "settings-at-sync").read_bytes() == before
     assert "uv venv" not in (tmp_path / "uv.log").read_text()
-    if outcome == "success":
+    if outcome in ("success", "ack-disconnects"):
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
         assert (root / "identity").read_text() == "new"
@@ -219,11 +261,11 @@ def test_guided_codex_uses_prepared_interpreter_for_settings(tmp_path, outcome):
     assert (root / "identity").read_text() == "old"
     assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
     log = next((tmp_path / ".claude-smart/install-logs").glob("update-codex-*.log"))
-    expected_error = (
-        "Settings changed after confirmation"
-        if outcome == "stale-settings"
-        else "uv sync failed"
-    )
+    expected_error = {
+        "stale-settings": "Settings changed after confirmation",
+        "guide-disconnects": "Installation guide disconnected before settings publication",
+        "preparation-fails": "uv sync failed",
+    }[outcome]
     assert expected_error in log.read_text()
 
 
