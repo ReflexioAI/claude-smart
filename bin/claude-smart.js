@@ -2644,27 +2644,24 @@ function privateNodeRoot() {
   return join(homedir(), ".claude-smart", "node", "current");
 }
 
-function privateNodeBinDirs() {
-  const root = privateNodeRoot();
+function privateNodeBinDirs(root = privateNodeRoot()) {
   return [join(root, "bin"), root];
 }
 
-function resolvePrivateCommand(names) {
-  for (const dir of privateNodeBinDirs()) {
+function resolvePrivateCommand(names, root) {
+  for (const dir of privateNodeBinDirs(root)) {
     for (const name of names) {
       const candidate = join(dir, name);
-      if (existsSync(candidate)) return candidate;
+      if (isExecutableFile(candidate)) return candidate;
     }
   }
   return null;
 }
 
-function resolvePrivateNode() {
-  return resolvePrivateCommand(isWindows() ? ["node.exe", "node"] : ["node"]);
-}
-
-function resolvePrivateNpm() {
-  return resolvePrivateCommand(isWindows() ? ["npm.cmd", "npm.exe", "npm"] : ["npm"]);
+function privateNodeTools(root = privateNodeRoot()) {
+  const node = resolvePrivateCommand(isWindows() ? ["node.exe", "node"] : ["node"], root);
+  const npm = resolvePrivateCommand(isWindows() ? ["npm.cmd", "npm.exe", "npm"] : ["npm"], root);
+  return node && npm ? { node, npm } : null;
 }
 
 function runtimeEnv(extraDirs = []) {
@@ -2702,21 +2699,11 @@ function nodeArchiveSpec() {
   return { nodeOs, nodeArch, archiveExt };
 }
 
-async function ensurePrivateNode() {
-  const existing = resolvePrivateNode();
-  const existingNpm = resolvePrivateNpm();
-  if (existing && existingNpm) return { node: existing, npm: existingNpm };
-
-  assertSupportedRuntimePlatform();
+async function preparePrivateNodeArchive(temp) {
   const major = process.env.CLAUDE_SMART_NODE_LTS_MAJOR || "26";
   const { nodeOs, nodeArch, archiveExt } = nodeArchiveSpec();
   const baseUrl =
     process.env.CLAUDE_SMART_NODE_BASE_URL || `https://nodejs.org/dist/latest-v${major}.x`;
-  const nodeRoot = join(homedir(), ".claude-smart", "node");
-  const temp = join(tmpdir(), `claude-smart-node-${process.pid}`);
-  mkdirSync(nodeRoot, { recursive: true });
-  rmSync(temp, { recursive: true, force: true });
-  mkdirSync(temp, { recursive: true });
 
   const sumsPath = join(temp, "SHASUMS256.txt");
   await downloadFile(`${baseUrl}/SHASUMS256.txt`, sumsPath);
@@ -2766,43 +2753,54 @@ async function ensurePrivateNode() {
   }
   if (code !== 0) throw new Error(`Node.js archive extraction failed for ${archiveName}`);
   const extracted = join(extractDir, archiveName.replace(/\.zip$/, "").replace(/\.tar\.gz$/, ""));
-  const current = privateNodeRoot();
-  // Atomic swap with rollback: move existing `current` to a backup first
-  // so a non-EXDEV failure (EACCES, EBUSY) does not leave the user with no
-  // private node at all. EXDEV (cross-device) falls back to cpSync.
-  const backup = `${current}.prev.${process.pid}`;
-  rmSync(backup, { recursive: true, force: true });
-  const hadCurrent = existsSync(current);
-  if (hadCurrent) renameSync(current, backup);
-  try {
-    try {
-      renameSync(extracted, current);
-    } catch (err) {
-      if (!err || err.code !== "EXDEV") throw err;
-      cpSync(extracted, current, {
-        recursive: true,
-        force: true,
-        verbatimSymlinks: true,
-      });
-    }
-  } catch (err) {
-    if (hadCurrent) {
-      try {
-        renameSync(backup, current);
-      } catch {
-        /* leave backup for manual recovery */
-      }
-    }
-    throw err;
-  }
-  rmSync(backup, { recursive: true, force: true });
-  rmSync(temp, { recursive: true, force: true });
+  if (!privateNodeTools(extracted))
+    throw new Error(`verified Node.js archive ${archiveName} is missing executable node or npm`);
+  return extracted;
+}
 
-  const node = resolvePrivateNode();
-  const npm = resolvePrivateNpm();
-  if (!node || !npm)
-    throw new Error("private Node.js install completed but node/npm are not usable");
-  return { node, npm };
+async function ensurePrivateNode() {
+  const existing = privateNodeTools();
+  if (existing) return existing;
+
+  assertSupportedRuntimePlatform();
+  const current = privateNodeRoot();
+  const nodeRoot = dirname(current);
+  mkdirSync(nodeRoot, { recursive: true });
+  // Stage on the destination filesystem so activation is one rename after
+  // backing up the old path. Preparation never touches the current runtime.
+  const temp = mkdtempSync(join(nodeRoot, ".prepare-"));
+  try {
+    const extracted = await preparePrivateNodeArchive(temp);
+    const lock = acquirePackageInstallLock(current, "private Node");
+    try {
+      const concurrent = privateNodeTools();
+      if (concurrent) return concurrent;
+
+      const backup = uniquePackagePath(current, ".previous");
+      const hadCurrent = pathEntryExists(current);
+      if (hadCurrent) renameSync(current, backup);
+      try {
+        renameSync(extracted, current);
+      } catch (error) {
+        if (hadCurrent) renameSync(backup, current);
+        throw error;
+      }
+      const installed = privateNodeTools();
+      if (!installed) {
+        // Put the invalid candidate back in the private work directory so the
+        // same rollback works even when its paths include symlinks.
+        renameSync(current, extracted);
+        if (hadCurrent) renameSync(backup, current);
+        throw new Error("private Node.js install completed but node/npm are not usable");
+      }
+      if (hadCurrent) rmSync(backup, { recursive: true, force: true });
+      return installed;
+    } finally {
+      rmSync(lock, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
 }
 
 function resolveUv() {
