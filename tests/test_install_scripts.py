@@ -6447,6 +6447,7 @@ def _install_opencode_tarball_fixture(
     foreign_global_loader: str | None = None,
     log_service_calls: bool = False,
     block_root_metadata: bool = False,
+    block_loader_write: bool = False,
 ) -> tuple[Path, Path, Path, Path, dict[str, str], subprocess.CompletedProcess[str]]:
     if os.name == "nt":
         pytest.skip("tarball smoke uses POSIX npm bin paths")
@@ -6509,25 +6510,34 @@ def _install_opencode_tarball_fixture(
 
     if block_root_metadata:
         (home / ".reflexio" / "plugin-root.txt").mkdir(parents=True)
+    if block_root_metadata or block_loader_write:
         config = xdg / "opencode" / "opencode.json"
         config.parent.mkdir(parents=True, exist_ok=True)
         config.write_text('{"plugin":["claude-smart"]}\n')
 
-    result = subprocess.run(
-        [
-            str(prefix / "bin" / "claude-smart"),
-            "install",
-            "--host",
-            "opencode",
-            "--global",
-        ],
-        cwd=project,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=120,
-    )
+    plugins_dir = xdg / "opencode" / "plugins"
+    if block_loader_write:
+        plugins_dir.mkdir()
+        plugins_dir.chmod(0o500)
+    try:
+        result = subprocess.run(
+            [
+                str(prefix / "bin" / "claude-smart"),
+                "install",
+                "--host",
+                "opencode",
+                "--global",
+            ],
+            cwd=project,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+    finally:
+        if block_loader_write:
+            plugins_dir.chmod(0o700)
     return home, prefix, project, xdg, env, result
 
 
@@ -7029,6 +7039,26 @@ def test_opencode_pointer_write_failure_preserves_legacy_registration(
         '{"plugin":["claude-smart"]}\n'
     )
     assert not (xdg / "opencode" / "plugins" / "claude-smart.js").exists()
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
+    reason="requires POSIX permissions enforced for the installer process",
+)
+def test_opencode_unwritable_loader_directory_preserves_legacy_registration(
+    tmp_path: Path,
+) -> None:
+    home, _prefix, _project, xdg, _env, result = _install_opencode_tarball_fixture(
+        tmp_path, block_loader_write=True
+    )
+
+    assert result.returncode == 1
+    assert "EACCES" in result.stderr
+    assert "uv sync --locked" in (home / "uv.log").read_text()
+    assert (xdg / "opencode" / "opencode.json").read_bytes() == (
+        b'{"plugin":["claude-smart"]}\n'
+    )
+    assert not list((xdg / "opencode" / "plugins").iterdir())
 
 
 def test_opencode_tarball_install_conflict_leaves_shared_services_running(

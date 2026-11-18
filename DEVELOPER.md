@@ -154,6 +154,9 @@ Hosted Reflexio deployments should use a managed embedding provider or a scalabl
 Codex and OpenCode prepare their runtime dependencies before selecting the
 shared plugin root. The installer selects the prepared root before replacing
 the host adapter, so a root selection error leaves the previous adapter intact.
+OpenCode writes the replacement loader to a temporary file beside its destination
+before removing legacy registrations. A loader staging error preserves the
+existing registration.
 
 `install`, `update`, `setup`, and `uninstall` use the guided coordinator. It invokes
 the existing per-agent workers sequentially, captures their output in private log

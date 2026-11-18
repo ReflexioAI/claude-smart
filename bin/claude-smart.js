@@ -28,6 +28,7 @@ const {
   cpSync,
   existsSync,
   accessSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -593,6 +594,7 @@ function writeOpenCodeV2Plugin(
   args = [],
   packageRoot = OPENCODE_LOCAL_PACKAGE_DIR,
   cwd = process.cwd(),
+  beforePublish = () => {},
 ) {
   const target = opencodeV2PluginFile(args, cwd);
   const body = opencodeV2PluginBody(packageRoot);
@@ -605,9 +607,46 @@ function writeOpenCodeV2Plugin(
   if (existing !== null && existing !== body && !isGeneratedOpenCodeV2Loader(existing)) {
     return { path: target, status: "conflict" };
   }
-  mkdirSync(dirname(target), { recursive: true });
-  if (existing !== body) writeFileSync(target, body);
-  return { path: target, status: existing === body ? "unchanged" : "wrote" };
+  let staged;
+  try {
+    if (existing !== body) {
+      mkdirSync(dirname(target), { recursive: true });
+      const candidate = uniquePackagePath(target, ".claude-smart-loader") + ".tmp";
+      const file = openSync(candidate, "wx");
+      staged = candidate;
+      try {
+        writeFileSync(file, body);
+      } finally {
+        closeSync(file);
+      }
+    }
+    beforePublish();
+    if (readOpenCodeV2Loader(target) !== existing) {
+      return { path: target, status: "conflict" };
+    }
+    if (!staged) return { path: target, status: "unchanged" };
+    if (existing === null) {
+      try {
+        linkSync(staged, target);
+      } catch (err) {
+        if (err?.code === "EEXIST") return { path: target, status: "conflict" };
+        throw err;
+      }
+    } else {
+      renameSync(staged, target);
+      staged = undefined;
+    }
+    return { path: target, status: "wrote" };
+  } finally {
+    if (staged) {
+      try {
+        rmSync(staged, { force: true });
+      } catch {
+        // The temporary extension is ignored by OpenCode. Cleanup failure
+        // must not roll back a package its published loader now imports.
+      }
+    }
+  }
 }
 
 function removeOpenCodeV2Plugin(args = [], cwd = process.cwd()) {
@@ -3970,7 +4009,7 @@ async function runInstallOpenCode(args) {
   assertOpenCodeInstallConfiguration(args);
   // Fail while the original adapter still works if selecting the root fails.
   ensurePluginRoot(pluginRoot);
-  try {
+  const v2PluginFile = writeOpenCodeV2Plugin(args, packageRoot, process.cwd(), () => {
     // One load path per scope: OpenCode 1.x auto-loads {plugin,plugins}/*.{ts,js}
     // from its config directories and V2 loads the plugins directory, so the
     // loader written below is the single entry for both lines. A config entry
@@ -3980,18 +4019,12 @@ async function runInstallOpenCode(args) {
     // any entry left by earlier versions, from every config the scope loads,
     // instead of writing one.
     results = removeOpenCodeLegacyEntries(args);
-  } catch (err) {
-    process.stderr.write(
-      `error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`,
-    );
-    process.exit(1);
-  }
+  });
   if (readOnly) {
     process.stdout.write(
       "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
     );
   }
-  const v2PluginFile = writeOpenCodeV2Plugin(args, packageRoot);
   if (v2PluginFile.status === "conflict") {
     throw new Error(
       `OpenCode loader changed during install at ${v2PluginFile.path}; reinstall after resolving the conflict.`,

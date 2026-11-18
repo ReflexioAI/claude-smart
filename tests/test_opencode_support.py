@@ -1882,6 +1882,29 @@ def test_node_opencode_v2_loader_round_trip(tmp_path: Path) -> None:
     assert parsed["still"] == "other plugin\n"
 
 
+def test_opencode_loader_preserves_file_created_during_preparation(tmp_path: Path):
+    script = f"""
+        const fs = require("node:fs");
+        const assert = require("node:assert/strict");
+        const {{ join }} = require("node:path");
+        const installer = require({json.dumps(str(REPO_ROOT / "bin/claude-smart.js"))});
+        const project = {json.dumps(str(tmp_path))};
+        const directory = join(project, ".opencode", "plugins");
+        const target = join(directory, "claude-smart.js");
+        const installed = installer.writeOpenCodeV2Plugin([], project, project, () => {{
+            assert.deepEqual(fs.readdirSync(directory).map(name => name.slice(-4)), [".tmp"]);
+            fs.writeFileSync(target, "foreign loader", {{flag: "wx"}});
+        }});
+        assert.equal(installed.status, "conflict");
+        assert.equal(fs.readFileSync(target, "utf8"), "foreign loader");
+        assert.deepEqual(fs.readdirSync(directory), ["claude-smart.js"]);
+    """
+    result = _run_node_script(script)
+    if result is None:
+        pytest.skip("node is not installed")
+    assert result.returncode == 0, result.stderr
+
+
 def test_node_opencode_server_injects_cached_context_for_session_ids(
     tmp_path: Path,
 ) -> None:
