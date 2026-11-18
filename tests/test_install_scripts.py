@@ -7401,6 +7401,12 @@ def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
     home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(
         tmp_path, mode="fresh"
     )
+    (plugin_root / "dashboard").mkdir()
+    private_npm = home / ".claude-smart" / "node" / "current" / "bin" / "npm.cmd"
+    _write_executable(
+        private_npm,
+        '#!/bin/sh\nprintf "npm %s\\n" "$*" >> "$HOME/npm.log"\n',
+    )
     scripts = plugin_root / "scripts"
     scripts.mkdir()
     shutil.copy2(LIB, scripts / "_lib.sh")
@@ -7457,6 +7463,10 @@ def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
     if ownership == "attached":
         assert result.returncode == 0, result.stderr
         assert not marker.exists()
+        assert (home / "npm.log").read_text().splitlines() == [
+            "npm ci --omit=dev",
+            "npm run build",
+        ]
         return
     assert result.returncode == 2
     expected = {
@@ -7470,8 +7480,7 @@ def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
     assert expected in marker_text
     assert "fingerprint=" in marker_text
     assert "verify-windows-embedding" in (home / "bash.log").read_text()
-    npm_log = home / "npm.log"
-    assert not npm_log.exists() or "npm ci" not in npm_log.read_text()
+    assert not (home / "npm.log").exists()
 
 
 def test_node_installer_non_lock_sync_failure_stays_strict(tmp_path: Path) -> None:
