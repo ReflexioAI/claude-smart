@@ -435,7 +435,9 @@ process.stdout.write(JSON.stringify({{
     assert "--agent" in call["args"]
     assert "--pure" not in call["args"]
     assert "--dir" not in call["args"]
-    assert call["env"]["PWD"] == call["cwd"]
+    subprocess_pwd = Path(call["env"]["PWD"])
+    assert subprocess_pwd.is_absolute()
+    assert subprocess_pwd.resolve() == Path(call["cwd"]).resolve()
     assert call["dotConfigExists"] is True
     assert call["rootConfigExists"] is False
     assert "--model" not in call["args"]
@@ -773,7 +775,8 @@ def _seed_private_node_and_uv(env: dict[str, str]) -> None:
     uv_bin = home / ".local" / "bin"
     private_node.mkdir(parents=True, exist_ok=True)
     uv_bin.mkdir(parents=True, exist_ok=True)
-    for path in [private_node / "node", private_node / "npm"]:
+    npm = "npm.cmd" if env.get("CLAUDE_SMART_TEST_PLATFORM") == "win32" else "npm"
+    for path in [private_node / "node", private_node / npm]:
         path.write_text("#!/bin/sh\nexit 0\n")
         path.chmod(0o755)
     from tests.test_install_scripts import _write_bootstrap_uv
