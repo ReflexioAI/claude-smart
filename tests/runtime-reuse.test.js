@@ -53,8 +53,26 @@ process.exit(87);
     textSelection[boundary] = boundary === "before" ? "prior" : "next";
     if (boundary === "before") fs.unlinkSync(record + ".tmp");
   }
+  const held = fs.openSync(record, "r");
+  const tempRecord = record + ".tmp";
+  fs.writeFileSync(tempRecord, prior, { flag: "wx" });
+  let heldReaderReplace = "success";
+  try {
+    try {
+      fs.renameSync(tempRecord, record);
+    } catch (error) {
+      assert.ok(error.code);
+      heldReaderReplace = error.code;
+    }
+    assert.equal(fs.readFileSync(held, "utf8"), next);
+    assert.equal(fs.readFileSync(record, "utf8"), heldReaderReplace === "success" ? prior : next);
+  } finally {
+    fs.closeSync(held);
+  }
+  if (heldReaderReplace !== "success") fs.renameSync(tempRecord, record);
+  assert.equal(fs.readFileSync(record, "utf8"), prior);
   t.diagnostic("RUNTIME_SELECTOR_PROBE " + JSON.stringify({
-    platform: process.platform, node: process.version, junctionReplace, textSelection,
+    platform: process.platform, node: process.version, junctionReplace, textSelection, heldReaderReplace,
   }));
 });
 
