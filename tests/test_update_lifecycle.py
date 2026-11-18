@@ -153,6 +153,80 @@ def _run(tmp_path, package, host, env, command="update"):
     )
 
 
+@pytest.mark.parametrize("outcome", ["success", "preparation-fails", "stale-settings"])
+def test_guided_codex_uses_prepared_interpreter_for_settings(tmp_path, outcome):
+    package, root, uv, env = _fixture(tmp_path, "codex", running="none")
+    env.pop("CLAUDE_SMART_INSTALL_CHILD")
+    env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
+    settings = tmp_path / ".claude-smart/.env"
+    before = settings.read_bytes()
+    node = tmp_path / ".claude-smart/node/current/bin/node"
+    _write_executable(node, f'#!/bin/sh\nexec {shlex.quote(node_bin())} "$@"\n')
+    if outcome != "preparation-fails":
+        _write_bootstrap_uv(uv, mode="fresh")
+    uv_source = uv.read_text()
+    change = (
+        'printf "# concurrent edit\\n" >> "$HOME/.claude-smart/.env"'
+        if outcome == "stale-settings"
+        else ":"
+    )
+    _write_executable(
+        uv,
+        uv_source.replace(
+            "#!/bin/sh\n",
+            "#!/bin/sh\n"
+            'if [ "$1" = sync ] && [ ! -e "$HOME/settings-at-sync" ]; then\n'
+            '  cp "$HOME/.claude-smart/.env" "$HOME/settings-at-sync"\n'
+            f"  {change}\n"
+            "fi\n",
+            1,
+        ),
+    )
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(package / "bin/claude-smart.js"),
+            "update",
+            "--host",
+            "codex",
+            "--backend",
+            "local",
+            "--provider",
+            "codex",
+            "--read-only",
+            "--yes",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert (tmp_path / "settings-at-sync").read_bytes() == before
+    assert "uv venv" not in (tmp_path / "uv.log").read_text()
+    if outcome == "success":
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
+        assert (root / "identity").read_text() == "new"
+        return
+
+    assert result.returncode != 0
+    expected = (
+        before + b"# concurrent edit\n" if outcome == "stale-settings" else before
+    )
+    assert settings.read_bytes() == expected
+    assert (root / "identity").read_text() == "old"
+    assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
+    log = next((tmp_path / ".claude-smart/install-logs").glob("update-codex-*.log"))
+    expected_error = (
+        "Settings changed after confirmation"
+        if outcome == "stale-settings"
+        else "uv sync failed"
+    )
+    assert expected_error in log.read_text()
+
+
 def _calls(tmp_path):
     path = tmp_path / "service-calls.jsonl"
     return (
