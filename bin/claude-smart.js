@@ -2268,14 +2268,16 @@ async function writeConfirmedSettings(python, args, runtime, environment, reques
     throw new Error(
       "Settings are busy; retry after the other save finishes.",
     );
-  if (saved.code === 76)
-    throw new Error("Could not determine Windows inference ownership. Check the embedding settings before retrying.");
-  if (saved.code === 77)
-    throw new Error("Windows local embeddings require onnxruntime. Install the Microsoft Visual C++ x64 Redistributable (https://aka.ms/vs/17/release/vc_redist.x64.exe) and retry.");
-  if (saved.code === 78)
-    throw new Error("Windows embedding preflight timed out before saving settings.");
-  if (saved.code === 79)
-    throw new Error("A .env file in the installed plugin runtime shadows the account settings. Move those settings to the account file before retrying.");
+  if (args.includes("--check-windows-embedding")) {
+    if (saved.code === 76)
+      throw new Error("Could not determine Windows inference ownership. Check the embedding settings before retrying.");
+    if (saved.code === 77)
+      throw new Error("Windows local embeddings require onnxruntime. Install the Microsoft Visual C++ x64 Redistributable (https://aka.ms/vs/17/release/vc_redist.x64.exe) and retry.");
+    if (saved.code === 78)
+      throw new Error("Windows embedding preflight timed out before saving settings.");
+    if (saved.code === 79)
+      throw new Error("A .env file in the installed plugin runtime shadows the account settings. Move those settings to the account file before retrying.");
+  }
   let acknowledged = false;
   try {
     acknowledged = saved.code === 0 && JSON.parse(saved.output).ok === true;
