@@ -3096,30 +3096,42 @@ function verifyVendoredReflexioIdentity(pluginRoot, pythonPath, vendorRoot, env)
   const script = `
 import filecmp
 from importlib.util import find_spec
+import os
 from pathlib import Path
 import sys
 
+def sources(root):
+    files = set()
+    for directory, children, entries in os.walk(root):
+        folder = Path(directory)
+        if any((folder / child).is_symlink() for child in children):
+            raise SystemExit("Reflexio source directory contains a linked subdirectory")
+        files.update((folder / item).relative_to(root) for item in entries if item.endswith(".py"))
+    return files
+
 vendor = Path(sys.argv[1]) / "reflexio"
-prefix = Path(sys.argv[2]).resolve()
+prefix = Path(sys.prefix)
 spec = find_spec("reflexio")
-if Path(sys.prefix).resolve() != prefix or not spec or not spec.origin:
-    raise SystemExit("the candidate interpreter does not resolve Reflexio")
-installed = Path(spec.origin).resolve().parent
-if not installed.is_relative_to(prefix):
+roots = list(spec.submodule_search_locations or ()) if spec else []
+if prefix.resolve() != Path(sys.argv[2]).resolve() or len(roots) != 1:
+    raise SystemExit("the candidate interpreter does not resolve a single Reflexio package")
+installed = Path(roots[0])
+if (not installed.is_relative_to(prefix) or not installed.resolve().is_relative_to(prefix.resolve())
+        or not spec.origin or Path(spec.origin) != installed / "__init__.py"):
     raise SystemExit("the candidate resolves Reflexio outside its environment")
-sources = {item.relative_to(vendor) for item in vendor.rglob("*.py")}
-if not sources or sources != {item.relative_to(installed) for item in installed.rglob("*.py")}:
+expected = sources(vendor)
+if not expected or expected != sources(installed):
     raise SystemExit("installed Python source paths differ from the bundle")
-for source in sorted(sources):
-    target = installed / source
-    if not target.resolve().is_relative_to(installed) or not filecmp.cmp(vendor / source, target, shallow=False):
+for source in sorted(expected):
+    if not filecmp.cmp(vendor / source, installed / source, shallow=False):
         raise SystemExit(f"installed Python source differs from the bundle: {source}")
 `;
-  const result = spawnSync(pythonPath, ["-I", "-c", script, vendorRoot, join(pluginRoot, ".venv")], {
+  const result = spawnSync(pythonPath, ["-I", "-X", "utf8", "-c", script, vendorRoot, join(pluginRoot, ".venv")], {
     cwd: pluginRoot,
     env,
     encoding: "utf8",
     timeout: 15_000,
+    killSignal: "SIGKILL",
     windowsHide: true,
   });
   if (result.status !== 0 || result.error) {
