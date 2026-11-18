@@ -1249,11 +1249,11 @@ const pendingPreviousPackages = new Map();
 // A leftover failure marker would suppress the restored working hooks.
 let installStateSnapshot = null;
 
-function snapshotInstallState() {
+function snapshotInstallState({ preserveFailureMarker = false } = {}) {
   const read = (path) => (existsSync(path) ? readFileSync(path) : null);
   const host = readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) ?? null;
   installStateSnapshot = {
-    failureMarker: read(INSTALL_FAILURE_MARKER),
+    failureMarker: preserveFailureMarker ? undefined : read(INSTALL_FAILURE_MARKER),
     // Bootstraps repoint the shared plugin-root before they finish.
     pluginRoot: activePluginRoot(),
     pluginRootBroken: pluginRootIsBroken(),
@@ -1290,7 +1290,8 @@ function restoreInstallState() {
       rmSync(join(REFLEXIO_DIR, "plugin-root.txt"), { force: true });
     }
     if (snapshot.failureMarker === null) rmSync(INSTALL_FAILURE_MARKER, { force: true });
-    else writeFileSync(INSTALL_FAILURE_MARKER, snapshot.failureMarker);
+    else if (snapshot.failureMarker !== undefined)
+      writeFileSync(INSTALL_FAILURE_MARKER, snapshot.failureMarker);
   } catch (err) {
     process.stderr.write(
       `warning: could not restore claude-smart install state: ${err && err.message ? err.message : err}\n`,
@@ -2268,9 +2269,13 @@ async function writeConfirmedSettings(python, args, runtime, environment, reques
       "Settings are busy; retry after the other save finishes.",
     );
   if (saved.code === 76)
-    throw new Error(
-      "Windows embedding preflight failed before saving settings. For bundled local embeddings, install the Microsoft Visual C++ x64 Redistributable (https://aka.ms/vs/17/release/vc_redist.x64.exe) and check the configured inference endpoint before retrying.",
-    );
+    throw new Error("Could not determine Windows inference ownership. Check the embedding settings before retrying.");
+  if (saved.code === 77)
+    throw new Error("Windows local embeddings require onnxruntime. Install the Microsoft Visual C++ x64 Redistributable (https://aka.ms/vs/17/release/vc_redist.x64.exe) and retry.");
+  if (saved.code === 78)
+    throw new Error("Windows embedding preflight timed out before saving settings.");
+  if (saved.code === 79)
+    throw new Error("A .env file in the installed plugin runtime shadows the account settings. Move those settings to the account file before retrying.");
   let acknowledged = false;
   try {
     acknowledged = saved.code === 0 && JSON.parse(saved.output).ok === true;
@@ -2284,7 +2289,11 @@ async function writeConfirmedSettings(python, args, runtime, environment, reques
 
 async function publishFromPreparedRuntime(pluginRoot, settings) {
   const args = ["-I", "-m", "claude_smart.env_config", "publish-prepared-install"];
-  if (isWindows()) args.push(requireWindowsEmbeddingBash());
+  if (isWindows()) {
+    requireWindowsEmbeddingBash();
+    if (isBundledBackendUrl(settings.request.updates.REFLEXIO_URL))
+      args.push("--check-windows-embedding");
+  }
   if (!process.connected)
     throw new Error("Installation guide disconnected before settings publication.");
   const runtime = { directory: pluginRoot, children: [] };
@@ -3378,7 +3387,7 @@ async function preparePluginDashboard(pluginRoot, nodeRuntime, env, settings) {
 async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   assertSupportedRuntimePlatform();
   reportRuntimePhase("Preparing Python and runtime dependencies…", options.settings);
-  rmSync(INSTALL_FAILURE_MARKER, { force: true });
+  if (!options.settings) rmSync(INSTALL_FAILURE_MARKER, { force: true });
   const nodeRuntime = await ensurePrivateNode();
   if (options.readOnly) prunePublishHooksForReadOnly(pluginRoot);
   const uv = await ensureUv();
@@ -4102,7 +4111,7 @@ async function runInstallCodex(settings) {
     process.exit(1);
   }
   assertSupportedRuntimePlatform();
-  snapshotInstallState();
+  snapshotInstallState({ preserveFailureMarker: Boolean(settings) });
   let setup = settings ? null : readInstallPolicy();
 
   validateCodexPackage();

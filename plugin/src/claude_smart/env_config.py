@@ -14,7 +14,6 @@ import hashlib
 import json
 import os
 import re
-import signal
 import stat
 import subprocess
 import sys
@@ -112,6 +111,10 @@ class SettingsBusyError(RuntimeError):
 
 class SettingsPreflightError(RuntimeError):
     """The staged settings failed a prepared-runtime prerequisite."""
+
+    def __init__(self, code: int) -> None:
+        super().__init__("Prepared runtime preflight failed")
+        self.code = code
 
 
 class SettingsConflictError(RuntimeError):
@@ -239,7 +242,7 @@ def publish_install(
     legacy: dict[str, object] | None,
     *,
     prepared: bool = False,
-    windows_bash: str | None = None,
+    check_windows_embedding: bool = False,
 ) -> None:
     """Publish a confirmed guide snapshot, imports and completion atomically.
 
@@ -333,11 +336,7 @@ def publish_install(
         path,
         edit,
         expected_snapshot=(existed, digest),
-        validate=(
-            (lambda staged: _verify_staged_windows_embedding(windows_bash, staged))
-            if windows_bash is not None
-            else None
-        ),
+        validate=_verify_staged_windows_embedding if check_windows_embedding else None,
     )
 
 
@@ -540,48 +539,34 @@ def _edit_env_file[Result](
         ) from None
 
 
-def _verify_staged_windows_embedding(bash: str, staged: Path) -> None:
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+def _verify_staged_windows_embedding(staged: Path) -> None:
+    root = Path.cwd()
+    # The SDK gives a working-directory dotenv file precedence. A bundled
+    # runtime must see the saved account file when it later starts from root.
+    if os.path.lexists(root / ".env"):
+        raise SettingsPreflightError(79)
     try:
-        with subprocess.Popen(  # noqa: S603 — the installer resolves Git Bash and owns cwd.
+        result = subprocess.run(  # noqa: S603 — the prepared runtime owns both paths.
             [
-                bash,
-                "scripts/smart-install.sh",
-                "verify-staged-windows-embedding",
-                str(staged),
+                sys.executable,
+                "-I",
+                str(root / "scripts/backend-inference-owner.py"),
+                "--validate-windows-embedding",
             ],
+            cwd=staged.parent,
+            env={**os.environ, "REFLEXIO_ENV_FILE": str(staged)},
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=flags,
-            start_new_session=os.name != "nt",
-        ) as check:
-            try:
-                if check.wait(timeout=15) != 0:
-                    raise SettingsPreflightError
-            except subprocess.TimeoutExpired:
-                # The shell can still have a native importer using the staged
-                # file. Stop the tree before the transaction removes it.
-                try:
-                    if os.name == "nt":
-                        taskkill = (
-                            Path(os.environ["SystemRoot"]) / "System32/taskkill.exe"
-                        )
-                        subprocess.run(  # noqa: S603 — terminate only the owned checker.
-                            [str(taskkill), "/F", "/T", "/PID", str(check.pid)],
-                            stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            timeout=5,
-                            creationflags=flags,
-                        )
-                    else:
-                        os.killpg(check.pid, signal.SIGKILL)
-                finally:
-                    check.kill()
-                raise SettingsPreflightError from None
-    except (OSError, subprocess.SubprocessError):
-        raise SettingsPreflightError from None
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired:
+        raise SettingsPreflightError(78) from None
+    except OSError:
+        raise SettingsPreflightError(76) from None
+    if result.returncode:
+        raise SettingsPreflightError(77 if result.returncode == 77 else 76)
 
 
 def _resolve_local_env_default(key: str, fallback: str) -> str:
@@ -617,7 +602,10 @@ def main(argv: list[str] | None = None) -> int:
     if (
         not arguments
         or arguments[0] not in commands
-        or len(arguments) > (2 if arguments[0] == "publish-prepared-install" else 1)
+        or (
+            len(arguments) != 1
+            and arguments != ["publish-prepared-install", "--check-windows-embedding"]
+        )
     ):
         print(
             "Usage: python -m claude_smart.env_config "
@@ -648,7 +636,7 @@ def main(argv: list[str] | None = None) -> int:
                     request["snapshot"],
                     request["legacy"],
                     prepared=command == "publish-prepared-install",
-                    windows_bash=arguments[1] if len(arguments) == 2 else None,
+                    check_windows_embedding=len(arguments) == 2,
                 )
             added = []
     except SettingsConflictError as error:
@@ -657,8 +645,8 @@ def main(argv: list[str] | None = None) -> int:
     except SettingsBusyError as error:
         print(str(error), file=sys.stderr)
         return 75
-    except SettingsPreflightError:
-        return 76
+    except SettingsPreflightError as error:
+        return error.code
     except (OSError, ValueError):
         print(
             "Cannot update settings; check file access and single-line UTF-8 values.",

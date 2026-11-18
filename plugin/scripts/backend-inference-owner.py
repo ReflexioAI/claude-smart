@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import redirect_stdout
+from importlib import import_module
 import os
 from pathlib import Path
 import sys
@@ -22,7 +23,7 @@ def reject_retired_embedding_setting(env: Mapping[str, object] = os.environ) -> 
         )
 
 
-def main() -> None:
+def inference_is_colocated() -> bool:
     reject_retired_embedding_setting()
     # Older supported SDKs expose this same launcher decision through run_services;
     # current SDKs delegate it to the dependency-free inference launch plan.
@@ -67,9 +68,25 @@ def main() -> None:
         reject_retired_embedding_setting()
         from reflexio.cli.run_services import should_start_local_embedding_service
 
-        colocated = should_start_local_embedding_service()
-    print("colocated" if colocated else "attached")
+        return should_start_local_embedding_service()
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--validate-windows-embedding"]:
+        # The isolated interpreter must use the same vendor source as the
+        # eventual backend. The caller sets cwd to the private staging folder.
+        vendor = Path(__file__).resolve().parents[1] / "vendor/reflexio"
+        if (vendor / "reflexio").is_dir():
+            sys.path.insert(0, str(vendor))
+        if inference_is_colocated():
+            try:
+                import_module("onnxruntime")
+            except Exception:
+                return 77
+        return 0
+    print("colocated" if inference_is_colocated() else "attached")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

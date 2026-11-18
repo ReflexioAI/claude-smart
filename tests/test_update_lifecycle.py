@@ -187,7 +187,10 @@ def test_guided_codex_uses_prepared_interpreter_for_settings(tmp_path, outcome):
     uv_source = uv.read_text()
     change = ":"
     if outcome == "stale-settings":
-        change = 'printf "# concurrent edit\\n" >> "$HOME/.claude-smart/.env"'
+        change = (
+            'printf "# concurrent edit\n" >> "$HOME/.claude-smart/.env"; '
+            'printf "other host diagnostic" > "$HOME/.claude-smart/install-failed"'
+        )
     if outcome == "guide-disconnects":
         change = (
             "for attempt in 1 2 3 4 5 6 7 8 9 10; do "
@@ -340,6 +343,10 @@ if (typeof process.send === "function") {
         before + b"# concurrent edit\n" if outcome == "stale-settings" else before
     )
     assert settings.read_bytes() == expected
+    if outcome == "stale-settings":
+        assert (
+            settings.parent / "install-failed"
+        ).read_text() == "other host diagnostic"
     assert (root / "identity").read_text() == "old"
     assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
     log = next((tmp_path / ".claude-smart/install-logs").glob("update-codex-*.log"))
