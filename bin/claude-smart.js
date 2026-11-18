@@ -22,13 +22,14 @@ const {
   chmodSync,
   closeSync,
   fstatSync,
+  ftruncateSync,
   openSync,
   readSync,
   constants,
   cpSync,
   existsSync,
   accessSync,
-  linkSync,
+  copyFileSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -608,8 +609,9 @@ function writeOpenCodeV2Plugin(
     return { path: target, status: "conflict" };
   }
   let staged;
+  let writableLoader;
   try {
-    if (existing !== body) {
+    if (existing === null) {
       mkdirSync(dirname(target), { recursive: true });
       const candidate = uniquePackagePath(target, ".claude-smart-loader") + ".tmp";
       const file = openSync(candidate, "wx");
@@ -619,25 +621,38 @@ function writeOpenCodeV2Plugin(
       } finally {
         closeSync(file);
       }
+    } else if (existing !== body) {
+      // Refresh on the existing inode, including directories where the
+      // installer can write the generated file but cannot replace its entry.
+      writableLoader = openSync(target, "r+");
     }
     beforePublish();
     if (readOpenCodeV2Loader(target) !== existing) {
       return { path: target, status: "conflict" };
     }
-    if (!staged) return { path: target, status: "unchanged" };
-    if (existing === null) {
+    if (staged) {
       try {
-        linkSync(staged, target);
+        copyFileSync(staged, target, constants.COPYFILE_EXCL);
       } catch (err) {
         if (err?.code === "EEXIST") return { path: target, status: "conflict" };
         throw err;
       }
+    } else if (writableLoader !== undefined) {
+      const previous = Buffer.from(existing);
+      const opened = Buffer.alloc(previous.length + 1);
+      const count = readSync(writableLoader, opened, 0, opened.length, 0);
+      if (!opened.subarray(0, count).equals(previous)) {
+        return { path: target, status: "conflict" };
+      }
+      const bytes = Buffer.from(body);
+      writeFileSync(writableLoader, bytes);
+      ftruncateSync(writableLoader, bytes.length);
     } else {
-      renameSync(staged, target);
-      staged = undefined;
+      return { path: target, status: "unchanged" };
     }
     return { path: target, status: "wrote" };
   } finally {
+    if (writableLoader !== undefined) closeSync(writableLoader);
     if (staged) {
       try {
         rmSync(staged, { force: true });

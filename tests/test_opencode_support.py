@@ -1905,6 +1905,32 @@ def test_opencode_loader_preserves_file_created_during_preparation(tmp_path: Pat
     assert result.returncode == 0, result.stderr
 
 
+def test_opencode_loader_refresh_updates_existing_file_in_place(tmp_path: Path):
+    script = f"""
+        const fs = require("node:fs");
+        const assert = require("node:assert/strict");
+        const {{ join }} = require("node:path");
+        const {{ pathToFileURL }} = require("node:url");
+        const installer = require({json.dumps(str(REPO_ROOT / "bin/claude-smart.js"))});
+        const project = {json.dumps(str(tmp_path))};
+        const oldRoot = join(project, "much-longer-original-package-path");
+        const newRoot = join(project, "pkg");
+        const original = installer.writeOpenCodeV2Plugin([], oldRoot, project);
+        assert.equal(original.status, "wrote");
+        const identity = fs.statSync(original.path).ino;
+        const refreshed = installer.writeOpenCodeV2Plugin([], newRoot, project);
+        assert.equal(refreshed.status, "wrote");
+        assert.equal(fs.statSync(original.path).ino, identity);
+        const body = fs.readFileSync(original.path, "utf8");
+        const entry = pathToFileURL(join(newRoot, "plugin", "opencode", "dist", "server.mjs")).href;
+        assert.equal(body.split("\\n").at(-2), `export {{ default }} from ${{JSON.stringify(entry)}};`);
+    """
+    result = _run_node_script(script)
+    if result is None:
+        pytest.skip("node is not installed")
+    assert result.returncode == 0, result.stderr
+
+
 def test_node_opencode_server_injects_cached_context_for_session_ids(
     tmp_path: Path,
 ) -> None:
