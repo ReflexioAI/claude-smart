@@ -6377,6 +6377,84 @@ def _prepare_node_bootstrap_sync_fixture(
     return home, plugin_root, env
 
 
+def test_codex_runtime_failure_leaves_existing_marketplace_and_features(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for the installer test")
+    home, _, env = _prepare_node_bootstrap_sync_fixture(
+        tmp_path, mode="non_lock_failure"
+    )
+    _seed_prepared_policy(home, "codex")
+    codex_home = home / ".codex"
+    env["CODEX_HOME"] = str(codex_home)
+    env["CLAUDE_SMART_INSTALL_CHILD"] = "1"
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "codex",
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/codex.log"\nexit 0\n',
+    )
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    prior_marketplace = codex_home / "claude-smart/marketplace"
+    prior_marketplace.mkdir(parents=True)
+    retained = prior_marketplace / "previous"
+    retained.write_text("predecessor\n")
+    config = codex_home / "config.toml"
+    config.write_text("[features]\nhooks = false\n")
+    before = config.read_bytes()
+
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "install", "--host", "codex"],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    assert result.returncode != 0
+    assert not (home / "codex.log").exists()
+    assert retained.read_text() == "predecessor\n"
+    assert config.read_bytes() == before
+    assert "could not prepare claude-smart Codex runtime" in result.stderr
+    assert "uv sync failed" in result.stderr
+
+
+def test_codex_interrupt_during_feature_enable_keeps_marketplace_portable(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for the installer test")
+    home, _, env = _prepare_node_bootstrap_sync_fixture(tmp_path, mode="fresh")
+    _seed_prepared_policy(home, "codex")
+    codex_home = home / ".codex"
+    env["CODEX_HOME"] = str(codex_home)
+    env["CLAUDE_SMART_INSTALL_CHILD"] = "1"
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "codex",
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/codex.log"\n'
+        'if [ "$1" = "features" ]; then kill -TERM "$PPID"; fi\nexit 0\n',
+    )
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "install", "--host", "codex"],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    assert result.returncode == 143, result.stderr
+    managed = codex_home / "claude-smart"
+    assert "features enable hooks" in (home / "codex.log").read_text()
+    assert not (managed / "runtime").exists()
+    manifest = managed / "marketplace/plugin/hooks/codex-hooks.json"
+    bundled = REPO_ROOT / "plugin/hooks/codex-hooks.json"
+    assert manifest.read_bytes() == bundled.read_bytes()
+
+
 def _run_node_bootstrap(
     tmp_path: Path, *, mode: str
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
