@@ -61,6 +61,10 @@ with (home / "service-calls.jsonl").open("a") as out:
 stopped = home / f"fixture-{kind}-stopped"
 if action == "stop" and os.environ.get("FIXTURE_UNSTOPPABLE") != kind:
     stopped.touch()
+    stop_requested = os.environ.get("FIXTURE_STOP_REQUESTED")
+    if stop_requested and kind == "backend":
+        Path(stop_requested).touch()
+        time.sleep(0.5)
 if action == "status":
     running = os.environ["FIXTURE_RUNNING"]
     pre_probe = os.environ.get("FIXTURE_INITIAL_PROBE_STARTED")
@@ -249,7 +253,7 @@ def test_interrupt_during_post_stop_probe_recovers_observed_service(tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX foreground process-group signal")
-@pytest.mark.parametrize("phase", ["status", "tcp"])
+@pytest.mark.parametrize("phase", ["status", "stop", "tcp"])
 def test_terminal_interrupt_preserves_previous_service(tmp_path, phase):
     package, root, uv, env = _fixture(tmp_path, "codex", running="backend")
     _write_bootstrap_uv(uv, mode="fresh")
@@ -274,32 +278,48 @@ def test_terminal_interrupt_preserves_previous_service(tmp_path, phase):
     if phase == "tcp":
         env["NODE_OPTIONS"] = f'--require "{preload}"'
         env["FIXTURE_PROBE_STARTED"] = str(started)
-    else:
+    elif phase == "status":
         env["FIXTURE_INITIAL_PROBE_STARTED"] = str(started)
-    with subprocess.Popen(
-        [node_bin(), str(package / "bin/claude-smart.js"), "update", "--host", "codex"],
-        cwd=tmp_path,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    ) as installer:
-        try:
-            deadline = time.monotonic() + 10
-            while (
-                not started.exists()
-                and installer.poll() is None
-                and time.monotonic() < deadline
-            ):
-                time.sleep(0.01)
-            assert started.exists(), f"installer never started the {phase} check"
-            os.killpg(installer.pid, signal.SIGINT)
-            _, stderr = installer.communicate(timeout=10)
-        finally:
-            if installer.poll() is None:
-                os.killpg(installer.pid, signal.SIGKILL)
-                installer.communicate(timeout=10)
+    else:
+        env["FIXTURE_STOP_REQUESTED"] = str(started)
+    with socket.socket() as listener:
+        if phase == "stop":
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            env["FIXTURE_PORT"] = str(listener.getsockname()[1])
+        with subprocess.Popen(
+            [
+                node_bin(),
+                str(package / "bin/claude-smart.js"),
+                "update",
+                "--host",
+                "codex",
+            ],
+            cwd=tmp_path,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        ) as installer:
+            try:
+                deadline = time.monotonic() + 10
+                while (
+                    not started.exists()
+                    and installer.poll() is None
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.01)
+                assert started.exists(), f"installer never started the {phase} check"
+                os.killpg(installer.pid, signal.SIGINT)
+                if phase == "stop":
+                    time.sleep(0.15)
+                    listener.close()
+                _, stderr = installer.communicate(timeout=10)
+            finally:
+                if installer.poll() is None:
+                    os.killpg(installer.pid, signal.SIGKILL)
+                    installer.communicate(timeout=10)
 
     assert installer.returncode == 130, stderr
     assert (root / "identity").read_text() == "old"
@@ -309,7 +329,7 @@ def test_terminal_interrupt_preserves_previous_service(tmp_path, phase):
         for row in _calls(tmp_path)
         if row["kind"] == "backend" and row["action"] != "status"
     ]
-    assert actions == (["stop", "start"] if phase == "tcp" else [])
+    assert actions == ([] if phase == "status" else ["stop", "start"])
 
 
 def test_update_rejects_timeout_even_when_status_exits_zero(tmp_path):

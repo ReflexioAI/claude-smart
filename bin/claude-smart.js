@@ -2442,6 +2442,8 @@ function runPluginService(pluginRoot, scriptName, subcommand, envOverrides = {})
     return false;
   }
   const result = spawnSync(bash, [script, subcommand], {
+    // Complete an in-flight shutdown before the parent handles Ctrl-C.
+    detached: subcommand === "stop",
     cwd: pluginRoot,
     env: { ...runtimeEnv(), ...envOverrides },
     stdio: "ignore",
