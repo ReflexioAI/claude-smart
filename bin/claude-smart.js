@@ -3117,17 +3117,7 @@ async function syncPluginPythonEnv(pluginRoot, uv, env) {
   if (code !== 0) throw new Error(`uv sync failed in ${pluginRoot}`);
 }
 
-async function bootstrapPluginRuntime(pluginRoot, options = {}) {
-  assertSupportedRuntimePlatform();
-  process.stdout.write("[phase] Preparing Python and runtime dependencies…\n");
-  rmSync(INSTALL_FAILURE_MARKER, { force: true });
-  const nodeRuntime = await ensurePrivateNode();
-  if (options.patchCodexHooks !== false) {
-    patchCodexHooksForNode(pluginRoot, nodeRuntime.node);
-  }
-  if (options.readOnly) prunePublishHooksForReadOnly(pluginRoot);
-  const uv = await ensureUv();
-  const env = runtimeEnv([dirname(uv), ...privateNodeBinDirs()]);
+async function preparePluginPython(pluginRoot, uv, env) {
   const pyprojectPath = join(pluginRoot, "pyproject.toml");
   const pyproject = existsSync(pyprojectPath) ? readFileSync(pyprojectPath, "utf8") : "";
   if (/^\s*\[tool\.uv\.sources\]\s*$/m.test(pyproject)) {
@@ -3136,17 +3126,9 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   }
   await syncPluginPythonEnv(pluginRoot, uv, env);
   await installVendoredReflexio(pluginRoot, uv, env);
-  const repairCode = await runChecked(
-    pluginPythonPath(pluginRoot),
-    ["-I", "-m", "claude_smart.env_config", "bootstrap-repair"],
-    { cwd: pluginRoot, env },
-  );
-  if (repairCode !== 0)
-    throw new Error(
-      "Could not repair missing installation defaults; resolve the settings error above and retry setup.",
-    );
-  verifyWindowsLocalEmbeddingRuntime(pluginRoot, env);
+}
 
+async function preparePluginDashboard(pluginRoot, nodeRuntime, env) {
   const dashboardDir = join(pluginRoot, "dashboard");
   if (existsSync(dashboardDir)) {
     process.stdout.write("[phase] Preparing dashboard dependencies and build…\n");
@@ -3167,6 +3149,31 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
     if (cache && nodeVersion && existsSync(join(dashboardDir, ".next", "BUILD_ID")))
       cache.record(dashboardDir, nodeVersion);
   }
+}
+
+async function bootstrapPluginRuntime(pluginRoot, options = {}) {
+  assertSupportedRuntimePlatform();
+  process.stdout.write("[phase] Preparing Python and runtime dependencies…\n");
+  rmSync(INSTALL_FAILURE_MARKER, { force: true });
+  const nodeRuntime = await ensurePrivateNode();
+  if (options.patchCodexHooks !== false) {
+    patchCodexHooksForNode(pluginRoot, nodeRuntime.node);
+  }
+  if (options.readOnly) prunePublishHooksForReadOnly(pluginRoot);
+  const uv = await ensureUv();
+  const env = runtimeEnv([dirname(uv), ...privateNodeBinDirs()]);
+  await preparePluginPython(pluginRoot, uv, env);
+  const repairCode = await runChecked(
+    pluginPythonPath(pluginRoot),
+    ["-I", "-m", "claude_smart.env_config", "bootstrap-repair"],
+    { cwd: pluginRoot, env },
+  );
+  if (repairCode !== 0)
+    throw new Error(
+      "Could not repair missing installation defaults; resolve the settings error above and retry setup.",
+    );
+  verifyWindowsLocalEmbeddingRuntime(pluginRoot, env);
+  await preparePluginDashboard(pluginRoot, nodeRuntime, env);
 }
 
 function printHelp() {
