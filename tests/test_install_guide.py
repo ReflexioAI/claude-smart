@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import select
 import shutil
 import subprocess
@@ -197,11 +198,22 @@ def test_lost_save_ack_stops_workers_and_retry_does_not_reimport_deleted_legacy(
     )
 
 
-def fake_guide(tmp_path: Path, *, delay: bool = False) -> tuple[Path, dict[str, str]]:
+def fake_guide(
+    tmp_path: Path, *, wait_for_progress: bool = False
+) -> tuple[Path, dict[str, str]]:
     package = _fake_claude_code_package(
         tmp_path,
         "#!/bin/sh\n"
-        + ("sleep 6\n" if delay else "")
+        + (
+            "i=0\n"
+            'while [ ! -e "$HOME/guide-progress" ]; do\n'
+            '  [ "$i" -lt 40 ] || exit 97\n'
+            "  sleep 0.25\n"
+            "  i=$((i + 1))\n"
+            "done\n"
+            if wait_for_progress
+            else ""
+        )
         + "uv sync --locked --python 3.12 --quiet || exit $?\n"
         + '"$PWD/.venv/bin/python" -I -m claude_smart.env_config bootstrap-repair >/dev/null || exit $?\n'
         + 'printf \'{"continue":true,"suppressOutput":true}\\n\'\n',
@@ -375,7 +387,22 @@ def test_guided_coordinator_reports_partial_success_and_keeps_provider(
 def test_guided_install_progress_is_visible_while_worker_is_waiting(
     tmp_path: Path,
 ) -> None:
-    installer, env = fake_guide(tmp_path, delay=True)
+    installer, env = fake_guide(tmp_path, wait_for_progress=True)
+    gate = tmp_path / "release-on-progress.cjs"
+    gate.write_text(r"""
+const {writeFileSync} = require("node:fs");
+const {join} = require("node:path");
+if (process.env.CLAUDE_SMART_INSTALL_CHILD !== "1") {
+  const write = process.stdout.write;
+  process.stdout.write = function(chunk, ...args) {
+    const result = write.call(this, chunk, ...args);
+    if (/Installing Claude Code integration… [0-9]+s/.test(String(chunk)))
+      writeFileSync(join(process.env.HOME, "guide-progress"), "");
+    return result;
+  };
+}
+""")
+    env["NODE_OPTIONS"] += f' --require "{gate}"'
     result = subprocess.run(
         [
             node_bin(),
@@ -393,10 +420,12 @@ def test_guided_install_progress_is_visible_while_worker_is_waiting(
     )
     assert result.returncode == 0, result.stderr
     assert "Preparing Python and runtime dependencies" in result.stdout
-    assert "Installing Claude Code integration… 5s" in result.stdout
-    assert result.stdout.index(
-        "Installing Claude Code integration"
-    ) < result.stdout.index("Installation complete")
+    progress = re.search(
+        r"Installing Claude Code integration… ([0-9]+)s", result.stdout
+    )
+    assert progress, result.stdout
+    assert int(progress[1]) >= 5
+    assert progress.start() < result.stdout.index("Installation complete")
 
 
 @pytest.mark.parametrize("hosts", ["claude-code", "claude-code,codex"])
