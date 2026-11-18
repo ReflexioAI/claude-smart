@@ -3115,7 +3115,17 @@ async function syncPluginPythonEnv(pluginRoot, uv, env) {
   if (code !== 0) throw new Error(`uv sync failed in ${pluginRoot}`);
 }
 
-async function preparePluginPython(pluginRoot, uv, env) {
+async function preparePluginPython(pluginRoot, uv, inherited) {
+  const project = resolve(pluginRoot);
+  // uv lets an invoking shell redirect both project discovery and the venv.
+  // Preparation owns the candidate package and its Python environment.
+  const env = {
+    ...inherited,
+    UV_WORKING_DIR: project,
+    UV_PROJECT: project,
+    UV_PROJECT_ENVIRONMENT: join(project, ".venv"),
+  };
+  delete env.VIRTUAL_ENV;
   const pyprojectPath = join(pluginRoot, "pyproject.toml");
   const pyproject = existsSync(pyprojectPath) ? readFileSync(pyprojectPath, "utf8") : "";
   if (/^\s*\[tool\.uv\.sources\]\s*$/m.test(pyproject)) {

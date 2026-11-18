@@ -7353,6 +7353,52 @@ def test_node_installer_locked_sync_success_does_not_refresh_lock(
     ]
 
 
+def test_node_python_preparation_owns_uv_project_and_environment(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for installer wrapper tests")
+    home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(
+        tmp_path, mode="stale"
+    )
+    previous = tmp_path / "existing environment"
+    previous.mkdir()
+    sentinel = previous / "keep"
+    sentinel.write_text("previous\n")
+    env.update(
+        dict.fromkeys(
+            ("UV_WORKING_DIR", "UV_PROJECT", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"),
+            str(previous),
+        )
+    )
+    uv = home / ".local/bin/uv"
+    shim = uv.with_name("uv-fixture")
+    uv.rename(shim)
+    _write_executable(
+        uv,
+        "#!/bin/sh\n"
+        '[ "$UV_WORKING_DIR" = "$PWD" ] && [ "$UV_PROJECT" = "$PWD" ] &&\n'
+        '[ "$UV_PROJECT_ENVIRONMENT" = "$PWD/.venv" ] && [ -z "${VIRTUAL_ENV+x}" ] || exit 63\n'
+        f'exec {shlex.quote(str(shim))} "$@"\n',
+    )
+    script = (
+        f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
+        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
+        "{ patchCodexHooks: false })"
+        ".catch((err) => { console.error(err.message); process.exitCode = 1; });"
+    )
+    result = subprocess.run(
+        [node, "-e", script], env=env, text=True, capture_output=True, timeout=120
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (plugin_root / ".venv/bin/python").is_file()
+    assert (plugin_root / "uv.lock").read_text() == "fresh\n"
+    assert sentinel.read_text() == "previous\n"
+    assert list(previous.iterdir()) == [sentinel]
+
+
 @pytest.mark.parametrize("mode", ["fresh", "non_lock_failure"])
 def test_node_runtime_preparation_preserves_active_root(
     tmp_path: Path, mode: str
