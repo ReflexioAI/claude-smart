@@ -380,6 +380,8 @@ def test_codex_marketplace_never_replaces_legacy_claude_runtime(tmp_path, phase)
     link = tmp_path / ".reflexio/plugin-root"
     link.parent.mkdir()
     link.symlink_to(legacy, target_is_directory=True)
+    if phase != "bootstrap":
+        _write_bootstrap_uv(uv, mode="fresh")
     if phase == "registration":
         fake = tmp_path / "fake-bin/codex"
         fake.write_text(
@@ -388,8 +390,6 @@ def test_codex_marketplace_never_replaces_legacy_claude_runtime(tmp_path, phase)
                 'if (args[0] === "plugin" && args[1] === "marketplace" && args[2] === "add") process.exit(3);\nif (args[0] === "features"',
             )
         )
-    elif phase in {"success", "uninstall"}:
-        _write_bootstrap_uv(uv, mode="fresh")
     before = {
         str(f.relative_to(legacy)): f.read_bytes()
         for f in legacy.rglob("*")
