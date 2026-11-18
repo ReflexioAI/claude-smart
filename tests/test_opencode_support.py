@@ -435,7 +435,9 @@ process.stdout.write(JSON.stringify({{
     assert "--agent" in call["args"]
     assert "--pure" not in call["args"]
     assert "--dir" not in call["args"]
-    assert call["env"]["PWD"] == call["cwd"]
+    subprocess_pwd = Path(call["env"]["PWD"])
+    assert subprocess_pwd.is_absolute()
+    assert subprocess_pwd.resolve() == Path(call["cwd"]).resolve()
     assert call["dotConfigExists"] is True
     assert call["rootConfigExists"] is False
     assert "--model" not in call["args"]
