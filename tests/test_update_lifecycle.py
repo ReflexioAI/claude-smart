@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -39,7 +40,7 @@ def _fixture(
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO_ROOT / name, target)
     (package / "plugin/identity").write_text("new")
-    record = """import json, os, sys
+    record = """import json, os, signal, sys
 from pathlib import Path
 home = Path(os.environ["HOME"])
 kind, action = sys.argv[1:]
@@ -55,9 +56,19 @@ row = {"kind": kind, "action": action, "root": str(root),
        "marker": marker.read_text() if marker.is_file() else None}
 with (home / "service-calls.jsonl").open("a") as out:
     out.write(json.dumps(row) + "\\n")
+stopped = home / f"fixture-{kind}-stopped"
+if action == "stop" and os.environ.get("FIXTURE_UNSTOPPABLE") != kind:
+    stopped.touch()
 if action == "status":
     running = os.environ["FIXTURE_RUNNING"]
-    print("running on http://localhost:1" if running in ("both", kind) else "not running")
+    if stopped.exists():
+        if os.environ.get("FIXTURE_UNVERIFIABLE") == kind:
+            sys.exit(1)
+        if os.environ.get("FIXTURE_INTERRUPT_PROBE") == kind:
+            os.kill(os.getppid(), signal.SIGTERM)
+    running_here = not stopped.exists() and running in ("both", kind)
+    active = "stale claude-smart backend" if os.environ.get("FIXTURE_STALE") == kind else "running"
+    print(f'{active} on http://localhost:{os.environ["FIXTURE_PORT"]}' if running_here else "not running")
 """
     for name in ("backend", "dashboard"):
         _write_executable(
@@ -99,6 +110,9 @@ if action == "status":
         for key in ("PATH", "SystemRoot", "LANG")
         if key in os.environ
     }
+    with socket.socket() as unused:
+        unused.bind(("127.0.0.1", 0))
+        port = str(unused.getsockname()[1])
     env.update(
         HOME=str(tmp_path),
         USERPROFILE=str(tmp_path),
@@ -112,6 +126,7 @@ if action == "status":
         CLAUDE_SMART_DASHBOARD_AUTOSTART="0",
         CLAUDE_SMART_HOST="opencode",
         FIXTURE_RUNNING=running,
+        FIXTURE_PORT=port,
     )
     return package, root, uv, env
 
@@ -166,6 +181,110 @@ def test_update_preflight_does_not_stop_services(tmp_path, host, failure):
     assert result.returncode != 0
     assert not _calls(tmp_path), result.stderr
     assert (root / "identity").read_text() == "old"
+
+
+@pytest.mark.parametrize("host", ["codex", "opencode"])
+@pytest.mark.parametrize("failure", ["UNSTOPPABLE", "UNVERIFIABLE"])
+def test_update_requires_observed_shutdown_of_running_service(tmp_path, host, failure):
+    package, root, uv, env = _fixture(tmp_path, host)
+    _write_bootstrap_uv(uv, mode="fresh")
+    env[f"FIXTURE_{failure}"] = "backend"
+    link = tmp_path / ".reflexio/plugin-root"
+    original_link = link.lstat().st_ino
+
+    result = _run(tmp_path, package, host, env)
+
+    assert result.returncode != 0
+    assert "Could not confirm shutdown of the previous backend service" in result.stderr
+    assert (root / "identity").read_text() == "old"
+    assert link.lstat().st_ino == original_link
+    assert link.resolve() == root
+    assert (tmp_path / ".claude-smart/install-failed").read_text() == "prior marker"
+    assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
+    assert [
+        (row["kind"], row["identity"])
+        for row in _calls(tmp_path)
+        if row["action"] == "start"
+    ] == (
+        [("backend", "old"), ("dashboard", "old")]
+        if failure == "UNVERIFIABLE"
+        else [("dashboard", "old")]
+    )
+
+
+def test_update_refuses_shutdown_when_health_disappears_but_port_stays_open(tmp_path):
+    package, root, uv, env = _fixture(tmp_path, "codex", running="backend")
+    _write_bootstrap_uv(uv, mode="fresh")
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        env["FIXTURE_PORT"] = str(listener.getsockname()[1])
+        result = _run(tmp_path, package, "codex", env)
+
+    assert result.returncode != 0
+    assert "Could not confirm shutdown of the previous backend service" in result.stderr
+    assert (root / "identity").read_text() == "old"
+    assert not [row for row in _calls(tmp_path) if row["action"] == "start"]
+
+
+def test_interrupt_during_post_stop_probe_recovers_observed_service(tmp_path):
+    package, root, uv, env = _fixture(tmp_path, "codex", running="backend")
+    _write_bootstrap_uv(uv, mode="fresh")
+    env["FIXTURE_INTERRUPT_PROBE"] = "backend"
+
+    result = _run(tmp_path, package, "codex", env)
+
+    assert result.returncode == 143, result.stderr
+    assert (root / "identity").read_text() == "old"
+    assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
+    assert [row["kind"] for row in _calls(tmp_path) if row["action"] == "start"] == [
+        "backend"
+    ]
+
+
+def test_update_rejects_timeout_even_when_status_exits_zero(tmp_path):
+    package, root, uv, env = _fixture(tmp_path, "codex", running="backend")
+    _write_bootstrap_uv(uv, mode="fresh")
+    preload = tmp_path / "timed-out-status.cjs"
+    preload.write_text(
+        r"""
+        const {existsSync} = require("node:fs");
+        const {join} = require("node:path");
+        const childProcess = require("node:child_process");
+        const spawnSync = childProcess.spawnSync;
+        childProcess.spawnSync = function(command, args, options) {
+          if (args[0].endsWith("backend-service.sh") && args[1] === "status" &&
+              existsSync(join(process.env.HOME, "fixture-backend-stopped"))) {
+            return { status: 0, error: {code: "ETIMEDOUT"}, stdout: "not running\n" };
+          }
+          return spawnSync(command, args, options);
+        };
+        """
+    )
+    env["NODE_OPTIONS"] = f'--require "{preload}"'
+
+    result = _run(tmp_path, package, "codex", env)
+
+    assert result.returncode != 0
+    assert "Could not confirm shutdown of the previous backend service" in result.stderr
+    assert (root / "identity").read_text() == "old"
+    assert [row["kind"] for row in _calls(tmp_path) if row["action"] == "start"] == [
+        "backend"
+    ]
+
+
+def test_failed_update_recovers_stopped_stale_backend(tmp_path):
+    package, root, _, env = _fixture(tmp_path, "codex", running="backend")
+    env["FIXTURE_STALE"] = "backend"
+
+    result = _run(tmp_path, package, "codex", env)
+
+    assert result.returncode != 0
+    assert "uv sync failed" in result.stderr, result.stderr
+    assert (root / "identity").read_text() == "old"
+    assert [row["kind"] for row in _calls(tmp_path) if row["action"] == "start"] == [
+        "backend"
+    ]
 
 
 @pytest.mark.parametrize("host", ["codex", "opencode"])

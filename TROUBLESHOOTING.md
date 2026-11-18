@@ -60,6 +60,12 @@ ReflexioAI/claude-smart`; use the npm command for installation and updates.
 bundle and deliberately leaves your running services alone rather than stopping
 a backend it cannot replace. Use `npx claude-smart update`.
 
+**Update could not confirm shutdown of a previous service.**
+The installer leaves the previous runtime in place if an observed backend
+or dashboard is still running or its shutdown cannot be verified. Inspect
+the affected service's log under `~/.claude-smart/`, resolve the shutdown
+failure, then rerun `npx claude-smart update`.
+
 **Where are private install tools stored?**
 `uv` is installed into the standard Astral locations (`~/.local/bin` or `~/.cargo/bin`). The private dashboard runtime is at `~/.claude-smart/node/current`. Set `CLAUDE_SMART_NODE_LTS_MAJOR` (default `26`) to choose the Node LTS major used by the private bootstrap.
 

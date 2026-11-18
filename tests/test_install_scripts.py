@@ -1915,7 +1915,13 @@ def test_failed_install_preserves_duplicate_host_and_restarts_effective_runtime(
     scripts.mkdir(parents=True)
     _write_executable(
         scripts / "backend-service.sh",
-        '#!/bin/sh\n[ "$1" = status ] && { echo "running on http://localhost:1"; exit 0; }\necho "$1 $CLAUDE_SMART_HOST" >> "$HOME/old-backend.log"\n',
+        "#!/bin/sh\n"
+        'if [ "$1" = status ]; then\n'
+        f'    [ -f "$HOME/backend-stopped" ] && echo "not running" || echo "running on http://localhost:{_free_port()}"\n'
+        "    exit 0\n"
+        "fi\n"
+        '[ "$1" = stop ] && touch "$HOME/backend-stopped"\n'
+        'echo "$1 $CLAUDE_SMART_HOST" >> "$HOME/old-backend.log"\n',
     )
     link = tmp_path / ".reflexio/plugin-root"
     link.parent.mkdir()
@@ -2109,7 +2115,12 @@ def test_failed_install_restarts_only_services_that_were_running(
     )
     _write_executable(
         old_scripts / "dashboard-service.sh",
-        '#!/bin/sh\n[ "$1" = status ] && { echo "running on http://localhost:3001"; exit 0; }\n'
+        "#!/bin/sh\n"
+        'if [ "$1" = status ]; then\n'
+        f'    [ -f "$HOME/dashboard-stopped" ] && echo "not running" || echo "running on http://localhost:{_free_port()}"\n'
+        "    exit 0\n"
+        "fi\n"
+        '[ "$1" = stop ] && touch "$HOME/dashboard-stopped"\n'
         'echo "dashboard $1" >> "$HOME/old-services.log"\n',
     )
     link = tmp_path / ".reflexio" / "plugin-root"
@@ -2625,7 +2636,12 @@ def test_node_failed_install_restarts_the_services_it_stopped(tmp_path: Path) ->
     for name in ("backend-service.sh", "dashboard-service.sh"):
         _write_executable(
             old_scripts / name,
-            '#!/bin/sh\n[ "$1" = status ] && { echo "running on http://localhost:1"; exit 0; }\n'
+            f'#!/bin/sh\nstate="$HOME/{name}.stopped"\n'
+            'if [ "$1" = status ]; then\n'
+            f'    [ -f "$state" ] && echo "not running" || echo "running on http://localhost:{_free_port()}"\n'
+            "    exit 0\n"
+            "fi\n"
+            '[ "$1" = stop ] && touch "$state"\n'
             f'echo "{name} $1" >> "$HOME/old-services.log"\n',
         )
     link = tmp_path / ".reflexio" / "plugin-root"

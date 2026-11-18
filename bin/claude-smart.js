@@ -1369,15 +1369,33 @@ function pluginServiceStatus(root, scriptName) {
     windowsHide: true,
     timeout: PLUGIN_SERVICE_TIMEOUT_MS,
   });
-  return (
-    String(result.stdout || "")
-      .trim()
-      .split(/\r?\n/)
-      .pop() || ""
-  );
+  if (result.error || result.signal || result.status !== 0) return "";
+  return String(result.stdout || "").trim().split(/\r?\n/).pop() || "";
 }
 
-function stopServicesForInstall(installedRoot, host) {
+// A failed HTTP health check can print "not running" while the old
+// listener is still bound. Corroborate it against the observed loopback
+// port without relying on HTTP, a PID file, or shell-specific networking.
+function servicePortRefusesConnections(status) {
+  const port = Number(status.match(/ on http:\/\/localhost:(\d+)(?=\s|$)/)?.[1]);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+  const connect = `
+    const socket = require("node:net").connect(Number(process.argv[1]), "127.0.0.1");
+    socket.once("connect", () => process.exit(1));
+    socket.once("error", error => process.exit(error.code === "ECONNREFUSED" ? 0 : 1));
+    socket.setTimeout(1000, () => process.exit(1));
+  `;
+  const probe = spawnSync(process.execPath, ["-e", connect, String(port)], {
+    env: { ...process.env, NODE_OPTIONS: "" },
+    stdio: "ignore",
+    windowsHide: true,
+    timeout: 3000,
+    killSignal: "SIGKILL",
+  });
+  return !probe.error && !probe.signal && probe.status === 0;
+}
+
+async function stopServicesForInstall(installedRoot, host) {
   // Shared services may belong to another integration. Never use a candidate
   // npm source as the recovery runtime for a first installation.
   const root = installStateSnapshot.pluginRoot || installedRoot;
@@ -1385,22 +1403,35 @@ function stopServicesForInstall(installedRoot, host) {
   stoppedServices = { root, host, backend: false, dashboard: false };
   ensureRollbackOnExit();
   const failed = [];
+  const reportsActiveService = /^(running on |stale claude-smart backend on )/;
   for (const kind of ["dashboard", "backend"]) {
     const scriptName = `${kind}-service.sh`;
     if (!existsSync(join(root, "scripts", scriptName))) continue;
-    const wasRunning = pluginServiceStatus(root, scriptName).startsWith("running on");
-    if (runPluginService(root, scriptName, "stop")) {
-      // Failed/unknown stops never authorize a speculative restart.
-      stoppedServices[kind] = wasRunning;
-    } else {
+    const before = pluginServiceStatus(root, scriptName);
+    const observed = reportsActiveService.test(before);
+    const stopped = runPluginService(root, scriptName, "stop");
+    const after = pluginServiceStatus(root, scriptName);
+    const stillActive = reportsActiveService.test(after);
+    const portClosed = observed && !stillActive && servicePortRefusesConnections(before);
+    // Record recovery before yielding for a pending signal. Even a failed
+    // status command can follow a successful stop of a previously live service.
+    stoppedServices[kind] = portClosed;
+    if (!stopped || stillActive || (observed && (!portClosed || after !== "not running"))) {
       failed.push(kind);
     }
   }
-  if (failed.length)
+  if (failed.length) {
+    // No package or selector writes have occurred. Preserve their original
+    // files and let exit recovery restart only the services confirmed stopped.
+    commitInstallState();
     throw new Error(
-      `Could not stop the previous ${failed.join(" and ")} service; ` +
+      `Could not confirm shutdown of the previous ${failed.join(" and ")} service; ` +
         "the runtime was not replaced. Resolve the service shutdown failure and retry installation.",
     );
+  }
+  // Let a queued interruption restore the old services before any package write.
+  await new Promise(setImmediate);
+  if (terminatingOnSignal) await new Promise(() => {});
 }
 
 function restartStoppedServices() {
@@ -3301,10 +3332,10 @@ function printHelp() {
       "  3. Reads setup/bootstrap config when managed/read-only setup was configured.",
       "",
       "Codex install:",
-      `  1. Copies the bundled marketplace to ${CODEX_MARKETPLACE_DIR}`,
-      "  2. codex plugin marketplace add <copied marketplace>",
-      "  3. codex features enable hooks && codex features enable plugin_hooks",
-      "  4. Installs private Node/npm, uv, Python deps, and dashboard deps as needed",
+      "  1. Prepares private Node/npm, uv, Python deps, and dashboard deps as needed",
+      `  2. Copies the bundled marketplace to ${CODEX_MARKETPLACE_DIR}`,
+      "  3. codex plugin marketplace add <copied marketplace>",
+      "  4. codex features enable hooks && codex features enable plugin_hooks",
       "  5. Installs claude-smart into Codex's plugin cache and enables it",
       "  6. Trusts and enables claude-smart hook entries in CODEX_HOME/config.toml (default ~/.codex)",
       "  7. Start a new Codex session to load the plugin.",
@@ -3845,7 +3876,7 @@ async function runInstall(args, options = {}) {
   // older copy) before the copy under them is replaced.
   const previousRoot = activePluginRoot();
   // Restart with the host that root was running for (e.g. Codex's bridge).
-  if (previousRoot) stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
+  if (previousRoot) await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
   let source;
   try {
     source = installLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "Claude Code");
@@ -3964,7 +3995,7 @@ async function runInstallCodex(args) {
   const previousRoot = existsSync(CODEX_RUNTIME_PLUGIN_ROOT)
     ? CODEX_RUNTIME_PLUGIN_ROOT
     : findCodexPluginRoot();
-  stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
+  await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
   try {
     installLocalPluginPackage(CODEX_RUNTIME_PACKAGE_DIR, "Codex runtime");
     await bootstrapPluginRuntime(CODEX_RUNTIME_PLUGIN_ROOT, { readOnly });
@@ -4110,7 +4141,7 @@ async function runInstallOpenCode(args) {
   assertOpenCodeInstallConfiguration(args);
   const installedRoot = join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin");
   const previousRoot = existsSync(installedRoot) ? installedRoot : null;
-  stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
+  await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
   let packageRoot;
   try {
     packageRoot = installOpenCodePluginPackage();
