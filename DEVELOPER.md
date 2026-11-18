@@ -151,6 +151,10 @@ Hosted Reflexio deployments should use a managed embedding provider or a scalabl
 
 ## Install dependency policy
 
+Codex and OpenCode prepare their runtime dependencies before selecting the
+shared plugin root. Each installer selects that root after publishing its host
+adapter and before starting shared services.
+
 `install`, `update`, `setup`, and `uninstall` use the guided coordinator. It invokes
 the existing per-agent workers sequentially, captures their output in private log
 files, and starts shared services once after successful installation. Each worker

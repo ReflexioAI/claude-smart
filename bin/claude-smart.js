@@ -3073,7 +3073,6 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
     patchCodexHooksForNode(pluginRoot, nodeRuntime.node);
   }
   if (options.readOnly) prunePublishHooksForReadOnly(pluginRoot);
-  ensurePluginRoot(pluginRoot);
   const uv = await ensureUv();
   const env = runtimeEnv([dirname(uv), ...privateNodeBinDirs()]);
   const pyprojectPath = join(pluginRoot, "pyproject.toml");
@@ -3867,7 +3866,8 @@ async function runInstallCodex(args) {
         "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
       );
     }
-    // Preparation succeeded; discard the rollback cache only now.
+    ensurePluginRoot(CODEX_RUNTIME_PLUGIN_ROOT);
+    // Preparation and publication succeeded; discard the rollback cache only now.
     commitLocalPluginPackages([cacheDir, CODEX_RUNTIME_PACKAGE_DIR]);
     await startAndReportServices(CODEX_RUNTIME_PLUGIN_ROOT, HOST_CODEX, setup);
   } catch (err) {
@@ -3995,6 +3995,7 @@ async function runInstallOpenCode(args) {
       `OpenCode loader changed during install at ${v2PluginFile.path}; reinstall after resolving the conflict.`,
     );
   }
+  ensurePluginRoot(pluginRoot);
   // Committed only after publication, so a conflict exit rolls the package back.
   commitLocalPluginPackages([packageRoot]);
   await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);

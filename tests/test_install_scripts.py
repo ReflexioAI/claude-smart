@@ -6776,6 +6776,7 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
         assert (root / "opencode" / "dist" / "server.mjs").exists()
         _assert_matching_smart_install_hash(root, installed_package)
     runtime_plugin = codex_home / "claude-smart" / "runtime" / "plugin"
+    assert (home / ".reflexio" / "plugin-root").resolve() == runtime_plugin.resolve()
     assert (runtime_plugin / ".venv" / "bin" / "python").exists()
     assert (runtime_plugin / "dashboard/node_modules/.bin/acorn").is_symlink()
     for root in [marketplace_plugin, cache_plugin]:
@@ -6972,6 +6973,9 @@ def test_opencode_fresh_tarball_install_uses_local_file_plugin(
     local_package = Path(
         entry.removeprefix("file://").removesuffix("/plugin/opencode/dist/server.mjs")
     )
+    assert (home / ".reflexio" / "plugin-root").resolve() == (
+        local_package / "plugin"
+    ).resolve()
     installed_package = prefix / "lib" / "node_modules" / "claude-smart"
     local_script = local_package / "plugin" / "scripts" / "smart-install.sh"
     assert local_script.exists()
@@ -7276,17 +7280,21 @@ def test_node_installer_locked_sync_success_does_not_refresh_lock(
     ]
 
 
-def test_node_installer_preserves_occupied_plugin_root(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mode", ["fresh", "non_lock_failure"])
+def test_node_runtime_preparation_preserves_active_root(
+    tmp_path: Path, mode: str
+) -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for installer wrapper tests")
-    home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(
-        tmp_path, mode="fresh"
-    )
+    home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(tmp_path, mode=mode)
     occupied = home / ".reflexio" / "plugin-root"
     occupied.mkdir(parents=True)
     sentinel = occupied / "keep.txt"
     sentinel.write_text("keep\n")
+    metadata = occupied.with_suffix(".txt")
+    metadata.write_text(f"{tmp_path / 'previous-plugin'}\n")
+    previous_metadata = metadata.read_bytes()
     script = (
         f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
         f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
@@ -7304,11 +7312,9 @@ def test_node_installer_preserves_occupied_plugin_root(tmp_path: Path) -> None:
         timeout=120,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert (result.returncode == 0) == (mode == "fresh"), result.stderr
     assert sentinel.read_text() == "keep\n"
-    assert (home / ".reflexio" / "plugin-root.txt").read_text().strip() == str(
-        plugin_root
-    )
+    assert metadata.read_bytes() == previous_metadata
 
 
 @pytest.mark.parametrize("ownership", ["colocated", "attached", "invalid", "exit"])
