@@ -3853,6 +3853,7 @@ async function runInstallCodex(args) {
   try {
     installLocalPluginPackage(CODEX_RUNTIME_PACKAGE_DIR, "Codex runtime");
     await bootstrapPluginRuntime(CODEX_RUNTIME_PLUGIN_ROOT, { readOnly });
+    ensurePluginRoot(CODEX_RUNTIME_PLUGIN_ROOT);
     // Only the patched manifest enters the marketplace/cache. Its commands
     // execute the account runtime even when Codex supplies PLUGIN_ROOT=cache.
     cpSync(
@@ -3866,7 +3867,6 @@ async function runInstallCodex(args) {
         "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
       );
     }
-    ensurePluginRoot(CODEX_RUNTIME_PLUGIN_ROOT);
     // Preparation and publication succeeded; discard the rollback cache only now.
     commitLocalPluginPackages([cacheDir, CODEX_RUNTIME_PACKAGE_DIR]);
     await startAndReportServices(CODEX_RUNTIME_PLUGIN_ROOT, HOST_CODEX, setup);
@@ -3968,6 +3968,8 @@ async function runInstallOpenCode(args) {
     process.exit(1);
   }
   assertOpenCodeInstallConfiguration(args);
+  // Fail while the original adapter still works if selecting the root fails.
+  ensurePluginRoot(pluginRoot);
   try {
     // One load path per scope: OpenCode 1.x auto-loads {plugin,plugins}/*.{ts,js}
     // from its config directories and V2 loads the plugins directory, so the
@@ -3995,7 +3997,6 @@ async function runInstallOpenCode(args) {
       `OpenCode loader changed during install at ${v2PluginFile.path}; reinstall after resolving the conflict.`,
     );
   }
-  ensurePluginRoot(pluginRoot);
   // Committed only after publication, so a conflict exit rolls the package back.
   commitLocalPluginPackages([packageRoot]);
   await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);

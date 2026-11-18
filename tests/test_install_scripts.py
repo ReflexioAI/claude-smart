@@ -6446,6 +6446,7 @@ def _install_opencode_tarball_fixture(
     tmp_path: Path,
     foreign_global_loader: str | None = None,
     log_service_calls: bool = False,
+    block_root_metadata: bool = False,
 ) -> tuple[Path, Path, Path, Path, dict[str, str], subprocess.CompletedProcess[str]]:
     if os.name == "nt":
         pytest.skip("tarball smoke uses POSIX npm bin paths")
@@ -6505,6 +6506,12 @@ def _install_opencode_tarball_fixture(
         loader = xdg / "opencode" / "plugins" / "claude-smart.js"
         loader.parent.mkdir(parents=True, exist_ok=True)
         loader.write_text(foreign_global_loader)
+
+    if block_root_metadata:
+        (home / ".reflexio" / "plugin-root.txt").mkdir(parents=True)
+        config = xdg / "opencode" / "opencode.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text('{"plugin":["claude-smart"]}\n')
 
     result = subprocess.run(
         [
@@ -7006,6 +7013,22 @@ def test_opencode_tarball_install_conflict_fails_loudly(
     assert "not a claude-smart loader" in result.stderr
     # The squatter is left untouched, not clobbered.
     assert (xdg / "opencode" / "plugins" / "claude-smart.js").read_text() == foreign
+
+
+def test_opencode_pointer_write_failure_preserves_legacy_registration(
+    tmp_path: Path,
+) -> None:
+    home, _prefix, _project, xdg, _env, result = _install_opencode_tarball_fixture(
+        tmp_path, block_root_metadata=True
+    )
+
+    assert result.returncode == 1
+    assert "plugin-root.txt" in result.stderr
+    assert "uv sync --locked" in (home / "uv.log").read_text()
+    assert (xdg / "opencode" / "opencode.json").read_text() == (
+        '{"plugin":["claude-smart"]}\n'
+    )
+    assert not (xdg / "opencode" / "plugins" / "claude-smart.js").exists()
 
 
 def test_opencode_tarball_install_conflict_leaves_shared_services_running(
