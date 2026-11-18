@@ -1905,6 +1905,36 @@ def test_opencode_loader_preserves_file_created_during_preparation(tmp_path: Pat
     assert result.returncode == 0, result.stderr
 
 
+def test_opencode_dangling_loader_blocks_configuration_changes(tmp_path: Path):
+    directory = tmp_path / ".opencode" / "plugins"
+    directory.mkdir(parents=True)
+    target = directory / "claude-smart.js"
+    missing = tmp_path / "missing.js"
+    try:
+        target.symlink_to(missing)
+    except OSError as err:
+        if os.name == "nt" and getattr(err, "winerror", None) == 1314:
+            pytest.skip("Windows runner lacks permission to create symlinks")
+        raise
+    script = f"""
+        const assert = require("node:assert/strict");
+        const installer = require({json.dumps(str(REPO_ROOT / "bin/claude-smart.js"))});
+        const project = {json.dumps(str(tmp_path))};
+        assert.match(installer.openCodeV2LoaderConflicts([], project), /cannot be read/);
+        const result = installer.writeOpenCodeV2Plugin([], project, project, () => {{
+            assert.fail("blocked loader must be detected before config changes");
+        }});
+        assert.equal(result.status, "conflict");
+    """
+    result = _run_node_script(script)
+    if result is None:
+        pytest.skip("node is not installed")
+    assert result.returncode == 0, result.stderr
+    assert list(directory.iterdir()) == [target]
+    assert target.readlink() == missing
+    assert not missing.exists()
+
+
 def test_opencode_loader_refresh_updates_existing_file_in_place(tmp_path: Path):
     script = f"""
         const fs = require("node:fs");

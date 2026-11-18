@@ -572,7 +572,7 @@ function readOpenCodeV2Loader(target) {
   try {
     return readFileSync(target, "utf8");
   } catch (err) {
-    if (err && err.code === "ENOENT") return null;
+    if (err && err.code === "ENOENT" && !pathEntryExists(target)) return null;
     throw err;
   }
 }
