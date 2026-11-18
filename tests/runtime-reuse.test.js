@@ -171,3 +171,78 @@ test("relative executables survive removal of the rollback source", {skip:proces
   assert.equal(fs.readFileSync(path.join(root, "new", "dashboard", "node_modules", ".bin", "next"), "utf8"), "next");
   assert.equal(fs.readFileSync(path.join(root, "new", ".venv", "bin", "python3"), "utf8"), "interpreter");
 });
+
+test("private Node archive preparation leaves current intact until tools are complete", async t => {
+  const { spawnSync } = require("node:child_process");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "private node λ "));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const windows = process.platform === "win32";
+  const osName = windows ? "win" : process.platform;
+  const arch = windows ? "x64" : osName === "darwin" ? "arm64" : process.arch;
+  const stem = `node-v26.0.0-${osName}-${arch}`;
+  const archive = path.join(root, `${stem}.${windows ? "zip" : "tar.gz"}`);
+  const source = path.join(root, stem);
+  const tools = windows ? source : path.join(source, "bin");
+  fs.mkdirSync(tools, { recursive: true });
+  const executable = windows ? "node.exe" : "node";
+  const packageManager = windows ? "npm.cmd" : "npm";
+  fs.writeFileSync(path.join(tools, executable), "candidate node", { mode: 0o700 });
+  const home = path.join(root, "account");
+  const nodeRoot = path.join(home, ".claude-smart", "node");
+  const current = path.join(nodeRoot, "current");
+  fs.mkdirSync(current, { recursive: true });
+  fs.writeFileSync(path.join(current, "old"), "predecessor");
+  const script = `
+    const fs = require("node:fs");
+    const { EventEmitter } = require("node:events");
+    const { Readable } = require("node:stream");
+    const path = require("node:path");
+    const crypto = require("node:crypto");
+    const [archive, installer] = process.argv.slice(1);
+    const contents = fs.readFileSync(archive);
+    const hash = crypto.createHash("sha256").update(contents).digest("hex");
+    require("node:https").get = (url, callback) => {
+      const request = new EventEmitter();
+      request.setTimeout = () => {};
+      queueMicrotask(() => {
+        const response = Readable.from([url.endsWith("SHASUMS256.txt")
+          ? Buffer.from(hash + "  " + path.basename(archive) + "\\n") : contents]);
+        response.statusCode = 200;
+        callback(response);
+      });
+      return request;
+    };
+    require(installer).ensurePrivateNode()
+      .then(tools => console.log(JSON.stringify(tools)))
+      .catch(error => { console.error(error.message); process.exitCode = 1; });
+  `;
+  function install() {
+    const build = spawnSync("tar", windows
+      ? ["-a", "-cf", path.basename(archive), stem] : ["-czf", path.basename(archive), stem],
+    { cwd: root, encoding: "utf8" });
+    assert.equal(build.status, 0, build.stderr || build.error);
+    return spawnSync(process.execPath, ["-e", script, archive, require.resolve("../bin/claude-smart")], {
+      cwd: root,
+      env: {
+        ...process.env, HOME: home, USERPROFILE: home,
+        CLAUDE_SMART_TEST_ARCH: arch, CLAUDE_SMART_TEST_RELEASE: "23.0.0",
+      },
+      encoding: "utf8", timeout: 30_000,
+    });
+  }
+
+  const rejected = install();
+  assert.equal(rejected.status, 1, rejected.stderr || rejected.error);
+  assert.match(rejected.stderr, /verified Node.js archive .* is missing executable node or npm/);
+  assert.equal(fs.readFileSync(path.join(current, "old"), "utf8"), "predecessor");
+  assert.deepEqual(fs.readdirSync(nodeRoot), ["current"]);
+
+  fs.writeFileSync(path.join(tools, packageManager), "candidate npm", { mode: 0o700 });
+  const accepted = install();
+  assert.equal(accepted.status, 0, accepted.stderr || accepted.error);
+  const selected = JSON.parse(accepted.stdout.trim());
+  assert.equal(fs.readFileSync(selected.node, "utf8"), "candidate node");
+  assert.equal(fs.readFileSync(selected.npm, "utf8"), "candidate npm");
+  assert.equal(fs.existsSync(path.join(current, "old")), false);
+  assert.deepEqual(fs.readdirSync(nodeRoot), ["current"]);
+});
