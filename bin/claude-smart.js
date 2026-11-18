@@ -1386,6 +1386,8 @@ function servicePortRefusesConnections(status) {
     socket.setTimeout(1000, () => process.exit(1));
   `;
   const probe = spawnSync(process.execPath, ["-e", connect, String(port)], {
+    // A terminal interrupt must not kill the observation needed for rollback.
+    detached: true,
     env: { ...process.env, NODE_OPTIONS: "" },
     stdio: "ignore",
     windowsHide: true,

@@ -3,10 +3,12 @@
 import json
 import os
 import shlex
+import signal
 import shutil
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -235,6 +237,63 @@ def test_interrupt_during_post_stop_probe_recovers_observed_service(tmp_path):
     result = _run(tmp_path, package, "codex", env)
 
     assert result.returncode == 143, result.stderr
+    assert (root / "identity").read_text() == "old"
+    assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
+    assert [row["kind"] for row in _calls(tmp_path) if row["action"] == "start"] == [
+        "backend"
+    ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX foreground process-group signal")
+def test_terminal_interrupt_during_tcp_probe_recovers_observed_service(tmp_path):
+    package, root, uv, env = _fixture(tmp_path, "codex", running="backend")
+    _write_bootstrap_uv(uv, mode="fresh")
+    started = tmp_path / "tcp-probe-started"
+    preload = tmp_path / "slow-probe.cjs"
+    preload.write_text(
+        """
+        const childProcess = require("node:child_process");
+        const spawnSync = childProcess.spawnSync;
+        childProcess.spawnSync = function(command, args, options) {
+          if (command === process.execPath && args[0] === "-e" && args[1].includes("node:net")) {
+            const probe = `
+              require("node:fs").writeFileSync(process.env.FIXTURE_PROBE_STARTED, "");
+              setTimeout(() => { ${args[1]} }, 500);
+            `;
+            args = [args[0], probe, ...args.slice(2)];
+          }
+          return spawnSync(command, args, options);
+        };
+        """
+    )
+    env["NODE_OPTIONS"] = f'--require "{preload}"'
+    env["FIXTURE_PROBE_STARTED"] = str(started)
+    with subprocess.Popen(
+        [node_bin(), str(package / "bin/claude-smart.js"), "update", "--host", "codex"],
+        cwd=tmp_path,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    ) as installer:
+        try:
+            deadline = time.monotonic() + 10
+            while (
+                not started.exists()
+                and installer.poll() is None
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
+            assert started.exists(), "installer never started the TCP check"
+            os.killpg(installer.pid, signal.SIGINT)
+            _, stderr = installer.communicate(timeout=10)
+        finally:
+            if installer.poll() is None:
+                os.killpg(installer.pid, signal.SIGKILL)
+                installer.communicate(timeout=10)
+
+    assert installer.returncode == 130, stderr
     assert (root / "identity").read_text() == "old"
     assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
     assert [row["kind"] for row in _calls(tmp_path) if row["action"] == "start"] == [
