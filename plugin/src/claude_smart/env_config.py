@@ -14,7 +14,9 @@ import hashlib
 import json
 import os
 import re
+import signal
 import stat
+import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
@@ -106,6 +108,10 @@ def load_reflexio_env(path: Path | None = None) -> None:
 
 class SettingsBusyError(RuntimeError):
     """Another cooperating settings transaction is currently publishing."""
+
+
+class SettingsPreflightError(RuntimeError):
+    """The staged settings failed a prepared-runtime prerequisite."""
 
 
 class SettingsConflictError(RuntimeError):
@@ -231,12 +237,16 @@ def publish_install(
     updates: dict[str, str | None],
     snapshot: dict[str, object],
     legacy: dict[str, object] | None,
+    *,
+    prepared: bool = False,
+    windows_bash: str | None = None,
 ) -> None:
     """Publish a confirmed guide snapshot, imports and completion atomically.
 
     Node selects provenance while building its one preview. This owner verifies
     that source and destination have not changed; it does not reinterpret the
-    guide's effective-value or connection-selection policies.
+    guide's effective-value or connection-selection policies. A prepared
+    runtime supplies its missing local defaults in the same transaction.
     """
     if not isinstance(snapshot, dict) or set(snapshot) != {
         "exists",
@@ -313,9 +323,22 @@ def publish_install(
                 + newline
                 + content.removeprefix("\ufeff")
             )
+        if prepared:
+            with_defaults, _ = _bootstrap_defaults(content)
+            if with_defaults is not None:
+                content = with_defaults
         return content, None
 
-    _edit_env_file(path, edit, expected_snapshot=(existed, digest))
+    _edit_env_file(
+        path,
+        edit,
+        expected_snapshot=(existed, digest),
+        validate=(
+            (lambda staged: _verify_staged_windows_embedding(windows_bash, staged))
+            if windows_bash is not None
+            else None
+        ),
+    )
 
 
 def _legacy_import_rows(
@@ -445,6 +468,7 @@ def _edit_env_file[Result](
     edit: Callable[[str], tuple[str | None, Result]],
     *,
     expected_snapshot: tuple[bool, str] | None = None,
+    validate: Callable[[Path], None] | None = None,
 ) -> Result:
     """Own one helper's read/transform/publication, not an entire installation.
 
@@ -483,7 +507,8 @@ def _edit_env_file[Result](
             if content is None:
                 return result
             # No-op operations still repair the original private mode, as before.
-            if exists and content == original:
+            unchanged = exists and content == original
+            if unchanged and validate is None:
                 path.chmod(0o600)
                 return result
             # Python >=3.12.4 gives a 0700 directory a private Windows DACL,
@@ -501,15 +526,62 @@ def _edit_env_file[Result](
                     target.write(content.encode("utf-8"))
                     target.flush()
                     os.fsync(target.fileno())
-                if exists and os.name == "nt":
+                if validate is not None:
+                    validate(temporary)
+                if unchanged or (exists and os.name == "nt"):
                     # Match the old in-place writer's read-only-attribute repair.
                     path.chmod(0o600)
-                temporary.replace(path)
+                if not unchanged:
+                    temporary.replace(path)
             return result
     except Timeout:
         raise SettingsBusyError(
             "Environment settings are busy; retry after the other save finishes"
         ) from None
+
+
+def _verify_staged_windows_embedding(bash: str, staged: Path) -> None:
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        with subprocess.Popen(  # noqa: S603 — the installer resolves Git Bash and owns cwd.
+            [
+                bash,
+                "scripts/smart-install.sh",
+                "verify-staged-windows-embedding",
+                str(staged),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=flags,
+            start_new_session=os.name != "nt",
+        ) as check:
+            try:
+                if check.wait(timeout=15) != 0:
+                    raise SettingsPreflightError
+            except subprocess.TimeoutExpired:
+                # The shell can still have a native importer using the staged
+                # file. Stop the tree before the transaction removes it.
+                try:
+                    if os.name == "nt":
+                        taskkill = (
+                            Path(os.environ["SystemRoot"]) / "System32/taskkill.exe"
+                        )
+                        subprocess.run(  # noqa: S603 — terminate only the owned checker.
+                            [str(taskkill), "/F", "/T", "/PID", str(check.pid)],
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=5,
+                            creationflags=flags,
+                        )
+                    else:
+                        os.killpg(check.pid, signal.SIGKILL)
+                finally:
+                    check.kill()
+                raise SettingsPreflightError from None
+    except (OSError, subprocess.SubprocessError):
+        raise SettingsPreflightError from None
 
 
 def _resolve_local_env_default(key: str, fallback: str) -> str:
@@ -536,39 +608,57 @@ def _single_line_value(value: str) -> bool:
 def main(argv: list[str] | None = None) -> int:
     """Internal prepared-runtime entrypoint; no bootstrap or provider imports."""
     arguments = sys.argv[1:] if argv is None else argv
-    if arguments not in (["bootstrap-repair"], ["publish"], ["publish-install"]):
+    commands = {
+        "bootstrap-repair",
+        "publish",
+        "publish-install",
+        "publish-prepared-install",
+    }
+    if (
+        not arguments
+        or arguments[0] not in commands
+        or len(arguments) > (2 if arguments[0] == "publish-prepared-install" else 1)
+    ):
         print(
-            "Usage: python -m claude_smart.env_config {bootstrap-repair|publish|publish-install}",
+            "Usage: python -m claude_smart.env_config "
+            "{bootstrap-repair|publish|publish-install|publish-prepared-install}",
             file=sys.stderr,
         )
         return 2
+    command = arguments[0]
     try:
-        if arguments in (["publish"], ["publish-install"]):
+        if command == "bootstrap-repair":
+            added = repair_bootstrap_env()
+        else:
             # Node sends JSON bytes; a Windows console code page must not
             # corrupt values or original-assignment comparisons under -I.
             request = json.load(sys.stdin.buffer)
             fields = (
                 {"updates", "expected"}
-                if arguments == ["publish"]
+                if command == "publish"
                 else {"updates", "snapshot", "legacy"}
             )
             if not isinstance(request, dict) or set(request) != fields:
                 raise ValueError("Invalid settings edit request")
-            if arguments == ["publish"]:
+            if command == "publish":
                 update_settings(request["updates"], request["expected"])
             else:
                 publish_install(
-                    request["updates"], request["snapshot"], request["legacy"]
+                    request["updates"],
+                    request["snapshot"],
+                    request["legacy"],
+                    prepared=command == "publish-prepared-install",
+                    windows_bash=arguments[1] if len(arguments) == 2 else None,
                 )
             added = []
-        else:
-            added = repair_bootstrap_env()
     except SettingsConflictError as error:
         print(str(error), file=sys.stderr)
         return 73
     except SettingsBusyError as error:
         print(str(error), file=sys.stderr)
         return 75
+    except SettingsPreflightError:
+        return 76
     except (OSError, ValueError):
         print(
             "Cannot update settings; check file access and single-line UTF-8 values.",

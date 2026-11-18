@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import signal
 import stat
@@ -758,6 +759,107 @@ def _install_snapshot(target):
         ).hexdigest(),
         "legacy_marker": (target.parent / "legacy-reflexio-env-checked").exists(),
     }
+
+
+@pytest.mark.parametrize(
+    "case", ["managed", "custom", "attached", "colocated", "unchanged", "stale"]
+)
+def test_prepared_settings_verify_staged_windows_backend_before_commit(
+    tmp_path, monkeypatch, case
+):
+    home = tmp_path / "owned home λ"
+    target = home / ".claude-smart/.env"
+    target.parent.mkdir(parents=True)
+    monkeypatch.setattr(env_config, "CLAUDE_SMART_ENV_PATH", target)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    marker = target.parent / "install-failed"
+    marker.write_bytes(b"previous installer diagnostic")
+    bash = shutil.which("bash")
+    if os.name == "nt":
+        candidate = Path(os.environ["ProgramFiles"]) / "Git/bin/bash.exe"
+        if candidate.is_file():
+            bash = str(candidate)
+    assert bash, "The dependency-platform checks provide Git Bash"
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    checkout = Path(__file__).resolve().parents[1] / "plugin/scripts"
+    shutil.copy2(checkout / "smart-install.sh", scripts)
+    # The real shell classifier and the files cross the process boundary.
+    # Keep the SDK and native import outcomes synthetic and independent.
+    library = (checkout / "_lib.sh").read_text(encoding="utf-8")
+    interpreter = shlex.quote(Path(sys.executable).as_posix())
+    (scripts / "_lib.sh").write_text(
+        library
+        + "\nclaude_smart_prepare_backend_import_context() { backend_python="
+        + interpreter
+        + '; backend_pythonpath=""; }\n'
+        + "claude_smart_python_imports() { return 1; }\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (scripts / "backend-inference-owner.py").write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        'content = Path(os.environ["REFLEXIO_ENV_FILE"]).read_bytes()\n'
+        'Path("observed-settings").write_bytes(content)\n'
+        'print("attached" if b"REFLEXIO_EMBEDDING_SERVICE_URL=" in content else "colocated")\n',
+        encoding="utf-8",
+    )
+    managed = "https://old.example.invalid/"
+    local = "http://localhost:8071/"
+    if case == "unchanged":
+        env_config.publish_install(
+            {"REFLEXIO_URL": local}, _install_snapshot(target), None, prepared=True
+        )
+    else:
+        target.write_bytes(f"REFLEXIO_URL={managed}\n".encode())
+    if case == "attached":
+        with target.open("ab") as settings:
+            settings.write(b"REFLEXIO_EMBEDDING_SERVICE_URL=http://localhost:8093/\n")
+    snapshot = _install_snapshot(target)
+    if case == "stale":
+        with target.open("ab") as settings:
+            settings.write(b"# edited\n")
+    original = target.read_bytes()
+    observed = tmp_path / "observed-settings"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REFLEXIO_URL", managed)
+    monkeypatch.setenv("BACKEND_PORT", "8071")
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    endpoint = {
+        "managed": "https://new.example.invalid/",
+        "custom": "http://localhost:8239/",
+    }.get(case, local)
+    updates = {"REFLEXIO_URL": endpoint}
+    if case in {"colocated", "unchanged", "stale"}:
+        error = (
+            env_config.SettingsConflictError
+            if case == "stale"
+            else env_config.SettingsPreflightError
+        )
+        with pytest.raises(error):
+            env_config.publish_install(
+                updates, snapshot, None, prepared=True, windows_bash=bash
+            )
+        assert target.read_bytes() == original
+    else:
+        env_config.publish_install(
+            updates, snapshot, None, prepared=True, windows_bash=bash
+        )
+        assert (
+            f"REFLEXIO_URL={updates['REFLEXIO_URL']}\n".encode() in target.read_bytes()
+        )
+    if case in {"managed", "custom", "stale"}:
+        assert not observed.exists()
+    elif case in {"attached", "unchanged"}:
+        assert observed.read_bytes() == target.read_bytes()
+    else:
+        assert b"REFLEXIO_ROW_LIMIT_INTERACTIONS=" in observed.read_bytes()
+        assert f"REFLEXIO_URL={local}\n".encode() in observed.read_bytes()
+    assert list(target.parent.glob(".env-*")) == []
+    assert marker.read_bytes() == b"previous installer diagnostic"
+    assert not (target.parent / "install.lock").exists()
 
 
 def _legacy_selection(source, rows):

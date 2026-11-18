@@ -11,11 +11,53 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
+PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
+# These fixed diagnostics also become the legacy install-failed marker.
+check_windows_local_embedding_runtime() {
+  local settings="$1" ownership
+  if claude_smart_reflexio_url_is_remote || claude_smart_reflexio_url_is_custom_local; then
+    return 0
+  fi
+  if ! claude_smart_prepare_backend_import_context "$PLUGIN_ROOT" || ! ownership="$(
+    cd "$PLUGIN_ROOT" &&
+      PYTHONPATH="$backend_pythonpath" REFLEXIO_ENV_FILE="$settings" \
+      "$backend_python" "$HERE/backend-inference-owner.py"
+  )"; then
+    printf '%s\n' "Unable to determine inference ownership; resolve the SDK startup error before retrying."
+    return 1
+  fi
+  ownership="${ownership%$'\r'}"
+  case "$ownership" in
+    attached) return 0 ;;
+    colocated) ;;
+    *)
+      printf '%s\n' "Invalid inference ownership result; repair the selected runtime before retrying."
+      return 1 ;;
+  esac
+  if ! claude_smart_python_imports "$PLUGIN_ROOT" onnxruntime; then
+    printf '%s\n' "Windows local embedding requires Microsoft Visual C++ Redistributable for onnxruntime; install the x64 redistributable from https://aka.ms/vs/17/release/vc_redist.x64.exe and rerun claude-smart install."
+    return 1
+  fi
+}
+
+# The settings publisher holds the settings lock. This read-only command
+# must stay above the install lock, marker writes, and legacy root redirects.
+if [ "${1:-}" = "verify-staged-windows-embedding" ]; then
+  staged="${2:?missing staged settings path}"
+  if command -v cygpath >/dev/null 2>&1; then
+    staged="$(cygpath -u "$staged")"
+  fi
+  [ -f "$staged" ] || exit 1
+  claude_smart_source_reflexio_env "$staged"
+  # Pass the original native path back to native Python.
+  check_windows_local_embedding_runtime "$2"
+  exit $?
+fi
+
 claude_smart_source_login_path
 claude_smart_prepend_astral_bins
 claude_smart_prepend_node_bins
 
-PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "smart-install.sh" "$@"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
@@ -100,26 +142,10 @@ write_failure() {
 
 verify_windows_local_embedding_runtime() {
   claude_smart_is_windows || return 0
-  local ownership
-  if claude_smart_reflexio_url_is_remote || claude_smart_reflexio_url_is_custom_local; then
-    return 0
+  local reason
+  if ! reason="$(check_windows_local_embedding_runtime "$HOME/.claude-smart/.env")"; then
+    write_failure "$reason"
   fi
-  claude_smart_prepare_backend_import_context "$PLUGIN_ROOT"
-  if ! ownership="$(cd "$PLUGIN_ROOT" && PYTHONPATH="$backend_pythonpath" \
-    REFLEXIO_ENV_FILE="$HOME/.claude-smart/.env" \
-    "$backend_python" "$HERE/backend-inference-owner.py")"; then
-    write_failure "Unable to determine inference ownership; resolve the SDK startup error before retrying."
-  fi
-  ownership="${ownership%$'\r'}"
-  case "$ownership" in
-    attached) return 0 ;;
-    colocated) ;;
-    *) write_failure "Invalid inference ownership result; repair the selected runtime before retrying." ;;
-  esac
-  if claude_smart_python_imports "$PLUGIN_ROOT" onnxruntime; then
-    return 0
-  fi
-  write_failure "Windows local embedding requires Microsoft Visual C++ Redistributable for onnxruntime; install the x64 redistributable from https://aka.ms/vs/17/release/vc_redist.x64.exe and rerun claude-smart install."
 }
 
 if [ "${1:-}" = "verify-windows-embedding" ]; then

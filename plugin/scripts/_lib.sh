@@ -96,7 +96,7 @@ claude_smart_source_reflexio_env() {
   # env_config.CLAUDE_SMART_ENV_PATH and the REFLEXIO_ENV_FILE export in
   # backend-service.sh.
   local env_file line key value
-  env_file="$HOME/.claude-smart/.env"
+  env_file="${1:-$HOME/.claude-smart/.env}"
   [ -f "$env_file" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line#"${line%%[![:space:]]*}"}"

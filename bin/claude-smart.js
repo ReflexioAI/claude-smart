@@ -2267,6 +2267,10 @@ async function writeConfirmedSettings(python, args, runtime, environment, reques
     throw new Error(
       "Settings are busy; retry after the other save finishes.",
     );
+  if (saved.code === 76)
+    throw new Error(
+      "Windows embedding preflight failed before saving settings. For bundled local embeddings, install the Microsoft Visual C++ x64 Redistributable (https://aka.ms/vs/17/release/vc_redist.x64.exe) and check the configured inference endpoint before retrying.",
+    );
   let acknowledged = false;
   try {
     acknowledged = saved.code === 0 && JSON.parse(saved.output).ok === true;
@@ -2279,6 +2283,8 @@ async function writeConfirmedSettings(python, args, runtime, environment, reques
 }
 
 async function publishFromPreparedRuntime(pluginRoot, settings) {
+  const args = ["-I", "-m", "claude_smart.env_config", "publish-prepared-install"];
+  if (isWindows()) args.push(requireWindowsEmbeddingBash());
   if (!process.connected)
     throw new Error("Installation guide disconnected before settings publication.");
   const runtime = { directory: pluginRoot, children: [] };
@@ -2286,7 +2292,7 @@ async function publishFromPreparedRuntime(pluginRoot, settings) {
   try {
     await writeConfirmedSettings(
       pluginPythonPath(pluginRoot),
-      ["-I", "-m", "claude_smart.env_config", "publish-install"],
+      args,
       runtime,
       runtimeEnv(),
       settings.request,
@@ -2438,8 +2444,7 @@ async function runGuidedCommand(command, args) {
       saved: () => saved,
       save: async (config) => {
         const settings = planInstallSettings(config, captured);
-        // The native Windows embedding check still reads the live settings.
-        if (!isWindows() && config.hosts.length === 1 && config.hosts[0] === HOST_CODEX) {
+        if (config.hosts.length === 1 && config.hosts[0] === HOST_CODEX) {
           deferredSettings = settings;
           return;
         }
@@ -3133,18 +3138,20 @@ function throwIfInstallFailureMarker() {
   if (existsSync(INSTALL_FAILURE_MARKER)) throw new Error(installFailureReason());
 }
 
-function verifyWindowsLocalEmbeddingRuntime(pluginRoot, env) {
-  if (!isWindows()) return;
-  // Reflexio owns local embeddings, but this installer is the first place a
-  // user sees whether the prepared Reflexio runtime can import onnxruntime.
-  const script = join(pluginRoot, "scripts", "smart-install.sh");
+function requireWindowsEmbeddingBash() {
   const bash = resolveUsableBash();
   if (!bash) {
     throw new Error(
       "Git Bash is required for claude-smart dependency checks on Windows. Install Git for Windows and ensure bash.exe is on PATH, or run from WSL.",
     );
   }
-  const result = spawnSync(bash, [script, "verify-windows-embedding"], {
+  return bash;
+}
+
+function verifyWindowsLocalEmbeddingRuntime(pluginRoot, env) {
+  if (!isWindows()) return;
+  const script = join(pluginRoot, "scripts", "smart-install.sh");
+  const result = spawnSync(requireWindowsEmbeddingBash(), [script, "verify-windows-embedding"], {
     cwd: pluginRoot,
     env,
     encoding: "utf8",
@@ -3376,12 +3383,12 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   if (options.readOnly) prunePublishHooksForReadOnly(pluginRoot);
   const uv = await ensureUv();
   const toolPaths = [dirname(uv), ...privateNodeBinDirs()];
-  let env = runtimeEnv(toolPaths);
+  const env = runtimeEnv(toolPaths);
   await preparePluginPython(pluginRoot, uv, env);
   if (options.settings) {
     await preparePluginDashboard(pluginRoot, nodeRuntime, env, options.settings);
     await publishFromPreparedRuntime(pluginRoot, options.settings);
-    env = runtimeEnv(toolPaths);
+    return nodeRuntime;
   }
   const repairCode = await runChecked(
     pluginPythonPath(pluginRoot),
@@ -3393,7 +3400,7 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
       "Could not repair missing installation defaults; resolve the settings error above and retry setup.",
     );
   verifyWindowsLocalEmbeddingRuntime(pluginRoot, env);
-  if (!options.settings) await preparePluginDashboard(pluginRoot, nodeRuntime, env);
+  await preparePluginDashboard(pluginRoot, nodeRuntime, env);
   return nodeRuntime;
 }
 
