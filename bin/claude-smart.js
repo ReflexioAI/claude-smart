@@ -2732,7 +2732,7 @@ async function preparePrivateNodeArchive(temp) {
   mkdirSync(extractDir, { recursive: true });
   let code = 0;
   if (archiveExt === "zip") {
-    const powershell = resolveCommand(["powershell.exe", "powershell", "pwsh"]);
+    const powershell = resolveCommand(["powershell.exe", "powershell", "pwsh.exe", "pwsh"]);
     if (!powershell)
       throw new Error("PowerShell is required to extract private Node.js on Windows");
     code = await runChecked(
