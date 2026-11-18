@@ -3101,10 +3101,13 @@ from pathlib import Path
 import sys
 
 def sources(root):
+    if root.is_symlink() or root.is_junction():
+        raise SystemExit("Reflexio source directory is linked")
     files = set()
     for directory, children, entries in os.walk(root):
         folder = Path(directory)
-        if any((folder / child).is_symlink() for child in children):
+        subdirs = (folder / child for child in children)
+        if any(child.is_symlink() or child.is_junction() for child in subdirs):
             raise SystemExit("Reflexio source directory contains a linked subdirectory")
         files.update((folder / item).relative_to(root) for item in entries if item.endswith(".py"))
     return files
