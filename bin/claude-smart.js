@@ -1112,6 +1112,26 @@ function acquirePackageInstallLock(packageRoot, label) {
 const heldPackageLocks = new Map();
 // Invocation-owned resources only; never an account/runtime selection.
 const settingsRuntimes = new Set();
+const privateNodeStages = new Map();
+
+function cleanupPrivateNodeStage(directory, stage) {
+  const { child, group } = stage;
+  if (child?.pid && (
+    (child.exitCode === null && child.signalCode === null) ||
+    (group && processGroupAlive(child.pid))
+  )) return;
+  try {
+    rmSync(directory, { recursive: true, force: true });
+    privateNodeStages.delete(directory);
+  } catch (error) {
+    process.stderr.write(`Could not clean temporary Node staging at ${directory}: ${error.message}\n`);
+  }
+}
+
+function cleanupPrivateNodeStages() {
+  for (const [directory, stage] of privateNodeStages)
+    cleanupPrivateNodeStage(directory, stage);
+}
 
 function cleanupSettingsRuntimes() {
   for (const runtime of settingsRuntimes) {
@@ -1161,6 +1181,7 @@ function ensureRollbackOnExit() {
   rollbackOnExitRegistered = true;
   process.once("exit", rollbackLocalPluginPackages);
   process.once("exit", cleanupSettingsRuntimes);
+  process.once("exit", cleanupPrivateNodeStages);
   for (const [signal, code] of [
     ["SIGINT", 130],
     ["SIGTERM", 143],
@@ -1677,10 +1698,12 @@ function assertSupportedRuntimePlatform() {
 }
 
 function runChecked(command, args, options = {}) {
+  // Cancellation may start while the stage still waits on a download.
+  if (options.stage && terminatingOnSignal) return new Promise(() => {});
   // While a package install is uncommitted, run children in their own
   // process group so an interrupt can stop the whole tree (uv, npm, ...)
   // before rolling back; they are non-interactive there.
-  const group = !isWindows() && rollbackArmed();
+  const group = !isWindows() && (rollbackArmed() || Boolean(options.stage));
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -1691,6 +1714,7 @@ function runChecked(command, args, options = {}) {
       detached: group,
     });
     trackChild(child, group);
+    if (options.stage) Object.assign(options.stage, { child, group });
     // While a signal handler is rolling back, the caller must not see the
     // terminated child as a failure and exit first.
     child.on("exit", (code) => terminatingOnSignal || resolve(typeof code === "number" ? code : 1));
@@ -2660,7 +2684,7 @@ function resolvePrivateCommand(names, root) {
 
 function privateNodeTools(root = privateNodeRoot()) {
   const node = resolvePrivateCommand(isWindows() ? ["node.exe", "node"] : ["node"], root);
-  const npm = resolvePrivateCommand(isWindows() ? ["npm.cmd", "npm.exe", "npm"] : ["npm"], root);
+  const npm = resolvePrivateCommand(isWindows() ? ["npm.cmd", "npm.exe"] : ["npm"], root);
   return node && npm ? { node, npm } : null;
 }
 
@@ -2699,7 +2723,7 @@ function nodeArchiveSpec() {
   return { nodeOs, nodeArch, archiveExt };
 }
 
-async function preparePrivateNodeArchive(temp) {
+async function preparePrivateNodeArchive(temp, stage) {
   const major = process.env.CLAUDE_SMART_NODE_LTS_MAJOR || "26";
   const { nodeOs, nodeArch, archiveExt } = nodeArchiveSpec();
   const baseUrl =
@@ -2744,12 +2768,12 @@ async function preparePrivateNodeArchive(temp) {
         "-Command",
         "$ProgressPreference='SilentlyContinue'; Expand-Archive -LiteralPath $env:ARCHIVE_PATH -DestinationPath $env:DEST_DIR -Force",
       ],
-      { env: { ...process.env, ARCHIVE_PATH: archivePath, DEST_DIR: extractDir } },
+      { env: { ...process.env, ARCHIVE_PATH: archivePath, DEST_DIR: extractDir }, stage },
     );
   } else {
     const tar = resolveCommand(["tar"]);
     if (!tar) throw new Error("tar is required to extract private Node.js on macOS");
-    code = await runChecked(tar, ["-xzf", archivePath, "-C", extractDir]);
+    code = await runChecked(tar, ["-xzf", archivePath, "-C", extractDir], { stage });
   }
   if (code !== 0) throw new Error(`Node.js archive extraction failed for ${archiveName}`);
   const extracted = join(extractDir, archiveName.replace(/\.zip$/, "").replace(/\.tar\.gz$/, ""));
@@ -2769,8 +2793,11 @@ async function ensurePrivateNode() {
   // Stage on the destination filesystem so activation is one rename after
   // backing up the old path. Preparation never touches the current runtime.
   const temp = mkdtempSync(join(nodeRoot, ".prepare-"));
+  const stage = {};
+  privateNodeStages.set(temp, stage);
+  ensureRollbackOnExit();
   try {
-    const extracted = await preparePrivateNodeArchive(temp);
+    const extracted = await preparePrivateNodeArchive(temp, stage);
     const lock = acquirePackageInstallLock(current, "private Node");
     try {
       const concurrent = privateNodeTools();
@@ -2799,7 +2826,7 @@ async function ensurePrivateNode() {
       rmSync(lock, { recursive: true, force: true });
     }
   } finally {
-    rmSync(temp, { recursive: true, force: true });
+    cleanupPrivateNodeStage(temp, stage);
   }
 }
 

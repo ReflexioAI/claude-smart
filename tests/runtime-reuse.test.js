@@ -173,7 +173,9 @@ test("relative executables survive removal of the rollback source", {skip:proces
 });
 
 test("private Node archive preparation leaves current intact until tools are complete", async t => {
-  const { spawnSync } = require("node:child_process");
+  const { spawn, spawnSync } = require("node:child_process");
+  const { once } = require("node:events");
+  const { setTimeout: delay } = require("node:timers/promises");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "private node λ "));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const windows = process.platform === "win32";
@@ -187,6 +189,7 @@ test("private Node archive preparation leaves current intact until tools are com
   const executable = windows ? "node.exe" : "node";
   const packageManager = windows ? "npm.cmd" : "npm";
   fs.writeFileSync(path.join(tools, executable), "candidate node", { mode: 0o700 });
+  if (windows) fs.writeFileSync(path.join(tools, "npm"), "POSIX npm launcher");
   const home = path.join(root, "account");
   const nodeRoot = path.join(home, ".claude-smart", "node");
   const current = path.join(nodeRoot, "current");
@@ -216,19 +219,17 @@ test("private Node archive preparation leaves current intact until tools are com
       .then(tools => console.log(JSON.stringify(tools)))
       .catch(error => { console.error(error.message); process.exitCode = 1; });
   `;
+  const args = ["-e", script, archive, require.resolve("../bin/claude-smart")];
+  const env = {
+    ...process.env, HOME: home, USERPROFILE: home,
+    CLAUDE_SMART_TEST_ARCH: arch, CLAUDE_SMART_TEST_RELEASE: "23.0.0",
+  };
   function install() {
     const build = spawnSync("tar", windows
       ? ["-a", "-cf", path.basename(archive), stem] : ["-czf", path.basename(archive), stem],
     { cwd: root, encoding: "utf8" });
     assert.equal(build.status, 0, build.stderr || build.error);
-    return spawnSync(process.execPath, ["-e", script, archive, require.resolve("../bin/claude-smart")], {
-      cwd: root,
-      env: {
-        ...process.env, HOME: home, USERPROFILE: home,
-        CLAUDE_SMART_TEST_ARCH: arch, CLAUDE_SMART_TEST_RELEASE: "23.0.0",
-      },
-      encoding: "utf8", timeout: 30_000,
-    });
+    return spawnSync(process.execPath, args, { cwd: root, env, encoding: "utf8", timeout: 30_000 });
   }
 
   const rejected = install();
@@ -236,6 +237,30 @@ test("private Node archive preparation leaves current intact until tools are com
   assert.match(rejected.stderr, /verified Node.js archive .* is missing executable node or npm/);
   assert.equal(fs.readFileSync(path.join(current, "old"), "utf8"), "predecessor");
   assert.deepEqual(fs.readdirSync(nodeRoot), ["current"]);
+
+  if (!windows) {
+    const fixtureBin = path.join(root, "fixture bin");
+    fs.mkdirSync(fixtureBin);
+    fs.writeFileSync(path.join(fixtureBin, "tar"),
+      '#!/bin/sh\n: > "$FIXTURE_EXTRACTOR_STARTED"\nexec /bin/sleep 60\n', { mode: 0o700 });
+    const marker = path.join(root, "extractor entered");
+    const interrupted = spawn(process.execPath, args, {
+      cwd: root, stdio: "ignore",
+      env: { ...env, PATH: fixtureBin + path.delimiter + env.PATH, FIXTURE_EXTRACTOR_STARTED: marker },
+    });
+    t.after(() => {
+      if (interrupted.exitCode === null && interrupted.signalCode === null) interrupted.kill();
+    });
+    const exited = once(interrupted, "exit", { signal: AbortSignal.timeout(10_000) });
+    const deadline = Date.now() + 5000;
+    while (!fs.existsSync(marker) && Date.now() < deadline && interrupted.exitCode === null)
+      await delay(20);
+    assert.ok(fs.existsSync(marker), "the extractor must start before SIGINT");
+    interrupted.kill("SIGINT");
+    assert.deepEqual(await exited, [130, null]);
+    assert.equal(fs.readFileSync(path.join(current, "old"), "utf8"), "predecessor");
+    assert.deepEqual(fs.readdirSync(nodeRoot), ["current"]);
+  }
 
   fs.writeFileSync(path.join(tools, packageManager), "candidate npm", { mode: 0o700 });
   const accepted = install();
