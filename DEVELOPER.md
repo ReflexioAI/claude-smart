@@ -151,9 +151,9 @@ Hosted Reflexio deployments should use a managed embedding provider or a scalabl
 
 ## Install dependency policy
 
-Codex and OpenCode prepare their runtime dependencies before selecting the
-shared plugin root. The installer selects the prepared root before replacing
-the host adapter, so a root selection error leaves the previous adapter intact.
+The Claude Code, Codex and OpenCode Node installers prepare their runtime
+dependencies before selecting the shared plugin root. Standalone Claude Code
+shell installation still maintains the pointer for slash commands.
 OpenCode stages a new loader beside its destination or opens an existing
 generated loader for refresh before removing legacy registrations. Failure
 to prepare the loader preserves the existing registration.

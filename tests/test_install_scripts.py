@@ -860,6 +860,26 @@ def test_smart_install_seeds_local_defaults_whenever_runtime_is_local(
         assert text == file_text
 
 
+def test_shell_bootstrap_leaves_pointer_publication_to_the_npx_installer(
+    tmp_path: Path,
+) -> None:
+    _root, script, env = _prepare_smart_install_sync_fixture(tmp_path, mode="fresh")
+    env["CLAUDE_SMART_DEFER_SERVICES"] = "1"
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", str(script)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / ".claude-smart" / "install-complete").exists()
+    selected = tmp_path / ".reflexio" / "plugin-root"
+    assert not os.path.lexists(selected)
+    assert not selected.with_suffix(".txt").exists()
+
+
 @pytest.mark.parametrize("defer", ["1", ""])
 def test_smart_install_defers_the_backend_start_for_the_npx_installer(
     tmp_path: Path, defer: str
