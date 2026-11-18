@@ -429,13 +429,37 @@ def test_failed_install_restores_absent_root_without_selecting_candidate(
     assert not [row for row in _calls(tmp_path) if row["action"] == "start"]
 
 
-@pytest.mark.parametrize("host", ["codex", "opencode"])
-def test_successful_update_keeps_new_runtime_without_rollback_restart(tmp_path, host):
+@pytest.mark.parametrize(
+    "host, read_only", [("codex", False), ("codex", True), ("opencode", False)]
+)
+def test_successful_update_keeps_new_runtime_without_rollback_restart(
+    tmp_path, host, read_only
+):
     package, root, uv, env = _fixture(tmp_path, host)
     _write_bootstrap_uv(uv, mode="fresh")
+    if read_only:
+        settings = tmp_path / ".claude-smart/.env"
+        settings.write_text(
+            settings.read_text().replace(
+                'CLAUDE_SMART_READ_ONLY="0"', 'CLAUDE_SMART_READ_ONLY="1"'
+            )
+        )
     result = _run(tmp_path, package, host, env)
     assert result.returncode == 0, result.stderr
     assert (root / "identity").read_text() == "new"
+    if host == "codex":
+        manifest = Path("hooks/codex-hooks.json")
+        source = package / "plugin" / manifest
+        assert (root / manifest).read_bytes() == source.read_bytes()
+        marketplace = tmp_path / ".codex/claude-smart/marketplace/plugin" / manifest
+        cache = tmp_path / ".codex/plugins/cache/reflexioai/claude-smart"
+        (cached,) = cache.glob("*/" + str(manifest))
+        assert marketplace.read_bytes() == cached.read_bytes()
+        assert "--runtime-root" in marketplace.read_text()
+        assert str(root) in marketplace.read_text()
+        hooks = json.loads(marketplace.read_bytes())["hooks"]
+        assert ("Stop" in hooks) == (not read_only)
+        assert "UserPromptSubmit" in hooks
     assert not [row for row in _calls(tmp_path) if row["action"] == "start"]
     assert "Restarted claude-smart services" not in result.stderr
 

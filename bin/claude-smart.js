@@ -2923,6 +2923,24 @@ function commandIsPublishHook(command) {
   );
 }
 
+function removePublishHooks(parsed) {
+  const hooksByEvent = parsed.hooks || {};
+  for (const event of Object.keys(hooksByEvent)) {
+    const blocks = [];
+    for (const block of hooksByEvent[event] || []) {
+      const keptHooks = (block.hooks || []).filter(
+        (hook) => !commandIsPublishHook(hook && hook.command),
+      );
+      if (keptHooks.length > 0) blocks.push({ ...block, hooks: keptHooks });
+    }
+    if (blocks.length > 0) {
+      hooksByEvent[event] = blocks;
+    } else {
+      delete hooksByEvent[event];
+    }
+  }
+}
+
 // Returns false when pluginRoot is this package's own plugin dir: its
 // manifests are the pristine source restorePublishHooksFromSource copies
 // from, so pruning them would make read-only mode permanent. Publishing is
@@ -2940,21 +2958,7 @@ function prunePublishHooksForReadOnly(pluginRoot) {
     const hookPath = join(pluginRoot, "hooks", hookFile);
     if (!existsSync(hookPath)) continue;
     const parsed = JSON.parse(readFileSync(hookPath, "utf8"));
-    const hooksByEvent = parsed.hooks || {};
-    for (const event of Object.keys(hooksByEvent)) {
-      const blocks = [];
-      for (const block of hooksByEvent[event] || []) {
-        const keptHooks = (block.hooks || []).filter(
-          (hook) => !commandIsPublishHook(hook && hook.command),
-        );
-        if (keptHooks.length > 0) blocks.push({ ...block, hooks: keptHooks });
-      }
-      if (blocks.length > 0) {
-        hooksByEvent[event] = blocks;
-      } else {
-        delete hooksByEvent[event];
-      }
-    }
+    removePublishHooks(parsed);
     writeFileSync(hookPath, JSON.stringify(parsed, null, 2) + "\n");
   }
   return true;
@@ -2972,9 +2976,8 @@ function restorePublishHooksFromSource(pluginRoot) {
   }
 }
 
-function patchCodexHooksForNode(pluginRoot, nodePath) {
-  const hookPath = join(pluginRoot, "hooks", "codex-hooks.json");
-  const parsed = JSON.parse(readFileSync(hookPath, "utf8"));
+function renderCodexHooksForNode(parsed, pluginRoot, nodePath, readOnly) {
+  if (readOnly) removePublishHooks(parsed);
   const runner = join(pluginRoot, "scripts", "codex-hook.js");
   const command = (...args) =>
     [nodePath, runner, ...args, "--runtime-root", pluginRoot].map(quoteCommandPart).join(" ");
@@ -3000,7 +3003,7 @@ function patchCodexHooksForNode(pluginRoot, nodePath) {
       }
     }
   }
-  writeFileSync(hookPath, JSON.stringify(parsed, null, 2) + "\n");
+  return JSON.stringify(parsed, null, 2) + "\n";
 }
 
 function ensurePluginRoot(pluginRoot) {
@@ -3289,9 +3292,6 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   process.stdout.write("[phase] Preparing Python and runtime dependencies…\n");
   rmSync(INSTALL_FAILURE_MARKER, { force: true });
   const nodeRuntime = await ensurePrivateNode();
-  if (options.patchCodexHooks !== false) {
-    patchCodexHooksForNode(pluginRoot, nodeRuntime.node);
-  }
   if (options.readOnly) prunePublishHooksForReadOnly(pluginRoot);
   const uv = await ensureUv();
   const env = runtimeEnv([dirname(uv), ...privateNodeBinDirs()]);
@@ -3307,6 +3307,7 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
     );
   verifyWindowsLocalEmbeddingRuntime(pluginRoot, env);
   await preparePluginDashboard(pluginRoot, nodeRuntime, env);
+  return nodeRuntime;
 }
 
 function printHelp() {
@@ -4003,9 +4004,17 @@ async function runInstallCodex(args) {
     ? CODEX_RUNTIME_PLUGIN_ROOT
     : findCodexPluginRoot();
   await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
+  let renderedHooks;
   try {
     installLocalPluginPackage(CODEX_RUNTIME_PACKAGE_DIR, "Codex runtime");
-    await bootstrapPluginRuntime(CODEX_RUNTIME_PLUGIN_ROOT, { readOnly });
+    const { node } = await bootstrapPluginRuntime(CODEX_RUNTIME_PLUGIN_ROOT);
+    const bundled = join(PACKAGE_ROOT, "plugin", "hooks", "codex-hooks.json");
+    renderedHooks = renderCodexHooksForNode(
+      JSON.parse(readFileSync(bundled, "utf8")),
+      CODEX_RUNTIME_PLUGIN_ROOT,
+      node,
+      readOnly,
+    );
   } catch (err) {
     process.stderr.write(
       `error: could not prepare claude-smart Codex runtime: ${err && err.message ? err.message : err}\n`,
@@ -4057,9 +4066,9 @@ async function runInstallCodex(args) {
     ensurePluginRoot(CODEX_RUNTIME_PLUGIN_ROOT);
     // Only the patched manifest enters the marketplace/cache. Its commands
     // execute the account runtime even when Codex supplies PLUGIN_ROOT=cache.
-    cpSync(
-      join(CODEX_RUNTIME_PLUGIN_ROOT, "hooks", "codex-hooks.json"),
+    writeFileSync(
       join(codexMarketplacePluginRoot(marketplaceRoot), "hooks", "codex-hooks.json"),
+      renderedHooks,
     );
     cacheDir = installCodexPluginCache(codexMarketplacePluginRoot(marketplaceRoot));
     process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
@@ -4161,7 +4170,7 @@ async function runInstallOpenCode(args) {
   const pluginRoot = join(packageRoot, "plugin");
   let results;
   try {
-    await bootstrapPluginRuntime(pluginRoot, { readOnly, patchCodexHooks: false });
+    await bootstrapPluginRuntime(pluginRoot, { readOnly });
   } catch (err) {
     process.stderr.write(
       `error: claude-smart OpenCode setup failed during dependency bootstrap: ${err && err.message ? err.message : err}\n`,
@@ -4552,7 +4561,7 @@ module.exports = {
   disabledCodexHooks,
   ensurePrivateNode,
   ensureUv,
-  patchCodexHooksForNode,
+  renderCodexHooksForNode,
   opencodeScopeConfigPaths,
   removeOpenCodeLegacyEntries,
   openCodeV2LoaderConflicts,

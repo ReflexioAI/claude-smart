@@ -6481,8 +6481,7 @@ def _run_node_bootstrap(
     home, plugin_root, env = _prepare_node_bootstrap_sync_fixture(tmp_path, mode=mode)
     script = (
         f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
-        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
-        "{ patchCodexHooks: false })"
+        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))})"
         ".then(() => console.log('done'))"
         ".catch((err) => { console.error(err.message); process.exit(1); });"
     )
@@ -7377,7 +7376,7 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
     uv_bin.mkdir(parents=True)
     (plugin_root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
     # Use realistic command fixtures so the content-based patcher in
-    # patchCodexHooksForNode can dispatch by script name.
+    # the Codex manifest renderer can dispatch by script name.
     (hooks / "codex-hooks.json").write_text(
         json.dumps(
             {
@@ -7458,9 +7457,17 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
     for executable in [private_node / "node", private_node / "npm", uv_bin / "uv"]:
         executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
 
+    portable = hooks / "codex-hooks.json"
+    before = portable.read_bytes()
+    adapter = tmp_path / "codex-marketplace-hooks.json"
     script = (
         f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
-        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))})"
+        "const fs = require('fs');"
+        f"const root = {json.dumps(str(plugin_root))};"
+        f"const source = {json.dumps(str(portable))};"
+        "installer.bootstrapPluginRuntime(root)"
+        f".then(({{node}}) => fs.writeFileSync({json.dumps(str(adapter))}, "
+        "installer.renderCodexHooksForNode(JSON.parse(fs.readFileSync(source)), root, node, false)))"
         ".then(() => console.log('done'))"
         ".catch((err) => { console.error(err.message); process.exit(1); });"
     )
@@ -7487,7 +7494,8 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
     npm_log = (home / "npm.log").read_text()
     assert "npm ci --omit=dev" in npm_log
     assert "npm run build" in npm_log
-    parsed = json.loads((hooks / "codex-hooks.json").read_text())
+    assert portable.read_bytes() == before
+    parsed = json.loads(adapter.read_text())
     session_hooks = parsed["hooks"]["SessionStart"][0]["hooks"]
     # Each SessionStart hook dispatches to node by command content. Verify each maps to
     # the right codex-hook.js subcommand and references the private node.
@@ -7571,8 +7579,7 @@ def test_node_python_preparation_owns_uv_project_and_environment(
     )
     script = (
         f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
-        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
-        "{ patchCodexHooks: false })"
+        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))})"
         ".catch((err) => { console.error(err.message); process.exitCode = 1; });"
     )
     result = subprocess.run(
@@ -7603,8 +7610,7 @@ def test_node_runtime_preparation_preserves_active_root(
     previous_metadata = metadata.read_bytes()
     script = (
         f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
-        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
-        "{ patchCodexHooks: false })"
+        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))})"
         ".then(() => console.log('done'))"
         ".catch((err) => { console.error(err.message); process.exit(1); });"
     )
@@ -7677,8 +7683,7 @@ def test_node_installer_windows_local_embedding_preflight_surfaces_marker(
     )
     script = (
         f"const installer = require({json.dumps(str(NODE_INSTALLER))});"
-        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))}, "
-        "{ patchCodexHooks: false })"
+        f"installer.bootstrapPluginRuntime({json.dumps(str(plugin_root))})"
         ".then(() => { process.exit(0); })"
         ".catch((err) => { console.error(err.message); process.exit(2); });"
     )
