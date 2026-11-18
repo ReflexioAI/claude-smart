@@ -35,7 +35,7 @@ async function main() {
     assert.deepEqual(fs.readFileSync(path.join(previous,"pyproject.toml")), prior);
     assert.deepEqual(fs.readdirSync(previous), ["pyproject.toml"]);
     const python = path.join(candidate, ".venv", "Scripts", "python.exe");
-    const prefix = execFileSync(python, ["-I", "-c", "import sys;print(sys.prefix)"], {encoding:"utf8"}).trim();
+    const prefix = execFileSync(python, ["-I", "-X", "utf8", "-c", "import sys;print(sys.prefix)"], {encoding:"utf8"}).trim();
     assert.equal(fs.realpathSync(prefix), fs.realpathSync(path.join(candidate, ".venv")));
     console.log("UV_NATIVE_OWNERSHIP " + JSON.stringify({bound:true, previousPreserved:true, mixedCase:true, lockUnchanged:true}));
   } finally { fs.rmSync(root, {recursive:true,force:true}); }
