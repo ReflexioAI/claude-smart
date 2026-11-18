@@ -32,3 +32,4 @@ jobs:
               $env:Path = $saved
               Remove-Item -Recurse -Force -LiteralPath $owned
             }
+          }
