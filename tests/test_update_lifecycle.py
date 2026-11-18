@@ -162,6 +162,12 @@ def _run(tmp_path, package, host, env, command="update"):
         "guide-disconnects",
         "early-disconnect",
         "ack-disconnects",
+        pytest.param(
+            "guide-exits-after-save",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="POSIX uncatchable signal"
+            ),
+        ),
     ],
 )
 def test_guided_codex_uses_prepared_interpreter_for_settings(tmp_path, outcome):
@@ -179,13 +185,20 @@ def test_guided_codex_uses_prepared_interpreter_for_settings(tmp_path, outcome):
     if outcome == "stale-settings":
         change = 'printf "# concurrent edit\\n" >> "$HOME/.claude-smart/.env"'
     if outcome == "guide-disconnects":
-        change = "sleep 0.5"
+        change = (
+            "for attempt in 1 2 3 4 5 6 7 8 9 10; do "
+            '[ ! -e "$HOME/guide-disconnected" ] || break; sleep 0.5; done; '
+            '[ -e "$HOME/guide-disconnected" ] || exit 97'
+        )
         preload = tmp_path / "disconnect-guide.cjs"
         preload.write_text("""
-const {existsSync} = require("node:fs");
+const {existsSync, writeFileSync} = require("node:fs");
 const {join} = require("node:path");
 const childProcess = require("node:child_process");
 const spawn = childProcess.spawn;
+if (typeof process.send === "function") {
+  process.once("disconnect", () => writeFileSync(join(process.env.HOME, "guide-disconnected"), ""));
+}
 childProcess.spawn = function(command, args, options) {
   const child = spawn(command, args, options);
   if (options?.stdio?.includes?.("ipc")) {
@@ -232,6 +245,28 @@ if (process.send) {
 }
 """)
         env["NODE_OPTIONS"] = f'--require "{preload}"'
+    if outcome == "guide-exits-after-save":
+        preload = tmp_path / "kill-guide.cjs"
+        preload.write_text("""
+const {writeFileSync} = require("node:fs");
+const {join} = require("node:path");
+if (typeof process.send === "function") {
+  const send = process.send;
+  process.send = function(message, ...args) {
+    if (message !== "settings-published") return send.call(this, message, ...args);
+    process.once("exit", (code) =>
+      writeFileSync(join(process.env.HOME, "worker-exit"), String(code)));
+    const guide = process.ppid;
+    process.kill(guide, "SIGKILL");
+    const deadline = Date.now() + 5000;
+    const wait = new Int32Array(new SharedArrayBuffer(4));
+    while (process.ppid === guide && Date.now() < deadline)
+      Atomics.wait(wait, 0, 0, 10);
+    if (process.ppid === guide) throw new Error("Fixture failed to kill guide");
+  };
+}
+""")
+        env["NODE_OPTIONS"] = f'--require "{preload}"'
     _write_executable(
         uv,
         uv_source.replace(
@@ -272,8 +307,22 @@ if (process.send) {
     else:
         assert at_sync.read_bytes() == before
         assert "uv venv" not in (tmp_path / "uv.log").read_text()
+    if outcome == "guide-exits-after-save":
+        assert result.returncode == -signal.SIGKILL, (result.stdout, result.stderr)
+        worker_exit = tmp_path / "worker-exit"
+        deadline = time.monotonic() + 10
+        while (
+            not worker_exit.exists() or not worker_exit.stat().st_size
+        ) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert worker_exit.read_text() == "0"
+        assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
+        assert (root / "identity").read_text() == "new"
+        assert (tmp_path / ".codex/claude-smart/marketplace").is_dir()
+        return
     if outcome in ("success", "ack-disconnects"):
         assert result.returncode == 0, (result.stdout, result.stderr)
+        assert "Preparing Python and runtime dependencies" in result.stdout
         assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
         assert (root / "identity").read_text() == "new"
         return

@@ -2299,6 +2299,11 @@ async function publishFromPreparedRuntime(pluginRoot, settings) {
   }
 }
 
+function reportRuntimePhase(label, settings) {
+  process.stdout.write(`[phase] ${label}\n`);
+  if (settings && process.connected) process.send({ phase: label }, () => {});
+}
+
 async function runGuidedHost(command, host, options, label, settings) {
   mkdirSync(join(CLAUDE_SMART_STATE_DIR, "install-logs"), { recursive: true });
   const log = join(
@@ -2330,21 +2335,24 @@ async function runGuidedHost(command, host, options, label, settings) {
           CLAUDE_SMART_INSTALL_CHILD: "1",
           CLAUDE_SMART_DEFER_SHARED_SERVICES: "1",
         },
-        stdio: settings ? ["ignore", "pipe", fd, "ipc"] : ["ignore", "pipe", fd],
+        // A committed settings worker and its subprocesses must be able to
+        // finish logging and registering even if the guide exits.
+        stdio: settings ? ["ignore", fd, fd, "ipc"] : ["ignore", "pipe", fd],
         detached: !isWindows(),
         windowsHide: true,
       });
       trackChild(child, !isWindows());
       if (settings) {
-        child.once("message", (message) => {
+        child.on("message", (message) => {
           if (message === "settings-published") acceptSettings();
+          else if (typeof message?.phase === "string") process.stdout.write(`  ${message.phase}\n`);
         });
         child.send({ request: settings.request, cliPath: settings.cliPath }, (error) => {
           if (error && child.connected) child.disconnect();
         });
       }
       let pending = "";
-      child.stdout.on("data", (chunk) => {
+      child.stdout?.on("data", (chunk) => {
         require("fs").writeSync(fd, chunk);
         pending += chunk.toString();
         const lines = pending.split(/\r?\n/);
@@ -2359,7 +2367,9 @@ async function runGuidedHost(command, host, options, label, settings) {
       // Wait for the log stream independently of IPC. After an explicit
       // disconnect Node can omit ChildProcess's combined close event.
       const exited = new Promise((done) => child.once("exit", done));
-      const logClosed = new Promise((done) => child.stdout.once("close", done));
+      const logClosed = child.stdout
+        ? new Promise((done) => child.stdout.once("close", done))
+        : Promise.resolve();
       Promise.all([exited, logClosed]).then(([code]) => {
         if (!terminatingOnSignal) resolve(typeof code === "number" ? code : 1);
       });
@@ -3335,10 +3345,10 @@ async function preparePluginPython(pluginRoot, uv, inherited) {
   await installVendoredReflexio(pluginRoot, uv, env);
 }
 
-async function preparePluginDashboard(pluginRoot, nodeRuntime, env) {
+async function preparePluginDashboard(pluginRoot, nodeRuntime, env, settings) {
   const dashboardDir = join(pluginRoot, "dashboard");
   if (existsSync(dashboardDir)) {
-    process.stdout.write("[phase] Preparing dashboard dependencies and build…\n");
+    reportRuntimePhase("Preparing dashboard dependencies and build…", settings);
     const helper = join(PACKAGE_ROOT, "plugin", "scripts", "dashboard-cache.js");
     const cache = existsSync(helper) ? require(helper) : null;
     const nodeVersion = spawnSync(nodeRuntime.node, ["--version"], {
@@ -3360,7 +3370,7 @@ async function preparePluginDashboard(pluginRoot, nodeRuntime, env) {
 
 async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   assertSupportedRuntimePlatform();
-  process.stdout.write("[phase] Preparing Python and runtime dependencies…\n");
+  reportRuntimePhase("Preparing Python and runtime dependencies…", options.settings);
   rmSync(INSTALL_FAILURE_MARKER, { force: true });
   const nodeRuntime = await ensurePrivateNode();
   if (options.readOnly) prunePublishHooksForReadOnly(pluginRoot);
@@ -3369,7 +3379,7 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   let env = runtimeEnv(toolPaths);
   await preparePluginPython(pluginRoot, uv, env);
   if (options.settings) {
-    await preparePluginDashboard(pluginRoot, nodeRuntime, env);
+    await preparePluginDashboard(pluginRoot, nodeRuntime, env, options.settings);
     await publishFromPreparedRuntime(pluginRoot, options.settings);
     env = runtimeEnv(toolPaths);
   }
