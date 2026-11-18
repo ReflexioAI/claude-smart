@@ -2742,7 +2742,13 @@ async function preparePrivateNodeArchive(temp) {
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "$ProgressPreference='SilentlyContinue'; Expand-Archive -LiteralPath $env:ARCHIVE_PATH -DestinationPath $env:DEST_DIR -Force",
+        // Use the two-argument .NET API on both PowerShell editions. A
+        // PSModulePath inherited from pwsh can select the wrong Archive module.
+        [
+          "$ErrorActionPreference = 'Stop'",
+          "if (-not ('System.IO.Compression.ZipFile' -as [type])) { Add-Type -AssemblyName System.IO.Compression.FileSystem }",
+          "[System.IO.Compression.ZipFile]::ExtractToDirectory($env:ARCHIVE_PATH, $env:DEST_DIR)",
+        ].join("; "),
       ],
       { env: { ...process.env, ARCHIVE_PATH: archivePath, DEST_DIR: extractDir } },
     );
