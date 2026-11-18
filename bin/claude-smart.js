@@ -3087,6 +3087,45 @@ async function installVendoredReflexio(pluginRoot, uv, env) {
   }
   if (code !== 0) throw new Error(`vendored Reflexio install failed in ${pluginRoot}`);
   verifyVendoredReflexioRequirements(pluginRoot, uv, pythonPath, env);
+  verifyVendoredReflexioIdentity(pluginRoot, pythonPath, vendorRoot, env);
+}
+
+// The installed hook imports Reflexio from Python's own environment. Check
+// the bundled Python sources using that interpreter and isolated resolution.
+function verifyVendoredReflexioIdentity(pluginRoot, pythonPath, vendorRoot, env) {
+  const script = `
+import filecmp
+from importlib.util import find_spec
+from pathlib import Path
+import sys
+
+vendor = Path(sys.argv[1]) / "reflexio"
+prefix = Path(sys.argv[2]).resolve()
+spec = find_spec("reflexio")
+if Path(sys.prefix).resolve() != prefix or not spec or not spec.origin:
+    raise SystemExit("the candidate interpreter does not resolve Reflexio")
+installed = Path(spec.origin).resolve().parent
+if not installed.is_relative_to(prefix):
+    raise SystemExit("the candidate resolves Reflexio outside its environment")
+sources = {item.relative_to(vendor) for item in vendor.rglob("*.py")}
+if not sources or sources != {item.relative_to(installed) for item in installed.rglob("*.py")}:
+    raise SystemExit("installed Python source paths differ from the bundle")
+for source in sorted(sources):
+    target = installed / source
+    if not target.resolve().is_relative_to(installed) or not filecmp.cmp(vendor / source, target, shallow=False):
+        raise SystemExit(f"installed Python source differs from the bundle: {source}")
+`;
+  const result = spawnSync(pythonPath, ["-I", "-c", script, vendorRoot, join(pluginRoot, ".venv")], {
+    cwd: pluginRoot,
+    env,
+    encoding: "utf8",
+    timeout: 15_000,
+    windowsHide: true,
+  });
+  if (result.status !== 0 || result.error) {
+    const detail = result.error?.message || result.stderr?.trim() || "Python verification failed";
+    throw new Error(`bundled Reflexio identity check failed in ${pluginRoot}: ${detail}`);
+  }
 }
 
 // --no-deps skips the bundled Reflexio's own requirements, so a requirement

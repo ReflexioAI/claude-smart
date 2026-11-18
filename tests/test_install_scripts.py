@@ -3945,6 +3945,62 @@ def test_node_installer_aborts_when_vendored_requirement_is_missing(
     assert "pip check --python" in uv_log
 
 
+def test_node_installer_rejects_wrong_sdk_even_when_dependency_check_passes(
+    tmp_path: Path,
+) -> None:
+    import venv
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the installer test")
+    plugin = tmp_path / "candidate λ"
+    vendor = plugin / "vendor/reflexio"
+    (vendor / "reflexio").mkdir(parents=True)
+    (vendor / "pyproject.toml").write_text("[project]\nname='reflexio-ai'\n")
+    bundled = vendor / "reflexio/__init__.py"
+    bundled.write_text("VERSION = 'bundled'\n")
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(plugin / ".venv")
+    python = plugin / ".venv/bin/python"
+    purelib = Path(
+        subprocess.check_output(
+            [
+                str(python),
+                "-I",
+                "-c",
+                "import sysconfig;print(sysconfig.get_path('purelib'))",
+            ],
+            text=True,
+        ).strip()
+    )
+    installed = purelib / "reflexio/__init__.py"
+    installed.parent.mkdir()
+    installed.write_text("VERSION = 'foreign'\n")
+    uv = tmp_path / "uv"
+    _write_executable(uv, "#!/bin/sh\nexit 0\n")
+    script = (
+        f"const {{ installVendoredReflexio }} = require({json.dumps(str(NODE_INSTALLER))});"
+        f"installVendoredReflexio({json.dumps(str(plugin))}, {json.dumps(str(uv))}, process.env)"
+        ".catch(error => { console.error(error.message); process.exitCode = 1; });"
+    )
+    env = _isolated_env(tmp_path)
+    env["PYTHONPATH"] = str(vendor)
+    command = [node, "-e", script]
+    rejected = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=30
+    )
+    assert rejected.returncode == 1
+    assert (
+        "installed Python source differs from the bundle: __init__.py"
+        in rejected.stderr
+    )
+
+    installed.write_bytes(bundled.read_bytes())
+    accepted = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=30
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+
 def _managed_claude_code_plugin_root(tmp_path: Path) -> Path:
     return tmp_path / ".claude-smart" / "claude-code" / "claude-smart" / "plugin"
 
