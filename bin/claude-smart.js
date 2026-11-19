@@ -5421,14 +5421,6 @@ async function main() {
     return;
   }
 
-  if (cmd === "install" || cmd === "update" || cmd === "setup") {
-    // Service scripts run from the plugin dir; the dashboard they start must
-    // still edit the project install was run from (dashboard-service.sh).
-    if (!process.env.CLAUDE_SMART_DASHBOARD_WORKSPACE) {
-      process.env.CLAUDE_SMART_DASHBOARD_WORKSPACE = process.cwd();
-    }
-  }
-
   if (cmd === "install") {
     if (process.env.CLAUDE_SMART_INSTALL_CHILD === "1") await runInstall(args.slice(1));
     else await runGuidedCommand(cmd, args.slice(1));

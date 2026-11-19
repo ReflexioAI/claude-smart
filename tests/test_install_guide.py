@@ -1344,36 +1344,6 @@ def test_public_setup_invalid_arguments_preserve_saved_state(tmp_path, arguments
     assert not (tmp_path / "backend-service.log").exists()
 
 
-def test_public_setup_passes_caller_workspace_to_real_host_child(tmp_path):
-    installer, env = fake_guide(tmp_path)
-    script = installer.parent.parent / "plugin/scripts/smart-install.sh"
-    _write_executable(
-        script,
-        '#!/bin/sh\nprintf "%s" "$CLAUDE_SMART_DASHBOARD_WORKSPACE" > "$HOME/workspace"\nprintf \'{"continue":true,"suppressOutput":true}\\n\'\n',
-    )
-    project = tmp_path / "caller-project"
-    project.mkdir()
-    result = subprocess.run(
-        [
-            node_bin(),
-            str(installer),
-            "setup",
-            "--host",
-            "claude-code",
-            "--backend",
-            "local",
-            "--yes",
-        ],
-        cwd=project,
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert (tmp_path / "workspace").read_text() == str(project)
-
-
 @pytest.mark.parametrize("credential", ["", "   ", "\t"])
 def test_setup_rejects_empty_supplied_managed_key_before_writes(tmp_path, credential):
     installer, env = fake_guide(tmp_path)

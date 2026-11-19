@@ -1736,7 +1736,7 @@ def test_node_install_starts_services_only_after_commit(
 ) -> None:
     # smart-install.sh must not start the backend or the dashboard build
     # while the copy may still be rolled back; install starts them after
-    # the Claude CLI steps commit, from the project install was run in.
+    # the Claude CLI steps commit.
     smart_install = (
         "#!/bin/sh\n"
         'echo "defer=${CLAUDE_SMART_DEFER_SERVICES:-}" > "$HOME/smart-install.env"\n'
@@ -1753,12 +1753,12 @@ def test_node_install_starts_services_only_after_commit(
     env["CLAUDE_SMART_DASHBOARD_AUTOSTART"] = dashboard_autostart
     env["CLAUDE_SMART_BACKEND_AUTOSTART"] = "0"
     env["DASHBOARD_PORT"] = str(_free_port())
-    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY", "CLAUDE_SMART_DASHBOARD_WORKSPACE"):
+    for key in ("REFLEXIO_URL", "REFLEXIO_API_KEY"):
         env.pop(key, None)
     scripts = package_root / "plugin" / "scripts"
     _write_executable(
         scripts / "dashboard-service.sh",
-        '#!/bin/sh\nprintf \'%s %s\\n\' "$1" "$CLAUDE_SMART_DASHBOARD_WORKSPACE" >> "$HOME/dashboard-service.log"\n',
+        '#!/bin/sh\nprintf \'%s\\n\' "$1" >> "$HOME/dashboard-service.log"\n',
     )
     _write_executable(
         scripts / "dashboard-build.sh",
@@ -1785,7 +1785,7 @@ def test_node_install_starts_services_only_after_commit(
     assert (tmp_path / "dashboard-build.log").read_text() == "build\n"
     if dashboard_autostart == "1":
         log = (tmp_path / "dashboard-service.log").read_text().splitlines()
-        assert log[-1] == f"start {project}"
+        assert log[-1] == "start"
 
 
 @pytest.mark.parametrize("bootstrap_ok", [True, False])

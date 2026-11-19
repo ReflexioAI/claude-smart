@@ -36,10 +36,6 @@ claude_smart_derive_reflexio_url_from_backend_port
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "dashboard-service.sh" "$@"
 DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
-# The project the Configure page edits. The npx installer runs this script
-# from the plugin dir and passes the directory install was run from instead.
-WORKSPACE_CWD="${CLAUDE_SMART_DASHBOARD_WORKSPACE:-${PWD:-}}"
-
 STATE_DIR="$HOME/.claude-smart"
 PID_FILE="$STATE_DIR/dashboard.pid"
 LOG_FILE="$STATE_DIR/dashboard.log"
@@ -136,7 +132,6 @@ spawn_dashboard() {
     return 1
   fi
   cd "$DASHBOARD_DIR"
-  export CLAUDE_SMART_DASHBOARD_WORKSPACE="$WORKSPACE_CWD"
   # Invoke Next directly so custom DASHBOARD_PORT values are honored
   # without relying on package.json's fixed start script.
   CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached "$NEXT_BIN" start -p "$dashboard_port" -H 127.0.0.1 >>"$LOG_FILE" 2>&1
