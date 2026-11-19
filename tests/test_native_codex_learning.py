@@ -19,15 +19,21 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.parametrize("explicit_path", [False, True])
 @pytest.mark.parametrize("learning_model", [None, " selected-native-model "])
 @pytest.mark.parametrize("legacy_path", [False, True])
+@pytest.mark.parametrize("sdk_generation", ["current", "predecessor"])
 def test_saved_codex_learning_reaches_native_bundled_sdk(
     tmp_path: Path,
     coding_host: str,
     explicit_path: bool,
     learning_model: str | None,
     legacy_path: bool,
+    sdk_generation: str,
 ) -> None:
     vendor = ROOT / "plugin/vendor/reflexio"
+    if sdk_generation == "predecessor":
+        vendor = Path(os.environ["CLAUDE_SMART_TEST_PREDECESSOR_SDK"])
     assert (vendor / "reflexio").is_dir(), "Materialize the locked SDK bundle first"
+    native_reference = (vendor / "reflexio/server/llm/_native_model_ref.py").is_file()
+    assert native_reference == (sdk_generation == "current")
     record = tmp_path / "calls.jsonl"
     hooks = tmp_path / "python-hooks"
     hooks.mkdir()
@@ -81,11 +87,29 @@ def test_saved_codex_learning_reaches_native_bundled_sdk(
     selection = source[
         source.index("learning_provider=") : source.index("\nSTATE_DIR=")
     ]
+    runner = str(ROOT / "plugin/scripts/backend-python-runner.py")
     program = (
+        "import runpy\n"
+        f"runpy.run_path({runner!r})['prepare_native_sdk_environment']()\n"
+    )
+    if native_reference:
+        program += (
+            "from reflexio.server.llm._native_model_ref import configured_native_model\n"
+            "from reflexio.server.llm.providers import native_cli_provider as provider\n"
+            "assert provider.register_native_provider()\n"
+            "target = configured_native_model()\n"
+            "assert target.host == 'codex'\n"
+            "model = target.reference\n"
+        )
+    else:
+        program += (
+            "from reflexio.server.llm.providers import claude_code_provider as provider\n"
+            "assert provider.register_if_enabled()\n"
+            "model = 'claude-code/opaque-role'\n"
+        )
+    program += (
         "import litellm\n"
-        "from reflexio.server.llm.providers import claude_code_provider as provider\n"
-        "assert provider.register_if_enabled()\n"
-        "result=litellm.completion(model='claude-code/opaque-role',messages=[{'role':'user','content':'private synthetic prompt'}],timeout=2.5,num_retries=0)\n"
+        "result=litellm.completion(model=model,messages=[{'role':'user','content':'private synthetic prompt'}],timeout=2.5,num_retries=0)\n"
         "assert result.choices[0].message.content=='owned response'\n"
         "assert result._hidden_params.get('reflexio_served_model') is None\n"
     )

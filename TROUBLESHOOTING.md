@@ -60,6 +60,20 @@ ReflexioAI/claude-smart`; use the npm command for installation and updates.
 bundle and deliberately leaves your running services alone rather than stopping
 a backend it cannot replace. Use `npx claude-smart update`.
 
+**The local backend stopped to preserve database identity.**
+Stop the local backend and the coding hosts that can restart it. Check the
+SQLite path saved in `~/.reflexio/configs/config_claude-smart.json` and preserve
+the original config and database. For a qualified older SQLite file, run
+`python -m reflexio.cli data upgrade-local /absolute/path/to/database --org-id claude-smart`
+from the packaged Reflexio runtime, then restart the plugin. The maintenance
+command checks the file before establishing its stored ownership. If it
+refuses the file, keep the original and resolve the reported condition.
+
+A rollback runtime must understand the saved config generation and the
+database schema. The previous SDK bundle at `70daf32c` understands config
+generation 14. A config already advanced to generation 15 requires a
+compatible runtime.
+
 **Update could not confirm shutdown of a previous service.**
 The installer leaves the previous runtime in place if an observed backend
 or dashboard is still running or its shutdown cannot be verified. Inspect

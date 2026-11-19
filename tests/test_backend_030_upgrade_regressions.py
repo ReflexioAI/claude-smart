@@ -16,6 +16,8 @@ before running pytest (``.github/workflows/integration.yml``).
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
 import os
 import socket
@@ -39,10 +41,38 @@ requires_vendor = pytest.mark.skipif(
 )
 
 
+def _supports_binding(vendor: Path) -> bool:
+    source = vendor / "reflexio" / "local_instance.py"
+    return (
+        source.is_file() and "def prepare_local_sqlite_instance(" in source.read_text()
+    )
+
+
+BINDING_VENDOR = _supports_binding(VENDOR)
+requires_binding_vendor = pytest.mark.skipif(
+    not BINDING_VENDOR, reason="requires the saved-instance SDK bundle"
+)
+
+
+@pytest.fixture
+def predecessor_sdk(monkeypatch):
+    """Exercise historical permissive behavior on the actual predecessor."""
+    source = os.environ.get("CLAUDE_SMART_TEST_PREDECESSOR_SDK")
+    if source is None:
+        if BINDING_VENDOR:
+            pytest.fail(
+                "The predecessor SDK source is required for legacy launcher scenarios"
+            )
+        return
+    path = Path(source)
+    assert (path / "reflexio" / "server").is_dir() and not _supports_binding(path)
+    monkeypatch.setattr(sys.modules[__name__], "VENDOR", path)
+
+
 @requires_vendor
 @pytest.mark.parametrize("both_files", [True, False])
 def test_undrained_selected_database_refuses_before_incompatible_config_publication(
-    tmp_path, both_files
+    tmp_path, both_files, predecessor_sdk
 ):
     reader = subprocess.run(
         [
@@ -168,6 +198,63 @@ def _run_selected_command(home: Path, args: list[str], metadata: tuple[str, ...]
     )
 
 
+@requires_vendor
+@requires_binding_vendor
+@pytest.mark.parametrize(
+    ("host", "model", "enabled", "expected"),
+    [
+        ("claude-code", "sonnet", "1", "local-cli/claude-code/sonnet"),
+        ("codex", "", "1", "local-cli/codex"),
+        ("opencode", " provider/model ", "true", "local-cli/opencode/provider/model"),
+        ("claude-code", "sonnet", "0", "disabled"),
+    ],
+)
+def test_backend_projects_native_selection_through_worker_reload(
+    tmp_path: Path, host: str, model: str, enabled: str, expected: str
+) -> None:
+    dotenv = tmp_path / ".env"
+    original = f"CLAUDE_SMART_USE_LOCAL_CLI={enabled}\nCLAUDE_SMART_CLI_MODEL={model}\n"
+    dotenv.write_text(original)
+    env = _env(tmp_path)
+    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
+    env.update(
+        REFLEXIO_ENV_FILE=str(dotenv),
+        CLAUDE_SMART_HOST=host,
+        CLAUDE_SMART_USE_LOCAL_CLI=enabled,
+        CLAUDE_SMART_CLI_MODEL=model,
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-c",
+            """import runpy
+import subprocess
+import sys
+
+runner = runpy.run_path(sys.argv[1])
+runner["prepare_native_sdk_environment"]()
+worker = '''
+from reflexio.server.llm._native_model_ref import configured_native_model
+target = configured_native_model()
+print(target.reference if target else "disabled")
+'''
+subprocess.run([sys.executable, "-P", "-c", worker], check=True)
+""",
+            str(RUNNER),
+        ],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=45,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == expected
+    assert dotenv.read_text() == original
+
+
 def _opened_db_path(home: Path) -> str:
     """Open storage the way Reflexio's configurator does and report the file."""
     script = (
@@ -247,6 +334,7 @@ def _write_config_with_null_db_path(home: Path) -> None:
 @requires_vendor
 def test_unpinned_config_opens_an_empty_file_beside_a_foreign_labelled_db(
     tmp_path: Path,
+    predecessor_sdk,
 ) -> None:
     """The 0.3.0 regression, reproduced: without the pin, history is skipped."""
     legacy = _write_legacy_db_with_foreign_label(tmp_path)
@@ -256,7 +344,9 @@ def test_unpinned_config_opens_an_empty_file_beside_a_foreign_labelled_db(
 
 
 @requires_vendor
-def test_backend_runner_pins_reflexio_db_so_history_is_opened(tmp_path: Path) -> None:
+def test_backend_runner_pins_reflexio_db_so_history_is_opened(
+    tmp_path: Path, predecessor_sdk
+) -> None:
     legacy = _write_legacy_db_with_foreign_label(tmp_path)
     _write_config_with_null_db_path(tmp_path)
 
@@ -282,17 +372,26 @@ def test_backend_runner_pins_a_fresh_install(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stdout + result.stderr
     config = json.loads(_config_file(tmp_path).read_text())
+    basename = f"reflexio_{ORG}.db" if BINDING_VENDOR else "reflexio.db"
+    db = tmp_path / "data" / basename
     assert config["storage_config"] == {
-        "db_path": str(tmp_path / "data" / "reflexio.db"),
+        "db_path": str(db),
         "type": "sqlite",
     }
+    if BINDING_VENDOR:
+        with sqlite3.connect(db) as connection:
+            assert connection.execute(
+                "SELECT org_id FROM _dataset_identity"
+            ).fetchone() == (ORG,)
 
 
 @requires_vendor
 @pytest.mark.parametrize("stale", [False, True])
 @pytest.mark.parametrize("storage", ["fresh", "custom", "non_sqlite"])
 def test_backend_runner_uses_sdk_binding_capability_without_exporting_selector(
-    tmp_path: Path, stale: bool, storage: str,
+    tmp_path: Path,
+    stale: bool,
+    storage: str,
 ) -> None:
     env = _env(tmp_path)
     env.pop("REFLEXIO_DEFAULT_ORG_ID")
@@ -363,7 +462,7 @@ raise SystemExit(runner["main"]())
 
 
 @requires_vendor
-def test_backend_runner_keeps_a_custom_db_path(tmp_path: Path) -> None:
+def test_backend_runner_keeps_a_custom_db_path(tmp_path: Path, predecessor_sdk) -> None:
     _write_config_with_null_db_path(tmp_path)
     config_file = _config_file(tmp_path)
     config = json.loads(config_file.read_text())
@@ -449,7 +548,9 @@ def _write_derived_db(home: Path) -> Path:
 
 
 @requires_vendor
-def test_install_that_began_on_030_keeps_its_per_org_file(tmp_path: Path) -> None:
+def test_install_that_began_on_030_keeps_its_per_org_file(
+    tmp_path: Path, predecessor_sdk
+) -> None:
     derived = _write_derived_db(tmp_path)
     _write_config_with_null_db_path(tmp_path)
 
@@ -463,6 +564,7 @@ def test_install_that_began_on_030_keeps_its_per_org_file(tmp_path: Path) -> Non
 @requires_vendor
 def test_history_wins_over_030_file_and_the_other_file_is_named(
     tmp_path: Path,
+    predecessor_sdk,
 ) -> None:
     legacy = _write_legacy_db_with_foreign_label(tmp_path)
     derived = _write_derived_db(tmp_path)
@@ -573,7 +675,7 @@ def test_backend_env_makes_the_launcher_start_the_local_embedding_daemon(
 @pytest.mark.parametrize("derived", [False, True])
 @pytest.mark.parametrize("historical_alias", [False, True])
 def test_explicit_saved_config_upgrade_preserves_original_and_database(
-    tmp_path, derived, historical_alias
+    tmp_path, derived, historical_alias, predecessor_sdk
 ):
     """Explicit conversion preserves old SQLite identity and original policy."""
     legacy = _write_legacy_db_with_foreign_label(tmp_path)
@@ -671,7 +773,7 @@ def test_explicit_saved_config_upgrade_preserves_original_and_database(
 @pytest.mark.parametrize("dataset", ["legacy", "derived", "custom"])
 @pytest.mark.parametrize("adopt", [False, True])
 def test_normal_runner_upgrades_agent_policy_before_pinning_owned_database(
-    tmp_path, dataset, adopt
+    tmp_path, dataset, adopt, predecessor_sdk
 ):
     """Normal launch preparation, not an offline conversion prerequisite."""
     target = _write_legacy_db_with_foreign_label(tmp_path)
@@ -836,13 +938,84 @@ def test_non_backend_commands_never_prepare_or_pin_selected_configuration(
 @requires_vendor
 @pytest.mark.parametrize("only", [None, "backend,docs", "docs,backend"])
 def test_default_and_combined_service_selection_still_pin_backend(tmp_path, only):
-    _write_config_with_null_db_path(tmp_path)
+    if not BINDING_VENDOR:
+        _write_config_with_null_db_path(tmp_path)
     args = ["services", "start"]
     if only is not None:
         args.extend(["--only", only])
     result = _run_selected_command(tmp_path, args, ("--claude-smart-backend=1",))
     assert result.returncode == 0, result.stdout + result.stderr
+    basename = f"reflexio_{ORG}.db" if BINDING_VENDOR else "reflexio.db"
     assert json.loads(_config_file(tmp_path).read_text())["storage_config"] == {
         "type": "sqlite",
-        "db_path": str(tmp_path / "data" / "reflexio.db"),
+        "db_path": str(tmp_path / "data" / basename),
     }
+
+
+@requires_binding_vendor
+def test_modern_launcher_holds_and_reopens_the_qualified_historical_dataset(
+    tmp_path: Path,
+) -> None:
+    source = Path(os.environ["CLAUDE_SMART_TEST_CURRENT_SDK"])
+    fixture = source / "tests/test_data/sqlite_70daf32c/plugin_explicit_path"
+    archive = (fixture / "completed.sqlite.gz").read_bytes()
+    receipt = json.loads((fixture / "provenance.json").read_text())["cohorts"][
+        "completed"
+    ]
+    assert hashlib.sha256(archive).hexdigest() == receipt["gzip_sha256"]
+    original_db = gzip.decompress(archive)
+    assert hashlib.sha256(original_db).hexdigest() == receipt["raw_sha256"]
+
+    db = tmp_path / "data" / "operator-owned.db"
+    db.parent.mkdir()
+    db.write_bytes(original_db)
+    config = _config_file(tmp_path)
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        json.dumps(
+            {
+                "_reflexio_config_file": {"version": 14},
+                "storage_config": {"type": "sqlite", "db_path": str(db)},
+            }
+        )
+    )
+    original_config = config.read_bytes()
+    inode = db.stat().st_ino
+
+    rejected = _run_runner(tmp_path, "--claude-smart-backend=1")
+    assert rejected.returncode != 0
+    assert "startup stopped to preserve database identity" in rejected.stderr
+    assert config.read_bytes() == original_config and db.read_bytes() == original_db
+
+    upgraded = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-m",
+            "reflexio.cli",
+            "--json",
+            "data",
+            "upgrade-local",
+            str(db),
+            "--org-id",
+            ORG,
+        ],
+        env=_env(tmp_path),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    assert json.loads(upgraded.stdout)["data"]["established"]
+    result = _run_runner(tmp_path, "--claude-smart-backend=1")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _opened_db_path(tmp_path) == str(db)
+    assert db.stat().st_ino == inode
+    assert not (db.parent / f"reflexio_{ORG}.db").exists()
+    with sqlite3.connect(db) as connection:
+        assert connection.execute("SELECT count(*) FROM profiles").fetchone() == (1,)
+        assert connection.execute("SELECT count(*) FROM requests").fetchone() == (1,)
+        assert connection.execute("SELECT count(*) FROM interactions").fetchone() == (
+            10,
+        )

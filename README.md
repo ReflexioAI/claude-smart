@@ -406,7 +406,7 @@ Advanced users can tune claude-smart via environment variables — see [DEVELOPE
 
 | Path | What |
 | --- | --- |
-| `~/.reflexio/data/reflexio.db` | Source of truth for learned preferences, skills, interactions, full-text indexes, and embedding tables (plus `.db-shm` / `.db-wal` WAL sidecars). Inspect with `sqlite3`. |
+| `~/.reflexio/data/reflexio_claude-smart.db` | SQLite data for fresh local installations, including learned preferences, skills, interactions, and search indexes. Existing installations keep the database path saved in `~/.reflexio/configs/config_claude-smart.json`, which may point to `reflexio.db` or a custom file. |
 | `~/.claude-smart/.env` | claude-smart config read by the hooks, backend, installer, and `npx claude-smart setup` — connection and learning policy (`REFLEXIO_URL` / `REFLEXIO_API_KEY`, `CLAUDE_SMART_LEARNING_PROVIDER` / `CLAUDE_SMART_LEARNING_MODEL`), plus execution overrides. Existing `CLAUDE_SMART_HOST` rows remain legacy fallback; installers no longer default or rewrite them. |
 | `~/.claude-smart/claude-code/claude-smart/` | Claude Code's stable local copy of the active npm package, registered as the `reflexioai` marketplace. Claude Code runs the plugin in place from its `plugin/` dir. |
 | `.claude/settings.local.json` or `~/.claude/settings.json` | Claude Code hook environment, such as `CLAUDE_SMART_CITATIONS`; use project-local settings for one repo or user settings for all projects. |
