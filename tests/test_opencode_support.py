@@ -1214,22 +1214,22 @@ def test_node_installer_patches_opencode_to_local_file_spec(tmp_path: Path) -> N
     config = tmp_path / "opencode.json"
     local_package = tmp_path / "local-package"
     local_package.mkdir()
-    old_package = tmp_path / "old-cache" / "node_modules" / "claude-smart"
-    old_package.mkdir(parents=True)
-    (old_package / "package.json").write_text('{"name":"claude-smart"}\n')
     config.write_text(
         json.dumps(
             {
                 "plugin": [
                     "other",
                     "claude-smart",
-                    old_package.as_uri(),
                 ]
             }
         )
     )
     script = (
         f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
+        "const fs = require('node:fs');"
+        "const current = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));"
+        "current.plugin.push(installer.opencodeLocalPluginSpec());"
+        "fs.writeFileSync(process.argv[1], JSON.stringify(current));"
         f"const spec = installer.opencodeLocalPluginSpec({json.dumps(str(local_package))});"
         f"installer.patchOpenCodePluginConfig({json.dumps(str(config))}, {{ install: true, pluginSpec: spec }});"
         "process.stdout.write(require('fs').readFileSync(process.argv[1], 'utf8'));"
@@ -1286,6 +1286,7 @@ def test_node_installer_preserves_unrelated_file_specs_named_claude_smart(
         "other",
         missing_manifest.as_uri(),
         wrong_manifest.as_uri(),
+        real_package.as_uri(),
     ]
 
 
@@ -1323,7 +1324,11 @@ def test_node_installer_uninstalls_and_preserves_other_plugin_shapes(
 
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
-    assert parsed["plugin"] == ["other", ["tuple-plugin", {"enabled": True}]]
+    assert parsed["plugin"] == [
+        "other",
+        ["tuple-plugin", {"enabled": True}],
+        local_package.as_uri(),
+    ]
     assert parsed["theme"] == "system"
 
 

@@ -1330,7 +1330,7 @@ def test_node_installer_restores_publish_hooks_from_source(tmp_path: Path) -> No
 def _copy_prepared_policy_owner(plugin_root: Path) -> None:
     owner = plugin_root / "src/claude_smart"
     owner.mkdir(parents=True, exist_ok=True)
-    for name in ("__init__.py", "env_config.py"):
+    for name in ("__init__.py", "env_config.py", "opencode_scope.py"):
         shutil.copy2(REPO_ROOT / "plugin/src/claude_smart" / name, owner / name)
 
 

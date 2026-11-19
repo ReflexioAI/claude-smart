@@ -574,14 +574,26 @@ function isGeneratedOpenCodeV2Loader(text) {
 
 // null only when nothing is at the path: a directory or unreadable file throws,
 // so callers treat it as occupied. Invalid UTF-8 is also a conflict.
-function readOpenCodeV2Loader(target) {
+function snapshotOpenCodeV2Loader(target) {
   let file;
   try {
-    file = openSync(target, constants.O_RDONLY | constants.O_NONBLOCK);
-    if (!fstatSync(file).isFile()) throw new Error("not a regular file");
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(readFileSync(file));
+    const named = lstatSync(target, { bigint: true });
+    if (!named.isFile() || named.nlink !== 1n) throw new Error("not a regular, unlinked file");
+    file = openSync(target, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+    const info = fstatSync(file, { bigint: true });
+    if (!info.isFile() || info.nlink !== 1n || !sameFileIdentity(info, named))
+      throw new Error("loader identity changed");
+    if (info.size > 8192n) throw new Error("OpenCode loader is too large");
+    const bytes = Buffer.alloc(Number(info.size) + 1);
+    const count = readSync(file, bytes, 0, bytes.length, 0);
+    if (BigInt(count) !== info.size) throw new Error("loader contents changed");
+    return {
+      contents: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, count)),
+      identity: `${info.dev}:${info.ino}`,
+    };
   } catch (err) {
-    if (err && err.code === "ENOENT" && !pathEntryExists(target)) return null;
+    if (err && err.code === "ENOENT" && !pathEntryExists(target))
+      return { contents: null, identity: null };
     throw err;
   } finally {
     if (file !== undefined) closeSync(file);
@@ -592,11 +604,11 @@ function readOpenCodeV2Loader(target) {
 // free; checked before any config change.
 function inspectOpenCodeV2Loader(path) {
   try {
-    const contents = readOpenCodeV2Loader(path);
+    const { contents, identity } = snapshotOpenCodeV2Loader(path);
     const reason = contents !== null && !isGeneratedOpenCodeV2Loader(contents)
       ? "It is not a claude-smart loader"
       : null;
-    return { contents, reason };
+    return { contents, identity, reason };
   } catch (err) {
     if (err?.code === "ERR_ENCODING_INVALID_ENCODED_DATA")
       return { reason: "It is not a claude-smart loader" };
@@ -631,7 +643,7 @@ function writeLoaderContents(file, contents) {
   ftruncateSync(file, contents.length);
 }
 
-function prepareOpenCodeV2Plugin({ path, contents }, packageRoot) {
+function prepareOpenCodeV2Plugin({ path, contents, identity }, packageRoot) {
   const body = Buffer.from(opencodeV2PluginBody(packageRoot));
   const prior = contents === null ? null : Buffer.from(contents);
   let staged;
@@ -648,13 +660,18 @@ function prepareOpenCodeV2Plugin({ path, contents }, packageRoot) {
   };
   const isUnchanged = () => {
     try {
-      if (writableLoader === undefined) return readOpenCodeV2Loader(path) === contents;
+      if (writableLoader === undefined) {
+        const current = snapshotOpenCodeV2Loader(path);
+        return current.identity === identity && current.contents === contents;
+      }
+      const info = fstatSync(writableLoader, { bigint: true });
+      if (identity !== `${info.dev}:${info.ino}` || info.nlink !== 1n) return false;
       const bytes = Buffer.alloc(prior.length + 1);
       const count = readSync(writableLoader, bytes, 0, bytes.length, 0);
       if (!bytes.subarray(0, count).equals(prior)) return false;
       return sameFileIdentity(
-        fstatSync(writableLoader, { bigint: true }),
-        statSync(path, { bigint: true }),
+        info,
+        lstatSync(path, { bigint: true }),
       );
     } catch {
       return false;
@@ -674,7 +691,7 @@ function prepareOpenCodeV2Plugin({ path, contents }, packageRoot) {
     } else if (!prior.equals(body)) {
       // Refresh the existing generated file in place, including when
       // the installer cannot replace its directory entry.
-      writableLoader = openSync(path, constants.O_RDWR | constants.O_NONBLOCK);
+      writableLoader = openSync(path, constants.O_RDWR | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
       if (!fstatSync(writableLoader).isFile() || !isUnchanged()) {
         close();
         return null;
@@ -744,9 +761,9 @@ function writeOpenCodeV2Plugin(
   beforePublish = () => {},
 ) {
   const path = opencodeV2PluginFile(args, cwd);
-  const { contents, reason } = inspectOpenCodeV2Loader(path);
+  const { contents, identity, reason } = inspectOpenCodeV2Loader(path);
   if (reason !== null) return { path, status: "conflict" };
-  const prepared = prepareOpenCodeV2Plugin({ path, contents }, packageRoot);
+  const prepared = prepareOpenCodeV2Plugin({ path, contents, identity }, packageRoot);
   if (!prepared) return { path, status: "conflict" };
   try {
     return prepared.publish(beforePublish);
@@ -2641,16 +2658,6 @@ function publishGuidedPackageAdapter(target, id, adapterPath, label) {
   return target;
 }
 
-function openCodeLoaderIdentity(path) {
-  try {
-    const stat = lstatSync(path, { bigint: true });
-    return `${stat.dev}:${stat.ino}`;
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-    return null;
-  }
-}
-
 function observePreviousServices() {
   const root = activePluginRoot();
   if (!root) return { root, status: {} };
@@ -2757,12 +2764,11 @@ async function prepareGuidedRuntime(config, options, settings) {
       : undefined;
     if (loader) {
       assertOpenCodeRuntimeEntry(pluginRoot);
-      const identity = openCodeLoaderIdentity(loader.path);
       const prepared = prepareOpenCodeV2Plugin(loader, directory);
       if (!prepared) throw new Error("OpenCode loader changed during preparation");
       try {
         writeFileSync(join(directory, "opencode-loader-input.json"),
-          JSON.stringify({ ...loader, identity }), { flag: "wx", mode: 0o600 });
+          JSON.stringify(loader), { flag: "wx", mode: 0o600 });
       } finally {
         prepared.close();
       }
@@ -4805,7 +4811,7 @@ async function runInstallCodex(settings, runtime) {
 
 function assertOpenCodeInstallConfiguration(args) {
   const path = opencodeV2PluginFile(args);
-  const { contents, reason: conflictReason } = inspectOpenCodeV2Loader(path);
+  const { contents, identity, reason: conflictReason } = inspectOpenCodeV2Loader(path);
   if (conflictReason !== null) {
     throw new Error(
       `left an existing OpenCode plugin in place at ${path}. ` +
@@ -4816,7 +4822,7 @@ function assertOpenCodeInstallConfiguration(args) {
   for (const file of opencodeScopeConfigPaths(args)) {
     if (existsSync(file)) readOpenCodePluginConfig(file);
   }
-  return { path, contents };
+  return { path, contents, identity };
 }
 
 function readInstallFailureFingerprint() {
@@ -4895,7 +4901,7 @@ async function runInstallOpenCode(args, settings, runtime) {
   if (runtime) {
     const expected = JSON.parse(readFileSync(join(packageRoot, "opencode-loader-input.json"), "utf8"));
     if (expected.path !== loader.path || expected.contents !== loader.contents ||
-        expected.identity !== openCodeLoaderIdentity(loader.path)) throw conflict();
+        expected.identity !== loader.identity) throw conflict();
   }
   const prepared = prepareOpenCodeV2Plugin(loader, packageRoot);
   if (!prepared) throw conflict();

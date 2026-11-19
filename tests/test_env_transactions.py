@@ -866,7 +866,11 @@ def test_prepared_settings_verify_staged_windows_backend_before_commit(
                 *args,
                 prepared=True,
                 check_windows_embedding=True,
-                opencode_loader={"path": str(loader), "contents": None}
+                opencode_loader={
+                    "path": str(loader),
+                    "contents": None,
+                    "identity": None,
+                }
                 if case == "loader"
                 else None,
             )
@@ -1151,3 +1155,70 @@ require(process.argv[1]).publishInstallSettings({}).then(
     pid = int((tmp_path / "bootstrap.pid").read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+@pytest.mark.parametrize(
+    "change", [None, "leaf-replacement", "linked-leaf", "linked-ancestor", "hard-link"]
+)
+def test_prepared_settings_observe_scoped_loader_identity(
+    install_files, tmp_path, change
+):
+    target, _ = install_files
+    target.write_bytes(b"REFLEXIO_URL=https://old.example.invalid/\n")
+    before = target.read_bytes()
+    # macOS may report a /var alias for the test root.
+    scope = tmp_path.resolve() / "project" / ".opencode" / "plugins"
+    scope.mkdir(parents=True)
+    loader = scope / "claude-smart.js"
+    contents = "expected loader\n"
+    loader.write_bytes(contents.encode())
+    info = loader.stat()
+    volume = info.st_dev & 0xFFFFFFFF if os.name == "nt" else info.st_dev
+    identity = f"{volume}:{info.st_ino}"
+    if change == "leaf-replacement":
+        replacement = scope / "new.js"
+        replacement.write_bytes(contents.encode())
+        replacement.replace(loader)
+    outside = tmp_path.resolve() / "unrelated"
+    if change == "linked-leaf":
+        outside.mkdir()
+        loader.rename(outside / loader.name)
+        try:
+            loader.symlink_to(outside / loader.name)
+        except OSError:
+            pytest.skip("filesystem does not support this test's symlink")
+    elif change == "linked-ancestor":
+        project = scope.parents[1]
+        project.rename(outside)
+        try:
+            project.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip("filesystem does not support this test's symlink")
+    elif change == "hard-link":
+        try:
+            os.link(loader, outside)
+        except OSError:
+            pytest.skip("filesystem does not support this test's hard link")
+
+    def save():
+        env_config.publish_install(
+            {"REFLEXIO_URL": "http://localhost:8071/"},
+            _install_snapshot(target),
+            None,
+            prepared=True,
+            opencode_loader={
+                "path": str(loader),
+                "contents": contents,
+                "identity": identity,
+            },
+        )
+
+    if change is None:
+        save()
+        assert b"http://localhost:8071/" in target.read_bytes()
+    else:
+        with pytest.raises(env_config.SettingsPreflightError) as error:
+            save()
+        assert error.value.code == 80
+        assert target.read_bytes() == before
+        assert loader.read_bytes() == contents.encode()

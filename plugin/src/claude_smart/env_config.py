@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 
 from filelock import Timeout, UnixFileLock, WindowsFileLock
@@ -339,18 +340,22 @@ def publish_install(
         else None
     )
 
-    def validate(staged: Path) -> None:
-        if check_windows_embedding:
-            _verify_staged_windows_embedding(staged)
-        if loader is not None:
-            _verify_opencode_loader(*loader)
+    with ExitStack() as open_files:
 
-    _edit_env_file(
-        path,
-        edit,
-        expected_snapshot=(existed, digest),
-        validate=validate if check_windows_embedding or loader is not None else None,
-    )
+        def validate(staged: Path) -> None:
+            if check_windows_embedding:
+                _verify_staged_windows_embedding(staged)
+            if loader is not None:
+                _verify_opencode_loader(*loader, open_files)
+
+        _edit_env_file(
+            path,
+            edit,
+            expected_snapshot=(existed, digest),
+            validate=validate
+            if check_windows_embedding or loader is not None
+            else None,
+        )
 
 
 def _legacy_import_rows(
@@ -558,37 +563,58 @@ def _edit_env_file[Result](
         ) from None
 
 
-def _opencode_loader_snapshot(snapshot: object) -> tuple[Path, bytes | None]:
-    if not isinstance(snapshot, dict) or set(snapshot) != {"path", "contents"}:
+def _opencode_loader_snapshot(
+    snapshot: object,
+) -> tuple[Path, bytes | None, str | None]:
+    if not isinstance(snapshot, dict) or set(snapshot) != {
+        "path",
+        "contents",
+        "identity",
+    }:
         raise ValueError("Invalid OpenCode loader snapshot")
-    path, contents = snapshot["path"], snapshot["contents"]
+    path, contents, identity = (
+        snapshot["path"],
+        snapshot["contents"],
+        snapshot["identity"],
+    )
     if (
         not isinstance(path, str)
         or not Path(path).is_absolute()
-        or (contents is not None and not isinstance(contents, str))
+        or (
+            identity is not None
+            if contents is None
+            else not isinstance(contents, str)
+            or not isinstance(identity, str)
+            or re.fullmatch(r"[0-9]+:[0-9]+", identity) is None
+        )
     ):
         raise ValueError("Invalid OpenCode loader snapshot")
-    return Path(path), contents.encode("utf-8") if contents is not None else None
+    return (
+        Path(path),
+        contents.encode("utf-8") if contents is not None else None,
+        identity,
+    )
 
 
-def _verify_opencode_loader(path: Path, expected: bytes | None) -> None:
-    """Recheck the installer's scoped loader observation before replacing settings."""
+def _verify_opencode_loader(
+    path: Path, expected: bytes | None, identity: str | None, open_files: ExitStack
+) -> None:
+    """Check the scoped loader and retain its file handle through settings save."""
+    # The transient install-settings publisher does not bundle host adapters.
+    from claude_smart.opencode_scope import open_scoped_file
+
     try:
+        source, opened_identity = open_scoped_file(path, open_files)
+        if (
+            identity == opened_identity
+            and expected is not None
+            and source.read(len(expected) + 1) == expected
+        ):
+            return
+    except FileNotFoundError:
         if expected is None:
-            try:
-                path.lstat()
-            except FileNotFoundError:
-                return
-        elif path.is_file():
-            flags = (
-                os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
-            )
-            with os.fdopen(os.open(path, flags), "rb") as source:
-                if stat.S_ISREG(os.fstat(source.fileno()).st_mode) and (
-                    source.read(len(expected) + 1) == expected
-                ):
-                    return
-    except OSError:
+            return
+    except (OSError, ValueError):
         pass
     raise SettingsPreflightError(80)
 
