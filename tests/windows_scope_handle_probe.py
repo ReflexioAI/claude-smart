@@ -236,3 +236,54 @@ with tempfile.TemporaryDirectory() as temporary:
     _publish([remove], check=False)
     assert not loader.exists()
     print(json.dumps({"native_scoped_loader_removal": True}))
+
+
+with tempfile.TemporaryDirectory() as temporary:
+    base = Path(temporary).resolve()
+    redirect, outside = base / "redirect", base / "outside"
+    outside.mkdir()
+    (outside / "sentinel").write_text("outside", encoding="utf-8")
+    mkdir = os.mkdir
+    is_dir = Path.is_dir
+    fired = False
+
+    def collide(path, *args, **kwargs):
+        global fired
+        if Path(path) == redirect and not fired:
+            fired = True
+            subprocess.run(
+                ["cmd.exe", "/d", "/c", "mklink", "/J", str(redirect), str(outside)],
+                check=True,
+                capture_output=True,
+            )
+        return mkdir(path, *args, **kwargs)
+
+    def refuse_follow(path):
+        if path == redirect:
+            raise AssertionError("the scope owner followed the directory collision")
+        return is_dir(path)
+
+    os.mkdir = collide
+    Path.is_dir = refuse_follow
+    try:
+        with ExitStack() as stack:
+            try:
+                open_scoped_file(
+                    redirect / "claude-smart.js",
+                    stack,
+                    writable=True,
+                    rollback_creation=[],
+                )
+            except ValueError as error:
+                assert "redirects" in str(error), str(error)
+            else:
+                raise AssertionError("scope accepted a redirected parent")
+    finally:
+        Path.is_dir = is_dir
+        os.mkdir = mkdir
+        redirect.rmdir()
+    assert fired and not (outside / "claude-smart.js").exists()
+    assert (outside / "sentinel").read_text(encoding="utf-8") == "outside"
+    print(
+        json.dumps({"native_directory_creation_collision_refused_without_follow": True})
+    )
