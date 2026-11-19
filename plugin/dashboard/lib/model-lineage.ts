@@ -46,8 +46,7 @@ function empty(
   };
 }
 
-// claude-smart's backend runs under this org id (backend-service.sh hard-sets
-// REFLEXIO_DEFAULT_ORG_ID), which names its config file and per-org database.
+// The backend runner uses this namespace for the saved config and SQLite path.
 const CLAUDE_SMART_ORG_ID = "claude-smart";
 
 /** Mirror of reflexio.cli.paths.reflexio_home(). */

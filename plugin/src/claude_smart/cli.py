@@ -55,10 +55,7 @@ _DASHBOARD_SCRIPT = _SCRIPTS_DIR / "dashboard-service.sh"
 _REFLEXIO_DIR = Path.home() / ".reflexio"
 _SERVICE_STATUS_PROBE_FAILED = "probe_failed"
 _DEFAULT_STORAGE_ROOT = _REFLEXIO_DIR / "data"
-# Org id claude-smart's backend runs under (set via REFLEXIO_DEFAULT_ORG_ID in
-# backend-service.sh). reflexio names the config file config_<org>.json, so this
-# must stay in sync with that export; using our own org keeps us off the
-# enterprise self-host backend's config_self-host-org.json.
+# Keep the reset tool aligned with the backend runner's saved namespace.
 _REFLEXIO_ORG_ID = "claude-smart"
 _REFLEXIO_CONFIG_PATH = _REFLEXIO_DIR / "configs" / f"config_{_REFLEXIO_ORG_ID}.json"
 _LOCAL_STORAGE_ENV = "LOCAL_STORAGE_PATH"

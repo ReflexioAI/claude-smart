@@ -155,9 +155,11 @@ def _run_selected_command(home: Path, args: list[str], metadata: tuple[str, ...]
         "sys.argv = ['runner', *sys.argv[2:]]\n"
         "raise SystemExit(runner['main']())\n"
     )
+    env = _env(home)
+    env.pop("REFLEXIO_DEFAULT_ORG_ID")
     return subprocess.run(
         [sys.executable, "-P", "-c", script, str(RUNNER), *metadata, "--", *args],
-        env=_env(home),
+        env=env,
         cwd=home,
         text=True,
         capture_output=True,
@@ -284,6 +286,80 @@ def test_backend_runner_pins_a_fresh_install(tmp_path: Path) -> None:
         "db_path": str(tmp_path / "data" / "reflexio.db"),
         "type": "sqlite",
     }
+
+
+@requires_vendor
+@pytest.mark.parametrize("stale", [False, True])
+@pytest.mark.parametrize("storage", ["fresh", "custom", "non_sqlite"])
+def test_backend_runner_uses_sdk_binding_capability_without_exporting_selector(
+    tmp_path: Path, stale: bool, storage: str,
+) -> None:
+    env = _env(tmp_path)
+    env.pop("REFLEXIO_DEFAULT_ORG_ID")
+    env["PYTHON_DOTENV_DISABLED"] = "1"
+    if stale:
+        env["REFLEXIO_DEFAULT_ORG_ID"] = "self-host-org"
+    script = """
+import importlib.util
+import os
+import runpy
+import sys
+import types
+from pathlib import Path
+
+import reflexio
+from reflexio.config_file import encode_local_config_document
+
+kind = sys.argv[2]
+root = Path(os.environ["LOCAL_STORAGE_PATH"])
+expected = root / "reflexio_claude-smart.db"
+if kind != "fresh":
+    if kind == "custom":
+        expected = root / "custom.db"
+        storage = {"type": "sqlite", "db_path": str(expected)}
+    else:
+        expected = None
+        storage = {"type": "postgres", "db_url": "postgresql://local:fixture@localhost/db"}
+    config = Path.home() / ".reflexio" / "configs" / "config_claude-smart.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(encode_local_config_document({"storage_config": storage}))
+
+runner = runpy.run_path(sys.argv[1])
+if importlib.util.find_spec("reflexio.local_instance") is None:
+    local_instance = types.ModuleType("reflexio.local_instance")
+    local_instance.__spec__ = importlib.util.spec_from_loader(local_instance.__name__, loader=None)
+    sys.modules[local_instance.__name__] = local_instance
+    reflexio.local_instance = local_instance
+else:
+    from reflexio import local_instance
+calls = []
+selector = "claude-smart" if "REFLEXIO_DEFAULT_ORG_ID" in os.environ else None
+
+def prepare(org, path):
+    assert os.environ.get("REFLEXIO_DEFAULT_ORG_ID") == selector
+    calls.append((org, path))
+
+def delegate(*args, **kwargs):
+    assert calls == [("claude-smart", expected)]
+    assert os.environ.get("REFLEXIO_DEFAULT_ORG_ID") == selector
+
+local_instance.prepare_local_sqlite_instance = prepare
+runner["main"].__globals__["runpy"].run_module = delegate
+sys.argv = ["runner", "--claude-smart-backend=1", "--", "services", "start", "--only", "backend"]
+raise SystemExit(runner["main"]())
+"""
+    result = subprocess.run(
+        [sys.executable, "-P", "-c", script, str(RUNNER), storage],
+        env=env,
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _config_file(tmp_path).exists() == (storage != "fresh")
 
 
 @requires_vendor

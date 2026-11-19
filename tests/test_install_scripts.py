@@ -3337,25 +3337,31 @@ def test_backend_service_verifies_bundled_reflexio_runtime_identity() -> None:
 def test_backend_python_runner_exposes_metadata_and_forwards_reflexio_args(
     tmp_path: Path,
 ) -> None:
-    package_dir = tmp_path / "reflexio"
-    package_dir.mkdir()
-    (package_dir / "__init__.py").write_text("")
-    (package_dir / "cli.py").write_text(
+    import reflexio
+
+    # Keep the real SDK parser and launch preparation. Capture the final CLI
+    # dispatch without starting a server.
+    (tmp_path / "sitecustomize.py").write_text(
         "import json\n"
         "import os\n"
+        "import runpy\n"
         "import sys\n"
         "from pathlib import Path\n"
-        "Path(os.environ['OUT']).write_text(json.dumps({\n"
-        "    'argv': sys.argv,\n"
-        "    'backend': os.environ.get('CLAUDE_SMART_BACKEND'),\n"
-        "    'version': os.environ.get('CLAUDE_SMART_VERSION'),\n"
-        "    'vendor': os.environ.get('CLAUDE_SMART_REFLEXIO_VENDOR_ROOT'),\n"
-        "}))\n"
+        "original = runpy.run_module\n"
+        "def capture(mod_name, *args, **kwargs):\n"
+        "    if mod_name != 'reflexio.cli':\n"
+        "        return original(mod_name, *args, **kwargs)\n"
+        "    Path(os.environ['OUT']).write_text(json.dumps({\n"
+        "        'argv': sys.argv,\n"
+        "        'backend': os.environ.get('CLAUDE_SMART_BACKEND'),\n"
+        "        'version': os.environ.get('CLAUDE_SMART_VERSION'),\n"
+        "        'vendor': os.environ.get('CLAUDE_SMART_REFLEXIO_VENDOR_ROOT'),\n"
+        "    }))\n"
+        "runpy.run_module = capture\n"
     )
     output = tmp_path / "out.json"
-    # This stub exercises argument forwarding, not a configured organization.
-    # Real SDK imports elsewhere in the suite may initialize routing defaults.
-    # Account routing and HOME must not enter a metadata-only child process.
+    port = str(_free_port())
+    sdk_root = Path(reflexio.__file__).resolve().parent.parent
     env = {
         key: os.environ[key]
         for key in ("PATH", "LANG", "SYSTEMROOT", "COMSPEC")
@@ -3366,7 +3372,8 @@ def test_backend_python_runner_exposes_metadata_and_forwards_reflexio_args(
             "HOME": str(tmp_path),
             "USERPROFILE": str(tmp_path),
             "OUT": str(output),
-            "PYTHONPATH": str(tmp_path),
+            "PYTHONPATH": os.pathsep.join((str(tmp_path), str(sdk_root))),
+            "PYTHON_DOTENV_DISABLED": "1",
         }
     )
 
@@ -3382,6 +3389,8 @@ def test_backend_python_runner_exposes_metadata_and_forwards_reflexio_args(
             "start",
             "--only",
             "backend",
+            "--backend-port",
+            port,
         ],
         env=env,
         text=True,
@@ -3393,7 +3402,15 @@ def test_backend_python_runner_exposes_metadata_and_forwards_reflexio_args(
     assert result.returncode == 0, result.stderr
     payload = json.loads(output.read_text())
     assert payload == {
-        "argv": ["reflexio.cli", "services", "start", "--only", "backend"],
+        "argv": [
+            "reflexio.cli",
+            "services",
+            "start",
+            "--only",
+            "backend",
+            "--backend-port",
+            port,
+        ],
         "backend": "1",
         "version": "0.2.49",
         "vendor": "/tmp/vendor/reflexio",
