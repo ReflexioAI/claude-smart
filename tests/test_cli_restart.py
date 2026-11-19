@@ -247,6 +247,28 @@ def test_restart_no_rebuild_flag_skips_npm(fake_services) -> None:
     assert build_calls == []
 
 
+@pytest.mark.parametrize("missing_build", [False, True])
+def test_prepared_restart_preserves_the_installed_dashboard(
+    tmp_path, monkeypatch, fake_services, capsys, missing_build
+) -> None:
+    monkeypatch.setattr(cli, "_PLUGIN_ROOT", tmp_path)
+    (tmp_path / "guide-prepared-runtime").write_text("runtime-AbCd12")
+    if not missing_build:
+        compiled = cli._DASHBOARD_DIR / ".next"
+        compiled.mkdir()
+        (compiled / "BUILD_ID").write_text("prepared-test-build")
+    service_calls, build_calls = fake_services
+    result = cli.cmd_restart(_make_args())
+    assert build_calls == []
+    if missing_build:
+        assert result == 1
+        assert service_calls == []
+        assert "npx claude-smart setup" in capsys.readouterr().err
+    else:
+        assert result == 0
+        assert ("dashboard-service.sh", "start") in service_calls
+
+
 def test_restart_failed_backend_preflight_preserves_services(
     fake_services, monkeypatch, capsys
 ) -> None:

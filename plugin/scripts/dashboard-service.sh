@@ -173,7 +173,7 @@ case "$CMD" in
       echo "[claude-smart] dashboard: port $PORT held by another process; skipping" >>"$LOG_FILE"
       emit_ok; exit 0
     fi
-    if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ] && [ ! -d "$DASHBOARD_DIR/.next" ]; then
+    if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ] && [ ! -f "$DASHBOARD_DIR/.next/BUILD_ID" ]; then
       reason="the prepared dashboard is missing; rerun npx claude-smart setup"
       echo "[claude-smart] dashboard: $reason" >>"$LOG_FILE"
       claude_smart_write_dashboard_unavailable "$reason"

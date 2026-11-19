@@ -1821,7 +1821,8 @@ def test_uninstall_checks_surviving_codex_home(
     assert not record.exists()
 
 
-def test_guided_uninstall_keeps_registered_standalone_codex_home(tmp_path):
+@pytest.mark.parametrize("recorded", [False, True])
+def test_guided_uninstall_keeps_standalone_codex_home(tmp_path, recorded):
     package, _old, uv, env = _fixture(tmp_path, "codex", installed=False)
     _write_bootstrap_uv(uv, mode="fresh")
     env.pop("CLAUDE_SMART_INSTALL_CHILD")
@@ -1849,6 +1850,10 @@ def test_guided_uninstall_keeps_registered_standalone_codex_home(tmp_path):
 
     setup = ["setup", "--backend", "local", "--provider", "codex", "--yes"]
     run(*setup, "--host", "codex", codex_home=standalone_home)
+    if not recorded:
+        registry = tmp_path / ".claude-smart/guided-runtimes/codex-homes"
+        for entry in registry.iterdir():
+            entry.unlink()
     run(*setup, "--host", "codex,opencode", codex_home=guided_home)
 
     selector = tmp_path / ".reflexio/plugin-root"
@@ -1884,8 +1889,9 @@ def test_guided_uninstall_keeps_registered_standalone_codex_home(tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="uses POSIX SIGKILL")
-def test_retry_starts_selected_runtime_before_preparing_replacement(tmp_path):
-    package, predecessor, uv, env = _fixture(tmp_path, "codex")
+@pytest.mark.parametrize("installed", [False, True])
+def test_retry_starts_selected_runtime_before_preparing_replacement(tmp_path, installed):
+    package, predecessor, uv, env = _fixture(tmp_path, "codex", installed=installed)
     _write_bootstrap_uv(uv, mode="fresh")
     env.pop("CLAUDE_SMART_INSTALL_CHILD")
     codex = tmp_path / "fake-bin/codex"
@@ -1938,8 +1944,11 @@ fs.renameSync = (source, target) => {
     selected = tmp_path / ".reflexio/plugin-root"
     chosen = selected.resolve()
     receipt = state / "pending-shutdown.json"
-    assert receipt.is_file()
-    assert all(row["action"] != "stop" for row in _calls(tmp_path))
+    assert json.loads(receipt.read_text())["root"] == (
+        str(predecessor) if installed else None
+    )
+    if installed:
+        assert all(row["action"] != "stop" for row in _calls(tmp_path))
 
     os.utime(state / ".install.lock", (1, 1))
     env.pop("NODE_OPTIONS")
@@ -1950,6 +1959,6 @@ fs.renameSync = (source, target) => {
     assert selected.resolve() == chosen
     assert not receipt.exists()
     events = [(row["root"], row["action"]) for row in _calls(tmp_path)]
-    assert events.index((str(predecessor), "stop")) < events.index(
-        (str(chosen), "start")
-    )
+    started = events.index((str(chosen), "start"))
+    if installed:
+        assert events.index((str(predecessor), "stop")) < started

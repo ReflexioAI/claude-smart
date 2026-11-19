@@ -2603,19 +2603,27 @@ function rememberCodexHome() {
 }
 
 function registeredCodexPluginRoots() {
-  let names;
+  // The historical standalone installer did not record the default home.
+  const homes = new Set([join(homedir(), ".codex")]);
   try {
-    names = readdirSync(GUIDED_CODEX_HOMES);
+    for (const name of readdirSync(GUIDED_CODEX_HOMES)) {
+      if (!/^[0-9a-f]{64}$/.test(name)) continue;
+      try {
+        const record = join(GUIDED_CODEX_HOMES, name);
+        if (!lstatSync(record).isFile()) continue;
+        const home = readFileSync(record, "utf8");
+        if (isAbsolute(home) && resolve(home) === home && codexHomeKey(home) === name)
+          homes.add(home);
+      } catch {
+        // An unreadable discovery record cannot preserve any services.
+      }
+    }
   } catch {
-    return [];
+    // There might be a default-home installation without a registry.
   }
-  return names.flatMap((name) => {
-    if (!/^[0-9a-f]{64}$/.test(name)) return [];
+  return Array.from(homes).flatMap((candidate) => {
     try {
-      const record = join(GUIDED_CODEX_HOMES, name);
-      if (!lstatSync(record).isFile()) return [];
-      const home = readFileSync(record, "utf8");
-      if (!isAbsolute(home) || resolve(home) !== home || codexHomeKey(home) !== name) return [];
+      const home = realpathSync(candidate);
       const adapter = join(home, "claude-smart", "marketplace", CODEX_MARKETPLACE_PLUGIN_PATH);
       const root = boundGuidedPluginRoot(adapter);
       const id = root && basename(dirname(root));
@@ -2722,7 +2730,6 @@ function observePreviousServices() {
 }
 
 function recordGuidedShutdown(selection, previous) {
-  if (!previous.root) return;
   const status = {};
   for (const [kind, value] of Object.entries(previous.status)) {
     const observed = value.match(/^(?:running on |stale claude-smart backend on )(http:\/\/(?:localhost|127\.0\.0\.1):[0-9]+)(?:\s|$)/);
@@ -2757,13 +2764,14 @@ async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
     throw new Error("The pending shared service shutdown record is invalid");
   const target = join(realpathSync(GUIDED_RUNTIME_DIR), pending.id, "plugin");
   const current = activePluginRoot();
-  if (typeof pending.root !== "string" || !isAbsolute(pending.root) ||
+  if ((pending.root !== null &&
+      (typeof pending.root !== "string" || !isAbsolute(pending.root))) ||
       (!pending.status || typeof pending.status !== "object"))
     throw new Error("The pending shared service shutdown record is invalid");
   if (current === target) {
     if (!pathEntryExists(GUIDED_SELECTED_RUNTIME)) recordGuidedSelection(target);
     const setup = readInstallPolicy();
-    if (pending.predecessorStopped !== true) {
+    if (pending.root && pending.predecessorStopped !== true) {
       if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
         throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
       await stopServicesForInstall(pending.root, null, pending.status);
@@ -2775,14 +2783,14 @@ async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
     return { completed: true, summary };
   } else {
     if (current !== pending.root) {
-      const predecessor = join(pending.root, "scripts", "backend-service.sh");
-      if (current !== null || pathEntryExists(join(REFLEXIO_DIR, "plugin-root")) || !existsSync(predecessor))
+      if (!pending.root || current !== null || pathEntryExists(join(REFLEXIO_DIR, "plugin-root")) ||
+          !existsSync(join(pending.root, "scripts", "backend-service.sh")))
         throw new Error("The shared runtime selection changed during shutdown; resolve it before retrying setup");
       forcePluginRoot(pending.root);
     }
     // Settings may have changed independently. Preserve the verified baseline
     // until the next attempt has prepared and selected its replacement.
-    if (retainBaseline) return { baseline: { root: pending.root, status: pending.status } };
+    if (retainBaseline && pending.root) return { baseline: { root: pending.root, status: pending.status } };
   }
   rmSync(GUIDED_PENDING_SHUTDOWN);
   return {};
