@@ -20,6 +20,7 @@ import gzip
 import hashlib
 import json
 import os
+import runpy
 import socket
 import sqlite3
 import subprocess
@@ -198,6 +199,29 @@ def _run_selected_command(home: Path, args: list[str], metadata: tuple[str, ...]
     )
 
 
+@pytest.mark.parametrize("source", ["process", "file"])
+def test_backend_refuses_retired_model_before_sdk_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    dotenv = tmp_path / ".env"
+    dotenv.touch()
+    monkeypatch.setenv("REFLEXIO_ENV_FILE", str(dotenv))
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", "provider/selected")
+    monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
+    if source == "process":
+        monkeypatch.setenv("CLAUDE_SMART_CLI_MODEL", "private-retired-model")
+    else:
+        dotenv.write_text("CLAUDE_SMART_CLI_MODEL=private-retired-model\n")
+    original = dotenv.read_bytes()
+
+    prepare = runpy.run_path(str(RUNNER))["prepare_native_sdk_environment"]
+    with pytest.raises(ValueError, match="CLAUDE_SMART_LEARNING_MODEL") as exc_info:
+        prepare()
+
+    assert "private-retired-model" not in str(exc_info.value)
+    assert dotenv.read_bytes() == original
+
+
 @requires_vendor
 @requires_binding_vendor
 @pytest.mark.parametrize(
@@ -213,7 +237,9 @@ def test_backend_projects_native_selection_through_worker_reload(
     tmp_path: Path, host: str, model: str, enabled: str, expected: str
 ) -> None:
     dotenv = tmp_path / ".env"
-    original = f"CLAUDE_SMART_USE_LOCAL_CLI={enabled}\nCLAUDE_SMART_CLI_MODEL={model}\n"
+    original = (
+        f"CLAUDE_SMART_USE_LOCAL_CLI={enabled}\nCLAUDE_SMART_LEARNING_MODEL={model}\n"
+    )
     dotenv.write_text(original)
     env = _env(tmp_path)
     env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
@@ -221,7 +247,7 @@ def test_backend_projects_native_selection_through_worker_reload(
         REFLEXIO_ENV_FILE=str(dotenv),
         CLAUDE_SMART_HOST=host,
         CLAUDE_SMART_USE_LOCAL_CLI=enabled,
-        CLAUDE_SMART_CLI_MODEL=model,
+        CLAUDE_SMART_LEARNING_MODEL=model,
     )
     result = subprocess.run(
         [

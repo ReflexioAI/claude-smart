@@ -17,18 +17,38 @@ ORG_ID = "claude-smart"
 
 def prepare_native_sdk_environment() -> None:
     """Project the plugin's saved learning intent into the selected SDK ABI."""
+    from dotenv import dotenv_values
+
+    enabled_name = "CLAUDE_SMART_USE_LOCAL_CLI"
+    legacy_model_name = "CLAUDE_SMART_CLI_MODEL"
+    model = os.environ.get("CLAUDE_SMART_LEARNING_MODEL", "").strip()
+    env_file = os.environ.get("REFLEXIO_ENV_FILE", "")
+    saved = (
+        dotenv_values(env_file, interpolate=False)
+        if env_file and Path(env_file).is_file()
+        else {}
+    )
+    if (
+        os.environ.get(legacy_model_name, "").strip()
+        or (saved.get(legacy_model_name) or "").strip()
+    ):
+        raise ValueError(
+            "CLAUDE_SMART_CLI_MODEL has been retired. Move the effective model to "
+            "CLAUDE_SMART_LEARNING_MODEL and remove the old assignment."
+        )
+
     package = find_spec("reflexio")
     locations = package.submodule_search_locations if package else None
     if not locations or not any(
         (Path(location) / "server/llm/_native_model_ref.py").is_file()
         for location in locations
     ):
+        # Older SDKs take the already selected model through a launch field.
+        os.environ[legacy_model_name] = model
         return
 
     from reflexio.env_utils import env_truthy
 
-    enabled_name = "CLAUDE_SMART_USE_LOCAL_CLI"
-    model_name = "CLAUDE_SMART_CLI_MODEL"
     target_name = "REFLEXIO_NATIVE_CLI_MODEL"
     intent = os.environ.get(enabled_name, "")
     selected = os.environ.get(target_name, "")
@@ -36,7 +56,6 @@ def prepare_native_sdk_environment() -> None:
         host = os.environ.get("CLAUDE_SMART_HOST", "").strip() or "claude-code"
         if host not in {"claude-code", "codex", "opencode"}:
             raise ValueError("Claude Smart learning provider is unsupported")
-        model = os.environ.get(model_name, "").strip()
         target = f"local-cli/{host}/{model}" if model else f"local-cli/{host}"
         if selected.strip() and selected != target:
             raise ValueError(
@@ -51,7 +70,7 @@ def prepare_native_sdk_environment() -> None:
     # The SDK reloads the same dotenv file in uvicorn children. An empty process
     # value eclipses any saved legacy selector without changing the user's file.
     os.environ[enabled_name] = ""
-    os.environ[model_name] = ""
+    os.environ[legacy_model_name] = ""
 
 
 def _incomplete_installation(path: Path, org_id: str) -> bool:

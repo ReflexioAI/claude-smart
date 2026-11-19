@@ -1190,7 +1190,7 @@ def test_backend_learning_model_selection(
         capture_output=True,
         check=True,
     )
-    assert result.stdout == f"{expected}:{expected}"
+    assert result.stdout == f":{expected}"
 
 
 @pytest.mark.parametrize("arguments", [[], ["--help"], ["--backend", "local"]])
