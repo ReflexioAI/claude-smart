@@ -157,6 +157,22 @@ def test_optimizer_rejects_invalid_payload_without_execution(
     launch.assert_not_called()
 
 
+def test_optimizer_reports_retired_opencode_model_before_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_PROVIDER", "opencode")
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/plugin/opencode-claude-compat")
+    monkeypatch.setenv("CLAUDE_SMART_OPENCODE_MODEL", "private-retired-selection")
+    runner = Mock(side_effect=AssertionError("retired setting launched a process"))
+    monkeypatch.setattr(optimizer_assistant.subprocess, "run", runner)
+    rc, out, err = _run_main(monkeypatch, _payload())
+    assert rc == 1 and out == ""
+    assert "CLAUDE_SMART_OPENCODE_MODEL has been retired" in err
+    assert "CLAUDE_SMART_LEARNING_MODEL" in err
+    assert "private-retired-selection" not in err
+    runner.assert_not_called()
+
+
 @pytest.mark.parametrize("response", ["result", "response"])
 def test_optimizer_legacy_opencode_retains_wire_model_variant_and_budget(
     monkeypatch: pytest.MonkeyPatch, response: str

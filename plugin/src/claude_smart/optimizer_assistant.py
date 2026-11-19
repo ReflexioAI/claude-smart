@@ -260,6 +260,12 @@ def _run_compat_bridge(
     deadline: float,
 ) -> str:
     """Legacy OpenCode wrapper contract; no native descendant-ownership claim."""
+    if os.environ.get("CLAUDE_SMART_OPENCODE_MODEL", "").strip():
+        raise OptimizerAssistantError(
+            "CLAUDE_SMART_OPENCODE_MODEL has been retired. Use "
+            "CLAUDE_SMART_LEARNING_MODEL for the saved OpenCode route and clear "
+            "the old setting."
+        )
     cmd = [cli_path, "-p", "--output-format", "json"]
     if model:
         cmd.extend(["--model", model])
