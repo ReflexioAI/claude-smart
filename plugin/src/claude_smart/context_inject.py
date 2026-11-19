@@ -35,7 +35,6 @@ _LOGGER = logging.getLogger(__name__)
 # for the session, so a dropped result would stay hidden until a reset.
 DEFAULT_MAX_INJECTED_ITEMS = 6
 _MAX_ITEMS_ENV = "CLAUDE_SMART_MAX_INJECTED_ITEMS"
-_THRESHOLD_ENV = "CLAUDE_SMART_SEARCH_THRESHOLD"
 
 
 def max_injected_items() -> int | None:
@@ -82,28 +81,6 @@ def per_type_top_k(top_k: int, max_items: int | None) -> int:
     return max(1, min(top_k, max_items // SEARCHED_ENTITY_TYPE_COUNT))
 
 
-def search_threshold() -> float | None:
-    """Return the configured search similarity threshold, if any.
-
-    Reads ``CLAUDE_SMART_SEARCH_THRESHOLD``, a number from 0 to 1. Unset,
-    empty or invalid means no threshold is sent and the server default applies.
-
-    Returns:
-        float | None: The threshold, or ``None`` to omit it.
-    """
-    raw = os.environ.get(_THRESHOLD_ENV, "").strip()
-    if not raw:
-        return None
-    try:
-        value = float(raw)
-    except ValueError:
-        value = -1.0
-    if not 0.0 <= value <= 1.0:
-        _LOGGER.debug("ignoring invalid %s=%r", _THRESHOLD_ENV, raw)
-        return None
-    return value
-
-
 def emit_context(
     *,
     session_id: str,
@@ -147,7 +124,6 @@ def emit_context(
         # are not returned again; next-best matches backfill instead.
         session_id=session_id or None,
         request_id=state.reserve_publish_request_id(session_id) if session_id else None,
-        threshold=search_threshold(),
         reset_session_seen=reset_seen,
     )
     if reset_seen and len(getattr(adapter, "read_errors", ())) > errors_before:
@@ -193,5 +169,4 @@ __all__ = [
     "emit_context",
     "max_injected_items",
     "per_type_top_k",
-    "search_threshold",
 ]

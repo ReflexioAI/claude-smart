@@ -591,7 +591,6 @@ class Adapter:
         top_k: int = 5,
         session_id: str | None = None,
         request_id: str | None = None,
-        threshold: float | None = None,
         reset_session_seen: bool = False,
     ) -> tuple[list[Any], list[Any], list[Any]]:
         """Unified hybrid search → ``(user_playbooks, agent_playbooks, preferences)``.
@@ -600,7 +599,7 @@ class Adapter:
         Reflexio's unified ``user_id`` filter scopes ``user_playbooks`` and
         preferences to this project; ``agent_playbooks`` carry no ``user_id``
         column so the same filter silently no-ops on that leg, leaving them
-        global across projects.
+        global across projects. The server resolves the cutoff for its embedding model.
 
         Args:
             project_id (str): reflexio ``user_id`` for this repo.
@@ -612,8 +611,6 @@ class Adapter:
                 within one session stop re-injecting the same rules.
             request_id (str | None): Durable identity reserved for the response
                 that will publish this retrieved context.
-            threshold (float | None): Similarity threshold. Sent only when
-                set; otherwise the server's embedding default applies.
             reset_session_seen (bool): Ask the server to forget what it
                 already served ``session_id`` before dedup (after the host
                 compacted the conversation). Sent only when True and the
@@ -629,8 +626,6 @@ class Adapter:
         if client is None:
             return [], [], []
         optional: dict[str, Any] = {}
-        if threshold is not None:
-            optional["threshold"] = threshold
         if reset_session_seen and session_id:
             if _client_accepts(client.search, "reset_session_seen"):
                 optional["reset_session_seen"] = True
