@@ -1618,6 +1618,67 @@ def test_opencode_legacy_rewrite_uses_same_snapshot_it_parsed(tmp_path: Path):
     assert result.returncode == 0, result.stderr
 
 
+def test_opencode_config_rewrite_can_retry_after_failed_stage_write(tmp_path: Path):
+    config = tmp_path / "opencode.json"
+    config.write_text('{"plugin":["claude-smart","keep"]}\n')
+    installer = REPO_ROOT / "bin" / "claude-smart.js"
+    script = f"""
+        const fs = require("node:fs");
+        const assert = require("node:assert/strict");
+        const path = require("node:path");
+        const config = {json.dumps(str(config))};
+        const original = fs.readFileSync(config);
+        const write = fs.writeFileSync;
+        let fail = true;
+        fs.writeFileSync = (target, contents, options) => {{
+          if (fail && typeof target === "string" &&
+              (target === config || path.basename(path.dirname(target)).startsWith(".claude-smart-config-"))) {{
+            write(target, "{{partial", options);
+            fail = false;
+            throw new Error("fixture interrupted config staging");
+          }}
+          return write(target, contents, options);
+        }};
+        const installer = require({json.dumps(str(installer))});
+        assert.throws(() => installer.patchOpenCodePluginConfig(config, {{install:false}}),
+          /interrupted config staging/);
+        assert.deepEqual(fs.readFileSync(config), original);
+        assert.equal(installer.patchOpenCodePluginConfig(config, {{install:false}}).changed, true);
+        assert.deepEqual(JSON.parse(fs.readFileSync(config)).plugin, ["keep"]);
+        assert.deepEqual(fs.readdirSync(path.dirname(config)), ["opencode.json"]);
+    """
+    result = _run_node_script(script)
+    if result is None:
+        pytest.skip("node is not installed")
+    assert result.returncode == 0, result.stderr
+
+
+def test_opencode_config_backup_does_not_follow_symlink(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    config = project / "opencode.jsonc"
+    original = '// preserve this comment\n{"plugin":["claude-smart","keep"]}\n'
+    config.write_text(original)
+    sentinel = tmp_path / "separate-settings"
+    sentinel.write_text("owned sentinel")
+    backup = project / "opencode.jsonc.bak"
+    backup.symlink_to(sentinel)
+    installer = REPO_ROOT / "bin" / "claude-smart.js"
+    script = f"""
+        const assert = require("node:assert/strict");
+        const installer = require({json.dumps(str(installer))});
+        assert.throws(() => installer.patchOpenCodePluginConfig(
+          {json.dumps(str(config))}, {{install:false}}), /requires a regular file/);
+    """
+    result = _run_node_script(script)
+    if result is None:
+        pytest.skip("node is not installed")
+    assert result.returncode == 0, result.stderr
+    assert sentinel.read_text() == "owned sentinel"
+    assert config.read_text() == original
+    assert backup.is_symlink()
+
+
 def test_node_installer_reports_unusable_loader_path_as_conflict(
     tmp_path: Path,
 ) -> None:

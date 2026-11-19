@@ -823,7 +823,8 @@ function readOpenCodePluginConfig(configPath, original) {
 
 function planOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
   const resolvedPluginSpec = install ? pluginSpec || opencodeLocalPluginSpec() : pluginSpec;
-  const original = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
+  const existed = existsSync(configPath);
+  const original = existed ? readFileSync(configPath, "utf8") : "";
   const data = readOpenCodePluginConfig(configPath, original);
   const current = [
     ...(Array.isArray(data.plugin) ? data.plugin : []),
@@ -843,17 +844,61 @@ function planOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
     : null;
   data.plugin = next;
   delete data.plugins;
-  return { changed: true, configPath, backupPath, original, data };
+  return { changed: true, configPath, backupPath, existed, original, data };
+}
+
+function openCodeConfigStat(path) {
+  try {
+    const info = lstatSync(path);
+    if (!info.isFile()) throw new Error(`OpenCode config write requires a regular file at ${path}`);
+    return info;
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function assertOpenCodeConfigSnapshot(plan) {
+  const info = openCodeConfigStat(plan.configPath);
+  const current = info ? readFileSync(plan.configPath, "utf8") : "";
+  if (Boolean(info) !== plan.existed || current !== plan.original)
+    throw new Error(`OpenCode config changed at ${plan.configPath}; retry setup.`);
+}
+
+function writeOpenCodeConfigAtomically(path, contents, validate) {
+  const info = openCodeConfigStat(path);
+  const directory = mkdtempSync(join(dirname(path), ".claude-smart-config-"));
+  const temporary = join(directory, "new");
+  try {
+    writeFileSync(temporary, contents, { flag: "wx", mode: info ? info.mode & 0o777 : 0o600 });
+    if (info && !isWindows()) chmodSync(temporary, info.mode & 0o777);
+    validate?.();
+    openCodeConfigStat(path);
+    // A same-directory move commits the complete bytes without opening an
+    // existing destination (including a substituted symlink) for writing.
+    renameSync(temporary, path);
+  } finally {
+    try {
+      rmSync(temporary, { force: true });
+      rmdirSync(directory);
+    } catch {
+      process.stderr.write(`warning: could not clean OpenCode config stage at ${directory}.\n`);
+    }
+  }
 }
 
 function applyOpenCodePluginConfig(plan) {
   const { changed, configPath, backupPath } = plan;
   if (!changed) return { changed, configPath };
-  const live = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
-  if (live !== plan.original) throw new Error(`OpenCode config changed at ${configPath}; retry setup.`);
-  if (backupPath) writeFileSync(backupPath, plan.original);
+  assertOpenCodeConfigSnapshot(plan);
   mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, JSON.stringify(plan.data, null, 2) + "\n");
+  if (backupPath)
+    writeOpenCodeConfigAtomically(backupPath, plan.original, () => assertOpenCodeConfigSnapshot(plan));
+  writeOpenCodeConfigAtomically(
+    configPath,
+    JSON.stringify(plan.data, null, 2) + "\n",
+    () => assertOpenCodeConfigSnapshot(plan),
+  );
   return { changed, configPath, backupPath };
 }
 
@@ -877,9 +922,9 @@ function assertOpenCodeLegacyEntriesWritable(plans) {
   for (const { configPath, backupPath } of plans) {
     for (const path of [configPath, backupPath].filter(Boolean)) {
       try {
-        if (path === backupPath && !pathEntryExists(path)) {
-          accessSync(dirname(path), constants.W_OK);
-        } else {
+        const info = openCodeConfigStat(path);
+        accessSync(dirname(path), constants.W_OK);
+        if (info) {
           const fd = openSync(path, constants.O_WRONLY | constants.O_NONBLOCK);
           try {
             if (!fstatSync(fd).isFile()) throw new Error("not a regular file");
