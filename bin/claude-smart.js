@@ -47,7 +47,7 @@ const {
 const http = require("http");
 const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
-const { basename, dirname, isAbsolute, join, relative, resolve, sep } = require("path");
+const { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } = require("path");
 const { fileURLToPath, pathToFileURL } = require("url");
 const guide = require("./install-guide");
 
@@ -2545,19 +2545,26 @@ function validateGuidedOpenCodeLearning(config, saved) {
   }
   if (!config.model?.startsWith("#")) return;
   const selected = config.cliPath;
-  const bridge = /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(selected || ""));
+  let launcher;
   if (selected) {
-    if (!isAbsolute(selected)) {
+    const absolute = isAbsolute(selected);
+    if (!absolute && basename(selected) !== selected) {
       throw new Error("Use an absolute CLAUDE_SMART_CLI_PATH to select an OpenCode variant.");
     }
-    if (!isExecutableFile(selected)) {
+    const names = isWindows() && !extname(selected)
+      ? [`${selected}.exe`, `${selected}.cmd`, `${selected}.bat`, selected]
+      : [selected];
+    const match = absolute ? names.find(isExecutableFile) : resolveCommand(names);
+    if (!match) {
       throw new Error("The configured CLAUDE_SMART_CLI_PATH cannot be executed. Repair that path before updating.");
     }
-    if (isWindows() && !bridge && !/\.exe$/i.test(selected)) {
-      throw new Error("Select a native OpenCode .exe or the supported compatibility bridge on Windows.");
-    }
+    launcher = resolve(match);
   }
-  const command = selected && !bridge ? selected : resolveOpenCodePath();
+  const bridge = /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(launcher || ""));
+  if (launcher && isWindows() && !bridge && !/\.exe$/i.test(launcher)) {
+    throw new Error("Select a native OpenCode .exe or the supported compatibility bridge on Windows.");
+  }
+  const command = launcher && !bridge ? launcher : resolveOpenCodePath();
   if (command && !isAbsolute(command)) {
     throw new Error("Use an absolute CLAUDE_SMART_OPENCODE_PATH to select an OpenCode variant.");
   }
@@ -2568,6 +2575,7 @@ function validateGuidedOpenCodeLearning(config, saved) {
       "The selected OpenCode CLI does not advertise --variant. Specify provider/model#variant instead of #variant.",
     );
   }
+  if (launcher) config.cliPath = launcher;
 }
 
 function readGuidedRuntime(id) {

@@ -818,6 +818,7 @@ def test_public_confirmation_preserves_or_discovers_opencode_path(
         ("variant-supported", ""),
         ("commented-empty", ""),
         ("custom-executable", ""),
+        ("named-executable", ""),
         ("known-bridge", ""),
         ("missing-bridge", "cannot be executed"),
         ("relative-cli", "absolute CLAUDE_SMART_CLI_PATH"),
@@ -848,6 +849,7 @@ def test_public_setup_checks_opencode_variant_before_publication(
         saved += 'CLAUDE_SMART_OPENCODE_VARIANT="" # use provider default\n'
     custom = case in {
         "custom-executable",
+        "named-executable",
         "known-bridge",
         "missing-bridge",
         "relative-cli",
@@ -855,8 +857,10 @@ def test_public_setup_checks_opencode_variant_before_publication(
     if custom:
         if case == "custom-executable":
             cli = executable
+        elif case == "named-executable":
+            cli = Path("opencode")
         elif case == "relative-cli":
-            cli = Path("./opencode")
+            cli = "./opencode"
         else:
             cli = tmp_path / "opencode-claude-compat"
             if case == "known-bridge":
@@ -872,6 +876,10 @@ def test_public_setup_checks_opencode_variant_before_publication(
     }
     if case == "retired-process":
         env["CLAUDE_SMART_OPENCODE_VARIANT"] = "high"
+    if case == "named-executable":
+        env["PATH"] = os.pathsep.join(
+            [str(tmp_path / "fake-bin"), str(tmp_path), os.environ["PATH"]]
+        )
     # The explicit provider choice resets a custom executable by design.
     provider_args = [] if custom else ["--provider", "opencode"]
     result = _run_public_setup(
@@ -890,10 +898,10 @@ def test_public_setup_checks_opencode_variant_before_publication(
         assert "Installing Claude Code integration" not in result.stdout
     else:
         assert result.returncode == 0, result.stderr
-        assert (
-            dotenv_values(selected, interpolate=False)["CLAUDE_SMART_LEARNING_MODEL"]
-            == "#high"
-        )
+        values = dotenv_values(selected, interpolate=False)
+        assert values["CLAUDE_SMART_LEARNING_MODEL"] == "#high"
+        if case == "named-executable":
+            assert values["CLAUDE_SMART_CLI_PATH"] == str(executable)
 
 
 def _fake_opencode_path(tmp_path: Path) -> Path:
