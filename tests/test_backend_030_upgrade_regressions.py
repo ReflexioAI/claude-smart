@@ -306,6 +306,8 @@ import runpy
 import sys
 import types
 from pathlib import Path
+
+import reflexio
 from reflexio.config_file import encode_local_config_document
 
 kind = sys.argv[2]
@@ -323,9 +325,13 @@ if kind != "fresh":
     config.write_text(encode_local_config_document({"storage_config": storage}))
 
 runner = runpy.run_path(sys.argv[1])
-local_instance = types.ModuleType("reflexio.local_instance")
-local_instance.__spec__ = importlib.util.spec_from_loader(local_instance.__name__, loader=None)
-sys.modules[local_instance.__name__] = local_instance
+if importlib.util.find_spec("reflexio.local_instance") is None:
+    local_instance = types.ModuleType("reflexio.local_instance")
+    local_instance.__spec__ = importlib.util.spec_from_loader(local_instance.__name__, loader=None)
+    sys.modules[local_instance.__name__] = local_instance
+    reflexio.local_instance = local_instance
+else:
+    from reflexio import local_instance
 calls = []
 selector = "claude-smart" if "REFLEXIO_DEFAULT_ORG_ID" in os.environ else None
 
