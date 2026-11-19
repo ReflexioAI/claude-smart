@@ -2609,7 +2609,11 @@ def test_node_opencode_v2_reload_flushes_only_prompted_instance(
           return () => (async function* () {{
             for (;;) {{
               if (!queue.length) await new Promise((resolve) => {{ wake = resolve; }});
-              while (queue.length) yield queue.shift();
+              while (queue.length) {{
+                const event = queue.shift();
+                if (typeof event === "function") event();
+                else yield event;
+              }}
             }}
           }})();
         }};
@@ -2632,17 +2636,17 @@ def test_node_opencode_v2_reload_flushes_only_prompted_instance(
         const second = makeCtx(false);
         const cleanupFirst = await mod.default.setup(first.ctx);
         await first.hooks.prompt({{ sessionID: "s-reload", prompt: {{ text: "only this instance got the prompt" }} }});
-        // Real reload order: cleanup frees the registration slot synchronously,
-        // then awaits the hook disposers. Hold one disposer open so the old
-        // instance's event loop is still alive while the new instance sets up —
-        // two live instances, only one of which received the prompt.
+        // Cleanup frees the slot and parks the old turn before awaiting
+        // hook disposal. Hold a disposer open while the new instance adopts
+        // the turn and handles its terminal event.
         const cleanupDone = cleanupFirst();
         await mod.default.setup(second.ctx);
         push({{ type: "session.text.ended", data: {{ sessionID: "s-reload", assistantMessageID: "m1", ordinal: 0, text: "Only once" }} }});
         push({{ type: "session.execution.succeeded", data: {{ sessionID: "s-reload" }} }});
         await waitForStops(1);
         push({{ type: "session.created", data: {{ sessionID: "s-created" }} }});
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        // The active stream must finish handling the broadcast before counting hooks.
+        await new Promise(subscribers.at(-1));
         const stops = stopPayloads();
         const prompts = readCalls().filter(
           (call) => Array.isArray(call.args) && call.args.includes("user-prompt"),
@@ -2665,9 +2669,7 @@ def test_node_opencode_v2_reload_flushes_only_prompted_instance(
 
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
-    # Events are broadcast to every live instance, but only the instance that
-    # received the prompt registered the session with V1 and may flush it, so
-    # the second (unprompted) instance must stay silent.
+    # The adopted turn publishes through the original prompt's V1 hooks once.
     assert parsed["stops"] == [
         {
             "session_id": "s-reload",

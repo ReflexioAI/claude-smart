@@ -580,16 +580,20 @@ function readOpenCodeV2Loader(target) {
 
 // Why a foreign file or directory blocks the loader path, or null when it is
 // free; checked before any config change.
-function openCodeV2LoaderConflicts(args = [], cwd = process.cwd()) {
-  let existing;
+function inspectOpenCodeV2Loader(path) {
   try {
-    existing = readOpenCodeV2Loader(opencodeV2PluginFile(args, cwd));
+    const contents = readOpenCodeV2Loader(path);
+    const reason = contents !== null && !isGeneratedOpenCodeV2Loader(contents)
+      ? "It is not a claude-smart loader"
+      : null;
+    return { contents, reason };
   } catch (err) {
-    return `It cannot be read as a file (${(err && (err.code || err.message)) || err})`;
+    return { reason: `It cannot be read as a file (${(err && (err.code || err.message)) || err})` };
   }
-  return existing !== null && !isGeneratedOpenCodeV2Loader(existing)
-    ? "It is not a claude-smart loader"
-    : null;
+}
+
+function openCodeV2LoaderConflicts(args = [], cwd = process.cwd()) {
+  return inspectOpenCodeV2Loader(opencodeV2PluginFile(args, cwd)).reason;
 }
 
 function writeOpenCodeV2Plugin(
@@ -2269,6 +2273,8 @@ async function writeConfirmedSettings(python, args, runtime, environment, reques
     throw new Error(
       "Settings are busy; retry after the other save finishes.",
     );
+  if (saved.code === 80 && request.opencode_loader)
+    throw new Error(`OpenCode loader changed before settings were saved at ${request.opencode_loader.path}; reload and retry.`);
   if (args.includes("--check-windows-embedding")) {
     if (saved.code === 76)
       throw new Error("Could not determine Windows inference ownership. Check the embedding settings before retrying.");
@@ -2290,7 +2296,7 @@ async function writeConfirmedSettings(python, args, runtime, environment, reques
   runtime.publishing = false;
 }
 
-async function publishFromPreparedRuntime(pluginRoot, settings) {
+async function publishFromPreparedRuntime(pluginRoot, settings, openCodeLoader) {
   const args = ["-I", "-m", "claude_smart.env_config", "publish-prepared-install"];
   if (isWindows()) {
     requireWindowsEmbeddingBash();
@@ -2307,7 +2313,7 @@ async function publishFromPreparedRuntime(pluginRoot, settings) {
       args,
       runtime,
       runtimeEnv(),
-      settings.request,
+      openCodeLoader ? { ...settings.request, opencode_loader: openCodeLoader } : settings.request,
     );
     usePublishedSettings(settings);
     // A lost acknowledgement cannot undo the settings owner's committed save.
@@ -3494,8 +3500,10 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   await preparePluginPython(pluginRoot, uv, env);
   if (options.settings) {
     await preparePluginDashboard(pluginRoot, nodeRuntime, env, options.settings);
-    options.beforeSettingsPublish?.();
-    await publishFromPreparedRuntime(pluginRoot, options.settings);
+    const openCodeLoader = options.openCodeArgs
+      ? assertOpenCodeInstallConfiguration(options.openCodeArgs)
+      : undefined;
+    await publishFromPreparedRuntime(pluginRoot, options.settings, openCodeLoader);
     return nodeRuntime;
   }
   const repairCode = await runChecked(
@@ -4347,16 +4355,54 @@ async function runInstallCodex(settings) {
 }
 
 function assertOpenCodeInstallConfiguration(args) {
-  const conflictReason = openCodeV2LoaderConflicts(args);
+  const path = opencodeV2PluginFile(args);
+  const { contents, reason: conflictReason } = inspectOpenCodeV2Loader(path);
   if (conflictReason !== null) {
     throw new Error(
-      `left an existing OpenCode plugin in place at ${opencodeV2PluginFile(args)}. ` +
+      `left an existing OpenCode plugin in place at ${path}. ` +
         `${conflictReason}; move it aside and reinstall to write ` +
         "the loader. claude-smart OpenCode support is not installed.",
     );
   }
   for (const file of opencodeScopeConfigPaths(args)) {
     if (existsSync(file)) readOpenCodePluginConfig(file);
+  }
+  return { path, contents };
+}
+
+function readInstallFailureFingerprint() {
+  try {
+    const stat = lstatSync(INSTALL_FAILURE_MARKER, { bigint: true });
+    if (!stat.isFile()) return null;
+    const text = readFileSync(INSTALL_FAILURE_MARKER, "utf8");
+    const fingerprint = text.match(/^fingerprint=([0-9a-f]{64})\r?$/m)?.[1];
+    return fingerprint ? { stat, text, fingerprint } : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearRecoveredOpenCodeFailure(pluginRoot, previous) {
+  if (!previous) return;
+  const bash = resolveUsableBash();
+  if (!bash) return;
+  // Use the same fingerprint implementation as the hook and shell installer.
+  const probe = spawnSync(bash, [
+    "-c",
+    '. ./scripts/_lib.sh && root="$(pwd -P)" && claude_smart_install_fingerprint_hash "$root" "$root/scripts"',
+  ], {
+    cwd: pluginRoot, env: runtimeEnv(), encoding: "utf8", timeout: 5000, windowsHide: true,
+  });
+  if (probe.status !== 0 || probe.stdout.trim() !== previous.fingerprint) return;
+  const current = readInstallFailureFingerprint();
+  if (current && current.text === previous.text &&
+      current.stat.ino === previous.stat.ino && current.stat.dev === previous.stat.dev &&
+      current.stat.ctimeNs === previous.stat.ctimeNs) {
+    try {
+      rmSync(INSTALL_FAILURE_MARKER, { force: true });
+    } catch {
+      process.stderr.write("warning: could not clear the previous OpenCode install failure.\n");
+    }
   }
 }
 
@@ -4369,6 +4415,7 @@ async function runInstallOpenCode(args, settings) {
   }
   assertSupportedRuntimePlatform();
   snapshotInstallState({ preserveFailureMarker: Boolean(settings) });
+  const previousFailure = settings ? readInstallFailureFingerprint() : null;
   const readOnly = settings
     ? settings.request.updates[CLAUDE_SMART_READ_ONLY_ENV] === "1"
     : setup.readOnly;
@@ -4396,7 +4443,7 @@ async function runInstallOpenCode(args, settings) {
     await bootstrapPluginRuntime(pluginRoot, {
       readOnly,
       settings,
-      beforeSettingsPublish: () => assertOpenCodeInstallConfiguration(args),
+      openCodeArgs: args,
     });
     if (settings) setup = readInstallPolicy();
   } catch (err) {
@@ -4431,6 +4478,7 @@ async function runInstallOpenCode(args, settings) {
   }
   // Committed only after publication, so a conflict exit rolls the package back.
   commitLocalPluginPackages([packageRoot]);
+  clearRecoveredOpenCodeFailure(pluginRoot, previousFailure);
   await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);
   reportOpenCodeConfigBackups(results);
   process.stdout.write(

@@ -243,6 +243,7 @@ def publish_install(
     *,
     prepared: bool = False,
     check_windows_embedding: bool = False,
+    opencode_loader: object = None,
 ) -> None:
     """Publish a confirmed guide snapshot, imports and completion atomically.
 
@@ -332,11 +333,23 @@ def publish_install(
                 content = with_defaults
         return content, None
 
+    loader = (
+        _opencode_loader_snapshot(opencode_loader)
+        if opencode_loader is not None
+        else None
+    )
+
+    def validate(staged: Path) -> None:
+        if check_windows_embedding:
+            _verify_staged_windows_embedding(staged)
+        if loader is not None:
+            _verify_opencode_loader(*loader)
+
     _edit_env_file(
         path,
         edit,
         expected_snapshot=(existed, digest),
-        validate=_verify_staged_windows_embedding if check_windows_embedding else None,
+        validate=validate if check_windows_embedding or loader is not None else None,
     )
 
 
@@ -545,6 +558,41 @@ def _edit_env_file[Result](
         ) from None
 
 
+def _opencode_loader_snapshot(snapshot: object) -> tuple[Path, bytes | None]:
+    if not isinstance(snapshot, dict) or set(snapshot) != {"path", "contents"}:
+        raise ValueError("Invalid OpenCode loader snapshot")
+    path, contents = snapshot["path"], snapshot["contents"]
+    if (
+        not isinstance(path, str)
+        or not Path(path).is_absolute()
+        or (contents is not None and not isinstance(contents, str))
+    ):
+        raise ValueError("Invalid OpenCode loader snapshot")
+    return Path(path), contents.encode("utf-8") if contents is not None else None
+
+
+def _verify_opencode_loader(path: Path, expected: bytes | None) -> None:
+    """Recheck the installer's scoped loader observation before replacing settings."""
+    try:
+        if expected is None:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                return
+        elif path.is_file():
+            flags = (
+                os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+            )
+            with os.fdopen(os.open(path, flags), "rb") as source:
+                if stat.S_ISREG(os.fstat(source.fileno()).st_mode) and (
+                    source.read(len(expected) + 1) == expected
+                ):
+                    return
+    except OSError:
+        pass
+    raise SettingsPreflightError(80)
+
+
 def _verify_staged_windows_embedding(staged: Path) -> None:
     root = Path.cwd()
     # The SDK gives a working-directory dotenv file precedence. A bundled
@@ -632,7 +680,11 @@ def main(argv: list[str] | None = None) -> int:
                 if command == "publish"
                 else {"updates", "snapshot", "legacy"}
             )
-            if not isinstance(request, dict) or set(request) != fields:
+            if not isinstance(request, dict):
+                raise ValueError("Invalid settings edit request")
+            if command == "publish-prepared-install" and "opencode_loader" in request:
+                fields.add("opencode_loader")
+            if set(request) != fields:
                 raise ValueError("Invalid settings edit request")
             if command == "publish":
                 update_settings(request["updates"], request["expected"])
@@ -643,6 +695,7 @@ def main(argv: list[str] | None = None) -> int:
                     request["legacy"],
                     prepared=command == "publish-prepared-install",
                     check_windows_embedding=len(arguments) == 2,
+                    opencode_loader=request.get("opencode_loader"),
                 )
             added = []
     except SettingsConflictError as error:
