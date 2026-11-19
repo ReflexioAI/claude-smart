@@ -307,6 +307,7 @@ async function configure(
     }
     if (
       !config.model &&
+      (!keepCurrent || !hasCurrent) &&
       config.provider === "claude-code" &&
       !config.cliPath &&
       config.useLocalCli !== "0"

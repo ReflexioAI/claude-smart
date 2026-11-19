@@ -228,6 +228,7 @@ def test_backend_refuses_retired_model_before_sdk_dispatch(
     ("host", "model", "enabled", "expected"),
     [
         ("claude-code", "sonnet", "1", "local-cli/claude-code/sonnet"),
+        ("claude-code", "", "1", "local-cli/claude-code"),
         ("codex", "", "1", "local-cli/codex"),
         ("opencode", " provider/model ", "true", "local-cli/opencode/provider/model"),
         ("claude-code", "sonnet", "0", "disabled"),
@@ -243,6 +244,7 @@ def test_backend_projects_native_selection_through_worker_reload(
     dotenv.write_text(original)
     env = _env(tmp_path)
     env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
+    env.pop("CLAUDE_SMART_CLI_MODEL", None)
     env.update(
         REFLEXIO_ENV_FILE=str(dotenv),
         CLAUDE_SMART_HOST=host,

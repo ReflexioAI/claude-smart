@@ -1161,7 +1161,7 @@ def test_learning_summary_and_sonnet_default_on_actual_guide(
 @pytest.mark.parametrize(
     "provider,explicit,use_local_cli,expected",
     [
-        ("claude-code", "", "1", "sonnet"),
+        ("claude-code", "", "1", ""),
         ("claude-code", "chosen-model", "1", "chosen-model"),
         ("claude-code", "", "0", ""),
         ("codex", "", "1", ""),
