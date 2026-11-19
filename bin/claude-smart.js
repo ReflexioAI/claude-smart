@@ -289,6 +289,9 @@ function parseEnvLine(line) {
   const key = trimmed.slice(0, eq).trim();
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null;
   let value = trimmed.slice(eq + 1).trim();
+  // Match the SDK's dotenv treatment of a commented empty retired setting.
+  if (key === "CLAUDE_SMART_OPENCODE_VARIANT" &&
+      /^(?:"\s*"|'\s*')\s*(?:#.*)?$/.test(value)) value = "";
   if (
     value.length >= 2 &&
     ((value[0] === '"' && value[value.length - 1] === '"') ||
@@ -2541,8 +2544,9 @@ function validateGuidedOpenCodeLearning(config, saved) {
     );
   }
   if (!config.model?.startsWith("#")) return;
-  const probe = config.cliPath ? undefined
-    : probeLearningCli(resolveOpenCodePath(), ["run", "--help"], 64 * 1024);
+  const bridge = /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(config.cliPath || ""));
+  const command = config.cliPath && !bridge ? config.cliPath : resolveOpenCodePath();
+  const probe = probeLearningCli(command, ["run", "--help"], 64 * 1024);
   const help = probe ? `${probe.stdout}\n${probe.stderr}` : "";
   if (!/^\s*(?:-[A-Za-z0-9],\s*)?--variant(?=[,\s=]|$)/m.test(help)) {
     throw new Error(
@@ -3291,7 +3295,9 @@ async function startAndReportServices(
   }
   process.stdout.write("Starting local dashboard (first build may take 1–2 minutes)…\n");
   if (restart) await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "stop");
-  await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "start");
+  await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "start", {
+    CLAUDE_SMART_HOST: learningHost,
+  });
   const port = (process.env.DASHBOARD_PORT || "").trim() || "3001";
   const url = `http://localhost:${port}/`;
   // Same marker dashboard-service.sh trusts: a foreign app on the port answers

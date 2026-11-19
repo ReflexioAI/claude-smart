@@ -184,15 +184,20 @@ def test_dashboard_proxy_prefers_the_saved_file_over_its_launch_env(
 
 
 @pytest.mark.parametrize("model", ["provider/model#high", "#high"])
-def test_dashboard_saves_opencode_variant_reference(tmp_path: Path, model: str) -> None:
+@pytest.mark.parametrize("saved_provider", [False, True])
+def test_dashboard_saves_opencode_variant_reference(
+    tmp_path: Path, model: str, saved_provider: bool
+) -> None:
+    env = {"CLAUDE_SMART_HOST": "opencode"} if not saved_provider else {}
     env_file = tmp_path / ".claude-smart" / ".env"
     env_file.parent.mkdir()
-    env_file.write_text("CLAUDE_SMART_LEARNING_PROVIDER=opencode\n")
+    if saved_provider:
+        env_file.write_text("CLAUDE_SMART_LEARNING_PROVIDER=opencode\n")
     out = _run_config_module(
         tmp_path,
         f"await m.writeConfig({{CLAUDE_SMART_LEARNING_MODEL: {json.dumps(model)}}}); "
         "process.stdout.write(JSON.stringify(await m.readConfig()));",
-        {},
+        env,
     )
     assert json.loads(out)["CLAUDE_SMART_LEARNING_MODEL"] == model
 

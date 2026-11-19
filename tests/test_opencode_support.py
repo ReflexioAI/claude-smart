@@ -816,6 +816,9 @@ def test_public_confirmation_preserves_or_discovers_opencode_path(
         ("retired-process", "CLAUDE_SMART_OPENCODE_VARIANT has been retired"),
         ("standalone-only", "does not advertise --variant"),
         ("variant-supported", ""),
+        ("commented-empty", ""),
+        ("custom-executable", ""),
+        ("known-bridge", ""),
     ],
 )
 def test_public_setup_checks_opencode_variant_before_publication(
@@ -826,7 +829,7 @@ def test_public_setup_checks_opencode_variant_before_publication(
     from tests.test_install_scripts import _run_public_setup
 
     executable = _fake_opencode_path(tmp_path)
-    declarations = "--variant string" if case == "variant-supported" else "--standalone"
+    declarations = "--standalone" if expected else "--variant string"
     executable.write_text(
         "#!/bin/sh\n"
         'if [ "$1" = run ] && [ "$2" = --help ]; then\n'
@@ -838,16 +841,29 @@ def test_public_setup_checks_opencode_variant_before_publication(
     saved = 'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\n'
     if case == "retired-file":
         saved += "CLAUDE_SMART_OPENCODE_VARIANT=high\n"
+    if case == "commented-empty":
+        saved += 'CLAUDE_SMART_OPENCODE_VARIANT="" # use provider default\n'
+    custom = case in {"custom-executable", "known-bridge"}
+    if custom:
+        cli = (
+            executable
+            if case == "custom-executable"
+            else tmp_path / "opencode-claude-compat"
+        )
+        saved += (
+            f"CLAUDE_SMART_CLI_PATH={cli}\nCLAUDE_SMART_LEARNING_PROVIDER=opencode\n"
+        )
     selected.write_text(saved)
     env = {"CLAUDE_SMART_OPENCODE_PATH": str(executable)}
     if case == "retired-process":
         env["CLAUDE_SMART_OPENCODE_VARIANT"] = "high"
+    # The explicit provider choice resets a custom executable by design.
+    provider_args = [] if custom else ["--provider", "opencode"]
     result = _run_public_setup(
         tmp_path,
         "--backend",
         "local",
-        "--provider",
-        "opencode",
+        *provider_args,
         "--model",
         "#high",
         env_extra=env,
