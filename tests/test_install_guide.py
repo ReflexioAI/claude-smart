@@ -340,12 +340,12 @@ def test_unattended_install_preserves_inherited_provider_overrides(
         )
 
 
-def test_guided_coordinator_reports_partial_success_and_keeps_provider(
+def test_guided_coordinator_rejects_incomplete_package_before_registration(
     tmp_path: Path,
 ) -> None:
     installer, env = fake_guide(tmp_path)
-    # The minimal fixture can install Claude Code but deliberately lacks Codex's
-    # required marketplace payload. The coordinator must still finish the first host.
+    # The package lacks the requested Codex adapter. Preflight must fail
+    # before the guide saves settings or registers either host.
     result = subprocess.run(
         [
             node_bin(),
@@ -364,24 +364,13 @@ def test_guided_coordinator_reports_partial_success_and_keeps_provider(
         timeout=30,
     )
     assert result.returncode == 1, result.stderr
-    assert "Claude Code: installed" in result.stdout
-    assert "Codex: failed" in result.stdout
-    assert "Background learning: Codex CLI" in result.stdout
-    assert '"continue"' not in result.stdout
-    config = (tmp_path / ".claude-smart" / ".env").read_text()
     assert (
-        dotenv_values(stream=StringIO(config), interpolate=False).get(
-            "CLAUDE_SMART_LEARNING_PROVIDER"
-        )
-        == "codex"
+        "published package is missing .agents/plugins/marketplace.json" in result.stderr
     )
-    logs = list((tmp_path / ".claude-smart" / "install-logs").glob("*.log"))
-    assert len(logs) == 2
-    assert all(path.stat().st_mode & 0o777 == 0o600 for path in logs)
-    assert any("missing" in path.read_text() for path in logs)
-    assert (
-        tmp_path / ".claude-smart" / "claude-code" / "claude-smart" / "plugin"
-    ).is_dir()
+    state = tmp_path / ".claude-smart"
+    assert not (state / ".env").exists()
+    assert not (state / "install-logs").exists()
+    assert not (state / "claude-code" / "claude-smart" / "plugin").exists()
 
 
 def test_guided_install_progress_is_visible_while_worker_is_waiting(
@@ -804,6 +793,16 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         tmp_path
     )
     assert setup.returncode == 0, setup.stderr
+    installer = prefix / "bin" / "claude-smart"
+    removal = subprocess.run(
+        [str(installer), "uninstall", "--host", "opencode", "--global", "--yes"],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    assert removal.returncode == 0, removal.stdout + removal.stderr
     _write_fake_claude_installer(tmp_path / "fake-bin" / "claude")
     _write_fake_codex(tmp_path / "fake-bin" / "codex")
     # This fixture's private node only records version probes; the fake Codex
@@ -827,7 +826,6 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         "custom": "custom executable (/custom/router)",
         "cloud": "configured cloud LLM",
     }[provider_mode]
-    installer = prefix / "bin" / "claude-smart"
     env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
     (home / "uv.log").unlink(missing_ok=True)
     hosts = (
@@ -934,6 +932,46 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         )
         == "global_user"
     )
+
+    if provider_mode == "named":
+        original_loader = loader.read_text()
+        loader.write_text(
+            original_loader.replace(
+                (runtime.resolve() / "opencode/dist/server.mjs").as_uri(),
+                "file://remote.invalid/share/plugin/opencode/dist/server.mjs",
+            )
+        )
+        status = subprocess.run(
+            [str(installer), "status", "--host", "opencode"],
+            cwd=project,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        assert status.returncode == 0, status.stdout + status.stderr
+        assert "Prepared runtime version: not installed" in status.stdout
+        loader.write_text(original_loader)
+
+    # A standalone update reselects its runtime. Removing it must recover
+    # the still-registered shared runtime, not a host adapter without Python.
+    surviving_hosts = {
+        "cloud": ["claude-code"],  # Codex remains.
+        "named": ["codex", "claude-code"],  # OpenCode remains.
+    }
+    for host in surviving_hosts.get(provider_mode, []):
+        removal = subprocess.run(
+            [str(installer), "uninstall", "--host", host, "--yes"],
+            cwd=project,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert removal.returncode == 0, removal.stdout + removal.stderr
+    if provider_mode in surviving_hosts:
+        assert (home / ".reflexio/plugin-root").resolve() == runtime.resolve()
+        assert (runtime / ".venv/bin/python").is_file()
 
 
 @pytest.mark.parametrize("provider", [None, "claude-code", "codex", "opencode"])
