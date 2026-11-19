@@ -762,7 +762,16 @@ def _install_snapshot(target):
 
 @pytest.mark.parametrize(
     "case",
-    ["attached", "colocated", "unchanged", "stale", "shadow", "timeout", "editor"],
+    [
+        "attached",
+        "colocated",
+        "unchanged",
+        "stale",
+        "shadow",
+        "timeout",
+        "editor",
+        "loader",
+    ],
 )
 def test_prepared_settings_verify_staged_windows_backend_before_commit(
     tmp_path, monkeypatch, case
@@ -797,6 +806,15 @@ def test_prepared_settings_verify_staged_windows_backend_before_commit(
             ),
             encoding="utf-8",
         )
+    loader = tmp_path / "claude-smart.js"
+    if case == "loader":
+        importer.write_text(
+            importer.read_text(encoding="utf-8").replace(
+                "sys.exit(",
+                f"Path({str(loader)!r}).write_bytes(b'foreign loader\\n')\nsys.exit(",
+            ),
+            encoding="utf-8",
+        )
     if case == "timeout":
         importer.write_text(
             importer.read_text(encoding="utf-8").replace(
@@ -819,7 +837,7 @@ def test_prepared_settings_verify_staged_windows_backend_before_commit(
         )
     else:
         target.write_bytes(b"REFLEXIO_URL=https://old.example.invalid/\n")
-    if case in {"attached", "editor"}:
+    if case in {"attached", "editor", "loader"}:
         with target.open("ab") as settings:
             settings.write(b"REFLEXIO_EMBEDDING_SERVICE_URL=http://localhost:8093/\n")
     if case == "shadow":
@@ -845,9 +863,18 @@ def test_prepared_settings_verify_staged_windows_backend_before_commit(
     else:
         with pytest.raises(env_config.SettingsPreflightError) as rejected:
             env_config.publish_install(
-                *args, prepared=True, check_windows_embedding=True
+                *args,
+                prepared=True,
+                check_windows_embedding=True,
+                opencode_loader={"path": str(loader), "contents": None}
+                if case == "loader"
+                else None,
             )
-        assert rejected.value.code == {"shadow": 79, "timeout": 78}.get(case, 77)
+        assert rejected.value.code == {"shadow": 79, "timeout": 78, "loader": 80}.get(
+            case, 77
+        )
+        if case == "loader":
+            assert loader.read_bytes() == b"foreign loader\n"
     if case != "attached":
         assert target.read_bytes() == original + (
             b"# external editor\n" if case == "editor" else b""

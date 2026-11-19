@@ -153,6 +153,7 @@ def _run(tmp_path, package, host, env, command="update"):
     )
 
 
+@pytest.mark.parametrize("host", ["codex", "opencode"])
 @pytest.mark.parametrize(
     "outcome",
     [
@@ -171,8 +172,15 @@ def _run(tmp_path, package, host, env, command="update"):
         ),
     ],
 )
-def test_guided_codex_uses_prepared_interpreter_for_settings(tmp_path, outcome):
-    package, root, uv, env = _fixture(tmp_path, "codex", running="none")
+def test_guided_node_host_uses_prepared_interpreter_for_settings(
+    tmp_path, host, outcome
+):
+    package, root, uv, env = _fixture(tmp_path, host, running="none")
+    adapter = (
+        tmp_path / ".codex/claude-smart/marketplace"
+        if host == "codex"
+        else tmp_path / ".opencode/plugins/claude-smart.js"
+    )
     env.pop("CLAUDE_SMART_INSTALL_CHILD")
     env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
     env["REFLEXIO_ROW_LIMIT_INTERACTIONS"] = (
@@ -294,7 +302,7 @@ if (typeof process.send === "function") {
             str(package / "bin/claude-smart.js"),
             "update",
             "--host",
-            "codex",
+            host,
             "--backend",
             "local",
             "--provider",
@@ -329,20 +337,24 @@ if (typeof process.send === "function") {
         assert b"REFLEXIO_ROW_LIMIT_INTERACTIONS=731\n" in settings.read_bytes()
         assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
         assert (root / "identity").read_text() == "new"
-        assert (tmp_path / ".codex/claude-smart/marketplace").is_dir()
+        assert adapter.exists()
         return
     if outcome in ("success", "ack-disconnects"):
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert "Preparing Python and runtime dependencies" in result.stdout
         assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
         assert (root / "identity").read_text() == "new"
-        marketplace = tmp_path / ".codex/claude-smart/marketplace"
-        manifest = next(marketplace.rglob("codex-hooks.json"))
-        contents = manifest.read_text()
-        launchers = list((tmp_path / ".claude-smart/node/launchers").glob("*/bin/node"))
-        assert len(launchers) == 1
-        assert str(launchers[0].resolve()) in contents
-        assert str(node.resolve()) not in contents
+        if host == "codex":
+            manifest = next(adapter.rglob("codex-hooks.json"))
+            contents = manifest.read_text()
+            launchers = list(
+                (tmp_path / ".claude-smart/node/launchers").glob("*/bin/node")
+            )
+            assert len(launchers) == 1
+            assert str(launchers[0].resolve()) in contents
+            assert str(node.resolve()) not in contents
+        else:
+            assert (root / "opencode/dist/server.mjs").as_uri() in adapter.read_text()
         return
 
     assert result.returncode != 0
@@ -355,8 +367,8 @@ if (typeof process.send === "function") {
             settings.parent / "install-failed"
         ).read_text() == "other host diagnostic"
     assert (root / "identity").read_text() == "old"
-    assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
-    log = next((tmp_path / ".claude-smart/install-logs").glob("update-codex-*.log"))
+    assert not adapter.exists()
+    log = next((tmp_path / ".claude-smart/install-logs").glob(f"update-{host}-*.log"))
     expected_error = {
         "stale-settings": "Settings changed after confirmation",
         "invalid-default": "Settings save could not be confirmed",
@@ -365,6 +377,125 @@ if (typeof process.send === "function") {
         "preparation-fails": "uv sync failed",
     }[outcome]
     assert expected_error in log.read_text()
+
+
+def _run_guided_opencode_update(home, package, env):
+    env = {
+        key: value for key, value in env.items() if key != "CLAUDE_SMART_INSTALL_CHILD"
+    }
+    return subprocess.run(
+        [
+            node_bin(),
+            str(package / "bin/claude-smart.js"),
+            "update",
+            "--host",
+            "opencode",
+            "--backend",
+            "local",
+            "--provider",
+            "opencode",
+            "--read-only",
+            "--yes",
+        ],
+        cwd=home,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("stage", ["build", "publish"])
+def test_guided_opencode_keeps_settings_when_loader_appears(tmp_path, stage):
+    package, root, uv, env = _fixture(tmp_path, "opencode", running="none")
+    settings = tmp_path / ".claude-smart/.env"
+    original = settings.read_bytes()
+    adapter = tmp_path / ".opencode/plugins/claude-smart.js"
+    adapter.parent.mkdir(parents=True)
+    _write_bootstrap_uv(uv, mode="fresh")
+    if stage == "build":
+        _write_executable(
+            uv,
+            uv.read_text().replace(
+                "#!/bin/sh\n",
+                "#!/bin/sh\n"
+                'if [ "$1" = sync ]; then\n'
+                '  printf "foreign loader\\n" > "$HOME/.opencode/plugins/claude-smart.js"\n'
+                "fi\n",
+                1,
+            ),
+        )
+    else:
+        owner = package / "plugin/src/claude_smart/env_config.py"
+        sync = "os.fsync(target.fileno())"
+        owner.write_text(
+            owner.read_text().replace(
+                sync,
+                f"{sync}\n                    Path({str(adapter)!r}).write_bytes(b'foreign loader\\n')",
+                1,
+            )
+        )
+
+    result = _run_guided_opencode_update(tmp_path, package, env)
+    assert result.returncode != 0
+    assert settings.read_bytes() == original
+    assert adapter.read_text() == "foreign loader\n"
+    assert (root / "identity").read_text() == "old"
+    log = next((tmp_path / ".claude-smart/install-logs").glob("update-opencode-*.log"))
+    expected = {
+        "build": "It is not a claude-smart loader",
+        "publish": "OpenCode loader changed before settings were saved",
+    }
+    assert expected[stage] in log.read_text()
+
+
+@pytest.mark.parametrize("marker_change", ["owned", "unrelated", "replaced"])
+def test_guided_opencode_retry_clears_only_its_previous_failure(
+    tmp_path, marker_change
+):
+    package, root, uv, env = _fixture(tmp_path, "opencode", running="none")
+    for directory in (root, package / "plugin"):
+        shutil.copy2(
+            REPO_ROOT / "plugin/scripts/_lib.sh", directory / "scripts/_lib.sh"
+        )
+    _write_bootstrap_uv(uv, mode="fresh")
+    fingerprint = subprocess.check_output(
+        [
+            "bash",
+            "-c",
+            '. ./scripts/_lib.sh && root="$(pwd -P)" && claude_smart_install_fingerprint_hash "$root" "$root/scripts"',
+        ],
+        cwd=root,
+        env={**env, "PATH": str(uv.parent) + os.pathsep + env["PATH"]},
+        text=True,
+    ).strip()
+    assert len(fingerprint) == 64
+    marker = tmp_path / ".claude-smart/install-failed"
+    if marker_change == "unrelated":
+        fingerprint = "1" * 64
+    original = f"previous transient failure\nfingerprint={fingerprint}\n"
+    marker.write_text(original)
+    if marker_change == "replaced":
+        _write_executable(
+            uv,
+            uv.read_text().replace(
+                "#!/bin/sh\n",
+                "#!/bin/sh\n"
+                'if [ "$1" = sync ]; then\n'
+                '  cp "$HOME/.claude-smart/install-failed" "$HOME/new-marker"\n'
+                '  mv "$HOME/new-marker" "$HOME/.claude-smart/install-failed"\n'
+                "fi\n",
+                1,
+            ),
+        )
+    result = _run_guided_opencode_update(tmp_path, package, env)
+    assert result.returncode == 0, (result.stderr, result.stdout)
+    assert (root / "identity").read_text() == "new"
+    if marker_change == "owned":
+        assert not marker.exists()
+    else:
+        assert marker.read_text() == original
 
 
 def _calls(tmp_path):
