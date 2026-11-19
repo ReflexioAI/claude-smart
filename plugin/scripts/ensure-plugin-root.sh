@@ -4,8 +4,8 @@
 #
 # Usage: ensure-plugin-root.sh <target-dir> [--force]
 #   --force  overwrite any existing link
-#   default  self-heal only if the link is missing or points at an
-#            invalid target
+#   default  repair a missing or invalid link, or track a managed cache
+#            upgrade. Keep a valid manually selected target.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -120,22 +120,6 @@ write_plugin_root_link() {
 
 if [ "$FORCE" = "--force" ]; then
     write_plugin_root_link "forced"
-    exit 0
-fi
-
-# Opt-in: when CLAUDE_SMART_PLUGIN_ROOT_FOLLOW_SESSION=1 (set in the
-# environment or in ~/.claude-smart/.env), always relink to $TARGET so the
-# symlink tracks the currently loaded plugin.
-FOLLOW="${CLAUDE_SMART_PLUGIN_ROOT_FOLLOW_SESSION:-}"
-if [ -z "$FOLLOW" ] && [ -f "$HOME/.claude-smart/.env" ]; then
-    FOLLOW="$(grep -E '^(export[[:space:]]+)?CLAUDE_SMART_PLUGIN_ROOT_FOLLOW_SESSION=' "$HOME/.claude-smart/.env" \
-        | tail -n1 | sed -E 's/^(export[[:space:]]+)?CLAUDE_SMART_PLUGIN_ROOT_FOLLOW_SESSION=//')"
-    # Strip a single pair of surrounding double or single quotes, if present.
-    FOLLOW="${FOLLOW#\"}"; FOLLOW="${FOLLOW%\"}"
-    FOLLOW="${FOLLOW#\'}"; FOLLOW="${FOLLOW%\'}"
-fi
-if [ "$FOLLOW" = "1" ]; then
-    write_plugin_root_link "follow-session"
     exit 0
 fi
 

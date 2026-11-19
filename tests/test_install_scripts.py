@@ -8223,6 +8223,43 @@ def test_windows_path_conversion_falls_back_without_cygpath(tmp_path: Path) -> N
         assert result.stdout.strip() == expected
 
 
+@pytest.mark.skipif(os.name == "nt", reason="uses POSIX symbolic links")
+@pytest.mark.parametrize("legacy_source", ["environment", "dotenv"])
+def test_session_root_repair_keeps_manual_selection_until_explicit_switch(
+    tmp_path: Path, legacy_source: str
+) -> None:
+    current = tmp_path / "current-checkout"
+    session = tmp_path / "session-checkout"
+    for candidate in (current, session):
+        candidate.mkdir()
+        (candidate / "pyproject.toml").write_text("[project]\n")
+    env = _isolated_env(tmp_path)
+    if legacy_source == "environment":
+        env["CLAUDE_SMART_PLUGIN_ROOT_FOLLOW_SESSION"] = "1"
+    else:
+        dotenv = tmp_path / ".claude-smart" / ".env"
+        dotenv.parent.mkdir()
+        dotenv.write_text("export CLAUDE_SMART_PLUGIN_ROOT_FOLLOW_SESSION='1'\n")
+
+    script = LIB.with_name("ensure-plugin-root.sh")
+    root = tmp_path / ".reflexio" / "plugin-root"
+    for target, extra, expected in (
+        (current, (), current),
+        (session, (), current),
+        (session, ("--force",), session),
+    ):
+        result = subprocess.run(
+            ["bash", str(script), str(target), *extra],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert root.resolve() == expected.resolve()
+
+
 def test_windows_plugin_root_tracks_cache_junction_metadata(tmp_path: Path) -> None:
     scripts = tmp_path / "plugin" / "scripts"
     scripts.mkdir(parents=True)
