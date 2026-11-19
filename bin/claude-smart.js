@@ -963,12 +963,18 @@ function installedPluginRoots(codexSurvivors = guidedCodexPluginRoots()) {
     if (typeof root === "string" && isAbsolute(root)) roots.push(root);
   }
   roots.push(join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin"));
-  const codex = findCodexPluginRoot();
-  const boundCodex = codex && boundGuidedPluginRoot(codex);
   roots.push(...codexSurvivors);
   roots.push(...openCodeGuidedPluginRoots());
   roots.push(join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"), CODEX_RUNTIME_PLUGIN_ROOT);
-  if (codex && !boundCodex) roots.push(codex);
+  try {
+    const legacy = readdirSync(CODEX_PLUGIN_CACHE_DIR)
+      .map((name) => join(CODEX_PLUGIN_CACHE_DIR, name))
+      .filter((root) => !pathEntryExists(join(root, GUIDED_RUNTIME_BINDING)))
+      .sort((a, b) => compareSemverLikePathNames(b, a));
+    roots.push(...legacy);
+  } catch {
+    // No standalone Codex cache.
+  }
   return roots.flatMap((root) => {
     const prepared = boundGuidedPluginRoot(root);
     if (prepared) return [prepared];

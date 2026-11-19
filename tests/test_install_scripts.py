@@ -3446,7 +3446,7 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
         "startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup)" in node_installer
     )
     assert (
-        "startAndReportServices(CODEX_RUNTIME_PLUGIN_ROOT, HOST_CODEX, setup)"
+        "startAndReportServices(pluginRoot, HOST_CODEX, setup)"
         in node_installer
     )
     assert (
