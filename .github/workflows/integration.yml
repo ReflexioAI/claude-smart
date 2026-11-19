@@ -66,6 +66,11 @@ jobs:
           git -C "$RUNNER_TEMP/reflexio-src" checkout --quiet "$commit"
           python3 scripts/vendor-reflexio.py \
             --reflexio-path "$RUNNER_TEMP/reflexio-src" --bundle-only --write
+          predecessor="$RUNNER_TEMP/reflexio-predecessor"
+          mkdir "$predecessor"
+          git -C "$RUNNER_TEMP/reflexio-src" archive 70daf32c2b47b35dd0fe7be1d6f64d648a67eb8a | tar -x -C "$predecessor"
+          echo "CLAUDE_SMART_TEST_PREDECESSOR_SDK=$predecessor" >> "$GITHUB_ENV"
+          echo "CLAUDE_SMART_TEST_CURRENT_SDK=$RUNNER_TEMP/reflexio-src" >> "$GITHUB_ENV"
 
       # The vendored runtime installs with --no-deps, so plugin/uv.lock must
       # already install every requirement it declares.
