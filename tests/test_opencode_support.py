@@ -819,6 +819,9 @@ def test_public_confirmation_preserves_or_discovers_opencode_path(
         ("commented-empty", ""),
         ("custom-executable", ""),
         ("known-bridge", ""),
+        ("missing-bridge", "cannot be executed"),
+        ("relative-cli", "absolute CLAUDE_SMART_CLI_PATH"),
+        ("relative-opencode", "absolute CLAUDE_SMART_OPENCODE_PATH"),
     ],
 )
 def test_public_setup_checks_opencode_variant_before_publication(
@@ -829,7 +832,7 @@ def test_public_setup_checks_opencode_variant_before_publication(
     from tests.test_install_scripts import _run_public_setup
 
     executable = _fake_opencode_path(tmp_path)
-    declarations = "--standalone" if expected else "--variant string"
+    declarations = "--standalone" if case == "standalone-only" else "--variant string"
     executable.write_text(
         "#!/bin/sh\n"
         'if [ "$1" = run ] && [ "$2" = --help ]; then\n'
@@ -843,18 +846,30 @@ def test_public_setup_checks_opencode_variant_before_publication(
         saved += "CLAUDE_SMART_OPENCODE_VARIANT=high\n"
     if case == "commented-empty":
         saved += 'CLAUDE_SMART_OPENCODE_VARIANT="" # use provider default\n'
-    custom = case in {"custom-executable", "known-bridge"}
+    custom = case in {
+        "custom-executable",
+        "known-bridge",
+        "missing-bridge",
+        "relative-cli",
+    }
     if custom:
-        cli = (
-            executable
-            if case == "custom-executable"
-            else tmp_path / "opencode-claude-compat"
-        )
+        if case == "custom-executable":
+            cli = executable
+        elif case == "relative-cli":
+            cli = Path("./opencode")
+        else:
+            cli = tmp_path / "opencode-claude-compat"
+            if case == "known-bridge":
+                shutil.copy2(executable, cli)
         saved += (
             f"CLAUDE_SMART_CLI_PATH={cli}\nCLAUDE_SMART_LEARNING_PROVIDER=opencode\n"
         )
     selected.write_text(saved)
-    env = {"CLAUDE_SMART_OPENCODE_PATH": str(executable)}
+    env = {
+        "CLAUDE_SMART_OPENCODE_PATH": (
+            "./opencode" if case == "relative-opencode" else str(executable)
+        )
+    }
     if case == "retired-process":
         env["CLAUDE_SMART_OPENCODE_VARIANT"] = "high"
     # The explicit provider choice resets a custom executable by design.

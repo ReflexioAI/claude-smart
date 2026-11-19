@@ -2544,8 +2544,23 @@ function validateGuidedOpenCodeLearning(config, saved) {
     );
   }
   if (!config.model?.startsWith("#")) return;
-  const bridge = /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(config.cliPath || ""));
-  const command = config.cliPath && !bridge ? config.cliPath : resolveOpenCodePath();
+  const selected = config.cliPath;
+  const bridge = /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(selected || ""));
+  if (selected) {
+    if (!isAbsolute(selected)) {
+      throw new Error("Use an absolute CLAUDE_SMART_CLI_PATH to select an OpenCode variant.");
+    }
+    if (!isExecutableFile(selected)) {
+      throw new Error("The configured CLAUDE_SMART_CLI_PATH cannot be executed. Repair that path before updating.");
+    }
+    if (isWindows() && !bridge && !/\.exe$/i.test(selected)) {
+      throw new Error("Select a native OpenCode .exe or the supported compatibility bridge on Windows.");
+    }
+  }
+  const command = selected && !bridge ? selected : resolveOpenCodePath();
+  if (command && !isAbsolute(command)) {
+    throw new Error("Use an absolute CLAUDE_SMART_OPENCODE_PATH to select an OpenCode variant.");
+  }
   const probe = probeLearningCli(command, ["run", "--help"], 64 * 1024);
   const help = probe ? `${probe.stdout}\n${probe.stderr}` : "";
   if (!/^\s*(?:-[A-Za-z0-9],\s*)?--variant(?=[,\s=]|$)/m.test(help)) {
