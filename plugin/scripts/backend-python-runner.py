@@ -97,8 +97,10 @@ def pin_legacy_sqlite_db_path(
                 local_instance, "prepare_local_sqlite_instance", None
             )
         org_id = ORG_ID
-        if prepare_instance is None:
-            # The installed SDK predates persisted instance bindings.
+        if prepare_instance is None or os.environ.get("REFLEXIO_DEFAULT_ORG_ID"):
+            # Old bundles require the selector, and older dotenv templates
+            # can supply the standalone default. The former launcher always
+            # replaced that value for Claude Smart.
             os.environ["REFLEXIO_DEFAULT_ORG_ID"] = org_id
 
         port = (

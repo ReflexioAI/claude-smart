@@ -289,12 +289,15 @@ def test_backend_runner_pins_a_fresh_install(tmp_path: Path) -> None:
 
 
 @requires_vendor
+@pytest.mark.parametrize("stale", [False, True])
 def test_backend_runner_uses_sdk_binding_capability_without_exporting_selector(
-    tmp_path: Path,
+    tmp_path: Path, stale: bool,
 ) -> None:
     env = _env(tmp_path)
     env.pop("REFLEXIO_DEFAULT_ORG_ID")
     env["PYTHON_DOTENV_DISABLED"] = "1"
+    if stale:
+        env["REFLEXIO_DEFAULT_ORG_ID"] = "self-host-org"
     script = """
 import importlib.util
 import os
@@ -308,14 +311,15 @@ local_instance = types.ModuleType("reflexio.local_instance")
 local_instance.__spec__ = importlib.util.spec_from_loader(local_instance.__name__, loader=None)
 sys.modules[local_instance.__name__] = local_instance
 calls = []
+selector = "claude-smart" if "REFLEXIO_DEFAULT_ORG_ID" in os.environ else None
 
 def prepare(org, path):
-    assert "REFLEXIO_DEFAULT_ORG_ID" not in os.environ
+    assert os.environ.get("REFLEXIO_DEFAULT_ORG_ID") == selector
     calls.append((org, path))
 
 def delegate(*args, **kwargs):
     assert calls == [("claude-smart", Path(os.environ["LOCAL_STORAGE_PATH"]) / "reflexio_claude-smart.db")]
-    assert "REFLEXIO_DEFAULT_ORG_ID" not in os.environ
+    assert os.environ.get("REFLEXIO_DEFAULT_ORG_ID") == selector
 
 local_instance.prepare_local_sqlite_instance = prepare
 runner["main"].__globals__["runpy"].run_module = delegate
