@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import json
 import os
 import signal
@@ -11,6 +13,7 @@ from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 from secrets import token_hex
+from tempfile import mkdtemp
 from typing import BinaryIO, TypedDict
 
 
@@ -61,20 +64,80 @@ def open_scoped_file(
         name = parts[-1]
 
         def remove_created() -> None:
-            try:
-                current = os.stat(name, follow_symlinks=False, dir_fd=parent)
-            except FileNotFoundError:
-                if create:
-                    return
-                raise
-            if f"{current.st_dev}:{current.st_ino}" != identity:
-                if create:
-                    return
-                raise ValueError("OpenCode file changed before removal")
-            os.unlink(name, dir_fd=parent)
+            _remove_posix_entry(parent, name, identity, discard_missing=create)
 
         remove.append(remove_created)
     return source, identity
+
+
+def _restore_posix_entry(quarantine: int, parent: int, name: str) -> None:
+    """Move a quarantined substitute back without clobbering a new entry."""
+    library = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        rename = library.renameatx_np
+        no_replace = 0x4  # RENAME_EXCL
+    else:
+        rename = getattr(library, "renameat2", None)
+        if rename is None:
+            raise OSError(
+                errno.ENOTSUP, "Filesystem cannot restore entries without clobbering"
+            )
+        no_replace = 1  # RENAME_NOREPLACE
+    rename.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    rename.restype = ctypes.c_int
+    if rename(quarantine, b"entry", parent, os.fsencode(name), no_replace):
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def _remove_posix_entry(
+    parent: int, name: str, identity: str, *, discard_missing: bool
+) -> None:
+    # Keep temporary state outside the project so a writer to the project
+    # directory cannot replace or populate the quarantine.
+    state = Path.home() / ".claude-smart"
+    state.mkdir(mode=0o700, exist_ok=True)
+    private = Path(mkdtemp(prefix=".scope-removal-", dir=state))
+    retained = False
+    try:
+        quarantine = os.open(private, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            if os.fstat(quarantine).st_dev != os.fstat(parent).st_dev:
+                raise ValueError(
+                    "OpenCode scope removal requires the scope and account directories on the same volume"
+                )
+            try:
+                os.rename(name, "entry", src_dir_fd=parent, dst_dir_fd=quarantine)
+            except FileNotFoundError:
+                if discard_missing:
+                    return
+                raise
+            retained = True
+            moved = os.stat("entry", follow_symlinks=False, dir_fd=quarantine)
+            if f"{moved.st_dev}:{moved.st_ino}" != identity:
+                try:
+                    _restore_posix_entry(quarantine, parent, name)
+                except OSError as error:
+                    raise ValueError(
+                        f"OpenCode file changed before removal; its replacement is preserved at {private / 'entry'}"
+                    ) from error
+                retained = False
+                raise ValueError(
+                    "OpenCode file changed before removal; its replacement was restored"
+                )
+            os.unlink("entry", dir_fd=quarantine)
+            retained = False
+        finally:
+            os.close(quarantine)
+    finally:
+        if not retained:
+            private.rmdir()
 
 
 def _open_regular_file(
@@ -99,7 +162,6 @@ def _open_windows_file(
     rollback_creation: list[Callable[[], None]] | None,
     remove_existing: list[Callable[[], None]] | None,
 ) -> tuple[BinaryIO, str]:
-    import ctypes
     import msvcrt
     from ctypes import wintypes
 
@@ -276,13 +338,13 @@ def _publish(edits: list[_Edit], *, check: bool) -> None:
             if replacement is not None and len(replacement) > _MAX_CONFIG_BYTES:
                 raise ValueError("OpenCode edit exceeds the installer limit")
             if prior is None:
-                if replacement is None:
-                    raise ValueError("OpenCode removal requires a file snapshot")
                 if (
                     edit["identity"] is not None
                     or _snapshot(path)["identity"] is not None
                 ):
                     raise ValueError("OpenCode file appeared before publication")
+                if replacement is None:
+                    continue
                 if check:
                     with ExitStack() as probe:
                         remove_probe = []

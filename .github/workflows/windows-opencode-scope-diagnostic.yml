@@ -21,3 +21,5 @@ jobs:
           node-version: '26'
       - run: python tests/windows_scope_handle_probe.py
       - run: node tests/windows_selector_publication_probe.cjs
+      - shell: bash
+        run: bash tests/windows_slash_command_probe.sh
