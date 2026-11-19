@@ -46,6 +46,8 @@ def clear_reflexio_connection_env(monkeypatch, tmp_path):
         env_config, "CLAUDE_SMART_ENV_PATH", tmp_path / ".claude-smart" / ".env"
     )
     monkeypatch.delenv("REFLEXIO_URL", raising=False)
+    monkeypatch.delenv("DASHBOARD_PORT", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_DASHBOARD_URL", raising=False)
     monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
     monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_READ_ONLY", raising=False)

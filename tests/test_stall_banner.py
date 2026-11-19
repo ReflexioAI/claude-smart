@@ -34,3 +34,9 @@ def test_auth_error_mentions_login():
 
 def test_unknown_reason_returns_empty():
     assert render_banner(reason="something_else", reset_estimate=None) == ""
+
+
+def test_stall_notice_uses_dashboard_listener_port(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_PORT", "4310")
+    text = render_banner(reason="auth_error", reset_estimate=None)
+    assert "Details: http://localhost:4310" in text
