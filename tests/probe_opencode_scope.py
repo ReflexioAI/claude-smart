@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import stat
 import sys
 from collections.abc import Callable
@@ -252,6 +253,7 @@ def _write_bytes(file: BinaryIO, data: bytes) -> None:
     file.write(data)
     file.truncate()
     file.flush()
+    os.fsync(file.fileno())
 
 
 class _Edit(TypedDict):
@@ -309,28 +311,23 @@ def _publish(edits: list[_Edit], *, check: bool) -> None:
             raise ValueError("An OpenCode scope can remove only its loader")
         if check:
             return
-        changed = []
-        remove_created = []
-        try:
+        with ExitStack() as compensation:
             for path, file, prior, replacement in prepared:
                 if file is None:
+                    remove_created = []
                     file, _ = open_scoped_file(
                         path, lifetime, writable=True, rollback_creation=remove_created
                     )
+                    compensation.callback(remove_created[0])
                 else:
                     file.seek(0)
                     if _read_bytes(file) != prior:
                         raise ValueError("OpenCode file changed before publication")
-                    changed.append((file, prior))
+                    compensation.callback(_write_bytes, file, prior)
                 _write_bytes(file, replacement)
             for remove in removals:
                 remove()
-        except (OSError, ValueError):
-            for file, prior in reversed(changed):
-                _write_bytes(file, prior)
-            for remove in reversed(remove_created):
-                remove()
-            raise
+            compensation.pop_all()
 
 
 def main() -> int:
@@ -351,4 +348,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+
+    def _interrupt(signum, _frame):
+        signal.signal(signum, signal.SIG_IGN)
+        raise InterruptedError("OpenCode scope edit interrupted")
+
+    signal.signal(signal.SIGTERM, _interrupt)
+    signal.signal(signal.SIGINT, _interrupt)
     raise SystemExit(main())
