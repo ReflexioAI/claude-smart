@@ -10,4 +10,4 @@ note is provided after the command, it is appended as a neutral User turn
 before extraction so claude-smart can learn from it directly.
 Run the bash command below and show its output verbatim.
 
-!`bash "$HOME/.reflexio/plugin-root/scripts/cli.sh" learn --note "$ARGUMENTS"`
+!`root="$HOME/.reflexio/plugin-root"; if [ ! -d "$root" ]; then IFS= read -r root <"$root.txt" || exit 1; if command -v cygpath >/dev/null 2>&1; then root="$(cygpath -u "$root")"; fi; fi; bash "$root/scripts/cli.sh" learn --note "$ARGUMENTS"`

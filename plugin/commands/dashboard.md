@@ -6,4 +6,4 @@ allowed-tools: Bash(bash:*)
 
 Run this bash command and show its output verbatim:
 
-!`bash "$HOME/.reflexio/plugin-root/scripts/dashboard-open.sh"`
+!`root="$HOME/.reflexio/plugin-root"; if [ ! -d "$root" ]; then IFS= read -r root <"$root.txt" || exit 1; if command -v cygpath >/dev/null 2>&1; then root="$(cygpath -u "$root")"; fi; fi; bash "$root/scripts/dashboard-open.sh"`

@@ -753,7 +753,10 @@ function prepareOpenCodeConfigEdits(configs, sources, snapshot, options) {
   for (const [index, configPath] of configs.entries()) {
     const source = sources[index];
     const plan = planOpenCodePluginConfig(configPath, source.contents, options);
-    if (!plan) continue;
+    if (!plan) {
+      edits.push({ path: configPath, ...source, replacement: source.contents });
+      continue;
+    }
     const backupPath = plan.backup === null ? null : `${configPath}.bak`;
     if (backupPath) {
       const [backup] = snapshot([backupPath]);
@@ -2528,31 +2531,68 @@ function assertOpenCodeRuntimeEntry(pluginRoot) {
       !lstatSync(entry).isFile()) throw new Error(`Prepared OpenCode runtime entry is invalid at ${entry}`);
 }
 
+function openCodeRuntimeMatchesLoader(runtime, path) {
+  try {
+    const [loader] = runScopedOpenCode(runtime.pluginRoot, "snapshot", [path]);
+    if (!isGeneratedOpenCodeV2Loader(loader.contents)) return false;
+    const spec = loader.contents.split("\n")[2].slice("export { default } from ".length, -1);
+    return localOpenCodeFilePath(JSON.parse(spec)) === join(runtime.pluginRoot, "opencode", "dist", "server.mjs");
+  } catch {
+    return false;
+  }
+}
+
+function recoverOpenCodeBinding(binding) {
+  const pending = `${binding}.pending`;
+  if (!pathEntryExists(pending)) return null;
+  try {
+    if (!lstatSync(pending).isFile()) return null;
+    const { path, id } = JSON.parse(readFileSync(pending, "utf8"));
+    if (openCodeRegistrationPath(path) !== binding) return null;
+    const runtime = readGuidedRuntime(id);
+    assertOpenCodeRuntimeEntry(runtime.pluginRoot);
+    return openCodeRuntimeMatchesLoader(runtime, path) ? runtime : null;
+  } catch {
+    return null;
+  }
+}
+
 function openCodeGuidedPluginRoots() {
   try {
-    return readdirSync(GUIDED_OPENCODE_REGISTRATIONS)
-      .filter((name) => /^[0-9a-f]{64}$/.test(name))
-      .map((name) => openCodeGuidedRuntime(join(GUIDED_OPENCODE_REGISTRATIONS, name))?.pluginRoot)
-      .filter(Boolean);
+    const names = readdirSync(GUIDED_OPENCODE_REGISTRATIONS)
+      .filter((name) => /^[0-9a-f]{64}(?:\.pending)?$/.test(name))
+      .map((name) => name.replace(/\.pending$/, ""));
+    return Array.from(new Set(names), (name) => {
+      const binding = join(GUIDED_OPENCODE_REGISTRATIONS, name);
+      return (recoverOpenCodeBinding(binding) || openCodeGuidedRuntime(binding))?.pluginRoot;
+    }).filter(Boolean);
   } catch {
     return [];
   }
 }
 
-function publishOpenCodeRegistration(loader, runtime) {
+function stageOpenCodeRegistration(loader, runtime) {
+  if (!runtime) return;
   const binding = openCodeRegistrationPath(loader);
-  if (!runtime) {
-    rmSync(binding, { force: true });
-    return;
-  }
+  writeOpenCodeBinding(`${binding}.pending`, JSON.stringify({ path: loader, id: runtime.id }));
+}
+
+function writeOpenCodeBinding(binding, contents) {
   mkdirSync(GUIDED_OPENCODE_REGISTRATIONS, { recursive: true, mode: 0o700 });
   const candidate = uniquePackagePath(binding, ".scope");
   try {
-    writeFileSync(candidate, runtime.id, { flag: "wx", mode: 0o600 });
+    writeFileSync(candidate, contents, { flag: "wx", mode: 0o600 });
     renameSync(candidate, binding);
   } finally {
     rmSync(candidate, { force: true });
   }
+}
+
+function publishOpenCodeRegistration(loader, runtime) {
+  const binding = openCodeRegistrationPath(loader);
+  if (runtime) writeOpenCodeBinding(binding, runtime.id);
+  else rmSync(binding, { force: true });
+  rmSync(`${binding}.pending`, { force: true });
 }
 
 function guidedAdapterStage(target, id) {
@@ -2600,7 +2640,7 @@ function observePreviousServices() {
   return { root, status };
 }
 
-function recordGuidedShutdown(id, previous) {
+function recordGuidedShutdown(id, previous, previousSettingsDigest) {
   if (!previous.root) return;
   const status = {};
   for (const [kind, value] of Object.entries(previous.status)) {
@@ -2609,7 +2649,7 @@ function recordGuidedShutdown(id, previous) {
   }
   const draft = uniquePackagePath(GUIDED_PENDING_SHUTDOWN, ".shutdown");
   try {
-    writeFileSync(draft, JSON.stringify({ id, root: previous.root, status }), {
+    writeFileSync(draft, JSON.stringify({ id, root: previous.root, status, previousSettingsDigest }), {
       flag: "wx", mode: 0o600,
     });
     renameSync(draft, GUIDED_PENDING_SHUTDOWN);
@@ -2628,12 +2668,17 @@ async function resumeGuidedShutdown() {
     if (error?.code === "ENOENT") return;
     throw error;
   }
-  const target = readGuidedRuntime(pending.id).pluginRoot;
+  if (typeof pending.id !== "string" || !/^runtime-[A-Za-z0-9]{6}$/.test(pending.id))
+    throw new Error("The pending shared service shutdown record is invalid");
+  const target = join(realpathSync(GUIDED_RUNTIME_DIR), pending.id, "plugin");
   const current = activePluginRoot();
   if (typeof pending.root !== "string" || !isAbsolute(pending.root) ||
       (!pending.status || typeof pending.status !== "object"))
     throw new Error("The pending shared service shutdown record is invalid");
-  if (current === target) {
+  const savedSettings = readEnvSnapshot(CLAUDE_SMART_ENV_PATH);
+  const settingsChanged = pending.previousSettingsDigest &&
+    crypto.createHash("sha256").update(savedSettings.bytes).digest("hex") !== pending.previousSettingsDigest;
+  if (current === target || (current === pending.root && settingsChanged)) {
     if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
       throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
     await stopServicesForInstall(pending.root, null, pending.status);
@@ -2696,6 +2741,7 @@ async function prepareGuidedRuntime(config, options, settings) {
       openCode = planScopedOpenCode(openCodeArgs, directory);
     }
     const previous = observePreviousServices();
+    recordGuidedShutdown(id, previous, settings.request.snapshot.sha256);
     await publishFromPreparedRuntime(pluginRoot, settings, openCode?.loader, { guideWorker: false });
     published = true;
     acceptGuideSettings(settings);
@@ -2807,7 +2853,6 @@ async function runGuidedCommand(command, args) {
           const { root: previousRoot } = preparedRuntime.previous;
           if (activePluginRoot() !== previousRoot)
             throw new Error("Account settings and registrations were saved, but the selected runtime changed. Rerun setup to refresh shared services.");
-          recordGuidedShutdown(preparedRuntime.id, preparedRuntime.previous);
           snapshotInstallState({ preserveFailureMarker: true });
           try {
             // A refused selection must leave the previous services running.
@@ -4815,6 +4860,7 @@ async function runInstallOpenCode(args, settings, runtime, scopedPlan) {
     setup = readInstallPolicy();
   }
   if (!runtime) ensurePluginRoot(pluginRoot);
+  stageOpenCodeRegistration(plan.loader.path, runtime);
   runScopedOpenCode(pluginRoot, "publish", plan.edits);
   // Keep the prepared runtime once a loader can refer to it.
   commitLocalPluginPackages([packageRoot]);
@@ -4993,18 +5039,12 @@ function localOpenCodeFilePath(spec) {
 }
 
 function installedOpenCodeRuntime(args) {
-  try {
-    const path = opencodeV2PluginFile(args);
-    const runtime = openCodeGuidedRuntime(openCodeRegistrationPath(path));
-    if (!runtime) return null;
-    const [loader] = snapshotOpenCodeScope([path]);
-    if (!isGeneratedOpenCodeV2Loader(loader.contents)) return null;
-    const spec = loader.contents.split("\n")[2].slice("export { default } from ".length, -1);
-    return localOpenCodeFilePath(JSON.parse(spec)) === join(runtime.pluginRoot, "opencode", "dist", "server.mjs")
-      ? runtime.pluginRoot : null;
-  } catch {
-    return null;
-  }
+  const path = opencodeV2PluginFile(args);
+  const binding = openCodeRegistrationPath(path);
+  const recovered = recoverOpenCodeBinding(binding);
+  if (recovered) return recovered.pluginRoot;
+  const runtime = openCodeGuidedRuntime(binding);
+  return runtime && openCodeRuntimeMatchesLoader(runtime, path) ? runtime.pluginRoot : null;
 }
 
 function openCodeInstalledVersion(args) {

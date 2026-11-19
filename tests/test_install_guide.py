@@ -1646,3 +1646,28 @@ def test_confirmed_local_endpoint_is_saved_in_runtime_loopback_form(
         timeout=10,
     )
     assert shell.returncode == 0, shell.stdout + shell.stderr
+
+
+def test_installed_claude_slash_commands_follow_selector_file_without_junction(
+    tmp_path,
+):
+    root = tmp_path / "active runtime"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("cli.sh", "dashboard-open.sh"):
+        (scripts / name).write_text('printf "%s\n" "$0"')
+    metadata = tmp_path / ".reflexio"
+    metadata.mkdir()
+    (metadata / "plugin-root.txt").write_text(str(root) + "\n")
+    for command in (REPO_ROOT / "plugin/commands").glob("*.md"):
+        invocation = next(
+            line[2:-1]
+            for line in command.read_text().splitlines()
+            if line.startswith("!`")
+        )
+        env = dict(os.environ, HOME=str(tmp_path), ARGUMENTS="test")
+        result = subprocess.run(
+            ["bash", "-c", invocation], env=env, capture_output=True, text=True
+        )
+        assert result.returncode == 0, (command.name, result.stderr)
+        assert Path(result.stdout.strip()).parent == scripts

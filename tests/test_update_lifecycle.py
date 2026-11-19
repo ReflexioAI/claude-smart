@@ -471,6 +471,11 @@ def test_multihost_preparation_failure_preserves_settings_and_registration(
         None,
         "selection",
         "shutdown",
+        "binding",
+        pytest.param(
+            "interrupted-after-save",
+            marks=pytest.mark.skipif(os.name == "nt", reason="uses POSIX SIGKILL"),
+        ),
         pytest.param(
             "interrupted-selection",
             marks=pytest.mark.skipif(
@@ -517,6 +522,34 @@ if (!process.send) {
 """
         )
         env["NODE_OPTIONS"] = f'--require "{preload}"'
+    elif failure == "interrupted-after-save":
+        preload = tmp_path / "interrupted-after-save.cjs"
+        preload.write_text(
+            """
+const cp = require("node:child_process");
+const spawn = cp.spawn;
+cp.spawn = (command, args, ...rest) => {
+  if (!process.send && args.includes("--host") && args.includes("codex")) process.kill(process.pid, "SIGKILL");
+  return spawn(command, args, ...rest);
+};
+"""
+        )
+        env["NODE_OPTIONS"] = f'--require "{preload}"'
+    elif failure == "binding":
+        preload = tmp_path / "interrupted-binding.cjs"
+        preload.write_text(
+            """
+const fs = require("node:fs");
+const { basename } = require("node:path");
+const rename = fs.renameSync;
+fs.renameSync = (from, to) => {
+  if (to.includes("opencode-registrations") && /^[0-9a-f]{64}$/.test(basename(to)))
+    throw new Error("fixture refused final binding");
+  return rename(from, to);
+};
+"""
+        )
+        env["NODE_OPTIONS"] = f'--require "{preload}"'
     args = [
         node_bin(),
         str(package / "bin/claude-smart.js"),
@@ -551,11 +584,20 @@ if (!process.send) {
         assert "runtime selection failed" in result.stderr
         assert selected.is_dir() and not selected.is_symlink()
         assert all(row["action"] == "status" for row in calls)
-    elif failure == "interrupted-selection":
+    elif failure in {"interrupted-selection", "interrupted-after-save"}:
         assert result.returncode == -signal.SIGKILL
-        assert not selected.is_symlink()
-        text = selected.with_name("plugin-root.txt")
-        assert (Path(text.read_text().strip()) / "scripts/backend-service.sh").is_file()
+        if failure == "interrupted-selection":
+            assert not selected.is_symlink()
+            text = selected.with_name("plugin-root.txt")
+            assert (
+                Path(text.read_text().strip()) / "scripts/backend-service.sh"
+            ).is_file()
+        else:
+            assert selected.resolve() == old_root
+            assert (
+                "http://localhost:9090/"
+                in (tmp_path / ".claude-smart/.env").read_text()
+            )
         records = tmp_path / ".claude-smart/guided-runtimes"
         pending = records / "pending-shutdown.json"
         assert json.loads(pending.read_text())["root"] == str(old_root)
@@ -570,6 +612,33 @@ if (!process.send) {
         assert any(
             row["action"] == "stop" and row["root"] == str(old_root)
             for row in _calls(tmp_path)
+        )
+    elif failure == "binding":
+        assert result.returncode == 1
+        assert (tmp_path / ".opencode/plugins/claude-smart.js").is_file()
+        registrations = (
+            tmp_path / ".claude-smart/guided-runtimes/opencode-registrations"
+        )
+        assert len(list(registrations.glob("*.pending"))) == 1
+        env.pop("NODE_OPTIONS")
+        status = subprocess.run(
+            [
+                node_bin(),
+                str(package / "bin/claude-smart.js"),
+                "status",
+                "--host",
+                "opencode",
+            ],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert status.returncode == 0, status.stderr
+        assert (
+            "Prepared runtime version:" in status.stdout
+            and "not installed" not in status.stdout
         )
     elif failure == "shutdown":
         assert result.returncode == 1
@@ -820,7 +889,9 @@ def test_guided_codex_keeps_settings_when_hook_manifest_is_invalid(
     assert reason in log.read_text()
 
 
-@pytest.mark.parametrize("change", ["appeared", "redirected-ancestor"])
+@pytest.mark.parametrize(
+    "change", ["appeared", "redirected-ancestor", "config-appeared", "config-changed"]
+)
 def test_guided_opencode_recovers_if_scope_changes_after_settings_save(
     tmp_path, change
 ):
@@ -831,6 +902,9 @@ def test_guided_opencode_recovers_if_scope_changes_after_settings_save(
     (outside / "plugins").mkdir(parents=True)
     outside_loader = outside / "plugins/claude-smart.js"
     outside_loader.write_text("outside sentinel")
+    config = tmp_path / "opencode.json"
+    if change == "config-changed":
+        config.write_text('{"theme":"system"}')
     preload = tmp_path / "change-scope.cjs"
     preload.write_text(
         """
@@ -843,6 +917,8 @@ if (process.send) {
       const project = join(process.env.HOME, ".opencode");
       if (process.env.FIXTURE_SCOPE_CHANGE === "appeared") {
         fs.writeFileSync(join(project, "plugins", "claude-smart.js"), "foreign loader", { flag: "wx" });
+      } else if (process.env.FIXTURE_SCOPE_CHANGE.startsWith("config-")) {
+        fs.writeFileSync(join(process.env.HOME, "opencode.json"), '{"plugin":["claude-smart"]}');
       } else {
         fs.renameSync(project, join(process.env.HOME, "previous-scope"));
         fs.symlinkSync(join(process.env.HOME, "unrelated"), project, "junction");
@@ -865,8 +941,11 @@ if (process.send) {
     assert outside_loader.read_text() == "outside sentinel"
     if change == "appeared":
         assert project_loader.read_text() == "foreign loader"
-    else:
+    elif change == "redirected-ancestor":
         assert not (tmp_path / "previous-scope/plugins/claude-smart.js").exists()
+    else:
+        assert json.loads(config.read_text()) == {"plugin": ["claude-smart"]}
+        assert not project_loader.exists()
 
 
 @pytest.mark.parametrize("marker_change", ["owned", "unrelated", "replaced"])
