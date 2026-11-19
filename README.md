@@ -187,6 +187,13 @@ Python repair owner to supply only missing local defaults, with native locking
 and private atomic publication. Existing values, including zero and explicit
 empty values, are preserved. Ordinary standalone self-repair remains supported.
 
+When a guide installs multiple integrations together, it prepares one account
+runtime and saves confirmed settings through that runtime's Python interpreter.
+The selected integrations register against it without rebuilding Python or
+the dashboard. A registration can be retried after settings were saved.
+Previous prepared runtimes are retained for integrations and OpenCode project
+loaders that still reference them.
+
 Dashboard saves use the prepared Python settings owner too. They share the
 repair lock and publish privately with one atomic file replacement. An explicit
 empty value stays present; omitted settings stay unchanged. If relevant settings

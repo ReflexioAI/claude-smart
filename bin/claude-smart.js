@@ -49,7 +49,7 @@ const {
 const http = require("http");
 const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
-const { dirname, isAbsolute, join, relative, resolve, sep } = require("path");
+const { basename, dirname, isAbsolute, join, relative, resolve, sep } = require("path");
 const { fileURLToPath, pathToFileURL } = require("url");
 const guide = require("./install-guide");
 
@@ -78,6 +78,8 @@ const SUPPORTED_HOSTS = [HOST_CLAUDE_CODE, HOST_CODEX, HOST_OPENCODE];
 const DEFAULT_CLAUDE_SMART_HOST = HOST_CLAUDE_CODE;
 const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
+const GUIDED_RUNTIME_DIR = join(CLAUDE_SMART_STATE_DIR, "guided-runtimes");
+const MULTI_HOST_INSTALL = join(GUIDED_RUNTIME_DIR, "guide");
 const INSTALL_FAILURE_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-failed");
 // Written the first time install considers ~/.reflexio/.env, whatever the
 // outcome, so the migration runs once and a later local-mode choice sticks.
@@ -2377,14 +2379,14 @@ async function writeConfirmedSettings(python, args, runtime, environment, reques
   runtime.publishing = false;
 }
 
-async function publishFromPreparedRuntime(pluginRoot, settings, openCodeLoader) {
+async function publishFromPreparedRuntime(pluginRoot, settings, openCodeLoader, { guideWorker = true } = {}) {
   const args = ["-I", "-m", "claude_smart.env_config", "publish-prepared-install"];
   if (isWindows()) {
     requireWindowsEmbeddingBash();
     if (isBundledBackendUrl(settings.request.updates.REFLEXIO_URL))
       args.push("--check-windows-embedding");
   }
-  if (!process.connected)
+  if (guideWorker && !process.connected)
     throw new Error("Installation guide disconnected before settings publication.");
   const runtime = { directory: pluginRoot, children: [] };
   settingsRuntimes.add(runtime);
@@ -2398,7 +2400,7 @@ async function publishFromPreparedRuntime(pluginRoot, settings, openCodeLoader) 
     );
     usePublishedSettings(settings);
     // A lost acknowledgement cannot undo the settings owner's committed save.
-    if (process.connected) process.send("settings-published", () => {});
+    if (guideWorker && process.connected) process.send("settings-published", () => {});
   } finally {
     cleanupSettingsRuntimes();
   }
@@ -2409,7 +2411,7 @@ function reportRuntimePhase(label, settings) {
   if (settings && process.connected) process.send({ phase: label }, () => {});
 }
 
-async function runGuidedHost(command, host, options, label, settings) {
+async function runGuidedHost(command, host, options, label, settings, generation) {
   mkdirSync(join(CLAUDE_SMART_STATE_DIR, "install-logs"), { recursive: true });
   const log = join(
     CLAUDE_SMART_STATE_DIR,
@@ -2442,17 +2444,18 @@ async function runGuidedHost(command, host, options, label, settings) {
         },
         // A committed settings worker and its subprocesses must be able to
         // finish logging and registering even if the guide exits.
-        stdio: settings ? ["ignore", fd, fd, "ipc"] : ["ignore", "pipe", fd],
+        stdio: settings || generation ? ["ignore", fd, fd, "ipc"] : ["ignore", "pipe", fd],
         detached: !isWindows(),
         windowsHide: true,
       });
       trackChild(child, !isWindows());
-      if (settings) {
+      if (settings || generation) {
         child.on("message", (message) => {
-          if (message === "settings-published") acceptSettings();
+          if (settings && message === "settings-published") acceptSettings();
           else if (typeof message?.phase === "string") process.stdout.write(`  ${message.phase}\n`);
         });
-        child.send({ request: settings.request, cliPath: settings.cliPath }, (error) => {
+        const payload = generation ? { generation } : { request: settings.request, cliPath: settings.cliPath };
+        child.send(payload, (error) => {
           if (error && child.connected) child.disconnect();
         });
       }
@@ -2483,7 +2486,7 @@ async function runGuidedHost(command, host, options, label, settings) {
     // guide disconnected before receiving the acknowledgement.
     if (settings && code === 0) acceptSettings();
     if (code !== 0) {
-      if (accepted)
+      if (accepted || generation)
         process.stderr.write("  Account settings were saved. Retry setup to finish registration.\n");
       process.stderr.write(`  ${label} failed. Details: ${log}\n`);
     }
@@ -2525,6 +2528,71 @@ function learningProviderVersion(config) {
   return /^[A-Za-z0-9][A-Za-z0-9 ._()+:/-]{0,159}$/.test(version) ? version : undefined;
 }
 
+function readGuidedRuntime(id) {
+  if (typeof id !== "string" || !/^runtime-[A-Za-z0-9]{6}$/.test(id))
+    throw new Error("Invalid prepared runtime identity");
+  const base = realpathSync(GUIDED_RUNTIME_DIR);
+  const packageRoot = join(base, id);
+  const pluginRoot = join(packageRoot, "plugin");
+  if (realpathSync(packageRoot) !== packageRoot || realpathSync(pluginRoot) !== pluginRoot ||
+      !isExecutableFile(pluginPythonPath(pluginRoot)))
+    throw new Error("Prepared runtime is incomplete");
+  verifyLocalPluginPackage(packageRoot, "guided runtime");
+  return { packageRoot, pluginRoot };
+}
+
+async function prepareGuidedRuntime(config, options, settings) {
+  assertSupportedRuntimePlatform();
+  const openCodeArgs = options.global ? ["--global"] : [];
+  if (config.hosts.includes(HOST_OPENCODE)) assertOpenCodeInstallConfiguration(openCodeArgs);
+  if (config.hosts.includes(HOST_CODEX)) validateCodexPackage();
+
+  mkdirSync(GUIDED_RUNTIME_DIR, { recursive: true, mode: 0o700 });
+  const directory = mkdtempSync(join(realpathSync(GUIDED_RUNTIME_DIR), "runtime-"));
+  const pluginRoot = join(directory, "plugin");
+  // The interpreter embeds its prefix, so build at the final physical path.
+  let published = false;
+  const discard = () => {
+    if (!published) rmSync(directory, { recursive: true, force: true });
+  };
+  process.once("exit", discard);
+  try {
+    cpSync(PACKAGE_ROOT, directory, { recursive: true, filter: shouldCopyPath });
+    verifyLocalPluginPackage(directory, "guided runtime");
+    const tools = await bootstrapPluginRuntime(pluginRoot, { settings });
+    const readOnly = settings.request.updates[CLAUDE_SMART_READ_ONLY_ENV] === "1";
+    if (config.hosts.includes(HOST_CLAUDE_CODE)) {
+      const hooks = renderSharedClaudeHooks(join(pluginRoot, "hooks", "hooks.json"), pluginRoot, readOnly);
+      writeFileSync(join(directory, "claude-hooks.json"), hooks, { flag: "wx" });
+    }
+    if (config.hosts.includes(HOST_CODEX)) {
+      const hooks = renderPreparedCodexHooks(pluginRoot, pinHookNode(tools.node), readOnly, true);
+      writeFileSync(join(directory, "codex-hooks.json"), hooks, { flag: "wx" });
+    }
+    const loader = config.hosts.includes(HOST_OPENCODE)
+      ? assertOpenCodeInstallConfiguration(openCodeArgs)
+      : undefined;
+    snapshotInstallState({ preserveFailureMarker: true });
+    await stopServicesForInstall(null, installStateSnapshot.restartHost);
+    await publishFromPreparedRuntime(pluginRoot, settings, loader, { guideWorker: false });
+    // Once settings are durable, keep the prepared runtime available for
+    // recovery even if the filesystem refuses to update the compatibility root.
+    published = true;
+    acceptGuideSettings(settings);
+    try {
+      forcePluginRoot(pluginRoot);
+    } catch (error) {
+      throw new Error(`Account settings were saved, but runtime selection failed: ${error.message}`, { cause: error });
+    }
+    // Worker failure does not invalidate the shared package or saved settings.
+    commitLocalPluginPackages([]);
+    return basename(directory);
+  } finally {
+    process.removeListener("exit", discard);
+    discard();
+  }
+}
+
 async function runGuidedCommand(command, args) {
   if (args.includes("--help") || args.includes("-h")) {
     printHelp();
@@ -2541,12 +2609,18 @@ async function runGuidedCommand(command, args) {
     `claude-smart ${JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version} · ${command}\n`,
   );
   let deferredSettings;
+  let generation;
   await guide
     .runGuide(command, args, {
       inventory: installInventory,
       saved: () => saved,
-      save: async (config) => {
+      save: async (config, options) => {
         const settings = planInstallSettings(config, captured);
+        if (config.hosts.length > 1) {
+          holdPackageInstallLock(MULTI_HOST_INSTALL, "multi-host guide");
+          generation = await prepareGuidedRuntime(config, options, settings);
+          return;
+        }
         if (config.hosts.length === 1 && [HOST_CODEX, HOST_OPENCODE].includes(config.hosts[0])) {
           deferredSettings = settings;
           return;
@@ -2576,9 +2650,9 @@ async function runGuidedCommand(command, args) {
         }
       },
       runHost: (action, host, options, label) =>
-        runGuidedHost(action, host, options, label, deferredSettings),
+        runGuidedHost(action, host, options, label, deferredSettings, generation),
       finish: async (action, config, results) => {
-        const root = activePluginRoot();
+        const root = generation ? readGuidedRuntime(generation).pluginRoot : activePluginRoot();
         if (!root || !existsSync(join(root, "scripts", "backend-service.sh")))
           return;
         if (action === "uninstall") {
@@ -2595,7 +2669,7 @@ async function runGuidedCommand(command, args) {
           process.stdout.write(
             "\nRefreshing shared services for remaining integrations…\n",
           );
-        } else if (!results.some((result) => result.code === 0)) return;
+        } else if (!generation && !results.some((result) => result.code === 0)) return;
         let setup;
         try {
           setup = readInstallPolicy();
@@ -2613,6 +2687,7 @@ async function runGuidedCommand(command, args) {
       },
     })
     .finally(() => {
+      releasePackageInstallLock(MULTI_HOST_INSTALL);
       // Keypress listeners can keep the TTY alive after the last prompt. Release
       // it only when the whole guide finishes; later prompts still need stdin.
       if (process.stdin.isTTY) process.stdin.destroy();
@@ -3260,7 +3335,7 @@ function restorePublishHooksFromSource(pluginRoot) {
   }
 }
 
-function renderCodexHooksForNode(parsed, pluginRoot, nodePath, readOnly) {
+function renderCodexHooksForNode(parsed, pluginRoot, nodePath, readOnly, { shared = false } = {}) {
   if (readOnly) removePublishHooks(parsed);
   const runner = join(pluginRoot, "scripts", "codex-hook.js");
   const command = (...args) =>
@@ -3282,6 +3357,9 @@ function renderCodexHooksForNode(parsed, pluginRoot, nodePath, readOnly) {
   };
   for (const event of Object.keys(parsed.hooks || {})) {
     for (const block of parsed.hooks[event] || []) {
+      if (shared && Array.isArray(block.hooks)) {
+        block.hooks = block.hooks.filter((hook) => !hook.command?.includes("ensure-plugin-root.sh"));
+      }
       for (const hook of block.hooks || []) {
         hook.command = patchOne(hook.command);
       }
@@ -4164,14 +4242,40 @@ function receivePreparedInstallSettings() {
   });
 }
 
+function renderSharedClaudeHooks(path, pluginRoot, readOnly) {
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  if (readOnly) removePublishHooks(manifest);
+  // Setup was the standalone dependency installer. These hooks only launch
+  // the prepared runtime and do not republish account selection.
+  delete manifest.hooks.Setup;
+  for (const blocks of Object.values(manifest.hooks)) {
+    for (const block of blocks) {
+      block.hooks = block.hooks.flatMap((hook) => {
+        if (hook.command?.includes("ensure-plugin-root.sh")) return [];
+        const match = hook.command?.match(/bash "\$_R\/scripts\/([a-z_-]+\.sh)"(.*)$/);
+        if (!match) throw new Error("Unrecognized bundled Claude hook command");
+        const [, script, args] = match;
+        const file = join(pluginRoot, "scripts", script);
+        const target = (isWindows() ? file.replaceAll("\\", "/") : file).replaceAll("'", "'\\''");
+        return [{ ...hook, command: `bash '${target}'${args}` }];
+      });
+    }
+  }
+  return JSON.stringify(manifest, null, 2) + "\n";
+}
+
 async function runInstall(args, options = {}) {
   const host = parseHost(args);
+  const message = await receivePreparedInstallSettings();
+  const runtime = message?.generation ? readGuidedRuntime(message.generation) : null;
+  const settings = runtime ? null : message;
+  if (runtime && process.connected) process.disconnect();
   if (host === HOST_CODEX) {
-    await runInstallCodex(await receivePreparedInstallSettings());
+    await runInstallCodex(settings, runtime);
     return;
   }
   if (host === HOST_OPENCODE) {
-    await runInstallOpenCode(args, await receivePreparedInstallSettings());
+    await runInstallOpenCode(args, settings, runtime);
     return;
   }
 
@@ -4184,14 +4288,14 @@ async function runInstall(args, options = {}) {
   }
 
   assertSupportedRuntimePlatform();
-  snapshotInstallState();
+  if (!runtime) snapshotInstallState();
   const setup = readInstallPolicy();
   const readOnly = setup.readOnly;
   // Stop services running from the previous root (e.g. a pruned npx dir or an
   // older copy) before the copy under them is replaced.
   const previousRoot = activePluginRoot();
   // Restart with the host that root was running for (e.g. Codex's bridge).
-  if (previousRoot) await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
+  if (!runtime && previousRoot) await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
   let source;
   try {
     source = installLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "Claude Code");
@@ -4211,14 +4315,23 @@ async function runInstall(args, options = {}) {
   try {
     // Claude Code runs a local-directory marketplace plugin in place, so the
     // copy's plugin dir is the one runtime root to bootstrap and report.
-    pluginRoot = await bootstrapClaudeCodeInstall(join(source, "plugin"));
-    restorePublishHooksFromSource(pluginRoot);
-    if (readOnly && prunePublishHooksForReadOnly(pluginRoot)) {
-      process.stdout.write(
-        "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
+    if (runtime) {
+      pluginRoot = runtime.pluginRoot;
+      const adapter = join(source, "plugin");
+      writeFileSync(
+        join(adapter, "hooks", "hooks.json"),
+        readFileSync(join(runtime.packageRoot, "claude-hooks.json")),
       );
+    } else {
+      pluginRoot = await bootstrapClaudeCodeInstall(join(source, "plugin"));
+      restorePublishHooksFromSource(pluginRoot);
+      if (readOnly && prunePublishHooksForReadOnly(pluginRoot)) {
+        process.stdout.write(
+          "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
+        );
+      }
+      forcePluginRoot(pluginRoot);
     }
-    forcePluginRoot(pluginRoot);
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
     markLocalPluginPackagePrepared(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
   } catch (err) {
@@ -4307,41 +4420,47 @@ function validateGuidedCodexHookManifest(manifest) {
   }
 }
 
-async function runInstallCodex(settings) {
+function renderPreparedCodexHooks(pluginRoot, launcher, readOnly, shared = false) {
+  const bundled = join(PACKAGE_ROOT, "plugin", "hooks", "codex-hooks.json");
+  const manifest = JSON.parse(readFileSync(bundled, "utf8"));
+  const hooks = renderCodexHooksForNode(manifest, pluginRoot, launcher, readOnly, { shared });
+  if (shared) validateGuidedCodexHookManifest(JSON.parse(hooks));
+  return hooks;
+}
+
+async function runInstallCodex(settings, runtime) {
   if (!hasCli("codex")) {
     process.stderr.write("error: 'codex' CLI not found on PATH. Install Codex first.\n");
     process.exit(1);
   }
   assertSupportedRuntimePlatform();
-  snapshotInstallState({ preserveFailureMarker: Boolean(settings) });
+  if (!runtime) snapshotInstallState({ preserveFailureMarker: Boolean(settings) });
   let setup = settings ? null : readInstallPolicy();
+  const pluginRoot = runtime?.pluginRoot ?? CODEX_RUNTIME_PLUGIN_ROOT;
 
   validateCodexPackage();
   const previousRoot = existsSync(CODEX_RUNTIME_PLUGIN_ROOT)
     ? CODEX_RUNTIME_PLUGIN_ROOT
     : findCodexPluginRoot();
-  await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
+  if (!runtime) await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
   let renderedHooks;
   try {
-    installLocalPluginPackage(CODEX_RUNTIME_PACKAGE_DIR, "Codex runtime");
-    const nodeRuntime = await ensurePrivateNode();
-    const launcher = pinHookNode(nodeRuntime.node);
-    await bootstrapPluginRuntime(CODEX_RUNTIME_PLUGIN_ROOT, { settings, nodeRuntime });
-    const bundled = join(PACKAGE_ROOT, "plugin", "hooks", "codex-hooks.json");
-    const manifest = JSON.parse(readFileSync(bundled, "utf8"));
-    const readOnly = settings
-      ? settings.request.updates[CLAUDE_SMART_READ_ONLY_ENV] === "1"
-      : setup.readOnly;
-    renderedHooks = renderCodexHooksForNode(
-      manifest,
-      CODEX_RUNTIME_PLUGIN_ROOT,
-      launcher,
-      readOnly,
-    );
-    if (settings) {
-      validateGuidedCodexHookManifest(JSON.parse(renderedHooks));
-      await publishFromPreparedRuntime(CODEX_RUNTIME_PLUGIN_ROOT, settings);
-      setup = readInstallPolicy();
+    if (runtime) {
+      renderedHooks = readFileSync(join(runtime.packageRoot, "codex-hooks.json"), "utf8");
+    } else {
+      installLocalPluginPackage(CODEX_RUNTIME_PACKAGE_DIR, "Codex runtime");
+      const nodeRuntime = await ensurePrivateNode();
+      const launcher = pinHookNode(nodeRuntime.node);
+      await bootstrapPluginRuntime(pluginRoot, { settings, nodeRuntime });
+      const readOnly = settings
+        ? settings.request.updates[CLAUDE_SMART_READ_ONLY_ENV] === "1"
+        : setup.readOnly;
+      renderedHooks = renderPreparedCodexHooks(pluginRoot, launcher, readOnly);
+      if (settings) {
+        validateGuidedCodexHookManifest(JSON.parse(renderedHooks));
+        await publishFromPreparedRuntime(pluginRoot, settings);
+        setup = readInstallPolicy();
+      }
     }
   } catch (err) {
     process.stderr.write(
@@ -4392,7 +4511,7 @@ async function runInstallCodex(settings) {
   let trustedHookCount = 0;
   let trustError = null;
   try {
-    ensurePluginRoot(CODEX_RUNTIME_PLUGIN_ROOT);
+    if (!runtime) ensurePluginRoot(pluginRoot);
     // Only the patched manifest enters the marketplace/cache. Its commands
     // execute the account runtime even when Codex supplies PLUGIN_ROOT=cache.
     writeFileSync(
@@ -4408,7 +4527,7 @@ async function runInstallCodex(settings) {
     }
     // Preparation and publication succeeded; discard the rollback cache only now.
     commitLocalPluginPackages([cacheDir, CODEX_RUNTIME_PACKAGE_DIR]);
-    await startAndReportServices(CODEX_RUNTIME_PLUGIN_ROOT, HOST_CODEX, setup);
+    await startAndReportServices(pluginRoot, HOST_CODEX, setup);
   } catch (err) {
     process.stderr.write(
       `error: automatic Codex plugin install failed: ${err && err.message ? err.message : err}\n`,
@@ -4506,7 +4625,7 @@ function clearRecoveredOpenCodeFailure(pluginRoot, previous) {
   }
 }
 
-async function runInstallOpenCode(args, settings) {
+async function runInstallOpenCode(args, settings, runtime) {
   let setup = settings ? null : readInstallPolicy();
   const prerequisiteError = opencodePrerequisiteError();
   if (prerequisiteError) {
@@ -4514,7 +4633,7 @@ async function runInstallOpenCode(args, settings) {
     process.exit(1);
   }
   assertSupportedRuntimePlatform();
-  snapshotInstallState({ preserveFailureMarker: Boolean(settings) });
+  if (!runtime) snapshotInstallState({ preserveFailureMarker: Boolean(settings) });
   const previousFailure = settings ? readInstallFailureFingerprint() : null;
   const readOnly = settings
     ? settings.request.updates[CLAUDE_SMART_READ_ONLY_ENV] === "1"
@@ -4527,10 +4646,10 @@ async function runInstallOpenCode(args, settings) {
   assertOpenCodeInstallConfiguration(args);
   const installedRoot = join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin");
   const previousRoot = existsSync(installedRoot) ? installedRoot : null;
-  await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
+  if (!runtime) await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
   let packageRoot;
   try {
-    packageRoot = installOpenCodePluginPackage();
+    packageRoot = runtime?.packageRoot ?? installOpenCodePluginPackage();
   } catch (err) {
     process.stderr.write(
       `error: could not prepare claude-smart OpenCode package: ${err && err.message ? err.message : err}\n`,
@@ -4538,7 +4657,7 @@ async function runInstallOpenCode(args, settings) {
     process.exit(1);
   }
   const pluginRoot = join(packageRoot, "plugin");
-  await bootstrapPluginRuntime(pluginRoot, { readOnly, settings });
+  if (!runtime) await bootstrapPluginRuntime(pluginRoot, { readOnly, settings });
   const loader = assertOpenCodeInstallConfiguration(args);
   const prepared = prepareOpenCodeV2Plugin(loader, packageRoot);
   const conflict = () => new Error(
@@ -4556,7 +4675,7 @@ async function runInstallOpenCode(args, settings) {
       setup = readInstallPolicy();
     }
     assertOpenCodeInstallConfiguration(args);
-    ensurePluginRoot(pluginRoot);
+    if (!runtime) ensurePluginRoot(pluginRoot);
     // Keep the legacy migration order. The loader and old config entries
     // must not both be published for the same OpenCode scope.
     v2PluginFile = prepared.publish(() => {
@@ -4738,13 +4857,31 @@ function writeDisabledCodexHookWarnings(configPath = CODEX_CONFIG_PATH) {
   );
 }
 
+function openCodeInstalledVersion(args) {
+  try {
+    const path = opencodeV2PluginFile(args);
+    const loader = readOpenCodeV2Loader(path);
+    if (loader && isGeneratedOpenCodeV2Loader(loader)) {
+      const spec = loader.split("\n")[2].slice("export { default } from ".length, -1);
+      const entry = fileURLToPath(JSON.parse(spec));
+      const root = dirname(dirname(dirname(entry)));
+      if (entry === join(root, "opencode", "dist", "server.mjs"))
+        return codexPluginVersion(root);
+    }
+    // Config-based registrations from before the generated loader.
+    return codexPluginVersion(join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"));
+  } catch {
+    return null;
+  }
+}
+
 function runStatus(args) {
   const host = parseHost(args);
   let installed = null;
   let claudeInstallations = [];
   let inventoryAvailable = false;
   if (host === HOST_OPENCODE) {
-    const version = codexPluginVersion(join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"));
+    const version = openCodeInstalledVersion(args);
     if (version) installed = { version };
     inventoryAvailable = true;
   } else {

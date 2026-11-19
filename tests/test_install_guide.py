@@ -815,7 +815,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     env.pop("CLAUDE_SMART_INSTALL_CHILD", None)
     config_path = home / ".claude-smart" / ".env"
     config_path.unlink()
-    provider_args = ["--provider", "codex"]
+    provider_args = ["--provider", "codex", "--read-only"]
     if provider_mode == "custom":
         env["CLAUDE_SMART_CLI_PATH"] = "/custom/router"
         provider_args = []
@@ -829,12 +829,18 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     }[provider_mode]
     installer = prefix / "bin" / "claude-smart"
     env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
+    (home / "uv.log").unlink(missing_ok=True)
+    hosts = (
+        "claude-code,codex,opencode"
+        if provider_mode == "named"
+        else "claude-code,codex"
+    )
     result = subprocess.run(
         [
             str(installer),
             "install",
             "--host",
-            "claude-code,codex",
+            hosts,
             "--backend",
             "local",
             "--url",
@@ -884,18 +890,28 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     )
     assert (cache / "hooks" / "codex-hooks.json").is_file()
     assert not (cache / ".venv").exists()
-    runtime = home / ".codex" / "claude-smart" / "runtime" / "plugin"
-    assert (runtime / ".venv" / "bin" / "python").is_file()
-    assert (
-        home
-        / ".claude-smart"
-        / "claude-code"
-        / "claude-smart"
-        / "plugin"
-        / ".venv"
-        / "bin"
-        / "python"
-    ).is_file()
+    (runtime,) = list((home / ".claude-smart/guided-runtimes").glob("runtime-*/plugin"))
+    assert (runtime / ".venv/bin/python").is_file()
+    assert (home / ".reflexio/plugin-root").resolve() == runtime.resolve()
+    adapter = home / ".claude-smart/claude-code/claude-smart/plugin"
+    assert not (adapter / ".venv").exists()
+    assert not (home / ".codex/claude-smart/runtime/plugin/.venv").exists()
+    assert (home / "uv.log").read_text().count("uv sync --locked") == 1
+    assert "uv venv" not in (home / "uv.log").read_text()
+    claude_manifest = json.loads((adapter / "hooks/hooks.json").read_text())
+    assert "Setup" not in claude_manifest["hooks"]
+    assert str(runtime.resolve()) in json.dumps(claude_manifest)
+    assert "ensure-plugin-root.sh" not in json.dumps(claude_manifest)
+    assert str(runtime.resolve()) in (cache / "hooks/codex-hooks.json").read_text()
+    if provider_mode == "named":
+        assert "Stop" not in claude_manifest["hooks"]
+        codex_manifest = json.loads((cache / "hooks/codex-hooks.json").read_text())
+        assert "Stop" not in codex_manifest["hooks"]
+        assert "OpenCode: installed" in result.stdout
+        loader = project / ".opencode/plugins/claude-smart.js"
+        assert (
+            runtime.resolve() / "opencode/dist/server.mjs"
+        ).as_uri() in loader.read_text()
     assert "hash-session-start" in (home / ".codex" / "config.toml").read_text()
     result = subprocess.run(
         [str(installer), "update", "--host", "claude-code"],

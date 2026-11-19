@@ -367,6 +367,50 @@ if (typeof process.send === "function") {
     assert expected_error in log.read_text()
 
 
+def test_multihost_preparation_failure_preserves_settings_and_registration(tmp_path):
+    package, old_root, uv, env = _fixture(tmp_path, "codex", running="none")
+    env.pop("CLAUDE_SMART_INSTALL_CHILD")
+    settings = tmp_path / ".claude-smart/.env"
+    original = settings.read_bytes()
+    loader = tmp_path / ".opencode/plugins/claude-smart.js"
+    loader.parent.mkdir(parents=True)
+    original_loader = (
+        "// claude-smart OpenCode V2 loader\n"
+        "// OpenCode V2 auto-loads this directory. Reinstall claude-smart to refresh.\n"
+        'export { default } from "file:///older/runtime/server.mjs";\n'
+    )
+    loader.write_text(original_loader)
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(package / "bin/claude-smart.js"),
+            "update",
+            "--host",
+            "codex,opencode",
+            "--backend",
+            "local",
+            "--provider",
+            "codex",
+            "--read-only",
+            "--yes",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "uv sync failed" in result.stderr
+    assert settings.read_bytes() == original
+    assert loader.read_text() == original_loader
+    assert (tmp_path / ".reflexio/plugin-root").resolve() == old_root.resolve()
+    assert not list((tmp_path / ".claude-smart/guided-runtimes").glob("runtime-*"))
+    assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
+    assert not (tmp_path / "service-calls.jsonl").exists()
+
+
 def _run_guided_node_update(home, package, env, host):
     env = {
         key: value for key, value in env.items() if key != "CLAUDE_SMART_INSTALL_CHILD"
