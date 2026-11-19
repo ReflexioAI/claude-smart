@@ -458,6 +458,9 @@ def test_guided_opencode_loader_stage_and_settings_order(tmp_path, failure):
     directory = tmp_path / ".opencode/plugins"
     directory.mkdir(parents=True)
     loader = directory / "claude-smart.js"
+    legacy = tmp_path / "opencode.json"
+    original_config = b'{"plugin":["claude-smart","keep"]}\n'
+    legacy.write_bytes(original_config)
     if failure == "refresh":
         loader.write_text(
             "// claude-smart OpenCode V2 loader\n"
@@ -481,16 +484,11 @@ fs.openSync = (path, flags, ...args) => {
        (failure === "refresh" && basename(path) === "claude-smart.js" &&
         (flags === "r+" || (typeof flags === "number" && flags & fs.constants.O_RDWR)))))
     throw Object.assign(new Error("fixture denied loader setup"), { code: "EACCES" });
+  if (failure === "publish" && process.send && flags === "wx" &&
+      typeof path === "string" && basename(path) === "claude-smart.js")
+    throw Object.assign(new Error("fixture denied loader publication"), { code: "EACCES" });
   return open(path, flags, ...args);
 };
-if (failure === "publish" && process.send) {
-  const copy = fs.copyFileSync;
-  fs.copyFileSync = (source, target, ...args) => {
-    if (basename(source).startsWith(".claude-smart-loader-"))
-      throw Object.assign(new Error("fixture denied loader publication"), { code: "EACCES" });
-    return copy(source, target, ...args);
-  };
-}
 """
     )
     env["NODE_OPTIONS"] = f'--require "{preload}"'
@@ -500,6 +498,7 @@ if (failure === "publish" && process.send) {
     assert result.returncode != 0
     assert (root / "identity").read_text() == "old"
     assert list(directory.glob(".claude-smart-loader-*.tmp")) == []
+    assert legacy.read_bytes() == original_config
     assert (loader.read_bytes() if loader.exists() else None) == previous_loader
     log = next((tmp_path / ".claude-smart/install-logs").glob("update-opencode-*.log"))
     if failure == "publish":
@@ -515,14 +514,20 @@ if (failure === "publish" && process.send) {
         assert "fixture denied loader setup" in log.read_text()
 
 
-def test_guided_codex_keeps_settings_when_hook_manifest_is_invalid(tmp_path):
+@pytest.mark.parametrize(
+    ("manifest", "reason"),
+    [("{invalid JSON}", "JSON"), ("{}", "missing a command for SessionStart")],
+)
+def test_guided_codex_keeps_settings_when_hook_manifest_is_invalid(
+    tmp_path, manifest, reason
+):
     package, root, uv, env = _fixture(tmp_path, "codex", running="none")
     settings = tmp_path / ".claude-smart/.env"
     before = settings.read_bytes()
     _write_bootstrap_uv(uv, mode="fresh")
     node = tmp_path / ".claude-smart/node/current/bin/node"
     _write_executable(node, f'#!/bin/sh\nexec {shlex.quote(node_bin())} "$@"\n')
-    (package / "plugin/hooks/codex-hooks.json").write_text("{invalid JSON}")
+    (package / "plugin/hooks/codex-hooks.json").write_text(manifest)
 
     result = _run_guided_node_update(tmp_path, package, env, "codex")
 
@@ -532,7 +537,44 @@ def test_guided_codex_keeps_settings_when_hook_manifest_is_invalid(tmp_path):
     assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
     log = next((tmp_path / ".claude-smart/install-logs").glob("update-codex-*.log"))
     assert "could not prepare claude-smart Codex runtime" in log.read_text()
-    assert "JSON" in log.read_text()
+    assert reason in log.read_text()
+
+
+def test_guided_opencode_publishes_generated_bytes_after_staging(tmp_path):
+    package, root, uv, env = _fixture(tmp_path, "opencode", running="none")
+    _write_bootstrap_uv(uv, mode="fresh")
+    preload = tmp_path / "changed-stage.cjs"
+    preload.write_text(
+        """
+const fs = require("node:fs");
+const { join } = require("node:path");
+if (process.send) {
+  const send = process.send;
+  process.send = (message, ...args) => {
+    if (message === "settings-published") {
+      const directory = join(process.env.HOME, ".opencode/plugins");
+      const stage = fs.readdirSync(directory).find(name => name.startsWith(".claude-smart-loader-"));
+      if (!stage) throw new Error("fixture could not locate the stage");
+      fs.writeFileSync(join(directory, stage), "foreign bytes");
+      fs.writeFileSync(join(process.env.HOME, "stage-altered"), "");
+    }
+    return send.call(process, message, ...args);
+  };
+}
+"""
+    )
+    env["NODE_OPTIONS"] = f'--require "{preload}"'
+
+    result = _run_guided_node_update(tmp_path, package, env, "opencode")
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert (tmp_path / "stage-altered").exists()
+    directory = tmp_path / ".opencode/plugins"
+    loader = (directory / "claude-smart.js").read_text()
+    assert loader.endswith(
+        f'export {{ default }} from "{(root / "opencode/dist/server.mjs").as_uri()}";\n'
+    )
+    assert not list(directory.glob(".claude-smart-loader-*.tmp"))
 
 
 @pytest.mark.parametrize("marker_change", ["owned", "unrelated", "replaced"])

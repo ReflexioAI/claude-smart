@@ -236,8 +236,8 @@ of Codex or OpenCode by itself, the installer prepares the runtime and the
 host's hook manifest or loader before saving confirmed settings through the
 prepared interpreter. On Windows, the interpreter checks the staged settings
 for local embedding prerequisites before it replaces the account file. If
-registration fails after the save, the guide reports that the settings were
-saved and that setup can be retried.
+registration fails after the guide confirms the save, it reports that setup
+can be retried with the saved settings.
 
 Codex commits its prepared runtime and hook cache before asking Codex to trust the
 hooks. A later trust failure keeps that new runtime; follow the reported `/hooks`
