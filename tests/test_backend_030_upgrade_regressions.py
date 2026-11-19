@@ -198,6 +198,63 @@ def _run_selected_command(home: Path, args: list[str], metadata: tuple[str, ...]
     )
 
 
+@requires_vendor
+@requires_binding_vendor
+@pytest.mark.parametrize(
+    ("host", "model", "enabled", "expected"),
+    [
+        ("claude-code", "sonnet", "1", "local-cli/claude-code/sonnet"),
+        ("codex", "", "1", "local-cli/codex"),
+        ("opencode", " provider/model ", "true", "local-cli/opencode/provider/model"),
+        ("claude-code", "sonnet", "0", "disabled"),
+    ],
+)
+def test_backend_projects_native_selection_through_worker_reload(
+    tmp_path: Path, host: str, model: str, enabled: str, expected: str
+) -> None:
+    dotenv = tmp_path / ".env"
+    original = f"CLAUDE_SMART_USE_LOCAL_CLI={enabled}\nCLAUDE_SMART_CLI_MODEL={model}\n"
+    dotenv.write_text(original)
+    env = _env(tmp_path)
+    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
+    env.update(
+        REFLEXIO_ENV_FILE=str(dotenv),
+        CLAUDE_SMART_HOST=host,
+        CLAUDE_SMART_USE_LOCAL_CLI=enabled,
+        CLAUDE_SMART_CLI_MODEL=model,
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-c",
+            """import runpy
+import subprocess
+import sys
+
+runner = runpy.run_path(sys.argv[1])
+runner["prepare_native_sdk_environment"]()
+worker = '''
+from reflexio.server.llm._native_model_ref import configured_native_model
+target = configured_native_model()
+print(target.reference if target else "disabled")
+'''
+subprocess.run([sys.executable, "-P", "-c", worker], check=True)
+""",
+            str(RUNNER),
+        ],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=45,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == expected
+    assert dotenv.read_text() == original
+
+
 def _opened_db_path(home: Path) -> str:
     """Open storage the way Reflexio's configurator does and report the file."""
     script = (

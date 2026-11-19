@@ -70,6 +70,10 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | `CLAUDE_SMART_BACKEND_STOP_ON_END` | `0` | Set to `1` to tear down the backend at `SessionEnd` instead of leaving it long-lived. |
 | `REFLEXIO_URL` | `http://localhost:8071/` | Point the plugin at a non-local reflexio backend. |
 
+The bundled backend launcher passes the saved provider and model to the SDK as
+one native model reference. It preserves the CLI opt-out and the saved file
+when the newer SDK loads settings again in worker processes.
+
 ## Embeddings
 
 claude-smart uses one shared local inference daemon by default. Reflexio's launcher owns a local child when `REFLEXIO_EMBEDDING_SERVICE_URL` is unset; an explicit URL attaches to a separately owned process, including when that URL is loopback. Model selection and process ownership are separate: reranking can also use the shared daemon.

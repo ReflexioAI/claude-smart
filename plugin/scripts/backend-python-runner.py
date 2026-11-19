@@ -15,6 +15,45 @@ LEGACY_DB_FILENAME = "reflexio.db"
 ORG_ID = "claude-smart"
 
 
+def prepare_native_sdk_environment() -> None:
+    """Project the plugin's saved learning intent into the selected SDK ABI."""
+    package = find_spec("reflexio")
+    locations = package.submodule_search_locations if package else None
+    if not locations or not any(
+        (Path(location) / "server/llm/_native_model_ref.py").is_file()
+        for location in locations
+    ):
+        return
+
+    from reflexio.env_utils import env_truthy
+
+    enabled_name = "CLAUDE_SMART_USE_LOCAL_CLI"
+    model_name = "CLAUDE_SMART_CLI_MODEL"
+    target_name = "REFLEXIO_NATIVE_CLI_MODEL"
+    intent = os.environ.get(enabled_name, "")
+    selected = os.environ.get(target_name, "")
+    if env_truthy(intent):
+        host = os.environ.get("CLAUDE_SMART_HOST", "").strip() or "claude-code"
+        if host not in {"claude-code", "codex", "opencode"}:
+            raise ValueError("Claude Smart learning provider is unsupported")
+        model = os.environ.get(model_name, "").strip()
+        target = f"local-cli/{host}/{model}" if model else f"local-cli/{host}"
+        if selected.strip() and selected != target:
+            raise ValueError(
+                "Native model conflicts with the saved Claude Smart selection"
+            )
+        os.environ[target_name] = target
+    elif intent.strip() and selected.strip():
+        raise ValueError(
+            "Native model conflicts with disabled Claude Smart CLI learning"
+        )
+
+    # The SDK reloads the same dotenv file in uvicorn children. An empty process
+    # value eclipses any saved legacy selector without changing the user's file.
+    os.environ[enabled_name] = ""
+    os.environ[model_name] = ""
+
+
 def _incomplete_installation(path: Path, org_id: str) -> bool:
     """Recognize a first-install reservation before using the legacy config writer."""
     from reflexio.server.services.storage.sqlite_storage._dataset_path import (
@@ -228,6 +267,7 @@ def main() -> int:
         reflexio_args[:2] == ["services", "start"]
         and os.environ.get("CLAUDE_SMART_BACKEND") == "1"
     ):
+        prepare_native_sdk_environment()
         # Use the same parser and precedence as the bundled launcher, including
         # a forwarded --backend-port; unknown Typer options remain its concern.
         from reflexio.cli.run_services import (
