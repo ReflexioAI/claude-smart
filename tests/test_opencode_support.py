@@ -1588,7 +1588,10 @@ def test_node_installer_removes_legacy_entries_from_every_scope_config(
     assert (bad / "opencode.json").read_text() == '{"plugin": ["claude-smart"]}\n'
 
 
-def test_opencode_legacy_rewrite_uses_same_snapshot_it_parsed(tmp_path: Path):
+@pytest.mark.parametrize("during", ["planning", "final_read"])
+def test_opencode_legacy_rewrite_uses_same_snapshot_it_parsed(
+    tmp_path: Path, during: str
+):
     config = tmp_path / "opencode.json"
     config.write_text('{"plugin":["claude-smart","keep"]}\n')
     installer = REPO_ROOT / "bin" / "claude-smart.js"
@@ -1597,21 +1600,25 @@ def test_opencode_legacy_rewrite_uses_same_snapshot_it_parsed(tmp_path: Path):
         const assert = require("node:assert/strict");
         const config = {json.dumps(str(config))};
         const replacement = '{{"plugin":["claude-smart","concurrent"]}}';
+        const during = {json.dumps(during)};
         const open = fs.openSync;
         const read = fs.readFileSync;
         let observed;
-        let changed = false;
+        let reads = 0;
         fs.openSync = (path, ...args) => {{
           const file = open(path, ...args);
           if (path === config) observed = file;
           return file;
         }};
         fs.readFileSync = (path, ...args) => {{
-          const result = read(path, ...args);
-          if ((path === config || path === observed) && !changed) {{
-            changed = true;
-            fs.writeFileSync(config, replacement);
+          if (path !== observed) return read(path, ...args);
+          reads++;
+          if (reads === 3 && during === "final_read") {{
+            fs.writeFileSync(config + ".editor", replacement);
+            fs.renameSync(config + ".editor", config);
           }}
+          const result = read(path, ...args);
+          if (reads === 1 && during === "planning") fs.writeFileSync(config, replacement);
           return result;
         }};
         const installer = require({json.dumps(str(installer))});

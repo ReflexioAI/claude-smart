@@ -501,9 +501,14 @@ function readOpenCodeConfigFile(path) {
   );
   try {
     const opened = fstatSync(file, { bigint: true });
-    if (!opened.isFile() || !sameFileIdentity(info, opened))
-      throw new Error(`OpenCode config changed while reading ${path}; retry setup.`);
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(readFileSync(file));
+    const conflict = () => new Error(`OpenCode config changed while reading ${path}; retry setup.`);
+    if (!opened.isFile() || !sameFileIdentity(info, opened)) throw conflict();
+    const bytes = readFileSync(file);
+    const current = openCodeConfigStat(path);
+    if (!current || !sameFileIdentity(current, opened) ||
+        current.mtimeNs !== opened.mtimeNs || current.ctimeNs !== opened.ctimeNs ||
+        current.size !== opened.size) throw conflict();
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } finally {
     closeSync(file);
   }
