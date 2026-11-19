@@ -11,7 +11,6 @@ from urllib.parse import quote, urlparse
 from claude_smart import cs_cite, env_config
 
 _DASHBOARD_URL_ENV = "CLAUDE_SMART_DASHBOARD_URL"
-_CITATION_LINK_STYLE_ENV = "CLAUDE_SMART_CITATION_LINK_STYLE"
 _DEFAULT_DASHBOARD_URL = "http://localhost:3001"
 _REFLEXIO_URL_ENV = "REFLEXIO_URL"
 _LOCAL_REFLEXIO_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}  # noqa: S104 -- Host allowlist; no socket is bound.
@@ -129,17 +128,9 @@ def render_with_registry(
     if profile_lines:
         sections.append("### Project preferences")
         sections.extend(profile_lines)
-    instruction = _citation_instruction(
-        os.environ.get("CLAUDE_SMART_CITATIONS", "on"),
-        os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
-    )
+    instruction = _citation_instruction(os.environ.get("CLAUDE_SMART_CITATIONS", "on"))
     if instruction:
         sections.append(instruction)
-    exact_osc8_marker = _exact_osc8_marker_instruction(
-        playbook_entries + profile_entries
-    )
-    if exact_osc8_marker:
-        sections.append(exact_osc8_marker)
     return "\n".join(sections) + "\n", playbook_entries + profile_entries
 
 
@@ -334,15 +325,9 @@ def _assemble_index(
     if profiles:
         sections.append("### Relevant project preferences")
         sections.extend(_index_line(entry) for entry in profiles)
-    instruction = _citation_instruction(
-        os.environ.get("CLAUDE_SMART_CITATIONS", "on"),
-        os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown"),
-    )
+    instruction = _citation_instruction(os.environ.get("CLAUDE_SMART_CITATIONS", "on"))
     if instruction:
         sections.append(instruction)
-    exact_osc8_marker = _exact_osc8_marker_instruction(playbooks + profiles)
-    if exact_osc8_marker:
-        sections.append(exact_osc8_marker)
     return "\n".join(sections) + "\n"
 
 
@@ -352,18 +337,12 @@ def _assemble_compact(
     session_id: str,
 ) -> str:
     """Render the one-line index block for exactly the given entries."""
-    link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
     marker_parts = []
     for entry in playbooks + profiles:
         rule_url = str(entry.get("rule_url") or "")
         if not rule_url:
             continue
-        title = _marker_title(entry)
-        marker_parts.append(
-            _osc8_link(rule_url, title)
-            if link_style == "osc8"
-            else _markdown_link(rule_url, title)
-        )
+        marker_parts.append(_markdown_link(rule_url, _marker_title(entry)))
     sections = [_index_header(session_id)]
     if playbooks:
         label = "Skill" if len(playbooks) == 1 else "Skills"
@@ -404,9 +383,7 @@ def _index_line(entry: dict[str, Any]) -> str:
 def _compact_index_item(entry: dict[str, Any]) -> str:
     label = index_label(entry)
     rule_url = str(entry.get("rule_url") or "")
-    if rule_url and os.environ.get(_CITATION_LINK_STYLE_ENV) == "osc8":
-        label = _osc8_link(rule_url, label)
-    elif rule_url:
+    if rule_url:
         label += f" (open: {rule_url})"
     return f"[cs:{entry['id']}] {label}"
 
@@ -450,24 +427,8 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
     if os.environ.get("CLAUDE_SMART_CITATIONS", "on") == "off":
         return ""
     gate = cs_cite.WHEN_TO_CITE_COMPACT
-    link_style = os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown")
-    if link_style == "osc8" and marker_parts:
-        example = cs_cite.build_marker(marker_parts[0], "osc8")
-        return _remoteize_citation_instruction(
-            f"{gate} If you do, use this final marker format, preserving its "
-            f"hidden OSC 8 terminal link: `{example}`. Include only memories "
-            "that materially changed the response. Use their links above. "
-            "Separate multiple linked memories with the visible ` | ` separator."
-        )
-    if link_style == "osc8":
-        return _remoteize_citation_instruction(
-            f"{gate} If you do, end with `{cs_cite.MARKER_PREFIX}` "
-            "followed by the same linked memory text, then "
-            f"`{cs_cite.marker_attribution('osc8')}` linking to the reflexio "
-            "repo; keep the links, but do not show the URL."
-        )
     if marker_parts:
-        example = cs_cite.build_marker(marker_parts[0], "markdown")
+        example = cs_cite.build_marker(marker_parts[0])
         return _remoteize_citation_instruction(
             f"{gate} If you do, use this final marker format with markdown "
             f"links: `{example}`. Include only memories that materially changed "
@@ -480,10 +441,8 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
     )
 
 
-def _citation_instruction(mode: str, link_style: str) -> str:
-    return _remoteize_citation_instruction(
-        cs_cite.citation_instruction(mode, link_style)
-    )
+def _citation_instruction(mode: str) -> str:
+    return _remoteize_citation_instruction(cs_cite.citation_instruction(mode))
 
 
 def _remoteize_citation_instruction(text: str) -> str:
@@ -493,32 +452,6 @@ def _remoteize_citation_instruction(text: str) -> str:
         return text
     return text.replace("http://localhost:3001/rules/s1-123", playbooks_url).replace(
         "http://localhost:3001/rules/p1-pref", profiles_url
-    )
-
-
-def _exact_osc8_marker_instruction(entries: list[dict[str, Any]]) -> str:
-    if os.environ.get("CLAUDE_SMART_CITATIONS", "on") == "off":
-        return ""
-    if os.environ.get(_CITATION_LINK_STYLE_ENV, "markdown") != "osc8":
-        return ""
-
-    marker_parts = []
-    for entry in entries:
-        rule_url = str(entry.get("rule_url") or "")
-        if not rule_url:
-            continue
-        marker_parts.append(_osc8_link(rule_url, _marker_title(entry)))
-    if not marker_parts:
-        return ""
-
-    example = cs_cite.build_marker(marker_parts[0], "osc8")
-    available = " · ".join(marker_parts)
-    return (
-        "If any listed memory above was used, use this final marker format, "
-        f"preserving its hidden OSC 8 terminal link: `{example}`. Include only "
-        f"memories that materially changed the response. Available linked titles: "
-        f"{available}. "
-        "Separate multiple linked memories with the visible ` | ` separator."
     )
 
 
@@ -720,10 +653,6 @@ def _title_from_content(content: str, limit: int = 80) -> str:
 
 def _one_line(text: str) -> str:
     return " ".join(text.split())
-
-
-def _osc8_link(url: str, label: str) -> str:
-    return f"\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\"
 
 
 def _markdown_link(url: str, label: str) -> str:

@@ -1173,7 +1173,6 @@ def test_user_prompt_injects_compact_context_for_codex(
     monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
     runtime.set_host(runtime.HOST_CODEX)
     assert os.environ["CLAUDE_SMART_HOST"] == "opencode"
-    monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
     _stub_user_prompt_adapter(
         monkeypatch,
         playbooks=[

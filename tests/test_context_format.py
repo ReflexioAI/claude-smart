@@ -209,10 +209,13 @@ def test_render_inline_with_registry_auto_mode_injects_compact_instruction(
     assert "citation block is up to two lines" not in md
 
 
-def test_render_inline_with_registry_default_is_on(monkeypatch) -> None:
-    """No env var set → compact citations are enabled."""
+@pytest.mark.parametrize("legacy_style", [None, "osc8"])
+def test_render_inline_with_registry_uses_markdown_by_default(
+    monkeypatch, legacy_style
+) -> None:
     monkeypatch.delenv("CLAUDE_SMART_CITATIONS", raising=False)
-    monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
+    if legacy_style:
+        monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", legacy_style)
     md, _ = context_format.render_inline_with_registry(
         project_id="demo",
         user_playbooks=[{"content": "x"}],
@@ -220,43 +223,10 @@ def test_render_inline_with_registry_default_is_on(monkeypatch) -> None:
         profiles=[],
     )
     assert cs_cite.CITATION_INSTRUCTION in md
+    assert "\x1b]8;;" not in md
 
 
-def test_render_inline_with_registry_can_inject_osc8_instruction(monkeypatch) -> None:
-    monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", "osc8")
-    md, _ = context_format.render_inline_with_registry(
-        project_id="demo",
-        user_playbooks=[
-            {"content": "Use uv sync after pyproject edits.", "user_playbook_id": 17}
-        ],
-        agent_playbooks=[],
-        profiles=[{"content": "prefers concise answers", "profile_id": "pref"}],
-    )
-    assert "OSC 8 terminal" in md
-    assert "\x1b]8;;http://localhost:3001/rules/s1-123\x1b\\" in md
-    assert "✨ claude-smart rule applied: [verify process state]" not in md
-    assert "Include only memories that materially changed the response." in md
-    assert "Available linked titles:" in md
-    assert (
-        "✨ claude-smart rule applied: "
-        "\x1b]8;;http://localhost:3001/rules/s1-17\x1b\\"
-        "Use uv sync after pyproject edits"
-        "\x1b]8;;\x1b\\"
-    ) in md
-    assert (
-        "Use uv sync after pyproject edits\x1b]8;;\x1b\\ | "
-        "\x1b]8;;http://localhost:3001/rules/p1-pref"
-    ) not in md
-    # Reflexio attribution rides along as an OSC 8 terminal link to the repo.
-    assert (
-        " · \x1b]8;;https://github.com/ReflexioAI/reflexio\x1b\\⚡Reflexio\x1b]8;;\x1b\\"
-    ) in md
-
-
-def test_render_inline_compact_with_registry_is_one_logical_line(
-    monkeypatch,
-) -> None:
-    monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
+def test_render_inline_compact_with_registry_is_one_logical_line() -> None:
     md, registry = context_format.render_inline_compact_with_registry(
         project_id="demo",
         user_playbooks=[
@@ -300,37 +270,6 @@ def test_render_inline_compact_with_registry_is_one_logical_line(
     ) not in md
     assert "visible ` | ` separator" in md
     assert "\x1b]8;;" not in md
-    assert {entry["id"] for entry in registry} == {"s1-17", "p1-pref"}
-
-
-def test_render_inline_compact_with_registry_can_emit_osc8_when_requested(
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", "osc8")
-    md, registry = context_format.render_inline_compact_with_registry(
-        project_id="demo",
-        user_playbooks=[
-            {
-                "content": (
-                    "Run uv sync after pyproject edits. "
-                    "Then run an import smoke test before committing."
-                ),
-                "user_playbook_id": 17,
-            }
-        ],
-        agent_playbooks=[],
-        profiles=[{"content": "prefers concise answers", "profile_id": "pref"}],
-    )
-
-    assert "\x1b]8;;http://localhost:3001/rules/s1-17\x1b\\" in md
-    assert "\x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\" in md
-    assert "Available linked titles:" not in md
-    assert "Include only memories that materially changed the response." in md
-    assert (
-        "Run uv sync after pyproject edits\x1b]8;;\x1b\\ | "
-        "\x1b]8;;http://localhost:3001/rules/p1-pref"
-    ) not in md
-    assert "open: http://localhost:3001/rules/s1-17" not in md
     assert {entry["id"] for entry in registry} == {"s1-17", "p1-pref"}
 
 
@@ -439,26 +378,6 @@ def test_render_inline_compact_uses_remote_reflexio_item_pages(monkeypatch) -> N
     assert "http://localhost:3001/rules/" not in md
 
 
-def test_render_inline_osc8_uses_remote_reflexio_item_pages(monkeypatch) -> None:
-    monkeypatch.setenv("REFLEXIO_URL", "https://www.reflexio.ai/")
-    monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", "osc8")
-
-    md, _ = context_format.render_inline_with_registry(
-        project_id="demo",
-        user_playbooks=[{"content": "use safe git flow", "user_playbook_id": 17}],
-        agent_playbooks=[],
-        profiles=[{"content": "prefers concise answers", "profile_id": "pref/one"}],
-    )
-
-    assert (
-        "\x1b]8;;https://www.reflexio.ai/playbooks?"
-        "resource=user_playbook&user_playbook_id=17\x1b\\"
-    ) in md
-    assert "\x1b]8;;https://www.reflexio.ai/profiles?profile_id=pref%2Fone\x1b\\" in md
-    assert "http://localhost:3001/rules/s1-17" not in md
-    assert "http://localhost:3001/rules/p1-pref" not in md
-
-
 def test_render_inline_with_registry_remote_items_without_real_ids_use_list_pages(
     monkeypatch,
 ) -> None:
@@ -505,12 +424,7 @@ def test_title_from_content_splits_on_sentence_boundary() -> None:
     assert context_format._title_from_content(text) == "First sentence"
 
 
-@pytest.mark.parametrize("link_style", ["markdown", "osc8"])
-def test_compact_citation_guidance_does_not_grow_with_unused_memories(
-    monkeypatch,
-    link_style: str,
-) -> None:
-    monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", link_style)
+def test_compact_citation_guidance_does_not_grow_with_unused_memories() -> None:
     titles = [f"rule-{index}" for index in range(50)]
     assert context_format._compact_citation_instruction(titles) == (
         context_format._compact_citation_instruction(titles[:1])
@@ -557,10 +471,7 @@ def test_index_label_never_splits_a_word_at_the_limit() -> None:
     assert label == "x" * 145 + "…"
 
 
-def test_marker_title_comes_from_index_label_and_keeps_whole_words(
-    monkeypatch,
-) -> None:
-    monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
+def test_marker_title_comes_from_index_label_and_keeps_whole_words() -> None:
     md, _ = context_format.render_inline_compact_with_registry(
         project_id="demo",
         user_playbooks=[
@@ -599,8 +510,7 @@ def test_index_label_for_profile_uses_cut_content() -> None:
     assert len(label) <= context_format.INDEX_LABEL_MAX_CHARS + 1
 
 
-def test_render_inline_index_lines_show_trigger_link_and_loader(monkeypatch) -> None:
-    monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
+def test_render_inline_index_lines_show_trigger_link_and_loader() -> None:
     md, registry = context_format.render_inline_with_registry(
         project_id="demo",
         user_playbooks=[
@@ -648,7 +558,6 @@ def test_render_inline_omits_session_flag_without_session() -> None:
     assert "--session" not in md
 
 
-@pytest.mark.parametrize("link_style", ["markdown", "osc8"])
 @pytest.mark.parametrize(
     ("renderer", "budget"),
     [
@@ -662,11 +571,8 @@ def test_render_inline_omits_session_flag_without_session() -> None:
         ),
     ],
 )
-def test_render_inline_fits_fifteen_items_within_budget(
-    monkeypatch, renderer, budget: int, link_style: str
-) -> None:
+def test_render_inline_fits_fifteen_items_within_budget(renderer, budget: int) -> None:
     """Five hits per collection, all with maximal labels, fit the budget."""
-    monkeypatch.setenv("CLAUDE_SMART_CITATION_LINK_STYLE", link_style)
     md, registry = renderer(
         project_id="demo",
         user_playbooks=_index_hits(5, "user"),

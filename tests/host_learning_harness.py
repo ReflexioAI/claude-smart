@@ -192,8 +192,7 @@ def run_host_learning_happy_path(
         session_id = f"learning-session-{host}"
         prompt = f"Use learned context for {host}"
         citation_marker = cs_cite.build_marker(
-            f"[{host} project skill](http://localhost:3001/rules/s2-user)",
-            "markdown",
+            f"[{host} project skill](http://localhost:3001/rules/s2-user)"
         )
         assistant_text = f"{host} final answer\n\n{citation_marker}"
 
@@ -220,7 +219,7 @@ def run_host_learning_happy_path(
         assert f"{host} shared skill" in additional_context
         assert f"{host} preference" in additional_context
         assert cs_cite.MARKER_PREFIX in additional_context
-        assert cs_cite.marker_attribution("markdown") in additional_context
+        assert cs_cite.marker_attribution() in additional_context
         assert "✨ N claude-smart learnings applied" not in additional_context
 
         post_tool_output = _run_hook(
