@@ -1572,6 +1572,7 @@ def test_codex_marketplace_never_replaces_legacy_claude_runtime(tmp_path, phase)
     [
         ("codex", "opencode", "trust"),
         ("codex", "codex", "trust"),
+        ("opencode", "codex", "binding"),
         pytest.param(
             "opencode",
             "codex",
@@ -1613,6 +1614,18 @@ def test_single_host_retry_recovers_abandoned_multihost_selection(
                 1,
             )
         )
+    elif failure == "binding":
+        preload = tmp_path / "refuse-final-opencode-binding.cjs"
+        preload.write_text("""
+const fs = require("node:fs"), path = require("node:path");
+const rename = fs.renameSync;
+fs.renameSync = (source, target) => {
+  if (target.includes("opencode-registrations") && /^[0-9a-f]{64}$/.test(path.basename(target)))
+    throw new Error("fixture refused final binding");
+  return rename(source, target);
+};
+""")
+        env["NODE_OPTIONS"] = f'--require "{preload}"'
     else:
         preload = tmp_path / "interrupt-before-opencode-registration.cjs"
         preload.write_text("""
@@ -1664,6 +1677,12 @@ fs.renameSync = (source, target) => {
             for row in calls
         )
         assert (predecessor / "identity").read_text() == "old"
+    elif failure == "binding":
+        assert selector.resolve().parent.parent == state
+        assert not receipt.exists()
+        assert (tmp_path / ".opencode/plugins/claude-smart.js").is_file()
+        assert len(list((state / "opencode-registrations").glob("*.pending"))) == 1
+        assert (tmp_path / "fixture-backend-stopped").exists()
     else:
         assert selector.resolve() == predecessor
         pending = json.loads(receipt.read_text())

@@ -2562,6 +2562,15 @@ function recoverOpenCodeBinding(binding, strict = false) {
   }
 }
 
+function preparedOpenCodeRegistration(runtime) {
+  if (!runtime?.openCode) return false;
+  const loader = runtime.openCode.loader.path;
+  const binding = openCodeRegistrationPath(loader);
+  if (recoverOpenCodeBinding(binding)?.id === runtime.id) return true;
+  const committed = openCodeGuidedRuntime(binding);
+  return committed?.id === runtime.id && openCodeRuntimeMatchesLoader(committed, loader);
+}
+
 function openCodeGuidedPluginRoots() {
   try {
     const names = readdirSync(GUIDED_OPENCODE_REGISTRATIONS)
@@ -2835,7 +2844,8 @@ async function runGuidedCommand(command, args) {
       },
       finish: async (action, config, results) => {
         if (action !== "uninstall" &&
-            !results.some((result) => result.code === 0 || result.registered)) return;
+            !results.some((result) => result.code === 0 || result.registered) &&
+            !preparedOpenCodeRegistration(preparedRuntime)) return;
         let root = preparedRuntime ? readGuidedRuntime(preparedRuntime.id).pluginRoot : activePluginRoot();
         if (!root || !existsSync(join(root, "scripts", "backend-service.sh")))
           return;
