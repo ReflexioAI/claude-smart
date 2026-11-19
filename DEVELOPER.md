@@ -74,6 +74,13 @@ The bundled backend launcher passes the saved provider and model to the SDK as
 one native model reference. It preserves the CLI opt-out and the saved file
 when the newer SDK loads settings again in worker processes.
 
+To upgrade an installation that still sets `CLAUDE_SMART_CLI_MODEL`, record the
+effective model, move it to `CLAUDE_SMART_LEARNING_MODEL`, and clear the old
+assignment in the saved environment and shell before starting the backend.
+Keep any existing saved model that already overrode the old value. The launcher
+translates the selected model for predecessor SDKs that still use their old
+process field.
+
 ## Embeddings
 
 claude-smart uses one shared local inference daemon by default. Reflexio's launcher owns a local child when `REFLEXIO_EMBEDDING_SERVICE_URL` is unset; an explicit URL attaches to a separately owned process, including when that URL is loopback. Model selection and process ownership are separate: reranking can also use the shared daemon.

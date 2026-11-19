@@ -5749,6 +5749,49 @@ def test_backend_service_preflight_missing_vendor_preserves_services(
     assert "existing services were not changed" in result.stderr
 
 
+@pytest.mark.parametrize("command", ["preflight", "start"])
+def test_backend_service_reports_retired_model_before_replacement(
+    tmp_path: Path, command: str
+) -> None:
+    port = 22500 + (abs(hash(tmp_path.name)) % 500)
+    plugin_root = _seed_backend_service_test_plugin(tmp_path, port=port)
+    _write_fake_plugin_python(
+        plugin_root,
+        "#!/bin/sh\n"
+        'if [ "${2:-}" = "--check-learning-model" ]; then\n'
+        f'  exec "{sys.executable}" "$@"\n'
+        "fi\n"
+        'case "$1" in *backend-python-runner.py) touch "$HOME/started" ;; esac\n'
+        "exit 0\n",
+    )
+    dotenv = tmp_path / ".claude-smart" / ".env"
+    dotenv.parent.mkdir(exist_ok=True)
+    original = "CLAUDE_SMART_CLI_MODEL=private-retired-model\n"
+    dotenv.write_text(original)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("curl", "lsof", "uv"):
+        status = 22 if name == "curl" else 0
+        _write_executable(bin_dir / name, f"#!/bin/sh\nexit {status}\n")
+
+    result = subprocess.run(
+        ["bash", str(plugin_root / "scripts" / "backend-service.sh"), command],
+        env=_backend_service_env(tmp_path, bin_dir, port),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+
+    report = result.stdout + result.stderr
+    assert result.returncode == (1 if command == "preflight" else 0), report
+    assert "CLAUDE_SMART_CLI_MODEL has been retired" in report
+    assert "CLAUDE_SMART_LEARNING_MODEL" in report
+    assert "private-retired-model" not in report
+    assert not (tmp_path / "started").exists()
+    assert dotenv.read_text() == original
+
+
 def test_backend_start_missing_vendor_does_not_stop_or_spawn(
     tmp_path: Path,
 ) -> None:

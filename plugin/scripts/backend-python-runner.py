@@ -13,22 +13,47 @@ from pathlib import Path
 # The one file every claude-smart release up to 0.2.x stored memory in.
 LEGACY_DB_FILENAME = "reflexio.db"
 ORG_ID = "claude-smart"
+LEGACY_MODEL_ENV = "CLAUDE_SMART_CLI_MODEL"
+LEGACY_MODEL_GUIDANCE = (
+    "CLAUDE_SMART_CLI_MODEL has been retired. Move the effective model to "
+    "CLAUDE_SMART_LEARNING_MODEL and remove the old assignment."
+)
+
+
+def _has_retired_model_setting() -> bool:
+    from dotenv import dotenv_values
+
+    env_file = os.environ.get("REFLEXIO_ENV_FILE", "")
+    saved = (
+        dotenv_values(env_file, interpolate=False)
+        if env_file and Path(env_file).is_file()
+        else {}
+    )
+    return bool(
+        os.environ.get(LEGACY_MODEL_ENV, "").strip()
+        or (saved.get(LEGACY_MODEL_ENV) or "").strip()
+    )
 
 
 def prepare_native_sdk_environment() -> None:
     """Project the plugin's saved learning intent into the selected SDK ABI."""
+    if _has_retired_model_setting():
+        raise ValueError(LEGACY_MODEL_GUIDANCE)
+
+    enabled_name = "CLAUDE_SMART_USE_LOCAL_CLI"
+    model = os.environ.get("CLAUDE_SMART_LEARNING_MODEL", "").strip()
     package = find_spec("reflexio")
     locations = package.submodule_search_locations if package else None
     if not locations or not any(
         (Path(location) / "server/llm/_native_model_ref.py").is_file()
         for location in locations
     ):
+        # Older SDKs take the already selected model through a launch field.
+        os.environ[LEGACY_MODEL_ENV] = model
         return
 
     from reflexio.env_utils import env_truthy
 
-    enabled_name = "CLAUDE_SMART_USE_LOCAL_CLI"
-    model_name = "CLAUDE_SMART_CLI_MODEL"
     target_name = "REFLEXIO_NATIVE_CLI_MODEL"
     intent = os.environ.get(enabled_name, "")
     selected = os.environ.get(target_name, "")
@@ -36,7 +61,6 @@ def prepare_native_sdk_environment() -> None:
         host = os.environ.get("CLAUDE_SMART_HOST", "").strip() or "claude-code"
         if host not in {"claude-code", "codex", "opencode"}:
             raise ValueError("Claude Smart learning provider is unsupported")
-        model = os.environ.get(model_name, "").strip()
         target = f"local-cli/{host}/{model}" if model else f"local-cli/{host}"
         if selected.strip() and selected != target:
             raise ValueError(
@@ -51,7 +75,7 @@ def prepare_native_sdk_environment() -> None:
     # The SDK reloads the same dotenv file in uvicorn children. An empty process
     # value eclipses any saved legacy selector without changing the user's file.
     os.environ[enabled_name] = ""
-    os.environ[model_name] = ""
+    os.environ[LEGACY_MODEL_ENV] = ""
 
 
 def _incomplete_installation(path: Path, org_id: str) -> bool:
@@ -246,6 +270,12 @@ def main() -> int:
         int: Exit status. Returns ``2`` when required argument separators or
             Reflexio CLI arguments are missing.
     """
+    if sys.argv[1:] == ["--check-learning-model"]:
+        if _has_retired_model_setting():
+            print(LEGACY_MODEL_GUIDANCE, file=sys.stderr)
+            return 3
+        return 0
+
     try:
         separator = sys.argv.index("--")
     except ValueError:
