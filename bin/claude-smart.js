@@ -493,8 +493,7 @@ function stripJsonc(text) {
   return out;
 }
 
-function readJsoncObject(path) {
-  const text = existsSync(path) ? readFileSync(path, "utf8") : "{}";
+function readJsoncObject(path, text = existsSync(path) ? readFileSync(path, "utf8") : "") {
   const parsed = JSON.parse(stripJsonc(text || "{}"));
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`OpenCode config ${path} must be a JSON object`);
@@ -812,8 +811,8 @@ function isOpenCodeClaudeSmartSpec(spec) {
   return false;
 }
 
-function readOpenCodePluginConfig(configPath) {
-  const data = readJsoncObject(configPath);
+function readOpenCodePluginConfig(configPath, original) {
+  const data = readJsoncObject(configPath, original);
   for (const field of ["plugins", "plugin"]) {
     if (data[field] !== undefined && !Array.isArray(data[field])) {
       throw new Error(`OpenCode config ${configPath} field "${field}" must be a JSON array`);
@@ -824,7 +823,8 @@ function readOpenCodePluginConfig(configPath) {
 
 function planOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
   const resolvedPluginSpec = install ? pluginSpec || opencodeLocalPluginSpec() : pluginSpec;
-  const data = readOpenCodePluginConfig(configPath);
+  const original = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
+  const data = readOpenCodePluginConfig(configPath, original);
   const current = [
     ...(Array.isArray(data.plugin) ? data.plugin : []),
     ...(Array.isArray(data.plugins) ? data.plugins : []),
@@ -838,7 +838,6 @@ function planOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
         next.some((entry, index) => entry !== data.plugin[index])
       : install && next.length > 0);
   if (!changed) return { changed: false, configPath };
-  const original = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
   const backupPath = original.trim() && original !== stripJsonc(original)
     ? `${configPath}.bak`
     : null;

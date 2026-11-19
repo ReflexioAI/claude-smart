@@ -1588,6 +1588,36 @@ def test_node_installer_removes_legacy_entries_from_every_scope_config(
     assert (bad / "opencode.json").read_text() == '{"plugin": ["claude-smart"]}\n'
 
 
+def test_opencode_legacy_rewrite_uses_same_snapshot_it_parsed(tmp_path: Path):
+    config = tmp_path / "opencode.json"
+    config.write_text('{"plugin":["claude-smart","keep"]}\n')
+    installer = REPO_ROOT / "bin" / "claude-smart.js"
+    script = f"""
+        const fs = require("node:fs");
+        const assert = require("node:assert/strict");
+        const config = {json.dumps(str(config))};
+        const replacement = '{{"plugin":["claude-smart","concurrent"]}}';
+        const read = fs.readFileSync;
+        let changed = false;
+        fs.readFileSync = (path, ...args) => {{
+          const result = read(path, ...args);
+          if (path === config && !changed) {{
+            changed = true;
+            fs.writeFileSync(config, replacement);
+          }}
+          return result;
+        }};
+        const installer = require({json.dumps(str(installer))});
+        assert.throws(() => installer.patchOpenCodePluginConfig(config, {{install:false}}),
+          /OpenCode config changed/);
+        assert.equal(read(config, "utf8"), replacement);
+    """
+    result = _run_node_script(script)
+    if result is None:
+        pytest.skip("node is not installed")
+    assert result.returncode == 0, result.stderr
+
+
 def test_node_installer_reports_unusable_loader_path_as_conflict(
     tmp_path: Path,
 ) -> None:
