@@ -42,10 +42,6 @@ the published npm package ships neither directory.
 
 ## Environment variables
 
-Hook searches use the server's embedding-model cutoff. Remove
-`CLAUDE_SMART_SEARCH_THRESHOLD` from older hook settings. Clients that need an
-explicit threshold can pass it through the Reflexio search API.
-
 Tunables read by the plugin at runtime. Most users don't need to touch these — the confirmed guide saves policy in `~/.claude-smart/.env`, while one Python repair owner supplies genuinely missing local defaults for every host. Hook-side variables must be set in the Claude Code process environment, such as a project `.claude/settings.local.json` `env` block or user-scoped `~/.claude/settings.json`, because hooks do not read Reflexio's backend `.env` file.
 
 | Variable | Default | Purpose |

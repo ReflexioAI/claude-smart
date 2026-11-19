@@ -23,6 +23,10 @@ identity for attribution and context formatting, with explicit Cursor detection
 for Cursor's Claude-compatible hooks. Service startup resolves the background
 learning provider separately from account settings.
 
+Hook searches use the server's embedding-model cutoff. Remove
+`CLAUDE_SMART_SEARCH_THRESHOLD` from older hook settings. Clients that need an
+explicit threshold can pass it through the Reflexio search API.
+
 ## Data flow
 
 ```
