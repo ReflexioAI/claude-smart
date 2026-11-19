@@ -183,6 +183,37 @@ def test_dashboard_proxy_prefers_the_saved_file_over_its_launch_env(
     assert json.loads(out) == {"url": "https://a.example/", "apiKey": "ka"}
 
 
+def test_dashboard_unrelated_save_does_not_materialize_a_timeout(tmp_path: Path) -> None:
+    out = _run_config_module(
+        tmp_path,
+        "const saved = await m.readConfig(); "
+        "await m.writeConfig({...saved, CLAUDE_SMART_READ_ONLY:true}); "
+        "process.stdout.write(JSON.stringify(await m.readConfig()));",
+        {},
+    )
+    assert "CLAUDE_SMART_CLI_TIMEOUT" not in json.loads(out)
+    text = (tmp_path / ".claude-smart/.env").read_text()
+    assert "CLAUDE_SMART_READ_ONLY" in text and "CLAUDE_SMART_CLI_TIMEOUT" not in text
+
+
+def test_dashboard_timeout_save_and_clear_preserve_presence(tmp_path: Path) -> None:
+    out = _run_config_module(
+        tmp_path,
+        "await m.writeConfig({CLAUDE_SMART_CLI_TIMEOUT:'75'}); "
+        "const saved = await m.readConfig(); "
+        "await m.writeConfig({...saved, CLAUDE_SMART_READ_ONLY:true}); "
+        "const kept = await m.readConfig(); "
+        "await m.writeConfig({CLAUDE_SMART_CLI_TIMEOUT:''}); "
+        "const cleared = await m.readConfig(); "
+        "process.stdout.write(JSON.stringify({kept, cleared}));",
+        {},
+    )
+    states = json.loads(out)
+    assert states["kept"]["CLAUDE_SMART_CLI_TIMEOUT"] == "75"
+    assert "CLAUDE_SMART_CLI_TIMEOUT" not in states["cleared"]
+    assert "CLAUDE_SMART_CLI_TIMEOUT" not in (tmp_path / ".claude-smart/.env").read_text()
+
+
 def test_dashboard_save_does_not_turn_off_absent_local_providers(
     tmp_path: Path,
 ) -> None:

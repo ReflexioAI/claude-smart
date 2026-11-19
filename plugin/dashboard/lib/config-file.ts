@@ -67,7 +67,6 @@ export async function readConfig(): Promise<ClaudeSmartConfig> {
     CLAUDE_SMART_READ_ONLY: false,
     CLAUDE_SMART_CLI_PATH: "",
     CLAUDE_SMART_LEARNING_MODEL: "",
-    CLAUDE_SMART_CLI_TIMEOUT: "120",
     CLAUDE_SMART_STATE_DIR: "",
   };
   let text: string;
@@ -81,7 +80,9 @@ export async function readConfig(): Promise<ClaudeSmartConfig> {
     const pair = parseLine(line);
     if (!pair) continue;
     if (!KNOWN.has(pair.key)) continue;
-    if (BOOL_KEYS.has(pair.key)) {
+    if (pair.key === "CLAUDE_SMART_CLI_TIMEOUT" && !pair.value.trim()) {
+      delete out.CLAUDE_SMART_CLI_TIMEOUT;
+    } else if (BOOL_KEYS.has(pair.key)) {
       out[pair.key] = pair.value === "1" || pair.value.toLowerCase() === "true";
     } else {
       out[pair.key] = pair.value;
@@ -231,6 +232,9 @@ export async function writeConfig(
       formatValue(key, value),
     ]),
   );
+  if (updates.CLAUDE_SMART_CLI_TIMEOUT?.trim() === "") {
+    updates.CLAUDE_SMART_CLI_TIMEOUT = null;
+  }
   if (dropUrl) updates.REFLEXIO_URL = null;
   // Connection decisions above depend on these originals too. Compare them
   // under the publisher's lock so a concurrent save cannot mix endpoint keys.
