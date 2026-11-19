@@ -24,7 +24,7 @@ class LearningSelectionError(ValueError):
     """Safe model-selection error to report before replacing a backend."""
 
 
-def _has_retired_model_setting() -> bool:
+def _check_retired_learning_settings(host: str) -> None:
     from dotenv import dotenv_values
 
     env_file = os.environ.get("REFLEXIO_ENV_FILE", "")
@@ -33,16 +33,21 @@ def _has_retired_model_setting() -> bool:
         if env_file and Path(env_file).is_file()
         else {}
     )
-    return bool(
-        os.environ.get(LEGACY_MODEL_ENV, "").strip()
-        or (saved.get(LEGACY_MODEL_ENV) or "").strip()
-    )
+    retired = {LEGACY_MODEL_ENV: LEGACY_MODEL_GUIDANCE}
+    if host == "opencode":
+        retired["CLAUDE_SMART_OPENCODE_VARIANT"] = (
+            "CLAUDE_SMART_OPENCODE_VARIANT has been retired. Use provider/model#variant "
+            "or #variant in CLAUDE_SMART_LEARNING_MODEL, then remove the old setting."
+        )
+    for name, guidance in retired.items():
+        if os.environ.get(name, "").strip() or (saved.get(name) or "").strip():
+            raise LearningSelectionError(guidance)
 
 
 def prepare_native_sdk_environment() -> None:
     """Project the plugin's saved learning intent into the selected SDK ABI."""
-    if _has_retired_model_setting():
-        raise LearningSelectionError(LEGACY_MODEL_GUIDANCE)
+    host = os.environ.get("CLAUDE_SMART_HOST", "").strip() or "claude-code"
+    _check_retired_learning_settings(host)
 
     enabled_name = "CLAUDE_SMART_USE_LOCAL_CLI"
     model = os.environ.get("CLAUDE_SMART_LEARNING_MODEL", "").strip()
@@ -62,7 +67,6 @@ def prepare_native_sdk_environment() -> None:
     intent = os.environ.get(enabled_name, "")
     selected = os.environ.get(target_name, "")
     if env_truthy(intent):
-        host = os.environ.get("CLAUDE_SMART_HOST", "").strip() or "claude-code"
         if host not in {"claude-code", "codex", "opencode"}:
             raise LearningSelectionError(
                 "Claude Smart learning provider is unsupported"

@@ -29,6 +29,11 @@ function main(argv) {
         "CLAUDE_SMART_OPENCODE_MODEL has been retired. Use CLAUDE_SMART_LEARNING_MODEL for the saved OpenCode route, or pass --model when invoking this bridge directly. Clear the old setting.",
       );
     }
+    if (process.env.CLAUDE_SMART_OPENCODE_VARIANT?.trim()) {
+      throw new Error(
+        "CLAUDE_SMART_OPENCODE_VARIANT has been retired. Use provider/model#variant or #variant in CLAUDE_SMART_LEARNING_MODEL, then remove the old setting.",
+      );
+    }
     const prompt = fs.readFileSync(0, "utf8");
     workDir = prepareWorkDir();
     const content = runOpenCode({
@@ -134,13 +139,18 @@ function runOpenCode({ prompt, model, workDir }) {
     "--agent",
     AGENT_NAME,
   ];
-  const selectedModel = opencodeModel(model);
-  if (selectedModel) {
-    args.push("--model", selectedModel);
-  }
-  const variant = (process.env.CLAUDE_SMART_OPENCODE_VARIANT || "").trim();
-  if (variant) {
-    args.push("--variant", variant);
+  const reference = opencodeModel(model);
+  const separator = reference.indexOf("#");
+  if (separator === -1) {
+    if (reference) args.push("--model", reference);
+  } else {
+    const selected = reference.slice(0, separator);
+    const variant = reference.slice(separator + 1);
+    if ((selected && !selected.trim()) || !variant.trim()) {
+      throw new Error("OpenCode model variant reference is invalid");
+    }
+    if (selected) args.push("--model", selected);
+    args.push("--variant=" + variant);
   }
 
   const proc = spawnSync(opencodePath, args, {
@@ -190,7 +200,7 @@ function opencodeModel(modelFromArgs) {
   const explicit = (process.env.CLAUDE_SMART_LEARNING_MODEL || "").trim();
   if (explicit) return explicit;
   const candidate = (modelFromArgs || "").trim();
-  return candidate.includes("/") ? candidate : "";
+  return candidate.includes("/") || candidate.startsWith("#") ? candidate : "";
 }
 
 function parseOpenCodeJson(stdout) {

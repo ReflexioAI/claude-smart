@@ -155,17 +155,21 @@ def test_optimizer_rejects_invalid_payload_without_execution(
     launch.assert_not_called()
 
 
-def test_optimizer_reports_retired_opencode_model_before_launch(
+@pytest.mark.parametrize(
+    "retired_name", ["CLAUDE_SMART_OPENCODE_MODEL", "CLAUDE_SMART_OPENCODE_VARIANT"]
+)
+def test_optimizer_reports_retired_opencode_setting_before_launch(
     monkeypatch: pytest.MonkeyPatch,
+    retired_name: str,
 ) -> None:
     monkeypatch.setenv("CLAUDE_SMART_LEARNING_PROVIDER", "opencode")
     monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/plugin/opencode-claude-compat")
-    monkeypatch.setenv("CLAUDE_SMART_OPENCODE_MODEL", "private-retired-selection")
+    monkeypatch.setenv(retired_name, "private-retired-selection")
     runner = Mock(side_effect=AssertionError("retired setting launched a process"))
     monkeypatch.setattr(optimizer_assistant.subprocess, "run", runner)
     rc, out, err = _run_main(monkeypatch, _payload())
     assert rc == 1 and out == ""
-    assert "CLAUDE_SMART_OPENCODE_MODEL has been retired" in err
+    assert f"{retired_name} has been retired" in err
     assert "CLAUDE_SMART_LEARNING_MODEL" in err
     assert "private-retired-selection" not in err
     runner.assert_not_called()
@@ -177,8 +181,8 @@ def test_optimizer_legacy_opencode_retains_wire_model_variant_and_budget(
 ) -> None:
     monkeypatch.setenv("CLAUDE_SMART_LEARNING_PROVIDER", "opencode")
     monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/plugin/opencode-claude-compat")
-    monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", "provider/model")
-    monkeypatch.setenv("CLAUDE_SMART_OPENCODE_VARIANT", "high")
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", "provider/model#high")
+    monkeypatch.delenv("CLAUDE_SMART_OPENCODE_VARIANT", raising=False)
     monkeypatch.setenv(
         "_REFLEXIO_ASSISTANT_INVOCATION",
         json.dumps(
@@ -203,9 +207,9 @@ def test_optimizer_legacy_opencode_retains_wire_model_variant_and_budget(
         "--output-format",
         "json",
     ]
-    assert cmd[cmd.index("--model") + 1] == "provider/model"
+    assert cmd[cmd.index("--model") + 1] == "provider/model#high"
     assert "--permission-mode" not in cmd and "--tools" not in cmd
-    assert kwargs["env"]["CLAUDE_SMART_OPENCODE_VARIANT"] == "high"
+    assert "CLAUDE_SMART_OPENCODE_VARIANT" not in kwargs["env"]
     assert kwargs["env"]["CLAUDE_SMART_INTERNAL"] == "1"
     assert kwargs["env"]["CLAUDE_CODE_ENTRYPOINT"] == "optimizer"
     assert 300 < kwargs["timeout"] <= 600

@@ -352,20 +352,31 @@ def test_opencode_server_resolves_windows_bash_before_spawning() -> None:
 
 
 @pytest.mark.parametrize(
-    ("requested_model", "saved_model", "retired_model", "expected_model"),
+    (
+        "requested_model",
+        "saved_model",
+        "retired_name",
+        "expected_model",
+        "expected_variant",
+    ),
     [
-        ("claude-sonnet-4-6", None, None, None),
-        ("provider/explicit", None, "", "provider/explicit"),
-        ("provider/explicit", "provider/saved", None, "provider/saved"),
-        ("provider/explicit", None, "provider/retired", None),
+        ("claude-sonnet-4-6", None, None, None, None),
+        ("provider/explicit", None, None, "provider/explicit", None),
+        ("provider/explicit", "provider/saved", None, "provider/saved", None),
+        ("provider/explicit", "provider/saved#high", None, "provider/saved", "high"),
+        ("provider/explicit", "#low", None, None, "low"),
+        ("#medium", None, None, None, "medium"),
+        ("provider/explicit", None, "CLAUDE_SMART_OPENCODE_MODEL", None, None),
+        ("provider/explicit", "#high", "CLAUDE_SMART_OPENCODE_VARIANT", None, None),
     ],
 )
 def test_opencode_cli_bridge_translates_claude_contract(
     tmp_path: Path,
     requested_model: str,
     saved_model: str | None,
-    retired_model: str | None,
+    retired_name: str | None,
     expected_model: str | None,
+    expected_variant: str | None,
 ) -> None:
     if shutil_which_node() is None:
         pytest.skip("node is not installed")
@@ -411,7 +422,16 @@ process.stdout.write(JSON.stringify({{
     env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
     for key, value in (
         ("CLAUDE_SMART_LEARNING_MODEL", saved_model),
-        ("CLAUDE_SMART_OPENCODE_MODEL", retired_model),
+        (
+            "CLAUDE_SMART_OPENCODE_MODEL",
+            "private-retired" if retired_name == "CLAUDE_SMART_OPENCODE_MODEL" else "",
+        ),
+        (
+            "CLAUDE_SMART_OPENCODE_VARIANT",
+            "private-retired"
+            if retired_name == "CLAUDE_SMART_OPENCODE_VARIANT"
+            else "",
+        ),
     ):
         if value is None:
             env.pop(key, None)
@@ -439,10 +459,10 @@ process.stdout.write(JSON.stringify({{
         check=False,
     )
 
-    if retired_model:
+    if retired_name:
         assert result.returncode != 0
-        assert "CLAUDE_SMART_OPENCODE_MODEL has been retired" in result.stderr
-        assert retired_model not in result.stderr
+        assert f"{retired_name} has been retired" in result.stderr
+        assert "private-retired" not in result.stderr
         assert not call_log.exists()
         return
 
@@ -474,6 +494,8 @@ process.stdout.write(JSON.stringify({{
         assert "--model" not in call["args"]
     else:
         assert call["args"][call["args"].index("--model") + 1] == expected_model
+    variant = [arg for arg in call["args"] if arg.startswith("--variant")]
+    assert variant == ([f"--variant={expected_variant}"] if expected_variant else [])
     assert "system text\n\n## Task\nuser prompt" not in call["args"]
     assert call["stdin"] == "system text\n\n## Task\nuser prompt"
 

@@ -260,6 +260,11 @@ def _run_compat_bridge(
             "CLAUDE_SMART_LEARNING_MODEL for the saved OpenCode route and clear "
             "the old setting."
         )
+    if os.environ.get("CLAUDE_SMART_OPENCODE_VARIANT", "").strip():
+        raise OptimizerAssistantError(
+            "CLAUDE_SMART_OPENCODE_VARIANT has been retired. Use provider/model#variant "
+            "or #variant in CLAUDE_SMART_LEARNING_MODEL, then remove the old setting."
+        )
     cmd = [cli_path, "-p", "--output-format", "json"]
     if model:
         cmd.extend(["--model", model])

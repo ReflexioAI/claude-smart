@@ -88,6 +88,12 @@ save `CLAUDE_SMART_LEARNING_MODEL=sonnet` before restarting. The bundled
 launcher also checks for that pin in the inherited native model selector. A
 blank model otherwise delegates to Claude Code's configured default.
 
+For OpenCode, use `provider/model#variant` in `CLAUDE_SMART_LEARNING_MODEL`
+to select both, or `#variant` to keep OpenCode's default model. Move any
+nonblank `CLAUDE_SMART_OPENCODE_VARIANT` into that model reference and remove
+the old setting before restarting.
+
+
 ## Embeddings
 
 claude-smart uses one shared local inference daemon by default. Reflexio's launcher owns a local child when `REFLEXIO_EMBEDDING_SERVICE_URL` is unset; an explicit URL attaches to a separately owned process, including when that URL is loopback. Model selection and process ownership are separate: reranking can also use the shared daemon.

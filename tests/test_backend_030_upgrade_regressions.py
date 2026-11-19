@@ -222,6 +222,31 @@ def test_backend_refuses_retired_model_before_sdk_dispatch(
     assert dotenv.read_bytes() == original
 
 
+@pytest.mark.parametrize("source", ["process", "dotenv"])
+def test_preflight_refuses_retired_opencode_variant_without_rewriting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    path = tmp_path / ".env"
+    old_name = "CLAUDE_SMART_OPENCODE_VARIANT"
+    original = f"{old_name}=private-variant\n" if source == "dotenv" else ""
+    path.write_text(original)
+    monkeypatch.setenv("REFLEXIO_ENV_FILE", str(path))
+    monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", "#high")
+    monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
+    monkeypatch.delenv(old_name, raising=False)
+    if source == "process":
+        monkeypatch.setenv(old_name, "private-variant")
+    prepare = runpy.run_path(str(RUNNER))["prepare_native_sdk_environment"]
+
+    with pytest.raises(ValueError, match=f"{old_name} has been retired") as failure:
+        prepare()
+
+    assert "#variant in CLAUDE_SMART_LEARNING_MODEL" in str(failure.value)
+    assert "private-variant" not in str(failure.value)
+    assert path.read_text() == original
+
+
 @requires_vendor
 @requires_binding_vendor
 @pytest.mark.parametrize("pin_source", ["environment", "stored-role"])
