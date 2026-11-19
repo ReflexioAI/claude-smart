@@ -16,7 +16,6 @@ const SERVICE_SCRIPT_TIMEOUT_MS = parsePositiveInteger(
 );
 const DEFAULT_BACKEND_PORT = parsePort(process.env.BACKEND_PORT, 8071);
 const DEFAULT_EMBEDDING_PORT = parsePort(process.env.EMBEDDING_PORT, 8072);
-const DASHBOARD_PORT = parsePort(process.env.DASHBOARD_PORT, parsePort(process.env.PORT, 3001));
 const LOG_MAX_BYTES = 10000000;
 
 function parsePort(value, fallback) {
@@ -362,8 +361,6 @@ function runServiceScript(root, scriptName, action, logName) {
       CLAUDE_SMART_CLI_PATH: learningCliPath(root),
       BACKEND_PORT: String(DEFAULT_BACKEND_PORT),
       EMBEDDING_PORT: String(DEFAULT_EMBEDDING_PORT),
-      DASHBOARD_PORT: String(DASHBOARD_PORT),
-      PORT: String(DASHBOARD_PORT),
       REFLEXIO_URL: readBackendUrl(),
     },
     stdio: ["ignore", "pipe", "pipe"],

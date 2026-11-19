@@ -19,7 +19,7 @@ BACKEND_LOG="$STATE_DIR/backend.log"
 DASHBOARD_LOG="$STATE_DIR/dashboard.log"
 DASHBOARD_UNAVAILABLE="$(claude_smart_dashboard_unavailable_marker)"
 BACKEND_PORT="${BACKEND_PORT:-8071}"
-DASHBOARD_PORT="${DASHBOARD_PORT:-${PORT:-3001}}"
+dashboard_port="$(claude_smart_dashboard_port)"
 
 # Capture start-command output so we can surface fatal errors (e.g. uv/npm
 # missing, port collisions, .next not built) rather than silently swallow
@@ -77,7 +77,7 @@ if [ "$dashboard_status" = "not running" ]; then
     if claude_smart_pid_alive_file "$BUILD_PID_FILE"; then
         echo "dashboard: still building (first-run cost, ~1-2 min). Re-run /claude-smart:dashboard in a minute."
     else
-        echo "ERROR: dashboard failed to start on http://localhost:$DASHBOARD_PORT"
+        echo "ERROR: dashboard failed to start on http://localhost:$dashboard_port"
         [ -n "$dashboard_start_out" ] && echo "$dashboard_start_out"
         if [ -f "$DASHBOARD_UNAVAILABLE" ]; then
             echo ""
@@ -94,7 +94,7 @@ if [ "$failed" = "1" ]; then
     exit 1
 fi
 
-URL="http://localhost:$DASHBOARD_PORT"
+URL="http://localhost:$dashboard_port"
 PY_BIN=$(claude_smart_resolve_python || true)
 if [ -n "$PY_BIN" ] && "$PY_BIN" -m webbrowser "$URL"; then
     echo "Opened $URL"

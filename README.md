@@ -349,6 +349,8 @@ https://github.com/user-attachments/assets/ed84d73a-d5b7-4a0d-ab2c-f2c060c3f276
 
 A web UI for browsing session histories, inspecting preferences, and editing project-specific and shared skills. The local backend binds to `127.0.0.1:8071` by default. The dashboard auto-starts in both local and managed mode at **http://localhost:3001**. Its data-source selector defaults to your saved runtime mode; managed mode reads cloud totals without starting a local backend. Or run `/claude-smart:dashboard` in Claude Code to open it in your browser. In Codex, run `bash ~/.reflexio/plugin-root/scripts/dashboard-open.sh`.
 
+Export `DASHBOARD_PORT` in the environment that launches Claude Smart to use a different port. If your launcher previously set `PORT` for Claude Smart, rename it to `DASHBOARD_PORT`.
+
 <p align="center">
   <img src="assets/preferences_dashboard.png" alt="Preferences dashboard" width="49%">
   <img src="assets/skills_dashboard.png" alt="Skills dashboard" width="49%">

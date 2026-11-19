@@ -29,7 +29,7 @@ claude_smart_prepend_node_bins
 claude_smart_source_reflexio_env
 
 BACKEND_PORT="${BACKEND_PORT:-8071}"
-PORT="${DASHBOARD_PORT:-${PORT:-3001}}"
+dashboard_port="$(claude_smart_dashboard_port)"
 export BACKEND_PORT
 claude_smart_derive_reflexio_url_from_backend_port
 
@@ -79,7 +79,7 @@ kill_recorded_dashboard() {
 # stop/uninstall can safely reap them without touching foreign listeners.
 marker_responds() {
   command -v curl >/dev/null 2>&1 || return 1
-  curl -sfI --connect-timeout 1 --max-time 2 "http://127.0.0.1:$PORT/api/health" 2>/dev/null \
+  curl -sfI --connect-timeout 1 --max-time 2 "http://127.0.0.1:$dashboard_port/api/health" 2>/dev/null \
     | grep -qi '^x-claude-smart-dashboard:'
 }
 
@@ -88,7 +88,7 @@ marker_responds() {
 stop_dashboard_listener() {
   marker_responds || return 0
   kill_recorded_dashboard
-  claude_smart_reap_port_listeners_matching "$PORT" \
+  claude_smart_reap_port_listeners_matching "$dashboard_port" \
     '*next-server*' \
     '*next*start*' \
     '*node*next*' \
@@ -98,11 +98,11 @@ stop_dashboard_listener() {
 # True if *something* is listening on the port, regardless of marker.
 port_occupied() {
   if command -v curl >/dev/null 2>&1; then
-    curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$PORT" 2>/dev/null && return 0
+    curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$dashboard_port" 2>/dev/null && return 0
     # curl with -sfI against a 404/405 still indicates "something answered".
     # Use a connect-only probe as a secondary signal.
   fi
-  (echo >"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
+  (echo >"/dev/tcp/127.0.0.1/$dashboard_port") 2>/dev/null
 }
 
 resolve_next_bin() {
@@ -137,9 +137,9 @@ spawn_dashboard() {
   fi
   cd "$DASHBOARD_DIR"
   export CLAUDE_SMART_DASHBOARD_WORKSPACE="$WORKSPACE_CWD"
-  # Invoke Next directly so custom DASHBOARD_PORT/PORT values are honored
+  # Invoke Next directly so custom DASHBOARD_PORT values are honored
   # without relying on package.json's fixed start script.
-  CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached "$NEXT_BIN" start -p "$PORT" -H 127.0.0.1 >>"$LOG_FILE" 2>&1
+  CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached "$NEXT_BIN" start -p "$dashboard_port" -H 127.0.0.1 >>"$LOG_FILE" 2>&1
   dash_pid=$!
   echo "$dash_pid" > "$PID_FILE"
 }
@@ -186,7 +186,7 @@ case "$CMD" in
     trap 'claude_smart_service_unlock "dashboard"' EXIT
     if marker_responds; then claude_smart_clear_dashboard_unavailable; emit_ok; exit 0; fi
     if port_occupied; then
-      echo "[claude-smart] dashboard: port $PORT held by another process; skipping" >>"$LOG_FILE"
+      echo "[claude-smart] dashboard: port $dashboard_port held by another process; skipping" >>"$LOG_FILE"
       emit_ok; exit 0
     fi
     if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
@@ -248,7 +248,7 @@ case "$CMD" in
         if marker_responds; then
           claude_smart_clear_dashboard_unavailable
         else
-          claude_smart_write_dashboard_unavailable "dashboard process exited and port $PORT is now held by a non-claude-smart listener; see $LOG_FILE"
+          claude_smart_write_dashboard_unavailable "dashboard process exited and port $dashboard_port is now held by a non-claude-smart listener; see $LOG_FILE"
         fi
       else
         echo "[claude-smart] dashboard: first start exited before readiness; retrying once" >>"$LOG_FILE"
@@ -256,12 +256,12 @@ case "$CMD" in
           if wait_for_dashboard_marker 5; then
             claude_smart_clear_dashboard_unavailable
           else
-            claude_smart_write_dashboard_unavailable "dashboard process spawned but did not respond on http://127.0.0.1:$PORT within 5s; see $LOG_FILE"
+            claude_smart_write_dashboard_unavailable "dashboard process spawned but did not respond on http://127.0.0.1:$dashboard_port within 5s; see $LOG_FILE"
           fi
         fi
       fi
     else
-      claude_smart_write_dashboard_unavailable "dashboard process spawned but did not respond on http://127.0.0.1:$PORT within 5s; see $LOG_FILE"
+      claude_smart_write_dashboard_unavailable "dashboard process spawned but did not respond on http://127.0.0.1:$dashboard_port within 5s; see $LOG_FILE"
     fi
     emit_ok
     ;;
@@ -284,7 +284,7 @@ case "$CMD" in
     emit_ok
     ;;
   status)
-    if marker_responds; then echo "running on http://localhost:$PORT"; else echo "not running"; fi
+    if marker_responds; then echo "running on http://localhost:$dashboard_port"; else echo "not running"; fi
     ;;
   *)
     emit_ok
