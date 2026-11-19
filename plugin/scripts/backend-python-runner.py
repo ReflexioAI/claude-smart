@@ -20,6 +20,10 @@ LEGACY_MODEL_GUIDANCE = (
 )
 
 
+class LearningSelectionError(ValueError):
+    """Safe model-selection error to report before replacing a backend."""
+
+
 def _has_retired_model_setting() -> bool:
     from dotenv import dotenv_values
 
@@ -38,7 +42,7 @@ def _has_retired_model_setting() -> bool:
 def prepare_native_sdk_environment() -> None:
     """Project the plugin's saved learning intent into the selected SDK ABI."""
     if _has_retired_model_setting():
-        raise ValueError(LEGACY_MODEL_GUIDANCE)
+        raise LearningSelectionError(LEGACY_MODEL_GUIDANCE)
 
     enabled_name = "CLAUDE_SMART_USE_LOCAL_CLI"
     model = os.environ.get("CLAUDE_SMART_LEARNING_MODEL", "").strip()
@@ -60,15 +64,27 @@ def prepare_native_sdk_environment() -> None:
     if env_truthy(intent):
         host = os.environ.get("CLAUDE_SMART_HOST", "").strip() or "claude-code"
         if host not in {"claude-code", "codex", "opencode"}:
-            raise ValueError("Claude Smart learning provider is unsupported")
+            raise LearningSelectionError(
+                "Claude Smart learning provider is unsupported"
+            )
+        if (
+            host == "claude-code"
+            and not model
+            and (selected == "local-cli/claude-code/sonnet" or _has_saved_sonnet_pin())
+        ):
+            raise LearningSelectionError(
+                "An explicit Sonnet pin needs CLAUDE_SMART_LEARNING_MODEL=sonnet. "
+                "Save that learning model before restarting."
+            )
         target = f"local-cli/{host}/{model}" if model else f"local-cli/{host}"
         if selected.strip() and selected != target:
-            raise ValueError(
-                "Native model conflicts with the saved Claude Smart selection"
+            raise LearningSelectionError(
+                "Native model conflicts with the saved Claude Smart selection. "
+                "Make REFLEXIO_NATIVE_CLI_MODEL agree with CLAUDE_SMART_LEARNING_MODEL."
             )
         os.environ[target_name] = target
     elif intent.strip() and selected.strip():
-        raise ValueError(
+        raise LearningSelectionError(
             "Native model conflicts with disabled Claude Smart CLI learning"
         )
 
@@ -76,6 +92,21 @@ def prepare_native_sdk_environment() -> None:
     # value eclipses any saved legacy selector without changing the user's file.
     os.environ[enabled_name] = ""
     os.environ[LEGACY_MODEL_ENV] = ""
+
+
+def _has_saved_sonnet_pin() -> bool:
+    # Use the SDK's read-only historical decoder. Startup owns config upgrades.
+    from reflexio.cli.paths import reflexio_home
+    from reflexio.config_env import StoredConfigurationError
+    from reflexio.config_file import LocalConfigFile
+
+    config = reflexio_home() / "configs" / f"config_{ORG_ID}.json"
+    try:
+        document = LocalConfigFile(config).read_document_for_conversion()
+    except (FileNotFoundError, StoredConfigurationError):
+        return False
+    roles = document.get("llm_config")
+    return isinstance(roles, dict) and "local-cli/claude-code/sonnet" in roles.values()
 
 
 def _incomplete_installation(path: Path, org_id: str) -> bool:
@@ -271,8 +302,10 @@ def main() -> int:
             Reflexio CLI arguments are missing.
     """
     if sys.argv[1:] == ["--check-learning-model"]:
-        if _has_retired_model_setting():
-            print(LEGACY_MODEL_GUIDANCE, file=sys.stderr)
+        try:
+            prepare_native_sdk_environment()
+        except LearningSelectionError as exc:
+            print(exc)
             return 3
         return 0
 

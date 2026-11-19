@@ -81,6 +81,11 @@ Keep any existing saved model that already overrode the old value. The launcher
 translates the selected model for predecessor SDKs that still use their old
 process field.
 
+If a native Claude Code role already pins `local-cli/claude-code/sonnet`,
+save `CLAUDE_SMART_LEARNING_MODEL=sonnet` before restarting. The bundled
+launcher also checks for that pin in the inherited native model selector. A
+blank model otherwise delegates to Claude Code's configured default.
+
 ## Embeddings
 
 claude-smart uses one shared local inference daemon by default. Reflexio's launcher owns a local child when `REFLEXIO_EMBEDDING_SERVICE_URL` is unset; an explicit URL attaches to a separately owned process, including when that URL is loopback. Model selection and process ownership are separate: reranking can also use the shared daemon.

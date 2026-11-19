@@ -224,6 +224,54 @@ def test_backend_refuses_retired_model_before_sdk_dispatch(
 
 @requires_vendor
 @requires_binding_vendor
+@pytest.mark.parametrize("pin_source", ["environment", "stored-role"])
+def test_learning_preflight_preserves_explicit_sonnet_pin(
+    tmp_path: Path, pin_source: str
+) -> None:
+    env = _env(tmp_path)
+    env.pop("CLAUDE_SMART_CLI_MODEL", None)
+    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
+    env.update(
+        REFLEXIO_ENV_FILE=str(tmp_path / ".env"),
+        CLAUDE_SMART_HOST="claude-code",
+        CLAUDE_SMART_USE_LOCAL_CLI="1",
+        CLAUDE_SMART_LEARNING_MODEL="",
+    )
+    pin = "local-cli/claude-code/sonnet"
+    config = _config_file(tmp_path)
+    original = json.dumps({"llm_config": {"generation_model_name": pin}})
+    if pin_source == "environment":
+        env["REFLEXIO_NATIVE_CLI_MODEL"] = pin
+    else:
+        config.parent.mkdir(parents=True)
+        config.write_text(original)
+
+    def preflight() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-P", str(RUNNER), "--check-learning-model"],
+            env=env,
+            cwd=tmp_path,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+
+    refused = preflight()
+    assert refused.returncode == 3, refused.stderr
+    assert "CLAUDE_SMART_LEARNING_MODEL=sonnet" in refused.stdout
+
+    env["CLAUDE_SMART_LEARNING_MODEL"] = "sonnet"
+    repaired = preflight()
+    assert repaired.returncode == 0, repaired.stderr
+    if pin_source == "stored-role":
+        assert config.read_text() == original
+    else:
+        assert not config.exists()
+
+
+@requires_vendor
+@requires_binding_vendor
 @pytest.mark.parametrize(
     ("host", "model", "enabled", "expected"),
     [
