@@ -55,6 +55,7 @@ _APPLIED_LINK_LINE_RE = re.compile(
     r"(?im)^\s*✨\s+(?:Applied|claude-smart rules? applied):\s+(?P<body>.+?)\s*$"
 )
 _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\((?P<url>[^)]+)\)")
+# Historical transcripts can contain terminal hyperlinks.
 _OSC8_URL_RE = re.compile(r"\x1b\]8;[^\x07\x1b]*;(?P<url>[^\x07\x1b]+)(?:\x07|\x1b\\)")
 _RAW_DASHBOARD_URL_RE = re.compile(
     r"(?P<url>(?:https?://[^\s),\x1b\\]+)?/"
@@ -64,7 +65,7 @@ _RAW_DASHBOARD_URL_RE = re.compile(
 )
 
 # The single "when to cite" decision, shared across every render path so the
-# bar can't drift between markdown / OSC8 / compact-Codex variants. The
+# bar stays consistent across detailed and compact rendering. The
 # counterfactual is the deciding test; relatedness alone is not enough.
 WHEN_TO_CITE = (
     "When to cite: add a marker only when a listed `[cs:…]` item materially "
@@ -93,51 +94,22 @@ MARKER_PREFIX = "✨ claude-smart rule applied:"
 _ATTRIBUTION_LABEL = "⚡Reflexio"
 
 
-def _osc8_link(url: str, text: str) -> str:
-    """Wrap ``text`` in an OSC 8 terminal hyperlink pointing at ``url``."""
-    return f"\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\"
-
-
-def marker_attribution(link_style: str = "markdown") -> str:
-    """Return the trailing ``· ⚡Reflexio`` attribution, linked to the repo.
-
-    Args:
-        link_style (str): ``"markdown"`` for a markdown link, or ``"osc8"`` for
-            a terminal-native hyperlink. Unknown values fall back to markdown.
-
-    Returns:
-        str: The attribution segment, beginning with a leading separator.
-    """
-    if link_style == "osc8":
-        return f" · {_osc8_link(REFLEXIO_REPO_URL, _ATTRIBUTION_LABEL)}"
+def marker_attribution() -> str:
+    """Return the linked Reflexio attribution with its leading separator."""
     return f" · [{_ATTRIBUTION_LABEL}]({REFLEXIO_REPO_URL})"
 
 
-def build_marker(body: str, link_style: str = "markdown") -> str:
-    """Build the full citation marker line, including the Reflexio attribution.
-
-    Single source of truth for the marker line so the prefix and attribution
-    cannot drift across the markdown / OSC 8 / compact render paths.
-
-    Args:
-        body (str): The linked memory title(s) — already formatted as markdown
-            or OSC 8 links, joined with `` | `` for multiple items.
-        link_style (str): ``"markdown"`` or ``"osc8"``; selects the attribution
-            link form.
-
-    Returns:
-        str: ``✨ claude-smart rule applied: <body> · ⚡Reflexio``.
-    """
-    return f"{MARKER_PREFIX} {body}{marker_attribution(link_style)}"
+def build_marker(body: str) -> str:
+    """Build the citation marker from Markdown-linked memory titles."""
+    return f"{MARKER_PREFIX} {body}{marker_attribution()}"
 
 
 MARKDOWN_EXAMPLE_ONE = build_marker(
-    "[verify process state](http://localhost:3001/rules/s1-123)", "markdown"
+    "[verify process state](http://localhost:3001/rules/s1-123)"
 )
 _MARKDOWN_EXAMPLE_MULTI = build_marker(
     "[git safety](http://localhost:3001/rules/s1-123) | "
-    "[brief answer preference](http://localhost:3001/rules/p1-pref)",
-    "markdown",
+    "[brief answer preference](http://localhost:3001/rules/p1-pref)"
 )
 _MARKDOWN_MARKER_PARAGRAPH = (
     "How to format: use human-readable linked titles, not raw ids. "
@@ -153,31 +125,10 @@ _MARKDOWN_MARKER_PARAGRAPH = (
     "`✨ 1 claude-smart learning applied [cs:...]` marker format._"
 )
 
-_OSC8_EXAMPLE_ONE = build_marker(
-    _osc8_link("http://localhost:3001/rules/s1-123", "verify process state"),
-    "osc8",
-)
-_OSC8_EXAMPLE_MULTI = build_marker(
-    _osc8_link("http://localhost:3001/rules/s1-123", "git safety")
-    + " | "
-    + _osc8_link("http://localhost:3001/rules/p1-pref", "brief answer preference"),
-    "osc8",
-)
-_OSC8_MARKER_PARAGRAPH = (
-    "How to format: use human-readable OSC 8 terminal hyperlinks, not raw ids "
-    "or visible URLs. Format for one item: "
-    f"`{_OSC8_EXAMPLE_ONE}`. For multiple items: "
-    f"`{_OSC8_EXAMPLE_MULTI}`. Use the dashboard URL shown beside each cited "
-    "item; do not invent URLs. Separate multiple linked memories with the "
-    "visible ` | ` separator. If OSC 8 is unavailable, use markdown links. "
-    "Do not include `[cs:…]` ids in the marker line._"
-)
-
 CITATION_MODES = ("on", "auto", "marker-only", "off")
-LINK_STYLES = ("markdown", "osc8")
 
 
-def citation_instruction(mode: str, link_style: str = "markdown") -> str:
+def citation_instruction(mode: str) -> str:
     """Return the citation prompt for ``mode``.
 
     Args:
@@ -186,19 +137,13 @@ def citation_instruction(mode: str, link_style: str = "markdown") -> str:
             ``"marker-only"``, returns the compact enabled instruction.
             Unknown values stay enabled — env-var typos must not break
             injection.
-        link_style: ``"markdown"`` for ordinary markdown links, or ``"osc8"``
-            for terminal-native hyperlinks. Unknown values fall back to
-            ``"markdown"``.
 
     Returns:
         str: The instruction text, or ``""`` for ``"off"``.
     """
     if mode == "off":
         return ""
-    marker_paragraph = (
-        _OSC8_MARKER_PARAGRAPH if link_style == "osc8" else _MARKDOWN_MARKER_PARAGRAPH
-    )
-    return f"{_COMPACT_INTRO}\n\n{marker_paragraph}"
+    return f"{_COMPACT_INTRO}\n\n{_MARKDOWN_MARKER_PARAGRAPH}"
 
 
 CITATION_INSTRUCTION = citation_instruction("on")

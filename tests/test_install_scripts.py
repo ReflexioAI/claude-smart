@@ -6404,72 +6404,6 @@ def test_early_hook_reply_uses_declared_host(tmp_path, host, inherited, expected
     assert json.loads(result.stdout) == expected
 
 
-def test_hook_entry_defaults_codex_citation_links_to_markdown(tmp_path: Path) -> None:
-    plugin_root = tmp_path / "plugin"
-    scripts = plugin_root / "scripts"
-    venv_bin = plugin_root / ".venv" / "bin"
-    bin_dir = tmp_path / "bin"
-    scripts.mkdir(parents=True)
-    venv_bin.mkdir(parents=True)
-    bin_dir.mkdir()
-    shutil.copy2(LIB, scripts / "_lib.sh")
-    shutil.copy2(HOOK_ENTRY, scripts / "hook_entry.sh")
-    (venv_bin / "python").write_text(
-        "#!/bin/sh\n"
-        'if [ "$1" = "-P" ]; then shift; fi\n'
-        'if [ "$1" = "-" ]; then\n'
-        "  cat >/dev/null\n"
-        "  exit 0\n"
-        "fi\n"
-        'printf \'%s\\n\' "{\\"hookSpecificOutput\\":'
-        '{\\"hookEventName\\":\\"UserPromptSubmit\\",'
-        '\\"additionalContext\\":\\"$CLAUDE_SMART_CITATION_LINK_STYLE\\"}}"\n'
-    )
-    uv = bin_dir / "uv"
-    uv.write_text(
-        "#!/bin/sh\n"
-        'printf \'%s\\n\' "{\\"hookSpecificOutput\\":'
-        '{\\"hookEventName\\":\\"UserPromptSubmit\\",'
-        '\\"additionalContext\\":\\"$CLAUDE_SMART_CITATION_LINK_STYLE\\"}}"\n'
-    )
-    for executable in [
-        scripts / "hook_entry.sh",
-        venv_bin / "python",
-        uv,
-    ]:
-        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
-
-    env = _isolated_env(tmp_path)
-    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
-    env.pop("CLAUDE_SMART_CITATION_LINK_STYLE", None)
-    result = subprocess.run(
-        [str(scripts / "hook_entry.sh"), "codex", "user-prompt"],
-        env=env,
-        text=True,
-        input=json.dumps({"session_id": "s1", "prompt": "What food do I like?"}),
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    parsed = json.loads(result.stdout)
-    assert parsed["hookSpecificOutput"]["additionalContext"] == "markdown"
-
-    env["CLAUDE_SMART_CITATION_LINK_STYLE"] = "osc8"
-    result = subprocess.run(
-        [str(scripts / "hook_entry.sh"), "codex", "user-prompt"],
-        env=env,
-        text=True,
-        input=json.dumps({"session_id": "s1", "prompt": "What food do I like?"}),
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    parsed = json.loads(result.stdout)
-    assert parsed["hookSpecificOutput"]["additionalContext"] == "osc8"
-
-
 def test_node_installer_platform_preflight_messages() -> None:
     node = shutil.which("node")
     if not node:
@@ -8656,37 +8590,6 @@ def test_codex_hook_normalizer_removes_suppress_output_for_hooks(
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"continue": True}
-
-
-def test_codex_hook_defaults_citation_links_to_markdown(tmp_path: Path) -> None:
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node is required for codex hook wrapper tests")
-
-    root = _prepared_hook_root(
-        tmp_path,
-        "#!/bin/sh\n"
-        'printf \'%s\\n\' "{\\"hookSpecificOutput\\":'
-        '{\\"hookEventName\\":\\"UserPromptSubmit\\",'
-        '\\"additionalContext\\":\\"$CLAUDE_SMART_CITATION_LINK_STYLE\\"}}"\n',
-    )
-    env = _isolated_env(tmp_path)
-    env["PATH"] = str(root / ".venv" / "bin")
-    env["CLAUDE_PLUGIN_ROOT"] = str(root)
-    env.pop("CLAUDE_SMART_CITATION_LINK_STYLE", None)
-    result = subprocess.run(
-        [node, str(CODEX_HOOK), "hook", "user-prompt"],
-        env=env,
-        text=True,
-        input=json.dumps({"session_id": "s1", "prompt": "What food do I like?"}),
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    parsed = json.loads(result.stdout)
-    assert parsed["hookSpecificOutput"]["additionalContext"] == "markdown"
-    assert parsed["continue"] is True
 
 
 def test_install_fingerprint_hash_tracks_lib_changes(tmp_path: Path) -> None:

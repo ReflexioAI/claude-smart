@@ -90,7 +90,7 @@ def test_parse_text_citations_accepts_managed_reflexio_item_links() -> None:
 def test_parse_text_citations_ignores_reflexio_repo_attribution() -> None:
     """The trailing ` · ⚡Reflexio` repo link must not be counted as a citation."""
     text = "Done.\n\n" + cs_cite.build_marker(
-        "[git safety](http://localhost:3001/rules/s1-7536)", "markdown"
+        "[git safety](http://localhost:3001/rules/s1-7536)"
     )
     assert cs_cite.REFLEXIO_REPO_URL in text
     assert cs_cite.parse_text_citations(text) == ["s1-7536"]
@@ -100,16 +100,12 @@ def test_parse_text_citations_ignores_reflexio_repo_attribution_osc8() -> None:
     osc8_link = (
         "\x1b]8;;http://localhost:3001/rules/s1-7536\x1b\\git safety\x1b]8;;\x1b\\"
     )
-    text = "Done.\n\n" + cs_cite.build_marker(osc8_link, "osc8")
+    attribution = (
+        "\x1b]8;;https://github.com/ReflexioAI/reflexio\x1b\\⚡Reflexio\x1b]8;;\x1b\\"
+    )
+    text = f"Done.\n\n✨ claude-smart rule applied: {osc8_link} · {attribution}"
     assert cs_cite.REFLEXIO_REPO_URL in text
     assert cs_cite.parse_text_citations(text) == ["s1-7536"]
-
-
-def test_marker_attribution_unknown_link_style_falls_back_to_markdown() -> None:
-    """Unknown link styles must render the markdown attribution, not raise."""
-    markdown = cs_cite.marker_attribution("markdown")
-    assert cs_cite.marker_attribution("totally-unknown") == markdown
-    assert markdown == f" · [⚡Reflexio]({cs_cite.REFLEXIO_REPO_URL})"
 
 
 def test_parse_text_citations_keeps_old_applied_marker_compatible() -> None:
@@ -215,20 +211,6 @@ def test_citation_instruction_legacy_modes_stay_enabled() -> None:
     """Old configured values remain valid aliases for compact enabled mode."""
     assert cs_cite.citation_instruction("auto") == cs_cite.CITATION_INSTRUCTION
     assert cs_cite.citation_instruction("marker-only") == cs_cite.CITATION_INSTRUCTION
-
-
-def test_citation_instruction_osc8_uses_terminal_hyperlink_examples() -> None:
-    text = cs_cite.citation_instruction("on", "osc8")
-    assert "OSC 8 terminal" in text
-    assert "\x1b]8;;http://localhost:3001/rules/s1-123\x1b\\" in text
-    assert "✨ claude-smart rule applied:" in text
-    assert "✨ claude-smart rules applied:" not in text
-    assert " | \x1b]8;;http://localhost:3001/rules/p1-pref\x1b\\" in text
-    assert "visible ` | ` separator" in text
-    assert "materially and meaningfully changed your response" in text
-    assert "markdown links" in text
-    assert "⚡Reflexio" in text
-    assert cs_cite.REFLEXIO_REPO_URL in text
 
 
 def test_citation_instruction_off_returns_empty_string() -> None:

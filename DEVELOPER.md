@@ -42,6 +42,10 @@ the published npm package ships neither directory.
 
 ## Environment variables
 
+Citation prompts use Markdown links in all hosts. The transcript reader still
+recognizes older OSC 8 markers. Remove the retired
+`CLAUDE_SMART_CITATION_LINK_STYLE` assignment from hook settings.
+
 Tunables read by the plugin at runtime. Most users don't need to touch these — the confirmed guide saves policy in `~/.claude-smart/.env`, while one Python repair owner supplies genuinely missing local defaults for every host. Hook-side variables must be set in the Claude Code process environment, such as a project `.claude/settings.local.json` `env` block or user-scoped `~/.claude/settings.json`, because hooks do not read Reflexio's backend `.env` file.
 
 | Variable | Default | Purpose |
@@ -57,7 +61,6 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | `EMBEDDING_PORT` | `8072` | Local embedding daemon port. Shared by Claude Code and Codex on the same machine. |
 | `REFLEXIO_RERANK_ENABLED` | `false` (hard-set by `backend-service.sh`) | claude-smart disables Reflexio's shared-service cross-encoder completely, so the local inference process skips reranker model loading and prewarm. This is intentionally not user-overridable in the bundled backend. |
 | `CLAUDE_SMART_CITATIONS` | `on` | Controls the final `✨ claude-smart rule applied` marker instruction. `on` (default) injects a compact instruction asking the assistant to cite only memories that materially changed the answer. `off` skips injection of the citation instruction entirely and strips any stray marker line from the assistant text before publishing. Legacy values `auto` and `marker-only` are accepted as enabled aliases. Set in Claude Code settings (hook env), not `~/.reflexio/.env`. |
-| `CLAUDE_SMART_CITATION_LINK_STYLE` | `markdown` | Controls the visible links in the final `✨ claude-smart rule applied` marker. `markdown` asks the model to emit `[human title](dashboard URL)` links and is the Codex default because Codex renders markdown links in assistant messages. `osc8` asks it to emit terminal-native OSC 8 hyperlinks so the human title can be clickable without showing the URL; unsupported terminals should fall back to markdown links. |
 | `CLAUDE_SMART_DASHBOARD_URL` | `http://localhost:3001` | Base URL used in injected citation targets and the final `✨ claude-smart rule applied` marker links. Override only if the local dashboard is exposed on another host or port. Model-facing citation links use short `/rules/{citationId}` resolver URLs; canonical direct links remain `/skills/project/{id}`, `/skills/shared/{id}`, and `/preferences/project/{id}`. `/preferences/{id}` remains a compatibility alias. |
 | `CLAUDE_SMART_CLI_PATH` | `claude` on Claude Code; native `codex` on Codex | Override the executable Reflexio calls for local generation. |
 | `CLAUDE_SMART_MAX_INJECTED_ITEMS` | `6` | Total results one UserPromptSubmit or PreToolUse search may return across its three collections. Enforced as a per-collection `top_k` of `cap // 3` (at least 1), so nothing the server marks as served is dropped. `0` removes the cap (`top_k` 5); empty or invalid values use the default. Hook env. |
