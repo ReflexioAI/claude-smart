@@ -1736,3 +1736,62 @@ fs.renameSync = (source, target) => {
         assert retry.returncode == 0, retry.stdout + retry.stderr
         assert selector.resolve().parent.parent == state
         assert not receipt.exists()
+
+
+@pytest.mark.parametrize("codex_stays_enabled", [True, False])
+def test_uninstall_checks_surviving_codex_home(tmp_path, codex_stays_enabled):
+    package, _old, uv, env = _fixture(tmp_path, "codex", installed=False)
+    _write_bootstrap_uv(uv, mode="fresh")
+    env.pop("CLAUDE_SMART_INSTALL_CHILD")
+    env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
+    codex = tmp_path / "fake-bin/codex"
+    codex.write_text(
+        codex.read_text().replace("#!/usr/bin/env node", f"#!{node_bin()}", 1)
+    )
+    launcher = [node_bin(), str(package / "bin/claude-smart.js")]
+    run_options = {
+        "cwd": tmp_path,
+        "env": env,
+        "text": True,
+        "capture_output": True,
+        "timeout": 60,
+    }
+    setup = subprocess.run(
+        [
+            *launcher,
+            "setup",
+            "--host",
+            "codex,opencode",
+            "--backend",
+            "local",
+            "--provider",
+            "codex",
+            "--yes",
+        ],
+        check=False,
+        **run_options,
+    )
+    assert setup.returncode == 0, setup.stdout + setup.stderr
+    selector = tmp_path / ".reflexio/plugin-root"
+    saved = selector.resolve()
+    home = Path(env["CODEX_HOME"])
+    if not codex_stays_enabled:
+        config = home / "config.toml"
+        config.write_text(
+            config.read_text().replace("enabled = true", "enabled = false")
+        )
+    env["CODEX_HOME"] = str(tmp_path / "empty-codex-home")
+    removed = subprocess.run(
+        [*launcher, "uninstall", "--host", "opencode"], check=False, **run_options
+    )
+    assert removed.returncode == 0, removed.stdout + removed.stderr
+    assert not (tmp_path / ".opencode/plugins/claude-smart.js").exists()
+    if codex_stays_enabled:
+        assert selector.resolve() == saved
+        assert "Refreshing shared services" in removed.stdout
+        env["CODEX_HOME"] = str(home)
+        cleared = subprocess.run(
+            [*launcher, "uninstall", "--host", "codex"], check=False, **run_options
+        )
+        assert cleared.returncode == 0, cleared.stdout + cleared.stderr
+    assert not selector.exists()
