@@ -1574,6 +1574,18 @@ def test_codex_marketplace_never_replaces_legacy_claude_runtime(tmp_path, phase)
         ("codex", "codex", "trust"),
         ("opencode", "codex", "binding"),
         pytest.param(
+            "codex",
+            "opencode",
+            "trust-interrupt",
+            marks=pytest.mark.skipif(os.name == "nt", reason="uses POSIX SIGKILL"),
+        ),
+        pytest.param(
+            "codex",
+            "opencode",
+            "disabled-interrupt",
+            marks=pytest.mark.skipif(os.name == "nt", reason="uses POSIX SIGKILL"),
+        ),
+        pytest.param(
             "opencode",
             "codex",
             "interrupt",
@@ -1614,6 +1626,26 @@ def test_single_host_retry_recovers_abandoned_multihost_selection(
                 1,
             )
         )
+    elif failure in {"trust-interrupt", "disabled-interrupt"}:
+        preload = tmp_path / "interrupt-before-codex-trust.cjs"
+        preload.write_text("""
+const cp = require("node:child_process");
+const fs = require("node:fs"), path = require("node:path");
+const spawn = cp.spawn;
+cp.spawn = (command, args, ...options) => {
+  if (args[0] === "app-server") {
+    if (process.env.FIXTURE_DISABLE_CODEX) {
+      const config = path.join(process.env.CODEX_HOME, "config.toml");
+      fs.writeFileSync(config, fs.readFileSync(config, "utf8").replace("enabled = true", "enabled = false"));
+    }
+    process.kill(process.pid, "SIGKILL");
+  }
+  return spawn(command, args, ...options);
+};
+""")
+        env["NODE_OPTIONS"] = f'--require "{preload}"'
+        if failure == "disabled-interrupt":
+            env["FIXTURE_DISABLE_CODEX"] = "1"
     elif failure == "binding":
         preload = tmp_path / "refuse-final-opencode-binding.cjs"
         preload.write_text("""
@@ -1677,6 +1709,14 @@ fs.renameSync = (source, target) => {
             for row in calls
         )
         assert (predecessor / "identity").read_text() == "old"
+    elif failure == "trust-interrupt":
+        assert selector.resolve().parent.parent == state
+        assert not receipt.exists()
+        assert (tmp_path / "fixture-backend-stopped").exists()
+    elif failure == "disabled-interrupt":
+        assert selector.resolve() == predecessor
+        assert receipt.exists()
+        assert not (tmp_path / "fixture-backend-stopped").exists()
     elif failure == "binding":
         assert selector.resolve().parent.parent == state
         assert not receipt.exists()

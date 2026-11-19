@@ -2383,7 +2383,6 @@ async function runGuidedHost(command, host, options, label, settings, preparedRu
     5000,
   );
   let accepted = false;
-  let registered = false;
   const acceptSettings = () => {
     if (accepted) return;
     accepted = true;
@@ -2406,9 +2405,7 @@ async function runGuidedHost(command, host, options, label, settings, preparedRu
       trackChild(child, !isWindows());
       if (settings || generation) {
         child.on("message", (message) => {
-          if (generation && host === HOST_CODEX && message?.codexRegistered === generation) {
-            registered = true;
-          } else if (settings && message === "settings-published") acceptSettings();
+          if (settings && message === "settings-published") acceptSettings();
           else if (typeof message?.phase === "string") process.stdout.write(`  ${message.phase}\n`);
         });
         const payload = generation
@@ -2449,7 +2446,7 @@ async function runGuidedHost(command, host, options, label, settings, preparedRu
         process.stderr.write("  Account settings were saved. Retry setup to finish registration.\n");
       process.stderr.write(`  ${label} failed. Details: ${log}\n`);
     }
-    return { code, log, registered };
+    return { code, log };
   } finally {
     clearInterval(timer);
     closeSync(fd);
@@ -2844,8 +2841,10 @@ async function runGuidedCommand(command, args) {
       },
       finish: async (action, config, results) => {
         if (action !== "uninstall" &&
-            !results.some((result) => result.code === 0 || result.registered) &&
-            !preparedOpenCodeRegistration(preparedRuntime)) return;
+            !results.some((result) => result.code === 0) &&
+            !preparedOpenCodeRegistration(preparedRuntime) &&
+            !(preparedRuntime && config.hosts.includes(HOST_CODEX) &&
+              preparedCodexRegistration(preparedRuntime.id))) return;
         let root = preparedRuntime ? readGuidedRuntime(preparedRuntime.id).pluginRoot : activePluginRoot();
         if (!root || !existsSync(join(root, "scripts", "backend-service.sh")))
           return;
@@ -4363,6 +4362,31 @@ function installCodexPluginCache(pluginRoot) {
   }
 }
 
+function preparedCodexRegistration(id) {
+  const { pluginRoot } = readGuidedRuntime(id);
+  const version = requireCodexPluginVersion(pluginRoot);
+  if (basename(version) !== version || version === "." || version === "..") return false;
+  const cache = join(CODEX_PLUGIN_CACHE_DIR, version);
+  if (boundGuidedPluginRoot(cache) !== pluginRoot || !existsSync(CODEX_CONFIG_PATH)) return false;
+
+  // Check the host's actual configuration, including TOML quoting and boolean
+  // types, without printing any values. The completed cache already binds the
+  // installed hook manifest to this exact prepared generation.
+  const enabled = `
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as stream:
+        plugin = tomllib.load(stream)["plugins"][sys.argv[2]]
+    sys.exit(0 if plugin.get("enabled") is True else 1)
+except (OSError, ValueError, KeyError, AttributeError, TypeError):
+    sys.exit(1)
+`;
+  const result = spawnSync(pluginPythonPath(pluginRoot), [
+    "-I", "-X", "utf8", "-c", enabled, CODEX_CONFIG_PATH, CODEX_PLUGIN_ID,
+  ], { cwd: pluginRoot, stdio: "ignore", timeout: 5000, windowsHide: true });
+  return result.status === 0;
+}
+
 function findCodexPluginRoot() {
   const candidates = [];
   try {
@@ -4498,14 +4522,10 @@ async function runInstall(args, options = {}) {
   const settings = runtime ? null : message;
   if (runtime) {
     verifyLocalPluginPackage(runtime.packageRoot, "guided runtime");
-    if (host !== HOST_CODEX && process.connected) process.disconnect();
+    if (process.connected) process.disconnect();
   }
   if (host === HOST_CODEX) {
-    try {
-      await runInstallCodex(settings, runtime);
-    } finally {
-      if (runtime && process.connected) process.disconnect();
-    }
+    await runInstallCodex(settings, runtime);
     return;
   }
   if (host === HOST_OPENCODE) {
@@ -4790,10 +4810,6 @@ async function runInstallCodex(settings, runtime) {
     process.stderr.write(
       `Run /hooks in Codex to review and trust the claude-smart hooks, then start a new session.\n`,
     );
-    // Registration was committed before the separate hook-trust operation.
-    if (runtime && process.connected) {
-      await new Promise((resolve) => process.send({ codexRegistered: runtime.id }, resolve));
-    }
     process.exit(1);
   } else {
     process.stdout.write(`Trusted and enabled ${trustedHookCount} claude-smart Codex hooks.\n`);
