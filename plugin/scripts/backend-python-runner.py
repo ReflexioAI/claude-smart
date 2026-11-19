@@ -24,7 +24,7 @@ class LearningSelectionError(ValueError):
     """Safe model-selection error to report before replacing a backend."""
 
 
-def _check_retired_learning_settings(host: str) -> None:
+def _check_retired_learning_settings(*, opencode_enabled: bool) -> None:
     from dotenv import dotenv_values
 
     env_file = os.environ.get("REFLEXIO_ENV_FILE", "")
@@ -34,7 +34,7 @@ def _check_retired_learning_settings(host: str) -> None:
         else {}
     )
     retired = {LEGACY_MODEL_ENV: LEGACY_MODEL_GUIDANCE}
-    if host == "opencode":
+    if opencode_enabled:
         retired["CLAUDE_SMART_OPENCODE_VARIANT"] = (
             "CLAUDE_SMART_OPENCODE_VARIANT has been retired. Use provider/model#variant "
             "or #variant in CLAUDE_SMART_LEARNING_MODEL, then remove the old setting."
@@ -46,10 +46,14 @@ def _check_retired_learning_settings(host: str) -> None:
 
 def prepare_native_sdk_environment() -> None:
     """Project the plugin's saved learning intent into the selected SDK ABI."""
-    host = os.environ.get("CLAUDE_SMART_HOST", "").strip() or "claude-code"
-    _check_retired_learning_settings(host)
+    from reflexio.env_utils import env_truthy
 
+    host = os.environ.get("CLAUDE_SMART_HOST", "").strip() or "claude-code"
     enabled_name = "CLAUDE_SMART_USE_LOCAL_CLI"
+    intent = os.environ.get(enabled_name, "")
+    _check_retired_learning_settings(
+        opencode_enabled=host == "opencode" and env_truthy(intent),
+    )
     model = os.environ.get("CLAUDE_SMART_LEARNING_MODEL", "").strip()
     package = find_spec("reflexio")
     locations = package.submodule_search_locations if package else None
@@ -61,10 +65,7 @@ def prepare_native_sdk_environment() -> None:
         os.environ[LEGACY_MODEL_ENV] = model
         return
 
-    from reflexio.env_utils import env_truthy
-
     target_name = "REFLEXIO_NATIVE_CLI_MODEL"
-    intent = os.environ.get(enabled_name, "")
     selected = os.environ.get(target_name, "")
     if env_truthy(intent):
         if host not in {"claude-code", "codex", "opencode"}:

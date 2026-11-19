@@ -140,9 +140,10 @@ export async function writeConfig(
   if (
     model &&
     (typeof model !== "string" ||
-      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(model))
+      model.length > 200 ||
+      !/^(?:[A-Za-z0-9][A-Za-z0-9._:/-]*)?(?:#[A-Za-z0-9][A-Za-z0-9._-]*)?$/.test(model))
   )
-    throw new Error("Learning model must be a valid model ID");
+    throw new Error("Learning model must be a valid model reference");
   const file = envPath();
   await fs.mkdir(path.dirname(file), { recursive: true });
 

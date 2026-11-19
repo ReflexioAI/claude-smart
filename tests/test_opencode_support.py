@@ -358,16 +358,40 @@ def test_opencode_server_resolves_windows_bash_before_spawning() -> None:
         "retired_name",
         "expected_model",
         "expected_variant",
+        "modern",
     ),
     [
-        ("claude-sonnet-4-6", None, None, None, None),
-        ("provider/explicit", None, None, "provider/explicit", None),
-        ("provider/explicit", "provider/saved", None, "provider/saved", None),
-        ("provider/explicit", "provider/saved#high", None, "provider/saved", "high"),
-        ("provider/explicit", "#low", None, None, "low"),
-        ("#medium", None, None, None, "medium"),
-        ("provider/explicit", None, "CLAUDE_SMART_OPENCODE_MODEL", None, None),
-        ("provider/explicit", "#high", "CLAUDE_SMART_OPENCODE_VARIANT", None, None),
+        ("claude-sonnet-4-6", None, None, None, None, False),
+        ("provider/explicit", None, None, "provider/explicit", None, False),
+        ("provider/explicit", "provider/saved", None, "provider/saved", None, False),
+        (
+            "provider/explicit",
+            "provider/saved#high",
+            None,
+            "provider/saved",
+            "high",
+            False,
+        ),
+        ("provider/explicit", "#low", None, None, "low", False),
+        ("#medium", None, None, None, "medium", False),
+        ("provider/explicit", None, "CLAUDE_SMART_OPENCODE_MODEL", None, None, False),
+        (
+            "provider/explicit",
+            "#high",
+            "CLAUDE_SMART_OPENCODE_VARIANT",
+            None,
+            None,
+            False,
+        ),
+        (
+            "provider/explicit",
+            "provider/saved#high",
+            None,
+            "provider/saved#high",
+            None,
+            True,
+        ),
+        ("provider/explicit", "#high", None, None, None, True),
     ],
 )
 def test_opencode_cli_bridge_translates_claude_contract(
@@ -377,6 +401,7 @@ def test_opencode_cli_bridge_translates_claude_contract(
     retired_name: str | None,
     expected_model: str | None,
     expected_variant: str | None,
+    modern: bool,
 ) -> None:
     if shutil_which_node() is None:
         pytest.skip("node is not installed")
@@ -388,6 +413,10 @@ def test_opencode_cli_bridge_translates_claude_contract(
 const fs = require("fs");
 const path = require("path");
 const args = process.argv.slice(2);
+if (args[1] === "--help") {{
+  process.stderr.write({json.dumps("--standalone" if modern else "--variant")});
+  process.exit(0);
+}}
 const dirIndex = args.indexOf("--dir");
 const workDir = dirIndex >= 0 ? args[dirIndex + 1] : "";
 const dotConfig = path.join(workDir, ".opencode", "opencode.json");
@@ -463,6 +492,12 @@ process.stdout.write(JSON.stringify({{
         assert result.returncode != 0
         assert f"{retired_name} has been retired" in result.stderr
         assert "private-retired" not in result.stderr
+        assert not call_log.exists()
+        return
+
+    if modern and saved_model == "#high":
+        assert result.returncode != 0
+        assert "compatible variant option" in result.stderr
         assert not call_log.exists()
         return
 

@@ -139,6 +139,29 @@ function runOpenCode({ prompt, model, workDir }) {
     "--agent",
     AGENT_NAME,
   ];
+  const budget = timeoutMs();
+  const deadline = performance.now() + budget;
+  const launch = (argv, input) => {
+    const remaining = Math.floor(deadline - performance.now());
+    if (remaining < 1) throw new Error("opencode CLI timed out");
+    return spawnSync(opencodePath, argv, {
+      input,
+      cwd: workDir,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OPENCODE_PURE: "1",
+        // OpenCode can resolve its project from PWD instead of the spawn cwd.
+        PWD: workDir,
+        CLAUDE_SMART_HOST: "opencode",
+        CLAUDE_SMART_INTERNAL: "1",
+        CLAUDE_CODE_ENTRYPOINT: "optimizer",
+      },
+      timeout: remaining,
+      windowsHide: true,
+      shell: process.platform === "win32" && /\.(?:cmd|bat)$/i.test(opencodePath),
+    });
+  };
   const reference = opencodeModel(model);
   const separator = reference.indexOf("#");
   if (separator === -1) {
@@ -149,32 +172,29 @@ function runOpenCode({ prompt, model, workDir }) {
     if ((selected && !selected.trim()) || !variant.trim()) {
       throw new Error("OpenCode model variant reference is invalid");
     }
-    if (selected) args.push("--model", selected);
-    args.push("--variant=" + variant);
+    const help = launch(["run", "--help"], "");
+    if (help.error || help.status !== 0) {
+      throw new Error("OpenCode model variant capability discovery failed");
+    }
+    const declared = new Set(
+      [...(help.stdout + "\n" + help.stderr).matchAll(
+        /^\s*(?:-[A-Za-z0-9],\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=[,\s=]|$)/gm,
+      )].map(([, option]) => option),
+    );
+    if (selected && declared.has("--standalone")) {
+      args.push("--model", reference);
+    } else if (declared.has("--variant")) {
+      if (selected) args.push("--model", selected);
+      args.push("--variant=" + variant);
+    } else {
+      throw new Error("Selected OpenCode CLI does not advertise a compatible variant option");
+    }
   }
 
-  const proc = spawnSync(opencodePath, args, {
-    input: prompt,
-    cwd: workDir,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      OPENCODE_PURE: "1",
-      // opencode resolves the project root from $PWD, not the spawn cwd.
-      // A stale inherited PWD points at the caller's directory, so the temp
-      // `.opencode/opencode.json` defining AGENT_NAME is never read.
-      PWD: workDir,
-      CLAUDE_SMART_HOST: "opencode",
-      CLAUDE_SMART_INTERNAL: "1",
-      CLAUDE_CODE_ENTRYPOINT: "optimizer",
-    },
-    timeout: timeoutMs(),
-    windowsHide: true,
-    shell: process.platform === "win32" && /\.(?:cmd|bat)$/i.test(opencodePath),
-  });
+  const proc = launch(args, prompt);
   if (proc.error) {
     if (proc.error.code === "ETIMEDOUT") {
-      throw new Error(`opencode CLI timed out after ${timeoutMs() / 1000}s`);
+      throw new Error(`opencode CLI timed out after ${budget / 1000}s`);
     }
     throw proc.error;
   }

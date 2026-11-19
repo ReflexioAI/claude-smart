@@ -232,6 +232,7 @@ def test_preflight_refuses_retired_opencode_variant_without_rewriting(
     path.write_text(original)
     monkeypatch.setenv("REFLEXIO_ENV_FILE", str(path))
     monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
+    monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
     monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", "#high")
     monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
     monkeypatch.delenv(old_name, raising=False)
@@ -244,6 +245,11 @@ def test_preflight_refuses_retired_opencode_variant_without_rewriting(
 
     assert "#variant in CLAUDE_SMART_LEARNING_MODEL" in str(failure.value)
     assert "private-variant" not in str(failure.value)
+    assert path.read_text() == original
+
+    monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "0")
+    monkeypatch.delenv("REFLEXIO_NATIVE_CLI_MODEL", raising=False)
+    prepare()
     assert path.read_text() == original
 
 

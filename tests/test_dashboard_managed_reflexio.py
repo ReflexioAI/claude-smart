@@ -183,6 +183,17 @@ def test_dashboard_proxy_prefers_the_saved_file_over_its_launch_env(
     assert json.loads(out) == {"url": "https://a.example/", "apiKey": "ka"}
 
 
+@pytest.mark.parametrize("model", ["provider/model#high", "#high"])
+def test_dashboard_saves_opencode_variant_reference(tmp_path: Path, model: str) -> None:
+    out = _run_config_module(
+        tmp_path,
+        f"await m.writeConfig({{CLAUDE_SMART_LEARNING_MODEL: {json.dumps(model)}}}); "
+        "process.stdout.write(JSON.stringify(await m.readConfig()));",
+        {},
+    )
+    assert json.loads(out)["CLAUDE_SMART_LEARNING_MODEL"] == model
+
+
 def test_dashboard_save_does_not_turn_off_absent_local_providers(
     tmp_path: Path,
 ) -> None:
