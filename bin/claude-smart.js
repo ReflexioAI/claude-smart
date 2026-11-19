@@ -2685,7 +2685,7 @@ function selectStandaloneRuntime(host, pluginRoot) {
   if (previous && activePluginRoot() === previous.root && !sameRealPath(previous.root, pluginRoot)) {
     if (!sameRealPath(standaloneRuntimeRoot(host), pluginRoot))
       throw new Error("The standalone runtime does not match the prepared host");
-    recordGuidedShutdown({ host }, previous);
+    recordGuidedShutdown({ target: realpathSync(pluginRoot) }, previous);
     forcePluginRoot(pluginRoot);
   } else if (host === HOST_CLAUDE_CODE) {
     forcePluginRoot(pluginRoot);
@@ -2697,8 +2697,8 @@ function selectStandaloneRuntime(host, pluginRoot) {
 async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
   const pending = readGuidedShutdown();
   if (!pending) return;
-  const target = pending.host
-    ? standaloneRuntimeRoot(pending.host)
+  const target = typeof pending.target === "string" && isAbsolute(pending.target)
+    ? pending.target
     : typeof pending.id === "string" && /^runtime-[A-Za-z0-9]{6}$/.test(pending.id)
       ? join(realpathSync(GUIDED_RUNTIME_DIR), pending.id, "plugin")
       : null;
@@ -2852,11 +2852,23 @@ async function runGuidedCommand(command, args) {
         return runGuidedHost(action, host, options, label, deferredSettings, preparedRuntime);
       },
       finish: async (action, config, results) => {
-        if (action !== "uninstall" && !results.some((result) => result.code === 0)) {
-          if (carriedBaseline && !preparedRuntime) await resumeGuidedShutdown();
-          return;
+        const succeeded = results.some((result) => result.code === 0);
+        let root;
+        if (action !== "uninstall" && !succeeded) {
+          // A standalone worker can fail hook trust after committing its runtime.
+          // Finish the cutover only if its recorded target was actually selected.
+          if (!carriedBaseline || preparedRuntime) return;
+          const pending = readGuidedShutdown();
+          const selected = activePluginRoot();
+          if (!pending?.target || !selected || !sameRealPath(selected, pending.target)) {
+            await resumeGuidedShutdown();
+            return;
+          }
+          await resumeGuidedShutdown();
+          root = selected;
+        } else {
+          root = preparedRuntime ? readGuidedRuntime(preparedRuntime.id).pluginRoot : activePluginRoot();
         }
-        let root = preparedRuntime ? readGuidedRuntime(preparedRuntime.id).pluginRoot : activePluginRoot();
         if (!root || !existsSync(join(root, "scripts", "backend-service.sh")))
           return;
         if (action === "uninstall") {
@@ -2901,7 +2913,7 @@ async function runGuidedCommand(command, args) {
           }
           commitInstallState();
           await resumeGuidedShutdown();
-        } else if (carriedBaseline) {
+        } else if (carriedBaseline && succeeded) {
           const remaining = await resumeGuidedShutdown();
           if (remaining) {
             await stopServicesForInstall(remaining.root, null, remaining.status);

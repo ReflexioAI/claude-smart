@@ -1550,6 +1550,11 @@ def test_codex_marketplace_never_replaces_legacy_claude_runtime(tmp_path, phase)
             "interrupt",
             marks=pytest.mark.skipif(os.name == "nt", reason="uses POSIX SIGKILL"),
         ),
+        pytest.param(
+            "codex",
+            "interrupt",
+            marks=pytest.mark.skipif(os.name == "nt", reason="uses POSIX SIGKILL"),
+        ),
     ],
 )
 def test_single_host_retry_recovers_abandoned_multihost_selection(
@@ -1559,7 +1564,10 @@ def test_single_host_retry_recovers_abandoned_multihost_selection(
     package, predecessor, uv, env = _fixture(tmp_path, predecessor_host)
     _write_bootstrap_uv(uv, mode="fresh")
     env.pop("CLAUDE_SMART_INSTALL_CHILD")
-    env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
+    if failure == "trust":
+        env["CLAUDE_SMART_BACKEND_AUTOSTART"] = "1"
+    else:
+        env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
 
     state = tmp_path / ".claude-smart/guided-runtimes"
     state.mkdir()
@@ -1624,13 +1632,28 @@ fs.renameSync = (source, target) => {
         assert not receipt.exists()
         logs = list((tmp_path / ".claude-smart/install-logs").glob("update-codex-*"))
         assert "review and trust" in logs[0].read_text()
+        calls = [
+            json.loads(line)
+            for line in (tmp_path / "service-calls.jsonl").read_text().splitlines()
+        ]
+        assert any(
+            row["kind"] == "backend"
+            and row["action"] == "start"
+            and Path(row["root"]) == selector.resolve()
+            for row in calls
+        )
+        env["CLAUDE_SMART_BACKEND_AUTOSTART"] = "0"
     else:
         assert result.returncode == -signal.SIGKILL
-        assert json.loads(receipt.read_text())["host"] == "opencode"
+        pending = json.loads(receipt.read_text())
+        assert Path(pending["target"]) == selector.resolve()
+        if host == "codex":
+            env["CODEX_HOME"] = str(tmp_path / ".another-codex-home")
         os.utime(state / ".install.lock", (1, 1))
         env.pop("NODE_OPTIONS")
+    recovery_host = "opencode" if host == "codex" and failure == "interrupt" else host
     removed = subprocess.run(
-        [*installer, "uninstall", "--host", host],
+        [*installer, "uninstall", "--host", recovery_host],
         cwd=tmp_path,
         env=env,
         text=True,
