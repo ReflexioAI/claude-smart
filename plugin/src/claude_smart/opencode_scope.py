@@ -56,6 +56,7 @@ def open_scoped_file(
         parent = child
     flags = (os.O_RDWR if writable else os.O_RDONLY) | os.O_NOFOLLOW | os.O_NONBLOCK
     if create:
+        _posix_quarantine_state(parent)
         flags |= os.O_CREAT | os.O_EXCL
     fd = os.open(parts[-1], flags, 0o600, dir_fd=parent)
     source, identity = _open_regular_file(fd, lifetime, writable)
@@ -96,13 +97,27 @@ def _restore_posix_entry(quarantine: int, parent: int, name: str) -> None:
         raise OSError(code, os.strerror(code))
 
 
+def _posix_quarantine_state(parent: int) -> Path:
+    state = Path.home() / ".claude-smart"
+    state.mkdir(mode=0o700, exist_ok=True)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open(state, flags)
+    try:
+        if os.fstat(directory).st_dev != os.fstat(parent).st_dev:
+            raise ValueError(
+                "OpenCode scope removal requires the scope and account directories on the same volume"
+            )
+    finally:
+        os.close(directory)
+    return state
+
+
 def _remove_posix_entry(
     parent: int, name: str, identity: str, *, discard_missing: bool
 ) -> None:
     # Keep temporary state outside the project so a writer to the project
     # directory cannot replace or populate the quarantine.
-    state = Path.home() / ".claude-smart"
-    state.mkdir(mode=0o700, exist_ok=True)
+    state = _posix_quarantine_state(parent)
     private = Path(mkdtemp(prefix=".scope-removal-", dir=state))
     retained = False
     try:
@@ -256,7 +271,10 @@ def _open_windows_file(
         except FileNotFoundError:
             if not create:
                 raise
-            parent.mkdir(exist_ok=True)
+            try:
+                os.mkdir(parent)
+            except FileExistsError:
+                pass
             handle = open_no_follow(parent, directory=True)
         lifetime.callback(close, handle)
     leaf = open_no_follow(path, directory=False)

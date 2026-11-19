@@ -2531,28 +2531,30 @@ function assertOpenCodeRuntimeEntry(pluginRoot) {
       !lstatSync(entry).isFile()) throw new Error(`Prepared OpenCode runtime entry is invalid at ${entry}`);
 }
 
-function openCodeRuntimeMatchesLoader(runtime, path) {
+function openCodeRuntimeMatchesLoader(runtime, path, strict = false) {
   try {
     const [loader] = runScopedOpenCode(runtime.pluginRoot, "snapshot", [path]);
     if (!isGeneratedOpenCodeV2Loader(loader.contents)) return false;
     const spec = loader.contents.split("\n")[2].slice("export { default } from ".length, -1);
     return localOpenCodeFilePath(JSON.parse(spec)) === join(runtime.pluginRoot, "opencode", "dist", "server.mjs");
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return false;
   }
 }
 
-function recoverOpenCodeBinding(binding) {
+function recoverOpenCodeBinding(binding, strict = false) {
   const pending = `${binding}.pending`;
   if (!pathEntryExists(pending)) return null;
   try {
-    if (!lstatSync(pending).isFile()) return null;
+    if (!lstatSync(pending).isFile()) throw new Error("Invalid pending OpenCode binding");
     const { path, id } = JSON.parse(readFileSync(pending, "utf8"));
-    if (openCodeRegistrationPath(path) !== binding) return null;
+    if (openCodeRegistrationPath(path) !== binding) throw new Error("Pending OpenCode binding changed scope");
     const runtime = readGuidedRuntime(id);
     assertOpenCodeRuntimeEntry(runtime.pluginRoot);
-    return openCodeRuntimeMatchesLoader(runtime, path) ? runtime : null;
-  } catch {
+    return openCodeRuntimeMatchesLoader(runtime, path, strict) ? runtime : null;
+  } catch (error) {
+    if (strict) throw error;
     return null;
   }
 }
@@ -2574,6 +2576,8 @@ function openCodeGuidedPluginRoots() {
 function stageOpenCodeRegistration(loader, runtime) {
   if (!runtime) return;
   const binding = openCodeRegistrationPath(loader);
+  const predecessor = recoverOpenCodeBinding(binding, true);
+  if (predecessor) writeOpenCodeBinding(binding, predecessor.id);
   writeOpenCodeBinding(`${binding}.pending`, JSON.stringify({ path: loader, id: runtime.id }));
 }
 
@@ -2640,7 +2644,7 @@ function observePreviousServices() {
   return { root, status };
 }
 
-function recordGuidedShutdown(id, previous, previousSettingsDigest) {
+function recordGuidedShutdown(id, previous) {
   if (!previous.root) return;
   const status = {};
   for (const [kind, value] of Object.entries(previous.status)) {
@@ -2649,7 +2653,7 @@ function recordGuidedShutdown(id, previous, previousSettingsDigest) {
   }
   const draft = uniquePackagePath(GUIDED_PENDING_SHUTDOWN, ".shutdown");
   try {
-    writeFileSync(draft, JSON.stringify({ id, root: previous.root, status, previousSettingsDigest }), {
+    writeFileSync(draft, JSON.stringify({ id, root: previous.root, status }), {
       flag: "wx", mode: 0o600,
     });
     renameSync(draft, GUIDED_PENDING_SHUTDOWN);
@@ -2658,7 +2662,7 @@ function recordGuidedShutdown(id, previous, previousSettingsDigest) {
   }
 }
 
-async function resumeGuidedShutdown() {
+async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
   let pending;
   try {
     if (!lstatSync(GUIDED_PENDING_SHUTDOWN).isFile())
@@ -2675,23 +2679,25 @@ async function resumeGuidedShutdown() {
   if (typeof pending.root !== "string" || !isAbsolute(pending.root) ||
       (!pending.status || typeof pending.status !== "object"))
     throw new Error("The pending shared service shutdown record is invalid");
-  const savedSettings = readEnvSnapshot(CLAUDE_SMART_ENV_PATH);
-  const settingsChanged = pending.previousSettingsDigest &&
-    crypto.createHash("sha256").update(savedSettings.bytes).digest("hex") !== pending.previousSettingsDigest;
-  if (current === target || (current === pending.root && settingsChanged)) {
+  if (current === target) {
     if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
       throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
     await stopServicesForInstall(pending.root, null, pending.status);
-  } else if (current !== pending.root) {
-    const predecessor = join(pending.root, "scripts", "backend-service.sh");
-    if (current !== null || pathEntryExists(join(REFLEXIO_DIR, "plugin-root")) || !existsSync(predecessor))
-      throw new Error("The shared runtime selection changed during shutdown; resolve it before retrying setup");
-    forcePluginRoot(pending.root);
+  } else {
+    if (current !== pending.root) {
+      const predecessor = join(pending.root, "scripts", "backend-service.sh");
+      if (current !== null || pathEntryExists(join(REFLEXIO_DIR, "plugin-root")) || !existsSync(predecessor))
+        throw new Error("The shared runtime selection changed during shutdown; resolve it before retrying setup");
+      forcePluginRoot(pending.root);
+    }
+    // Settings may have changed independently. Preserve the verified baseline
+    // until the next attempt has prepared and selected its replacement.
+    if (retainBaseline) return { root: pending.root, status: pending.status };
   }
   rmSync(GUIDED_PENDING_SHUTDOWN);
 }
 
-async function prepareGuidedRuntime(config, options, settings) {
+async function prepareGuidedRuntime(config, options, settings, baseline) {
   assertSupportedRuntimePlatform();
   const openCodeArgs = options.global ? ["--global"] : [];
   if (config.hosts.includes(HOST_CODEX)) validateCodexPackage();
@@ -2740,8 +2746,8 @@ async function prepareGuidedRuntime(config, options, settings) {
       assertOpenCodeRuntimeEntry(pluginRoot);
       openCode = planScopedOpenCode(openCodeArgs, directory);
     }
-    const previous = observePreviousServices();
-    recordGuidedShutdown(id, previous, settings.request.snapshot.sha256);
+    const previous = baseline || observePreviousServices();
+    recordGuidedShutdown(id, previous);
     await publishFromPreparedRuntime(pluginRoot, settings, openCode?.loader, { guideWorker: false });
     published = true;
     acceptGuideSettings(settings);
@@ -2769,16 +2775,17 @@ async function runGuidedCommand(command, args) {
   );
   let deferredSettings;
   let preparedRuntime;
+  let carriedBaseline;
   await guide
     .runGuide(command, args, {
       inventory: installInventory,
       saved: () => saved,
       save: async (config, options) => {
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
-        await resumeGuidedShutdown();
+        carriedBaseline = await resumeGuidedShutdown();
         const settings = planInstallSettings(config, captured);
         if (config.hosts.length > 1) {
-          preparedRuntime = await prepareGuidedRuntime(config, options, settings);
+          preparedRuntime = await prepareGuidedRuntime(config, options, settings, carriedBaseline);
           return;
         }
         if (config.hosts.length === 1 && [HOST_CODEX, HOST_OPENCODE].includes(config.hosts[0])) {
@@ -2812,7 +2819,7 @@ async function runGuidedCommand(command, args) {
       runHost: async (action, host, options, label) => {
         if (action === "uninstall" && !heldPackageLocks.has(GUIDE_INSTALL_LOCK)) {
           holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
-          await resumeGuidedShutdown();
+          await resumeGuidedShutdown({ retainBaseline: false });
         }
         return runGuidedHost(action, host, options, label, deferredSettings, preparedRuntime);
       },
@@ -2863,6 +2870,9 @@ async function runGuidedCommand(command, args) {
           }
           commitInstallState();
           await resumeGuidedShutdown();
+        } else if (carriedBaseline) {
+          await stopServicesForInstall(carriedBaseline.root, null, carriedBaseline.status);
+          rmSync(GUIDED_PENDING_SHUTDOWN, { force: true });
         }
         let setup;
         try {

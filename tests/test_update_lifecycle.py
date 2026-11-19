@@ -604,6 +604,16 @@ fs.renameSync = (from, to) => {
         # SIGKILL leaves the guide lock; simulate expiry of its existing lease.
         os.utime(records / ".install.lock", (1, 1))
         env.pop("NODE_OPTIONS")
+        if failure == "interrupted-after-save":
+            _write_bootstrap_uv(uv, mode="non_lock_failure")
+            refused = subprocess.run(
+                args, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60
+            )
+            assert refused.returncode == 1
+            assert "uv sync failed" in refused.stderr
+            assert all(row["action"] != "stop" for row in _calls(tmp_path))
+            assert pending.exists()
+            _write_bootstrap_uv(uv, mode="fresh")
         recovered = subprocess.run(
             args, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60
         )
@@ -621,6 +631,37 @@ fs.renameSync = (from, to) => {
         )
         assert len(list(registrations.glob("*.pending"))) == 1
         env.pop("NODE_OPTIONS")
+        status = subprocess.run(
+            [
+                node_bin(),
+                str(package / "bin/claude-smart.js"),
+                "status",
+                "--host",
+                "opencode",
+            ],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert status.returncode == 0, status.stderr
+        assert (
+            "Prepared runtime version:" in status.stdout
+            and "not installed" not in status.stdout
+        )
+        scope_owner = package / "plugin/src/claude_smart/opencode_scope.py"
+        launch = 'if __name__ == "__main__":'
+        scope_owner.write_text(
+            scope_owner.read_text().replace(
+                launch,
+                'if sys.argv[1:] == ["publish"]:\n    raise SystemExit(1)\n\n' + launch,
+            )
+        )
+        again = subprocess.run(
+            args, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60
+        )
+        assert again.returncode == 1
         status = subprocess.run(
             [
                 node_bin(),

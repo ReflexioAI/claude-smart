@@ -1273,3 +1273,24 @@ def test_scoped_loader_removal_preserves_replacement(
     assert restored.read_bytes() == b"foreign replacement"
     assert displaced.read_bytes() == original
     assert not list((tmp_path / ".claude-smart").glob(".scope-removal-*"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX same-volume quarantine")
+def test_scoped_creation_refuses_unavailable_quarantine_before_creating_leaf(
+    tmp_path, monkeypatch
+):
+    from contextlib import ExitStack
+
+    from claude_smart import opencode_scope
+
+    def refuse_quarantine(_parent):
+        raise ValueError("scope and account directories on the same volume")
+
+    monkeypatch.setattr(opencode_scope, "_posix_quarantine_state", refuse_quarantine)
+    loader = tmp_path.resolve() / "plugins" / "claude-smart.js"
+    with ExitStack() as lifetime, pytest.raises(ValueError, match="same volume"):
+        opencode_scope.open_scoped_file(
+            loader, lifetime, writable=True, rollback_creation=[]
+        )
+    assert not loader.exists()
+    assert not list(loader.parent.iterdir())
