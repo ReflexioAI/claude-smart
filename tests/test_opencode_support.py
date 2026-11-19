@@ -1597,11 +1597,18 @@ def test_opencode_legacy_rewrite_uses_same_snapshot_it_parsed(tmp_path: Path):
         const assert = require("node:assert/strict");
         const config = {json.dumps(str(config))};
         const replacement = '{{"plugin":["claude-smart","concurrent"]}}';
+        const open = fs.openSync;
         const read = fs.readFileSync;
+        let observed;
         let changed = false;
+        fs.openSync = (path, ...args) => {{
+          const file = open(path, ...args);
+          if (path === config) observed = file;
+          return file;
+        }};
         fs.readFileSync = (path, ...args) => {{
           const result = read(path, ...args);
-          if (path === config && !changed) {{
+          if ((path === config || path === observed) && !changed) {{
             changed = true;
             fs.writeFileSync(config, replacement);
           }}
@@ -1677,6 +1684,29 @@ def test_opencode_config_backup_does_not_follow_symlink(tmp_path: Path):
     assert sentinel.read_text() == "owned sentinel"
     assert config.read_text() == original
     assert backup.is_symlink()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires a POSIX named pipe")
+@pytest.mark.parametrize("linked", [False, True])
+def test_opencode_config_preflight_rejects_pipe_without_blocking(
+    tmp_path: Path, linked: bool
+):
+    config = tmp_path / "opencode.json"
+    pipe = tmp_path / "other-pipe" if linked else config
+    os.mkfifo(pipe)
+    if linked:
+        config.symlink_to(pipe)
+    installer = REPO_ROOT / "bin" / "claude-smart.js"
+    script = f"""
+        const assert = require("node:assert/strict");
+        const installer = require({json.dumps(str(installer))});
+        assert.throws(() => installer.removeOpenCodeLegacyEntries([], {json.dumps(str(tmp_path))}),
+          /requires a regular file/);
+    """
+    result = _run_node_script(script, timeout=5)
+    if result is None:
+        pytest.skip("node is not installed")
+    assert result.returncode == 0, result.stderr
 
 
 def test_node_installer_reports_unusable_loader_path_as_conflict(

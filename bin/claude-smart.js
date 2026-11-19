@@ -493,7 +493,23 @@ function stripJsonc(text) {
   return out;
 }
 
-function readJsoncObject(path, text = existsSync(path) ? readFileSync(path, "utf8") : "") {
+function readOpenCodeConfigFile(path) {
+  const info = openCodeConfigStat(path);
+  if (!info) return null;
+  const file = openSync(
+    path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const opened = fstatSync(file, { bigint: true });
+    if (!opened.isFile() || !sameFileIdentity(info, opened))
+      throw new Error(`OpenCode config changed while reading ${path}; retry setup.`);
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(readFileSync(file));
+  } finally {
+    closeSync(file);
+  }
+}
+
+function readJsoncObject(path, text = readOpenCodeConfigFile(path)) {
   const parsed = JSON.parse(stripJsonc(text || "{}"));
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`OpenCode config ${path} must be a JSON object`);
@@ -823,8 +839,7 @@ function readOpenCodePluginConfig(configPath, original) {
 
 function planOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
   const resolvedPluginSpec = install ? pluginSpec || opencodeLocalPluginSpec() : pluginSpec;
-  const existed = existsSync(configPath);
-  const original = existed ? readFileSync(configPath, "utf8") : "";
+  const original = readOpenCodeConfigFile(configPath);
   const data = readOpenCodePluginConfig(configPath, original);
   const current = [
     ...(Array.isArray(data.plugin) ? data.plugin : []),
@@ -839,17 +854,17 @@ function planOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
         next.some((entry, index) => entry !== data.plugin[index])
       : install && next.length > 0);
   if (!changed) return { changed: false, configPath };
-  const backupPath = original.trim() && original !== stripJsonc(original)
+  const backupPath = original?.trim() && original !== stripJsonc(original)
     ? `${configPath}.bak`
     : null;
   data.plugin = next;
   delete data.plugins;
-  return { changed: true, configPath, backupPath, existed, original, data };
+  return { changed: true, configPath, backupPath, original, data };
 }
 
 function openCodeConfigStat(path) {
   try {
-    const info = lstatSync(path);
+    const info = lstatSync(path, { bigint: true });
     if (!info.isFile()) throw new Error(`OpenCode config write requires a regular file at ${path}`);
     return info;
   } catch (error) {
@@ -859,9 +874,7 @@ function openCodeConfigStat(path) {
 }
 
 function assertOpenCodeConfigSnapshot(plan) {
-  const info = openCodeConfigStat(plan.configPath);
-  const current = info ? readFileSync(plan.configPath, "utf8") : "";
-  if (Boolean(info) !== plan.existed || current !== plan.original)
+  if (readOpenCodeConfigFile(plan.configPath) !== plan.original)
     throw new Error(`OpenCode config changed at ${plan.configPath}; retry setup.`);
 }
 
@@ -870,10 +883,11 @@ function writeOpenCodeConfigAtomically(path, contents, validate) {
   const directory = mkdtempSync(join(dirname(path), ".claude-smart-config-"));
   const temporary = join(directory, "new");
   try {
-    writeFileSync(temporary, contents, { flag: "wx", mode: info ? info.mode & 0o777 : 0o600 });
-    if (info && !isWindows()) chmodSync(temporary, info.mode & 0o777);
-    validate?.();
+    const mode = info ? Number(info.mode & 0o777n) : 0o600;
+    writeFileSync(temporary, contents, { flag: "wx", mode });
+    if (info && !isWindows()) chmodSync(temporary, mode);
     openCodeConfigStat(path);
+    validate?.();
     // A same-directory move commits the complete bytes without opening an
     // existing destination (including a substituted symlink) for writing.
     renameSync(temporary, path);
