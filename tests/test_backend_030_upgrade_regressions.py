@@ -155,9 +155,11 @@ def _run_selected_command(home: Path, args: list[str], metadata: tuple[str, ...]
         "sys.argv = ['runner', *sys.argv[2:]]\n"
         "raise SystemExit(runner['main']())\n"
     )
+    env = _env(home)
+    env.pop("REFLEXIO_DEFAULT_ORG_ID")
     return subprocess.run(
         [sys.executable, "-P", "-c", script, str(RUNNER), *metadata, "--", *args],
-        env=_env(home),
+        env=env,
         cwd=home,
         text=True,
         capture_output=True,
@@ -284,6 +286,54 @@ def test_backend_runner_pins_a_fresh_install(tmp_path: Path) -> None:
         "db_path": str(tmp_path / "data" / "reflexio.db"),
         "type": "sqlite",
     }
+
+
+@requires_vendor
+def test_backend_runner_uses_sdk_binding_capability_without_exporting_selector(
+    tmp_path: Path,
+) -> None:
+    env = _env(tmp_path)
+    env.pop("REFLEXIO_DEFAULT_ORG_ID")
+    env["PYTHON_DOTENV_DISABLED"] = "1"
+    script = """
+import importlib.util
+import os
+import runpy
+import sys
+import types
+from pathlib import Path
+
+runner = runpy.run_path(sys.argv[1])
+local_instance = types.ModuleType("reflexio.local_instance")
+local_instance.__spec__ = importlib.util.spec_from_loader(local_instance.__name__, loader=None)
+sys.modules[local_instance.__name__] = local_instance
+calls = []
+
+def prepare(org, path):
+    assert "REFLEXIO_DEFAULT_ORG_ID" not in os.environ
+    calls.append((org, path))
+
+def delegate(*args, **kwargs):
+    assert calls == [("claude-smart", Path(os.environ["LOCAL_STORAGE_PATH"]) / "reflexio_claude-smart.db")]
+    assert "REFLEXIO_DEFAULT_ORG_ID" not in os.environ
+
+local_instance.prepare_local_sqlite_instance = prepare
+runner["main"].__globals__["runpy"].run_module = delegate
+sys.argv = ["runner", "--claude-smart-backend=1", "--", "services", "start", "--only", "backend"]
+raise SystemExit(runner["main"]())
+"""
+    result = subprocess.run(
+        [sys.executable, "-P", "-c", script, str(RUNNER)],
+        env=env,
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not _config_file(tmp_path).exists()
 
 
 @requires_vendor

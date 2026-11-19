@@ -5,27 +5,54 @@ from __future__ import annotations
 
 import os
 import runpy
+import sqlite3
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 
 # The one file every claude-smart release up to 0.2.x stored memory in.
 LEGACY_DB_FILENAME = "reflexio.db"
+ORG_ID = "claude-smart"
+
+
+def _incomplete_installation(path: Path, org_id: str) -> bool:
+    """Recognize a first-install reservation before using the legacy config writer."""
+    from reflexio.server.services.storage.sqlite_storage._dataset_path import (
+        DatasetIdentityError,
+    )
+    from reflexio.server.services.storage.sqlite_storage._learning_policy_authority import (
+        verify_sqlite_creation_reservation,
+    )
+    from reflexio.server.services.storage.storage_base.learning_transition import (
+        LearningTransitionBlockedError,
+    )
+
+    try:
+        verify_sqlite_creation_reservation(path, org_id)
+    except (
+        DatasetIdentityError,
+        LearningTransitionBlockedError,
+        OSError,
+        ValueError,
+        sqlite3.Error,
+    ):
+        return False
+    return True
 
 
 def pin_legacy_sqlite_db_path(
     backend_port: int | None = None, backend_host: str | None = None
 ) -> None:
-    """Point the org's SQLite storage at an explicit file when no path is set.
+    """Prepare the Claude Smart dataset and its launch binding.
 
     Newer Reflexio resolves a null ``storage_config.db_path`` per org and
     refuses to adopt a shared ``reflexio.db`` holding rows another org
     labelled, opening an empty ``reflexio_<org>.db`` instead -- which made
     0.3.0 installs look wiped. An explicit path bypasses that resolver.
 
-    The file pinned is ``reflexio.db``, the one every 0.2.x release used,
-    unless only the per-org file exists: an install that began on 0.3.0 keeps
-    everything there. When both exist the history in ``reflexio.db`` wins and
-    the per-org file is named in a warning rather than silently ignored.
+    Existing installations retain their pinned file. For an older installation
+    without a stored path, prefer its legacy file when present. A new install
+    with binding support uses the namespace's own SQLite file.
 
     It must land on disk: uvicorn runs in a child process that re-reads the
     config. A path someone already set, and any non-SQLite storage, is left
@@ -38,8 +65,7 @@ def pin_legacy_sqlite_db_path(
     Returns:
         None: Side effect only -- may rewrite the org config file.
     """
-    org_id = os.environ.get("REFLEXIO_DEFAULT_ORG_ID", "").strip()
-    if os.environ.get("CLAUDE_SMART_BACKEND") != "1" or not org_id:
+    if os.environ.get("CLAUDE_SMART_BACKEND") != "1":
         return
     try:
         # Must precede the imports below: sqlite_storage pulls in LiteLLM,
@@ -63,6 +89,18 @@ def pin_legacy_sqlite_db_path(
             derive_db_path,
         )
 
+        prepare_instance = None
+        if find_spec("reflexio.local_instance") is not None:
+            from reflexio import local_instance
+
+            prepare_instance = getattr(
+                local_instance, "prepare_local_sqlite_instance", None
+            )
+        org_id = ORG_ID
+        if prepare_instance is None:
+            # The installed SDK predates persisted instance bindings.
+            os.environ["REFLEXIO_DEFAULT_ORG_ID"] = org_id
+
         port = (
             backend_port
             if backend_port is not None
@@ -77,9 +115,20 @@ def pin_legacy_sqlite_db_path(
         )
         ensure_requested_ports_available({"backend": port}, host=host)
         storage = LocalFileConfigStorage(org_id=org_id)
-        root = Path(LOCAL_STORAGE_PATH)
+        root = Path(LOCAL_STORAGE_PATH).absolute()
         legacy = root / LEGACY_DB_FILENAME
         derived = derive_db_path(root, org_id)
+        config_path = Path(storage.config_file)
+        if prepare_instance is not None and not config_path.exists():
+            legacy_present = legacy.exists() or legacy.is_symlink()
+            derived_present = derived.exists() or derived.is_symlink()
+            resuming = derived.is_file() and _incomplete_installation(derived, org_id)
+            if resuming and legacy_present:
+                raise RuntimeError("A legacy file appeared during local installation.")
+            if resuming or not (legacy_present or derived_present):
+                prepare_instance(org_id, derived)
+                return
+
         target = derived if derived.exists() and not legacy.exists() else legacy
         warn_legacy = target == legacy and derived.exists()
         pinned_legacy = False
@@ -120,6 +169,8 @@ def pin_legacy_sqlite_db_path(
                 else None
             )
             prepare(edit=pin, initial_document=initial)
+        if prepare_instance is not None:
+            prepare_instance(org_id, target)
         if pinned_legacy:
             print(
                 f"[claude-smart] using {legacy}; memories written by 0.3.0 "
@@ -166,7 +217,6 @@ def main() -> int:
     if (
         reflexio_args[:2] == ["services", "start"]
         and os.environ.get("CLAUDE_SMART_BACKEND") == "1"
-        and os.environ.get("REFLEXIO_DEFAULT_ORG_ID", "").strip()
     ):
         # Use the same parser and precedence as the bundled launcher, including
         # a forwarded --backend-port; unknown Typer options remain its concern.
