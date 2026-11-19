@@ -2383,6 +2383,7 @@ async function runGuidedHost(command, host, options, label, settings, preparedRu
     5000,
   );
   let accepted = false;
+  let registered = false;
   const acceptSettings = () => {
     if (accepted) return;
     accepted = true;
@@ -2405,7 +2406,9 @@ async function runGuidedHost(command, host, options, label, settings, preparedRu
       trackChild(child, !isWindows());
       if (settings || generation) {
         child.on("message", (message) => {
-          if (settings && message === "settings-published") acceptSettings();
+          if (generation && host === HOST_CODEX && message?.codexRegistered === generation) {
+            registered = true;
+          } else if (settings && message === "settings-published") acceptSettings();
           else if (typeof message?.phase === "string") process.stdout.write(`  ${message.phase}\n`);
         });
         const payload = generation
@@ -2446,7 +2449,7 @@ async function runGuidedHost(command, host, options, label, settings, preparedRu
         process.stderr.write("  Account settings were saved. Retry setup to finish registration.\n");
       process.stderr.write(`  ${label} failed. Details: ${log}\n`);
     }
-    return { code, log };
+    return { code, log, registered };
   } finally {
     clearInterval(timer);
     closeSync(fd);
@@ -2673,41 +2676,17 @@ function readGuidedShutdown() {
   }
 }
 
-function standaloneRuntimeRoot(host) {
-  if (host === HOST_CODEX) return CODEX_RUNTIME_PLUGIN_ROOT;
-  if (host === HOST_OPENCODE) return join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin");
-  if (host === HOST_CLAUDE_CODE) return join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin");
-  return null;
-}
-
-function selectStandaloneRuntime(host, pluginRoot) {
-  const previous = readGuidedShutdown();
-  if (previous && activePluginRoot() === previous.root && !sameRealPath(previous.root, pluginRoot)) {
-    if (!sameRealPath(standaloneRuntimeRoot(host), pluginRoot))
-      throw new Error("The standalone runtime does not match the prepared host");
-    recordGuidedShutdown({ target: realpathSync(pluginRoot) }, previous);
-    forcePluginRoot(pluginRoot);
-  } else if (host === HOST_CLAUDE_CODE) {
-    forcePluginRoot(pluginRoot);
-  } else {
-    ensurePluginRoot(pluginRoot);
-  }
-}
-
 async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
   const pending = readGuidedShutdown();
   if (!pending) return;
-  const target = typeof pending.target === "string" && isAbsolute(pending.target)
-    ? pending.target
-    : typeof pending.id === "string" && /^runtime-[A-Za-z0-9]{6}$/.test(pending.id)
-      ? join(realpathSync(GUIDED_RUNTIME_DIR), pending.id, "plugin")
-      : null;
-  if (!target) throw new Error("The pending shared service shutdown record is invalid");
+  if (typeof pending.id !== "string" || !/^runtime-[A-Za-z0-9]{6}$/.test(pending.id))
+    throw new Error("The pending shared service shutdown record is invalid");
+  const target = join(realpathSync(GUIDED_RUNTIME_DIR), pending.id, "plugin");
   const current = activePluginRoot();
   if (typeof pending.root !== "string" || !isAbsolute(pending.root) ||
       (!pending.status || typeof pending.status !== "object"))
     throw new Error("The pending shared service shutdown record is invalid");
-  if (current === target || (current && sameRealPath(current, target))) {
+  if (current === target) {
     if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
       throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
     await stopServicesForInstall(pending.root, null, pending.status);
@@ -2803,17 +2782,18 @@ async function runGuidedCommand(command, args) {
   );
   let deferredSettings;
   let preparedRuntime;
-  let carriedBaseline;
   await guide
     .runGuide(command, args, {
       inventory: installInventory,
       saved: () => saved,
       save: async (config, options) => {
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
-        carriedBaseline = await resumeGuidedShutdown();
+        const baseline = await resumeGuidedShutdown();
         const settings = planInstallSettings(config, captured);
-        if (config.hosts.length > 1) {
-          preparedRuntime = await prepareGuidedRuntime(config, options, settings, carriedBaseline);
+        // Recovery keeps the previous generation intact until registration is
+        // complete, even when the user retries with just one host.
+        if (config.hosts.length > 1 || baseline) {
+          preparedRuntime = await prepareGuidedRuntime(config, options, settings, baseline);
           return;
         }
         if (config.hosts.length === 1 && [HOST_CODEX, HOST_OPENCODE].includes(config.hosts[0])) {
@@ -2852,23 +2832,9 @@ async function runGuidedCommand(command, args) {
         return runGuidedHost(action, host, options, label, deferredSettings, preparedRuntime);
       },
       finish: async (action, config, results) => {
-        const succeeded = results.some((result) => result.code === 0);
-        let root;
-        if (action !== "uninstall" && !succeeded) {
-          // A standalone worker can fail hook trust after committing its runtime.
-          // Finish the cutover only if its recorded target was actually selected.
-          if (!carriedBaseline || preparedRuntime) return;
-          const pending = readGuidedShutdown();
-          const selected = activePluginRoot();
-          if (!pending?.target || !selected || !sameRealPath(selected, pending.target)) {
-            await resumeGuidedShutdown();
-            return;
-          }
-          await resumeGuidedShutdown();
-          root = selected;
-        } else {
-          root = preparedRuntime ? readGuidedRuntime(preparedRuntime.id).pluginRoot : activePluginRoot();
-        }
+        if (action !== "uninstall" &&
+            !results.some((result) => result.code === 0 || result.registered)) return;
+        let root = preparedRuntime ? readGuidedRuntime(preparedRuntime.id).pluginRoot : activePluginRoot();
         if (!root || !existsSync(join(root, "scripts", "backend-service.sh")))
           return;
         if (action === "uninstall") {
@@ -2913,12 +2879,6 @@ async function runGuidedCommand(command, args) {
           }
           commitInstallState();
           await resumeGuidedShutdown();
-        } else if (carriedBaseline && succeeded) {
-          const remaining = await resumeGuidedShutdown();
-          if (remaining) {
-            await stopServicesForInstall(remaining.root, null, remaining.status);
-            rmSync(GUIDED_PENDING_SHUTDOWN, { force: true });
-          }
         }
         let setup;
         try {
@@ -4526,10 +4486,14 @@ async function runInstall(args, options = {}) {
   const settings = runtime ? null : message;
   if (runtime) {
     verifyLocalPluginPackage(runtime.packageRoot, "guided runtime");
-    if (process.connected) process.disconnect();
+    if (host !== HOST_CODEX && process.connected) process.disconnect();
   }
   if (host === HOST_CODEX) {
-    await runInstallCodex(settings, runtime);
+    try {
+      await runInstallCodex(settings, runtime);
+    } finally {
+      if (runtime && process.connected) process.disconnect();
+    }
     return;
   }
   if (host === HOST_OPENCODE) {
@@ -4588,7 +4552,7 @@ async function runInstall(args, options = {}) {
           "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
         );
       }
-      selectStandaloneRuntime(HOST_CLAUDE_CODE, pluginRoot);
+      forcePluginRoot(pluginRoot);
     }
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
     markLocalPluginPackagePrepared(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
@@ -4777,7 +4741,7 @@ async function runInstallCodex(settings, runtime) {
       );
     }
     cacheDir = installCodexPluginCache(codexMarketplacePluginRoot(marketplaceRoot));
-    if (!runtime) selectStandaloneRuntime(HOST_CODEX, pluginRoot);
+    if (!runtime) ensurePluginRoot(pluginRoot);
     process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
     if (readOnly) {
       process.stdout.write(
@@ -4814,6 +4778,10 @@ async function runInstallCodex(settings, runtime) {
     process.stderr.write(
       `Run /hooks in Codex to review and trust the claude-smart hooks, then start a new session.\n`,
     );
+    // Registration was committed before the separate hook-trust operation.
+    if (runtime && process.connected) {
+      await new Promise((resolve) => process.send({ codexRegistered: runtime.id }, resolve));
+    }
     process.exit(1);
   } else {
     process.stdout.write(`Trusted and enabled ${trustedHookCount} claude-smart Codex hooks.\n`);
@@ -4915,7 +4883,7 @@ async function runInstallOpenCode(args, settings, runtime, scopedPlan) {
     await publishFromPreparedRuntime(pluginRoot, settings, plan.loader);
     setup = readInstallPolicy();
   }
-  if (!runtime) selectStandaloneRuntime(HOST_OPENCODE, pluginRoot);
+  if (!runtime) ensurePluginRoot(pluginRoot);
   stageOpenCodeRegistration(plan.loader.path, runtime);
   runScopedOpenCode(pluginRoot, "publish", plan.edits);
   // Keep the prepared runtime once a loader can refer to it.

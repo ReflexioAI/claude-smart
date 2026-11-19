@@ -3,8 +3,8 @@
 import json
 import os
 import shlex
-import signal
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 from tests.test_install_scripts import (
-    _copy_codex_install_sources,
     REPO_ROOT,
+    _copy_codex_install_sources,
     _fake_claude_code_package,
     _write_bootstrap_uv,
     _write_executable,
@@ -607,7 +607,13 @@ fs.renameSync = (from, to) => {
         if failure == "interrupted-after-save":
             _write_bootstrap_uv(uv, mode="non_lock_failure")
             refused = subprocess.run(
-                args, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60
+                args,
+                check=False,
+                cwd=tmp_path,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             assert refused.returncode == 1
             assert "uv sync failed" in refused.stderr
@@ -615,7 +621,13 @@ fs.renameSync = (from, to) => {
             assert pending.exists()
             _write_bootstrap_uv(uv, mode="fresh")
         recovered = subprocess.run(
-            args, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60
+            args,
+            check=False,
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert recovered.returncode == 0, recovered.stdout + recovered.stderr
         assert not pending.exists()
@@ -639,6 +651,7 @@ fs.renameSync = (from, to) => {
                 "--host",
                 "opencode",
             ],
+            check=False,
             cwd=tmp_path,
             env=env,
             capture_output=True,
@@ -659,7 +672,13 @@ fs.renameSync = (from, to) => {
             )
         )
         again = subprocess.run(
-            args, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60
+            args,
+            check=False,
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert again.returncode == 1
         status = subprocess.run(
@@ -670,6 +689,7 @@ fs.renameSync = (from, to) => {
                 "--host",
                 "opencode",
             ],
+            check=False,
             cwd=tmp_path,
             env=env,
             capture_output=True,
@@ -689,7 +709,13 @@ fs.renameSync = (from, to) => {
         assert selected.resolve() != old_root
         env.pop("FIXTURE_UNSTOPPABLE")
         recovered = subprocess.run(
-            args, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60
+            args,
+            check=False,
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert recovered.returncode == 0, recovered.stdout + recovered.stderr
         assert not pending.exists()
@@ -1542,15 +1568,12 @@ def test_codex_marketplace_never_replaces_legacy_claude_runtime(tmp_path, phase)
 
 
 @pytest.mark.parametrize(
-    ("host", "failure"),
+    ("host", "predecessor_host", "failure"),
     [
-        ("codex", "trust"),
+        ("codex", "opencode", "trust"),
+        ("codex", "codex", "trust"),
         pytest.param(
             "opencode",
-            "interrupt",
-            marks=pytest.mark.skipif(os.name == "nt", reason="uses POSIX SIGKILL"),
-        ),
-        pytest.param(
             "codex",
             "interrupt",
             marks=pytest.mark.skipif(os.name == "nt", reason="uses POSIX SIGKILL"),
@@ -1558,9 +1581,8 @@ def test_codex_marketplace_never_replaces_legacy_claude_runtime(tmp_path, phase)
     ],
 )
 def test_single_host_retry_recovers_abandoned_multihost_selection(
-    tmp_path, host, failure
+    tmp_path, host, predecessor_host, failure
 ):
-    predecessor_host = "opencode" if host == "codex" else "codex"
     package, predecessor, uv, env = _fixture(tmp_path, predecessor_host)
     _write_bootstrap_uv(uv, mode="fresh")
     env.pop("CLAUDE_SMART_INSTALL_CHILD")
@@ -1592,43 +1614,42 @@ def test_single_host_retry_recovers_abandoned_multihost_selection(
             )
         )
     else:
-        preload = tmp_path / "interrupt-standalone-selection.cjs"
+        preload = tmp_path / "interrupt-before-opencode-registration.cjs"
         preload.write_text("""
-const fs = require("node:fs"), path = require("node:path");
+const fs = require("node:fs");
 const rename = fs.renameSync;
 fs.renameSync = (source, target) => {
   const result = rename(source, target);
-  if (process.send && target === path.join(process.env.HOME, ".reflexio/plugin-root")) {
-    process.kill(process.ppid, "SIGKILL");
+  if (process.send && target.includes("opencode-registrations") && target.endsWith(".pending"))
     process.kill(process.pid, "SIGKILL");
-  }
   return result;
 };
 """)
         env["NODE_OPTIONS"] = f'--require "{preload}"'
-    installer = [node_bin(), str(package / "bin/claude-smart.js")]
-    result = subprocess.run(
-        [
-            *installer,
-            "update",
-            "--host",
-            host,
-            "--backend",
-            "local",
-            "--provider",
-            "codex",
-            "--yes",
-        ],
-        cwd=tmp_path,
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=60,
-    )
+    update = [
+        node_bin(),
+        str(package / "bin/claude-smart.js"),
+        "update",
+        "--host",
+        host,
+        "--backend",
+        "local",
+        "--provider",
+        "codex",
+        "--yes",
+    ]
+    run_options = {
+        "cwd": tmp_path,
+        "env": env,
+        "text": True,
+        "capture_output": True,
+        "timeout": 60,
+    }
+    result = subprocess.run(update, check=False, **run_options)
+    assert result.returncode == 1, result.stdout + result.stderr
     selector = tmp_path / ".reflexio/plugin-root"
-    assert selector.resolve() != predecessor
     if failure == "trust":
-        assert result.returncode == 1, result.stdout + result.stderr
+        assert selector.resolve().parent.parent == state
         assert not receipt.exists()
         logs = list((tmp_path / ".claude-smart/install-logs").glob("update-codex-*"))
         assert "review and trust" in logs[0].read_text()
@@ -1642,23 +1663,17 @@ fs.renameSync = (source, target) => {
             and Path(row["root"]) == selector.resolve()
             for row in calls
         )
-        env["CLAUDE_SMART_BACKEND_AUTOSTART"] = "0"
+        assert (predecessor / "identity").read_text() == "old"
     else:
-        assert result.returncode == -signal.SIGKILL
+        assert selector.resolve() == predecessor
         pending = json.loads(receipt.read_text())
-        assert Path(pending["target"]) == selector.resolve()
-        if host == "codex":
-            env["CODEX_HOME"] = str(tmp_path / ".another-codex-home")
-        os.utime(state / ".install.lock", (1, 1))
+        assert pending["root"] == str(predecessor)
+        assert pending["id"] != "runtime-AbCd12"
+        assert not (tmp_path / "fixture-backend-stopped").exists()
+        assert not (tmp_path / "fixture-dashboard-stopped").exists()
         env.pop("NODE_OPTIONS")
-    recovery_host = "opencode" if host == "codex" and failure == "interrupt" else host
-    removed = subprocess.run(
-        [*installer, "uninstall", "--host", recovery_host],
-        cwd=tmp_path,
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=60,
-    )
-    assert removed.returncode == 0, removed.stdout + removed.stderr
-    assert not receipt.exists()
+        env["CODEX_HOME"] = str(tmp_path / ".another-codex-home")
+        retry = subprocess.run(update, check=False, **run_options)
+        assert retry.returncode == 0, retry.stdout + retry.stderr
+        assert selector.resolve().parent.parent == state
+        assert not receipt.exists()
