@@ -240,6 +240,11 @@ Installing or removing Codex leaves that legacy runtime intact. Codex writes
 the commands for its prepared runtime to the marketplace and cache manifests.
 New Codex hooks use a pinned Node executable so replacing the installer's
 current Node does not interrupt them.
+Guided setup records the selected runtime under the claude-smart account. Current
+commands use that selection even if a running legacy hook rewrites
+`~/.reflexio/plugin-root`. Standalone installs can still use that compatibility
+path.
+
 The prepared Codex package retains the bundled manifests. For a guided install
 of Codex or OpenCode by itself, the installer prepares the runtime and the
 host's hook manifest or loader before saving confirmed settings through the

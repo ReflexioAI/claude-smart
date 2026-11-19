@@ -1739,7 +1739,10 @@ fs.renameSync = (source, target) => {
 
 
 @pytest.mark.parametrize("codex_stays_enabled", [True, False])
-def test_uninstall_checks_surviving_codex_home(tmp_path, codex_stays_enabled):
+@pytest.mark.parametrize("legacy_hook_repointed", [True, False])
+def test_uninstall_checks_surviving_codex_home(
+    tmp_path, codex_stays_enabled, legacy_hook_repointed
+):
     package, _old, uv, env = _fixture(tmp_path, "codex", installed=False)
     _write_bootstrap_uv(uv, mode="fresh")
     env.pop("CLAUDE_SMART_INSTALL_CHILD")
@@ -1747,6 +1750,10 @@ def test_uninstall_checks_surviving_codex_home(tmp_path, codex_stays_enabled):
     codex = tmp_path / "fake-bin/codex"
     codex.write_text(
         codex.read_text().replace("#!/usr/bin/env node", f"#!{node_bin()}", 1)
+    )
+    _write_executable(
+        package / "plugin/scripts/cli.sh",
+        '#!/bin/sh\nprintf "%s:%s\n" "$(dirname "$0")" "$*"\n',
     )
     launcher = [node_bin(), str(package / "bin/claude-smart.js")]
     run_options = {
@@ -1774,6 +1781,20 @@ def test_uninstall_checks_surviving_codex_home(tmp_path, codex_stays_enabled):
     assert setup.returncode == 0, setup.stdout + setup.stderr
     selector = tmp_path / ".reflexio/plugin-root"
     saved = selector.resolve()
+    record = saved.parents[1] / "selected"
+    assert record.read_text() == saved.parent.name
+    if legacy_hook_repointed:
+        legacy = tmp_path / "old-hook-runtime"
+        shutil.copytree(package / "plugin", legacy)
+        selector.unlink()
+        selector.symlink_to(legacy, target_is_directory=True)
+    command = subprocess.run(
+        ["bash", str(record.with_name("guided-command.sh")), "cli.sh", "show"],
+        check=False,
+        **run_options,
+    )
+    assert command.returncode == 0, command.stderr
+    assert command.stdout.strip() == f"{saved / 'scripts'}:show"
     home = Path(env["CODEX_HOME"])
     if not codex_stays_enabled:
         config = home / "config.toml"
@@ -1787,7 +1808,9 @@ def test_uninstall_checks_surviving_codex_home(tmp_path, codex_stays_enabled):
     assert removed.returncode == 0, removed.stdout + removed.stderr
     assert not (tmp_path / ".opencode/plugins/claude-smart.js").exists()
     if codex_stays_enabled:
-        assert selector.resolve() == saved
+        if not legacy_hook_repointed:
+            assert selector.resolve() == saved
+        assert record.read_text() == saved.parent.name
         assert "Refreshing shared services" in removed.stdout
         env["CODEX_HOME"] = str(home)
         cleared = subprocess.run(
@@ -1795,3 +1818,4 @@ def test_uninstall_checks_surviving_codex_home(tmp_path, codex_stays_enabled):
         )
         assert cleared.returncode == 0, cleared.stdout + cleared.stderr
     assert not selector.exists()
+    assert not record.exists()

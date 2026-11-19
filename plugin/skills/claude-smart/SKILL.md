@@ -13,13 +13,13 @@ shell commands there.
 
 ## Command Map
 
-- Dashboard: `bash ~/.reflexio/plugin-root/scripts/dashboard-open.sh`
-- Load the full text of injected learnings: `bash ~/.reflexio/plugin-root/scripts/cli.sh load --session <session-id> <id> [<id> ...]` (the injected index header gives the exact command)
-- Show learned state: `bash ~/.reflexio/plugin-root/scripts/cli.sh show`
-- Learn from the latest turn: `bash ~/.reflexio/plugin-root/scripts/cli.sh learn`
-- Learn with a note: `bash ~/.reflexio/plugin-root/scripts/cli.sh learn --note "<note>"`
-- Restart backend/dashboard: `bash ~/.reflexio/plugin-root/scripts/cli.sh restart`
-- Clear all learned state: `bash ~/.reflexio/plugin-root/scripts/cli.sh clear-all --yes`
+- Dashboard: `bash ~/.claude-smart/guided-runtimes/guided-command.sh dashboard-open.sh`
+- Load the full text of injected learnings: `bash ~/.claude-smart/guided-runtimes/guided-command.sh cli.sh load --session <session-id> <id> [<id> ...]` (the injected index header gives the exact command)
+- Show learned state: `bash ~/.claude-smart/guided-runtimes/guided-command.sh cli.sh show`
+- Learn from the latest turn: `bash ~/.claude-smart/guided-runtimes/guided-command.sh cli.sh learn`
+- Learn with a note: `bash ~/.claude-smart/guided-runtimes/guided-command.sh cli.sh learn --note "<note>"`
+- Restart backend/dashboard: `bash ~/.claude-smart/guided-runtimes/guided-command.sh cli.sh restart`
+- Clear all learned state: `bash ~/.claude-smart/guided-runtimes/guided-command.sh cli.sh clear-all --yes`
 
 ## Behavior
 
@@ -28,7 +28,8 @@ shell commands there.
 2. For `learn`, preserve any user-provided note exactly as the note text.
 3. For `clear-all`, require explicit confirmation before running it because it
    deletes all reflexio interactions, preferences, and skills.
-4. If `~/.reflexio/plugin-root` is missing or broken, rerun
-   `npx claude-smart install --host codex` to repair installation, then tell the
-   user to start a new Codex session and rerun the command.
+4. On a standalone install without the guided launcher, run the same script
+   from `~/.reflexio/plugin-root/scripts/` instead. If the selected runtime is
+   unavailable, rerun `npx claude-smart install --host codex` and start a new
+   Codex session.
 5. After running a command, summarize the important output concisely.

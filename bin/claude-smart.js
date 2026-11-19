@@ -78,6 +78,7 @@ const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const GUIDED_RUNTIME_DIR = join(CLAUDE_SMART_STATE_DIR, "guided-runtimes");
 const GUIDE_INSTALL_LOCK = join(GUIDED_RUNTIME_DIR, "guide");
+const GUIDED_SELECTED_RUNTIME = join(GUIDED_RUNTIME_DIR, "selected");
 const GUIDED_PENDING_SHUTDOWN = join(GUIDED_RUNTIME_DIR, "pending-shutdown.json");
 const GUIDED_CODEX_HOMES = join(GUIDED_RUNTIME_DIR, "codex-homes");
 const GUIDED_OPENCODE_REGISTRATIONS = join(GUIDED_RUNTIME_DIR, "opencode-registrations");
@@ -912,9 +913,24 @@ function compareSemverLikePathNames(a, b) {
   return 0;
 }
 
-// The root ~/.reflexio/plugin-root currently points at, if it is still a
-// usable plugin dir (npm may have pruned an npx target).
+// Guided installs own their selection. Already-loaded legacy integrations can
+// still rewrite ~/.reflexio/plugin-root without changing the guided selection.
 function activePluginRoot() {
+  let selected;
+  try {
+    selected = lstatSync(GUIDED_SELECTED_RUNTIME);
+  } catch (error) {
+    if (error?.code !== "ENOENT") return null;
+  }
+  if (selected) {
+    try {
+      if (!selected.isFile()) return null;
+      const { pluginRoot } = readGuidedRuntime(readFileSync(GUIDED_SELECTED_RUNTIME, "utf8"));
+      return existsSync(join(pluginRoot, "scripts", "backend-service.sh")) ? pluginRoot : null;
+    } catch {
+      return null;
+    }
+  }
   let root = null;
   try {
     root = realpathSync(join(REFLEXIO_DIR, "plugin-root"));
@@ -962,6 +978,7 @@ function installedPluginRoots(codexSurvivors = guidedCodexPluginRoots()) {
 }
 
 function pluginRootIsBroken() {
+  if (pathEntryExists(GUIDED_SELECTED_RUNTIME)) return !activePluginRoot();
   const hasRuntime = (root) => existsSync(join(root, "scripts", "backend-service.sh"));
   const link = join(REFLEXIO_DIR, "plugin-root");
   try {
@@ -989,6 +1006,7 @@ function pluginRootIsBroken() {
 // link left pointing at deleted files is repointed at a remaining install,
 // or removed when none is left.
 function clearPluginRoot() {
+  rmSync(GUIDED_SELECTED_RUNTIME, { force: true });
   rmSync(join(REFLEXIO_DIR, "plugin-root"), { force: true });
   rmSync(join(REFLEXIO_DIR, "plugin-root.txt"), { force: true });
 }
@@ -1034,6 +1052,21 @@ function hostForPluginRoot(root) {
 }
 
 function forcePluginRoot(pluginRoot) {
+  forceLegacyPluginRoot(pluginRoot);
+  recordGuidedSelection(pluginRoot);
+}
+
+function recordGuidedSelection(pluginRoot) {
+  if (isGuidedPluginRoot(pluginRoot)) {
+    const launcher = readFileSync(join(pluginRoot, "scripts", "guided-command.sh"));
+    writeGuidedRecord(join(GUIDED_RUNTIME_DIR, "guided-command.sh"), launcher);
+    writeGuidedRecord(GUIDED_SELECTED_RUNTIME, basename(dirname(pluginRoot)));
+  } else {
+    rmSync(GUIDED_SELECTED_RUNTIME, { force: true });
+  }
+}
+
+function forceLegacyPluginRoot(pluginRoot) {
   mkdirSync(REFLEXIO_DIR, { recursive: true });
   const link = join(REFLEXIO_DIR, "plugin-root");
   try {
@@ -1321,8 +1354,7 @@ function restoreInstallState() {
       repairPluginRoot();
     } else {
       // A failed first install must not leave its newly published root selected.
-      rmSync(join(REFLEXIO_DIR, "plugin-root"), { force: true });
-      rmSync(join(REFLEXIO_DIR, "plugin-root.txt"), { force: true });
+      clearPluginRoot();
     }
     if (snapshot.failureMarker === null) rmSync(INSTALL_FAILURE_MARKER, { force: true });
     else if (snapshot.failureMarker !== undefined)
@@ -2728,6 +2760,7 @@ async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
       (!pending.status || typeof pending.status !== "object"))
     throw new Error("The pending shared service shutdown record is invalid");
   if (current === target) {
+    if (!pathEntryExists(GUIDED_SELECTED_RUNTIME)) recordGuidedSelection(target);
     if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
       throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
     await stopServicesForInstall(pending.root, null, pending.status);
@@ -2836,7 +2869,7 @@ async function runGuidedCommand(command, args) {
         const settings = planInstallSettings(config, captured);
         // Recovery keeps the previous generation intact until registration is
         // complete, even when the user retries with just one host.
-        if (config.hosts.length > 1 || baseline) {
+        if (config.hosts.length > 1 || baseline || pathEntryExists(GUIDED_SELECTED_RUNTIME)) {
           preparedRuntime = await prepareGuidedRuntime(config, options, settings, baseline);
           return;
         }

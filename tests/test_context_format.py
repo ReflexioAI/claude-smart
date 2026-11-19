@@ -770,3 +770,13 @@ def test_render_loaded_item_prints_full_text() -> None:
         "Why: stale lockfile broke CI\n"
         "Open: http://localhost:3001/rules/s1-17\n"
     )
+
+
+def test_guided_index_header_uses_the_account_launcher(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    launcher = tmp_path / ".claude-smart/guided-runtimes/guided-command.sh"
+    launcher.parent.mkdir(parents=True)
+    launcher.touch()
+    header = context_format._index_header("session-example")
+    assert "guided-command.sh cli.sh load --session session-example" in header

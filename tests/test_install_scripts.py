@@ -1363,6 +1363,7 @@ def _fake_claude_code_package(tmp_path: Path, smart_install: str) -> Path:
         shutil.copy2(REPO_ROOT / "plugin" / name, package_root / "plugin" / name)
     # Shared Node preparation invokes the real import-light repair owner.
     _copy_prepared_policy_owner(package_root / "plugin")
+    shutil.copy2(REPO_ROOT / "plugin/scripts/guided-command.sh", scripts)
     _write_executable(scripts / "smart-install.sh", smart_install)
     _write_executable(
         scripts / "backend-service.sh",
