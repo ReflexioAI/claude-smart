@@ -336,6 +336,13 @@ if (typeof process.send === "function") {
         assert "Preparing Python and runtime dependencies" in result.stdout
         assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
         assert (root / "identity").read_text() == "new"
+        marketplace = tmp_path / ".codex/claude-smart/marketplace"
+        manifest = next(marketplace.rglob("codex-hooks.json"))
+        contents = manifest.read_text()
+        launchers = list((tmp_path / ".claude-smart/node/launchers").glob("*/bin/node"))
+        assert len(launchers) == 1
+        assert str(launchers[0].resolve()) in contents
+        assert str(node.resolve()) not in contents
         return
 
     assert result.returncode != 0

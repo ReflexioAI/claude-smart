@@ -69,6 +69,87 @@ process.stdout.write(JSON.stringify(result));`;
     assert.equal(fs.readFileSync(path.join(source,"scripts/backend-service.sh"),"utf8"),"owned sentinel");
 });
 
+test("an installed hook launcher survives replacement of the private Node", t => {
+  const { spawnSync } = require("node:child_process");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hook launcher λ "));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const script = `
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+const { pinHookNode } = require(process.argv[1]);
+const owner = path.join(process.env.USERPROFILE, ".claude-smart", "node");
+const current = path.join(owner, "current");
+const name = process.platform === "win32" ? "node.exe" : "node";
+const mutable = path.join(current, ...(process.platform === "win32" ? [] : ["bin"]), name);
+fs.mkdirSync(path.dirname(mutable), { recursive: true });
+fs.copyFileSync(process.execPath, mutable, fs.constants.COPYFILE_FICLONE);
+// The Homebrew build uses a relative sibling libnode dylib.
+if (process.platform === "darwin") {
+  const lib = path.resolve(fs.realpathSync(process.execPath), "../../lib");
+  if (fs.existsSync(lib)) {
+    for (const entry of fs.readdirSync(lib).filter(entry => /^libnode[.].*[.]dylib$/.test(entry))) {
+      const to = path.join(current, "lib", entry);
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.copyFileSync(path.join(lib, entry), to, fs.constants.COPYFILE_FICLONE);
+    }
+  }
+}
+const escape = path.join(current, "escape");
+if (process.platform === "win32") {
+  const outside = path.join(owner, "outside");
+  fs.mkdirSync(outside);
+  fs.symlinkSync(outside, escape, "junction");
+} else {
+  fs.mkdirSync(path.join(current, "deep"));
+  fs.mkdirSync(path.join(current, "real"));
+  fs.writeFileSync(path.join(current, "outside"), "inside");
+  fs.writeFileSync(path.join(owner, "outside"), "outside");
+  fs.symlinkSync("../real", path.join(current, "deep", "hop"));
+  fs.symlinkSync("deep/hop/../../outside", escape);
+}
+assert.throws(() => pinHookNode(mutable), /link outside/);
+fs.unlinkSync(escape);
+fs.writeFileSync(path.join(current, "sibling"), "also part of the snapshot");
+const pinned = pinHookNode(mutable);
+const launchers = path.join(fs.realpathSync.native(owner), "launchers");
+assert.ok(pinned.startsWith(launchers + path.sep));
+assert.equal(pinHookNode(mutable), pinned);
+assert.throws(() => pinHookNode(process.execPath), /outside the private Node distribution/);
+fs.renameSync(current, path.join(owner, "previous"));
+fs.mkdirSync(path.dirname(mutable), { recursive: true });
+fs.writeFileSync(mutable, "unrelated later Node");
+const launched = spawnSync(pinned, ["-p", "process.version"], { encoding: "utf8", timeout: 10000 });
+assert.equal(launched.status, 0, launched.stderr);
+assert.equal(launched.stdout.trim(), process.version);
+
+fs.rmSync(current, { recursive: true });
+fs.renameSync(path.join(owner, "previous"), current);
+if (process.platform !== "win32") {
+  const snapshot = path.join(launchers, fs.readdirSync(launchers)[0]);
+  const sibling = path.join(snapshot, "sibling");
+  const mode = fs.statSync(sibling).mode & 0o777;
+  fs.chmodSync(sibling, mode ^ 0o100);
+  assert.throws(() => pinHookNode(mutable), /does not match/);
+  fs.chmodSync(sibling, mode);
+}
+fs.chmodSync(pinned, 0o700);
+fs.writeFileSync(pinned, "bad cached executable");
+assert.throws(() => pinHookNode(mutable), /does not match/);
+assert.equal(fs.readFileSync(pinned, "utf8"), "bad cached executable");
+assert.equal(fs.readdirSync(path.join(owner, "launchers")).length, 1);
+`;
+  const env = { ...process.env, HOME: root, USERPROFILE: root };
+  delete env.NODE_OPTIONS;
+  const result = spawnSync(
+    process.execPath,
+    ["-e", script, path.resolve(__dirname, "../bin/claude-smart.js")],
+    { env, encoding: "utf8", timeout: 30000 },
+  );
+  assert.equal(result.status, 0, result.stderr || result.error?.message);
+});
+
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-reuse-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
