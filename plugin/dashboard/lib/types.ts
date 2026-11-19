@@ -124,7 +124,7 @@ export interface ClaudeSmartConfig {
   CLAUDE_SMART_USE_LOCAL_CLI: boolean;
   CLAUDE_SMART_READ_ONLY: boolean;
   CLAUDE_SMART_CLI_PATH: string;
-  CLAUDE_SMART_CLI_TIMEOUT: string;
+  CLAUDE_SMART_CLI_TIMEOUT?: string;
   CLAUDE_SMART_STATE_DIR: string;
   [extra: string]: string | boolean | undefined;
 }

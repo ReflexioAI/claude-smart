@@ -210,7 +210,7 @@ export default function ConfigureEnvPage() {
                     update("CLAUDE_SMART_CLI_TIMEOUT", e.target.value)
                   }
                   className="font-mono text-xs bg-background/80"
-                  placeholder="120"
+                  placeholder="No saved override"
                 />
               </div>
 
