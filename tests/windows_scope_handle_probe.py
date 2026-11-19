@@ -75,6 +75,22 @@ with tempfile.TemporaryDirectory(prefix="rx-open-scope-") as tmp:
     (outside / "claude-smart.js").write_text("outside sentinel", encoding="utf-8")
     leaf = scope / "claude-smart.js"
     leaf.write_text("original", encoding="utf-8")
+    node_identity = subprocess.check_output(
+        [
+            "node",
+            "-e",
+            "const s = require('fs').lstatSync(process.argv[1], {bigint:true});"
+            "console.log(String(s.dev) + ':' + String(s.ino));",
+            str(leaf),
+        ],
+        text=True,
+    ).strip()
+    python_stat = leaf.stat()
+    python_identity = f"{python_stat.st_dev}:{python_stat.st_ino}"
+    print(
+        json.dumps({"node_identity": node_identity, "python_identity": python_identity})
+    )
+    assert node_identity == python_identity
     pinned_parent = open_directory(parent)
     pinned_scope = open_directory(scope)
     try:
