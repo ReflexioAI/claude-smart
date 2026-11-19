@@ -172,7 +172,13 @@ def pin_legacy_sqlite_db_path(
             )
             prepare(edit=pin, initial_document=initial)
         if prepare_instance is not None:
-            prepare_instance(org_id, target)
+            saved = storage.load_config().storage_config
+            saved_path = None
+            if isinstance(saved, StorageConfigSQLite):
+                if saved.db_path is None:
+                    raise RuntimeError("The prepared SQLite configuration has no file.")
+                saved_path = Path(saved.db_path)
+            prepare_instance(org_id, saved_path)
         if pinned_legacy:
             print(
                 f"[claude-smart] using {legacy}; memories written by 0.3.0 "

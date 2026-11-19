@@ -290,8 +290,9 @@ def test_backend_runner_pins_a_fresh_install(tmp_path: Path) -> None:
 
 @requires_vendor
 @pytest.mark.parametrize("stale", [False, True])
+@pytest.mark.parametrize("storage", ["fresh", "custom", "non_sqlite"])
 def test_backend_runner_uses_sdk_binding_capability_without_exporting_selector(
-    tmp_path: Path, stale: bool,
+    tmp_path: Path, stale: bool, storage: str,
 ) -> None:
     env = _env(tmp_path)
     env.pop("REFLEXIO_DEFAULT_ORG_ID")
@@ -305,6 +306,21 @@ import runpy
 import sys
 import types
 from pathlib import Path
+from reflexio.config_file import encode_local_config_document
+
+kind = sys.argv[2]
+root = Path(os.environ["LOCAL_STORAGE_PATH"])
+expected = root / "reflexio_claude-smart.db"
+if kind != "fresh":
+    if kind == "custom":
+        expected = root / "custom.db"
+        storage = {"type": "sqlite", "db_path": str(expected)}
+    else:
+        expected = None
+        storage = {"type": "postgres", "db_url": "postgresql://local:fixture@localhost/db"}
+    config = Path.home() / ".reflexio" / "configs" / "config_claude-smart.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(encode_local_config_document({"storage_config": storage}))
 
 runner = runpy.run_path(sys.argv[1])
 local_instance = types.ModuleType("reflexio.local_instance")
@@ -318,7 +334,7 @@ def prepare(org, path):
     calls.append((org, path))
 
 def delegate(*args, **kwargs):
-    assert calls == [("claude-smart", Path(os.environ["LOCAL_STORAGE_PATH"]) / "reflexio_claude-smart.db")]
+    assert calls == [("claude-smart", expected)]
     assert os.environ.get("REFLEXIO_DEFAULT_ORG_ID") == selector
 
 local_instance.prepare_local_sqlite_instance = prepare
@@ -327,7 +343,7 @@ sys.argv = ["runner", "--claude-smart-backend=1", "--", "services", "start", "--
 raise SystemExit(runner["main"]())
 """
     result = subprocess.run(
-        [sys.executable, "-P", "-c", script, str(RUNNER)],
+        [sys.executable, "-P", "-c", script, str(RUNNER), storage],
         env=env,
         cwd=tmp_path,
         text=True,
@@ -337,7 +353,7 @@ raise SystemExit(runner["main"]())
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert not _config_file(tmp_path).exists()
+    assert _config_file(tmp_path).exists() == (storage != "fresh")
 
 
 @requires_vendor
