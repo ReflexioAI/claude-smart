@@ -192,11 +192,13 @@ runtime and saves confirmed settings through that runtime's Python interpreter.
 The selected integrations register against it without rebuilding Python or
 the dashboard. A registration can be retried after settings were saved.
 If setup stops after selecting a prepared runtime, the next setup resumes
-starting its services before preparing another replacement. A registered Codex
-home or OpenCode project counts as installed while its enabled plugin or loader
-still points to a usable runtime. Hooks and commands use the prepared Python
-environment. Rerun `npx claude-smart setup` to repair that environment or its
-dashboard build.
+starting its services before preparing another replacement. Setup retains that
+startup record until the configured local services answer their readiness probes,
+so an unsuccessful replacement cannot lose the current startup work. The default
+Codex home, another recorded Codex home, or an OpenCode project counts as installed
+while its enabled plugin or loader points to a usable runtime. Hooks and commands
+use the prepared Python environment. Restart uses the prepared dashboard build.
+Rerun `npx claude-smart setup` to repair the environment or dashboard build.
 
 Dashboard saves use the prepared Python settings owner too. They share the
 repair lock and publish privately with one atomic file replacement. An explicit

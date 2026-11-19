@@ -1855,6 +1855,11 @@ def test_guided_uninstall_keeps_standalone_codex_home(tmp_path, recorded):
         for entry in registry.iterdir():
             entry.unlink()
     run(*setup, "--host", "codex,opencode", codex_home=guided_home)
+    if not recorded:
+        # Simulate a later guided update interrupted after replacing the adapter
+        # but before replacing the old default home's enabled standalone cache.
+        binding = Path("claude-smart/marketplace/plugin/guided-runtime-id")
+        shutil.copy2(guided_home / binding, standalone_home / binding)
 
     selector = tmp_path / ".reflexio/plugin-root"
     guided_root = selector.resolve()
@@ -1958,7 +1963,19 @@ fs.renameSync = (source, target) => {
     assert "uv sync failed" in failed_retry.stderr
     assert selected.resolve() == chosen
     assert not receipt.exists()
+    startup = state / "pending-startup"
+    assert startup.read_text() == chosen.parent.name
     events = [(row["root"], row["action"]) for row in _calls(tmp_path)]
     started = events.index((str(chosen), "start"))
     if installed:
         assert events.index((str(predecessor), "stop")) < started
+
+    # Repeated dependency failures must not discard the selected runtime's
+    # unverified startup. Retry it again before touching the candidate.
+    failed_again = run()
+    assert failed_again.returncode == 1
+    assert "uv sync failed" in failed_again.stderr
+    assert startup.read_text() == chosen.parent.name
+    assert [
+        row["action"] for row in _calls(tmp_path) if row["root"] == str(chosen)
+    ].count("start") == 2

@@ -80,6 +80,7 @@ const GUIDED_RUNTIME_DIR = join(CLAUDE_SMART_STATE_DIR, "guided-runtimes");
 const GUIDE_INSTALL_LOCK = join(GUIDED_RUNTIME_DIR, "guide");
 const GUIDED_SELECTED_RUNTIME = join(GUIDED_RUNTIME_DIR, "selected");
 const GUIDED_PENDING_SHUTDOWN = join(GUIDED_RUNTIME_DIR, "pending-shutdown.json");
+const GUIDED_PENDING_STARTUP = join(GUIDED_RUNTIME_DIR, "pending-startup");
 const GUIDED_CODEX_HOMES = join(GUIDED_RUNTIME_DIR, "codex-homes");
 const GUIDED_OPENCODE_REGISTRATIONS = join(GUIDED_RUNTIME_DIR, "opencode-registrations");
 const GUIDED_RUNTIME_BINDING = "guided-runtime-id";
@@ -2627,7 +2628,9 @@ function registeredCodexPluginRoots() {
       const adapter = join(home, "claude-smart", "marketplace", CODEX_MARKETPLACE_PLUGIN_PATH);
       const root = boundGuidedPluginRoot(adapter);
       const id = root && basename(dirname(root));
-      if (id) return preparedCodexRegistration(id, home) ? [root] : [];
+      if (id && preparedCodexRegistration(id, home)) return [root];
+      // The native cache can still refer to a standalone runtime if the
+      // marketplace adapter was published before an interrupted installation.
       const standalone = join(home, "claude-smart", "runtime", "plugin");
       return standaloneCodexRegistration(standalone, home) ? [standalone] : [];
     } catch {
@@ -2757,49 +2760,83 @@ function readGuidedShutdown() {
   }
 }
 
+function pendingStartupId() {
+  try {
+    if (!lstatSync(GUIDED_PENDING_STARTUP).isFile())
+      throw new Error("The pending shared service startup record is not a regular file");
+    const id = readFileSync(GUIDED_PENDING_STARTUP, "utf8");
+    if (!/^runtime-[A-Za-z0-9]{6}$/.test(id))
+      throw new Error("The pending shared service startup record is invalid");
+    return id;
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
   const pending = readGuidedShutdown();
-  if (!pending) return {};
-  if (typeof pending.id !== "string" || !/^runtime-[A-Za-z0-9]{6}$/.test(pending.id))
-    throw new Error("The pending shared service shutdown record is invalid");
-  const target = join(realpathSync(GUIDED_RUNTIME_DIR), pending.id, "plugin");
-  const current = activePluginRoot();
-  if ((pending.root !== null &&
-      (typeof pending.root !== "string" || !isAbsolute(pending.root))) ||
-      (!pending.status || typeof pending.status !== "object"))
-    throw new Error("The pending shared service shutdown record is invalid");
-  if (current === target) {
-    if (!pathEntryExists(GUIDED_SELECTED_RUNTIME)) recordGuidedSelection(target);
-    const setup = readInstallPolicy();
-    if (pending.root && pending.predecessorStopped !== true) {
-      if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
-        throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
-      await stopServicesForInstall(pending.root, null, pending.status);
-      // A retry during startup must never stop the predecessor a second time.
-      recordGuidedShutdown({ id: pending.id, predecessorStopped: true }, pending);
+  const startup = pendingStartupId();
+  if (!pending && !startup) return {};
+  let current = activePluginRoot();
+  if (pending) {
+    if (typeof pending.id !== "string" || !/^runtime-[A-Za-z0-9]{6}$/.test(pending.id) ||
+        (pending.root !== null &&
+          (typeof pending.root !== "string" || !isAbsolute(pending.root))) ||
+        (!pending.status || typeof pending.status !== "object"))
+      throw new Error("The pending shared service shutdown record is invalid");
+    const target = join(realpathSync(GUIDED_RUNTIME_DIR), pending.id, "plugin");
+    if (current === target) {
+      if (!pathEntryExists(GUIDED_SELECTED_RUNTIME)) recordGuidedSelection(target);
+      if (pending.root && startup !== pending.id && pending.predecessorStopped !== true) {
+        if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
+          throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
+        await stopServicesForInstall(pending.root, null, pending.status);
+      }
+      // Publish forward recovery before discarding the predecessor record.
+      writeGuidedRecord(GUIDED_PENDING_STARTUP, pending.id);
+      rmSync(GUIDED_PENDING_SHUTDOWN);
+      return recoverSelectedStartup(target);
     }
-    const summary = await refreshSelectedServices(target, setup);
-    rmSync(GUIDED_PENDING_SHUTDOWN);
-    return { completed: true, summary };
-  } else {
     if (current !== pending.root) {
       if (!pending.root || current !== null || pathEntryExists(join(REFLEXIO_DIR, "plugin-root")) ||
           !existsSync(join(pending.root, "scripts", "backend-service.sh")))
         throw new Error("The shared runtime selection changed during shutdown; resolve it before retrying setup");
       forcePluginRoot(pending.root);
+      current = pending.root;
     }
-    // Settings may have changed independently. Preserve the verified baseline
-    // until the next attempt has prepared and selected its replacement.
-    if (retainBaseline && pending.root) return { baseline: { root: pending.root, status: pending.status } };
   }
-  rmSync(GUIDED_PENDING_SHUTDOWN);
+
+  // Candidate preparation and the predecessor observation can fail while the
+  // last selected generation is still starting. Retry that generation first.
+  if (startup && current && isGuidedPluginRoot(current) &&
+      basename(dirname(current)) === startup) {
+    const recovered = await recoverSelectedStartup(current);
+    if (pending && !retainBaseline) rmSync(GUIDED_PENDING_SHUTDOWN);
+    return {
+      ...recovered,
+      ...(pending && retainBaseline ? { baseline: observePreviousServices() } : {}),
+    };
+  }
+
+  if (pending && retainBaseline && pending.root)
+    return { baseline: { root: pending.root, status: pending.status } };
+  if (pending) rmSync(GUIDED_PENDING_SHUTDOWN);
   return {};
 }
 
-async function refreshSelectedServices(root, setup) {
+async function recoverSelectedStartup(root) {
+  const { ready, summary } = await refreshSelectedServices(root, readInstallPolicy(), {
+    restart: false,
+  });
+  if (ready) rmSync(GUIDED_PENDING_STARTUP, { force: true });
+  return { completed: true, summary };
+}
+
+async function refreshSelectedServices(root, setup, { restart = true } = {}) {
   const host = setup.provider || hostForPluginRoot(root);
   startDeferredDashboardBuild(root);
-  return startAndReportServices(root, host, setup, { summaryOnly: true });
+  return startAndReportServices(root, host, setup, { summaryOnly: true, restart });
 }
 
 async function prepareGuidedRuntime(config, options, settings, baseline) {
@@ -2997,7 +3034,7 @@ async function runGuidedCommand(command, args) {
             "Removal completed; repair saved settings with npx claude-smart setup before refreshing shared services.",
           ];
         }
-        return refreshSelectedServices(root, setup);
+        return (await refreshSelectedServices(root, setup)).summary;
       },
     })
     .finally(() => {
@@ -3139,12 +3176,15 @@ function isBundledBackendUrl(url) {
   }
 }
 
-async function startAndReportServices(pluginRoot, host, setup, { summaryOnly = false } = {}) {
+async function startAndReportServices(
+  pluginRoot, host, setup, { summaryOnly = false, restart = true } = {},
+) {
   // A stored learning target wins over the integration that supplied the runtime.
   const learningHost = setup.provider || host;
-  if (process.env.CLAUDE_SMART_DEFER_SHARED_SERVICES === "1") return;
+  if (process.env.CLAUDE_SMART_DEFER_SHARED_SERVICES === "1") return { ready: true, summary: [] };
   const { managed, url: hooksUrl } = setup;
   const summary = [];
+  let backendReady = true;
   const report = (message) => {
     summary.push(message.trim());
     if (!summaryOnly) process.stdout.write(message);
@@ -3180,14 +3220,16 @@ async function startAndReportServices(pluginRoot, host, setup, { summaryOnly = f
     // bind address or extraction bridge. Preparation succeeded before this
     // point; restart only owned services to apply the installed configuration.
     process.stdout.write(`\nStarting local Reflexio at ${localBackendUrl()}…\n`);
-    await runServiceWithProgress(pluginRoot, "backend-service.sh", "stop");
+    if (restart) await runServiceWithProgress(pluginRoot, "backend-service.sh", "stop");
     await runServiceWithProgress(pluginRoot, "backend-service.sh", "start", {
       CLAUDE_SMART_HOST: learningHost,
     });
     const url = localBackendUrl();
+    backendReady = false;
     if (await waitForHttp(`${url}health`, 5, ({ status }) => status === 200)) {
       const status = backendServiceStatus(pluginRoot);
       if (status.startsWith("running on")) {
+        backendReady = true;
         report(`Backend healthy at ${url}.\n`);
       } else {
         report(
@@ -3204,10 +3246,10 @@ async function startAndReportServices(pluginRoot, host, setup, { summaryOnly = f
   }
   if (autostartDisabled("CLAUDE_SMART_DASHBOARD_AUTOSTART")) {
     report("Dashboard autostart is disabled (CLAUDE_SMART_DASHBOARD_AUTOSTART=0).\n");
-    return summary;
+    return { ready: backendReady, summary };
   }
   process.stdout.write("Starting local dashboard (first build may take 1–2 minutes)…\n");
-  await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "stop");
+  if (restart) await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "stop");
   await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "start");
   const port = (process.env.DASHBOARD_PORT || "").trim() || "3001";
   const url = `http://localhost:${port}/`;
@@ -3215,7 +3257,8 @@ async function startAndReportServices(pluginRoot, host, setup, { summaryOnly = f
   // the root page too, but only the claude-smart dashboard sends this header.
   const isDashboard = ({ status, headers }) =>
     status === 200 && headers["x-claude-smart-dashboard"] !== undefined;
-  if (await waitForHttp(`${url}api/health`, 3, isDashboard)) {
+  const dashboardReady = await waitForHttp(`${url}api/health`, 3, isDashboard);
+  if (dashboardReady) {
     report(
       `Local dashboard: ${url} · default data source: ${managed ? "Managed Reflexio" : "Local Reflexio"}.\n`,
     );
@@ -3229,7 +3272,7 @@ async function startAndReportServices(pluginRoot, host, setup, { summaryOnly = f
       `Dashboard is building in the background (first build takes 1-2 minutes); it will serve ${url}.\n`,
     );
   }
-  return summary;
+  return { ready: backendReady && dashboardReady, summary };
 }
 
 function stopClaudeSmartServices(pluginRoot) {
