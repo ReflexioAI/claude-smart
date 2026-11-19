@@ -5,8 +5,11 @@ import json
 import os
 import subprocess
 import tempfile
+from contextlib import ExitStack
 from ctypes import wintypes
 from pathlib import Path
+
+from probe_opencode_scope import open_scoped_file
 
 READ_DIRECTORY = 0x81
 SHARE_READ = 0x1
@@ -75,22 +78,26 @@ with tempfile.TemporaryDirectory(prefix="rx-open-scope-") as tmp:
     (outside / "claude-smart.js").write_text("outside sentinel", encoding="utf-8")
     leaf = scope / "claude-smart.js"
     leaf.write_text("original", encoding="utf-8")
-    node_identity = subprocess.check_output(
+    node_identities = subprocess.check_output(
         [
             "node",
             "-e",
-            "const s = require('fs').lstatSync(process.argv[1], {bigint:true});"
-            "console.log(String(s.dev) + ':' + String(s.ino));",
+            "const fs = require('fs'), p = process.argv[1], fd = fs.openSync(p, 'r');"
+            "console.log([fs.lstatSync(p, {bigint:true}),fs.fstatSync(fd, {bigint:true})]"
+            ".map(s => String(s.dev) + ':' + String(s.ino)).join(' '));fs.closeSync(fd);",
             str(leaf),
         ],
         text=True,
-    ).strip()
-    python_stat = leaf.stat()
-    python_identity = f"{python_stat.st_dev}:{python_stat.st_ino}"
-    print(
-        json.dumps({"node_identity": node_identity, "python_identity": python_identity})
-    )
-    assert node_identity == python_identity
+    ).split()
+    with ExitStack() as stack:
+        scoped, identity = open_scoped_file(leaf, stack)
+        assert scoped.read() == b"original"
+        print(
+            json.dumps(
+                {"node_identities": node_identities, "scoped_identity": identity}
+            )
+        )
+        assert node_identities == [identity, identity]
     pinned_parent = open_directory(parent)
     pinned_scope = open_directory(scope)
     try:
