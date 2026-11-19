@@ -159,6 +159,7 @@ def _run(tmp_path, package, host, env, command="update"):
         "success",
         "preparation-fails",
         "stale-settings",
+        "invalid-default",
         "guide-disconnects",
         "early-disconnect",
         "ack-disconnects",
@@ -174,6 +175,9 @@ def test_guided_codex_uses_prepared_interpreter_for_settings(tmp_path, outcome):
     package, root, uv, env = _fixture(tmp_path, "codex", running="none")
     env.pop("CLAUDE_SMART_INSTALL_CHILD")
     env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
+    env["REFLEXIO_ROW_LIMIT_INTERACTIONS"] = (
+        "not\na single line" if outcome == "invalid-default" else "731"
+    )
     settings = tmp_path / ".claude-smart/.env"
     before = settings.read_bytes()
     node = tmp_path / ".claude-smart/node/current/bin/node"
@@ -183,7 +187,10 @@ def test_guided_codex_uses_prepared_interpreter_for_settings(tmp_path, outcome):
     uv_source = uv.read_text()
     change = ":"
     if outcome == "stale-settings":
-        change = 'printf "# concurrent edit\\n" >> "$HOME/.claude-smart/.env"'
+        change = (
+            'printf "# concurrent edit\n" >> "$HOME/.claude-smart/.env"; '
+            'printf "other host diagnostic" > "$HOME/.claude-smart/install-failed"'
+        )
     if outcome == "guide-disconnects":
         change = (
             "for attempt in 1 2 3 4 5 6 7 8 9 10; do "
@@ -248,14 +255,16 @@ if (process.send) {
     if outcome == "guide-exits-after-save":
         preload = tmp_path / "kill-guide.cjs"
         preload.write_text("""
-const {writeFileSync} = require("node:fs");
+const {copyFileSync, writeFileSync} = require("node:fs");
 const {join} = require("node:path");
 if (typeof process.send === "function") {
   const send = process.send;
   process.send = function(message, ...args) {
     if (message !== "settings-published") return send.call(this, message, ...args);
+    const home = process.env.HOME;
+    copyFileSync(join(home, ".claude-smart", ".env"), join(home, "settings-at-ack"));
     process.once("exit", (code) =>
-      writeFileSync(join(process.env.HOME, "worker-exit"), String(code)));
+      writeFileSync(join(home, "worker-exit"), String(code)));
     const guide = process.ppid;
     process.kill(guide, "SIGKILL");
     const deadline = Date.now() + 5000;
@@ -316,6 +325,8 @@ if (typeof process.send === "function") {
         ) and time.monotonic() < deadline:
             time.sleep(0.02)
         assert worker_exit.read_text() == "0"
+        assert (tmp_path / "settings-at-ack").read_bytes() == settings.read_bytes()
+        assert b"REFLEXIO_ROW_LIMIT_INTERACTIONS=731\n" in settings.read_bytes()
         assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
         assert (root / "identity").read_text() == "new"
         assert (tmp_path / ".codex/claude-smart/marketplace").is_dir()
@@ -332,11 +343,16 @@ if (typeof process.send === "function") {
         before + b"# concurrent edit\n" if outcome == "stale-settings" else before
     )
     assert settings.read_bytes() == expected
+    if outcome == "stale-settings":
+        assert (
+            settings.parent / "install-failed"
+        ).read_text() == "other host diagnostic"
     assert (root / "identity").read_text() == "old"
     assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
     log = next((tmp_path / ".claude-smart/install-logs").glob("update-codex-*.log"))
     expected_error = {
         "stale-settings": "Settings changed after confirmation",
+        "invalid-default": "Settings save could not be confirmed",
         "guide-disconnects": "Installation guide disconnected before settings publication",
         "early-disconnect": "Installation guide disconnected before passing settings",
         "preparation-fails": "uv sync failed",

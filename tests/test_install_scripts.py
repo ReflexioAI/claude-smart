@@ -1837,6 +1837,10 @@ def test_node_first_install_removes_an_unprepared_copy_on_failure(
         ("80", "http://localhost/", True),
         ("8071", "http://localhost/", False),
         ("9000", "http://127.0.0.1:9000/x/", True),
+        ("08073", "http://localhost:08073/", True),
+        ("08073", "http://127.0.0.1:08073/x/?q=1", True),
+        ("08073", "http://localhost:8073/", False),
+        ("8073", "http://localhost:08073/", False),
         ("9000", "http://localhost:8071", True),
         ("9000", "http://localhost:8071/x/", False),
         ("8071", "http://localhost:8071#dev", True),
@@ -3424,7 +3428,10 @@ def test_cli_sh_self_heals_when_claude_smart_unimportable() -> None:
     assert "claude-smart is not installed correctly" in cli_sh
 
 
-def test_cli_sh_suppresses_installer_hook_payload_on_self_heal(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "state", ["self-heal", "ready-with-marker", "broken-with-marker"]
+)
+def test_cli_sh_uses_selected_runtime_readiness(tmp_path: Path, state: str) -> None:
     plugin_root = tmp_path / "plugin"
     scripts = plugin_root / "scripts"
     venv_bin = plugin_root / ".venv" / "bin"
@@ -3458,6 +3465,12 @@ def test_cli_sh_suppresses_installer_hook_payload_on_self_heal(tmp_path: Path) -
     ]:
         executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
 
+    if state == "ready-with-marker":
+        (tmp_path / "import-ok").touch()
+    marker = tmp_path / ".claude-smart/install-failed"
+    if state != "self-heal":
+        marker.parent.mkdir()
+        marker.write_text("another installer failed")
     env = _isolated_env(tmp_path)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     result = subprocess.run(
@@ -3468,10 +3481,17 @@ def test_cli_sh_suppresses_installer_hook_payload_on_self_heal(tmp_path: Path) -
         check=False,
     )
 
-    assert result.returncode == 0
-    assert result.stdout == "cli ran\n"
-    assert "installer diagnostic" in result.stderr
+    if state == "broken-with-marker":
+        assert result.returncode == 1
+        assert "another installer failed" in result.stderr
+        assert result.stdout == ""
+    else:
+        assert result.returncode == 0
+        assert result.stdout == "cli ran\n"
+    assert ("installer diagnostic" in result.stderr) == (state == "self-heal")
     assert '"continue"' not in result.stderr
+    if state != "self-heal":
+        assert marker.read_text() == "another installer failed"
 
 
 def test_service_start_scripts_guard_internal_invocations() -> None:

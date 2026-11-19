@@ -760,6 +760,110 @@ def _install_snapshot(target):
     }
 
 
+@pytest.mark.parametrize(
+    "case",
+    ["attached", "colocated", "unchanged", "stale", "shadow", "timeout", "editor"],
+)
+def test_prepared_settings_verify_staged_windows_backend_before_commit(
+    tmp_path, monkeypatch, case
+):
+    home = tmp_path / "owned home λ"
+    target = home / ".claude-smart/.env"
+    target.parent.mkdir(parents=True)
+    monkeypatch.setattr(env_config, "CLAUDE_SMART_ENV_PATH", target)
+    marker = target.parent / "install-failed"
+    marker.write_bytes(b"previous installer diagnostic")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    importer = scripts / "backend-inference-owner.py"
+    importer.write_text(
+        "from pathlib import Path\n"
+        "import os, sys\n"
+        'assert sys.argv[1:] == ["--validate-windows-embedding"]\n'
+        'assert not Path(".env").exists()\n'
+        'staged = Path(os.environ["REFLEXIO_ENV_FILE"])\n'
+        "assert staged.parent == Path.cwd()\n"
+        "content = staged.read_bytes()\n"
+        '(Path(__file__).parents[1] / "observed-settings").write_bytes(content)\n'
+        'sys.exit(0 if b"REFLEXIO_EMBEDDING_SERVICE_URL=" in content else 77)\n',
+        encoding="utf-8",
+    )
+    if case == "editor":
+        importer.write_text(
+            importer.read_text(encoding="utf-8").replace(
+                "sys.exit(",
+                f"with Path({str(target)!r}).open('ab') as live:\n"
+                "    live.write(b'# external editor\\n')\nsys.exit(",
+            ),
+            encoding="utf-8",
+        )
+    if case == "timeout":
+        importer.write_text(
+            importer.read_text(encoding="utf-8").replace(
+                "sys.exit(",
+                "with staged.open('rb'):\n    __import__('time').sleep(60)\nsys.exit(",
+            ),
+            encoding="utf-8",
+        )
+        run = subprocess.run
+
+        def short_timeout(*args, **kwargs):
+            assert kwargs["timeout"] == 15
+            return run(*args, **{**kwargs, "timeout": 2})
+
+        monkeypatch.setattr(env_config.subprocess, "run", short_timeout)
+    local = "http://localhost:8071/"
+    if case == "unchanged":
+        env_config.publish_install(
+            {"REFLEXIO_URL": local}, _install_snapshot(target), None, prepared=True
+        )
+    else:
+        target.write_bytes(b"REFLEXIO_URL=https://old.example.invalid/\n")
+    if case in {"attached", "editor"}:
+        with target.open("ab") as settings:
+            settings.write(b"REFLEXIO_EMBEDDING_SERVICE_URL=http://localhost:8093/\n")
+    if case == "shadow":
+        (tmp_path / ".env").write_bytes(
+            b"REFLEXIO_EMBEDDING_SERVICE_URL=http://localhost:8093/\n"
+        )
+    snapshot = _install_snapshot(target)
+    if case == "stale":
+        with target.open("ab") as settings:
+            settings.write(b"# edited\n")
+    original = target.read_bytes()
+    observed = tmp_path / "observed-settings"
+    monkeypatch.chdir(tmp_path)
+    args = ({"REFLEXIO_URL": local}, snapshot, None)
+    if case == "attached":
+        env_config.publish_install(*args, prepared=True, check_windows_embedding=True)
+        assert f"REFLEXIO_URL={local}\n".encode() in target.read_bytes()
+    elif case in {"stale", "editor"}:
+        with pytest.raises(env_config.SettingsConflictError):
+            env_config.publish_install(
+                *args, prepared=True, check_windows_embedding=True
+            )
+    else:
+        with pytest.raises(env_config.SettingsPreflightError) as rejected:
+            env_config.publish_install(
+                *args, prepared=True, check_windows_embedding=True
+            )
+        assert rejected.value.code == {"shadow": 79, "timeout": 78}.get(case, 77)
+    if case != "attached":
+        assert target.read_bytes() == original + (
+            b"# external editor\n" if case == "editor" else b""
+        )
+    if case in {"stale", "shadow"}:
+        assert not observed.exists()
+    elif case in {"attached", "unchanged"}:
+        assert observed.read_bytes() == target.read_bytes()
+    else:
+        assert b"REFLEXIO_ROW_LIMIT_INTERACTIONS=" in observed.read_bytes()
+        assert f"REFLEXIO_URL={local}\n".encode() in observed.read_bytes()
+    assert list(target.parent.glob(".env-*")) == []
+    assert marker.read_bytes() == b"previous installer diagnostic"
+    assert not (target.parent / "install.lock").exists()
+
+
 def _legacy_selection(source, rows):
     return {"sha256": hashlib.sha256(source.read_bytes()).hexdigest(), "rows": rows}
 
