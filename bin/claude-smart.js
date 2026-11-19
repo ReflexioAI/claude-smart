@@ -2625,18 +2625,32 @@ function registeredCodexPluginRoots() {
   return Array.from(homes).flatMap((candidate) => {
     try {
       const home = realpathSync(candidate);
-      const adapter = join(home, "claude-smart", "marketplace", CODEX_MARKETPLACE_PLUGIN_PATH);
-      const root = boundGuidedPluginRoot(adapter);
-      const id = root && basename(dirname(root));
-      if (id && preparedCodexRegistration(id, home)) return [root];
-      // The native cache can still refer to a standalone runtime if the
-      // marketplace adapter was published before an interrupted installation.
-      const standalone = join(home, "claude-smart", "runtime", "plugin");
-      return standaloneCodexRegistration(standalone, home) ? [standalone] : [];
+      return installedCodexRuntime(home);
     } catch {
       return [];
     }
   });
+}
+
+function installedCodexRuntime(home) {
+  // The installed cache remains authoritative when updating the marketplace
+  // adapter and the installed plugin is interrupted between the two writes.
+  const cache = join(home, "plugins", "cache", CODEX_MARKETPLACE_NAME, "claude-smart");
+  const versions = readdirSync(cache, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort((a, b) => compareSemverLikePathNames(b, a));
+  for (const version of versions) {
+    const entry = join(cache, version);
+    if (codexPluginVersion(entry) !== version) continue;
+    const root = boundGuidedPluginRoot(entry);
+    if (root && preparedCodexRegistration(basename(dirname(root)), home))
+      return [root];
+    const standalone = join(home, "claude-smart", "runtime", "plugin");
+    if (codexPluginVersion(standalone) === version && standaloneCodexRegistration(standalone, home))
+      return [standalone];
+  }
+  return [];
 }
 
 function preparedOpenCodeRegistration(runtime) {

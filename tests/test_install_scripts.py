@@ -9492,3 +9492,37 @@ def test_prepared_dashboard_repair_does_not_mutate_generation(tmp_path, entrypoi
         diagnostic = result.stderr
     assert "npx claude-smart setup" in diagnostic
     assert not list((root / "dashboard").iterdir())
+
+
+@pytest.mark.parametrize("launcher", ["missing", "broken", "ready"])
+def test_prepared_dashboard_preflight_checks_the_actual_launcher(tmp_path, launcher):
+    root = tmp_path / "plugin"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    build = root / "dashboard/.next"
+    build.mkdir(parents=True)
+    (build / "BUILD_ID").write_text("prepared-test-build")
+    (root / "guide-prepared-runtime").write_text("runtime-AbCd12")
+    for name in ("_lib.sh", "dashboard-service.sh"):
+        shutil.copy2(LIB.with_name(name), scripts / name)
+    if launcher != "missing":
+        binary = root / "dashboard/node_modules/.bin/next"
+        binary.parent.mkdir(parents=True)
+        exit_code = 0 if launcher == "ready" else 33
+        binary.write_text(f"#!/bin/sh\nexit {exit_code}\n")
+        binary.chmod(0o700)
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_DASHBOARD_AUTOSTART"] = "1"
+    result = subprocess.run(
+        ["bash", str(scripts / "dashboard-service.sh"), "preflight"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if launcher == "ready":
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 1, result.stderr
+        assert "npx claude-smart setup" in result.stderr

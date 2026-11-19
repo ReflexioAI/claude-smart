@@ -679,15 +679,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
 
     prepared = (_PLUGIN_ROOT / "guide-prepared-runtime").is_file()
     if do_dashboard and prepared:
-        launchers = _DASHBOARD_DIR / "node_modules/.bin"
-        if not (_DASHBOARD_DIR / ".next/BUILD_ID").is_file() or not any(
-            (launchers / name).is_file() for name in ("next", "next.cmd")
-        ):
-            sys.stderr.write(
-                "error: the prepared dashboard build or launcher is missing. "
-                "Rerun npx claude-smart setup before restarting.\n"
-            )
-            return 1
+        preflight_rc = _run_service(_DASHBOARD_SCRIPT, "preflight")
+        if preflight_rc != 0:
+            return preflight_rc
 
     if do_backend:
         # Preparing the replacement can reinstall the vendored Reflexio if its

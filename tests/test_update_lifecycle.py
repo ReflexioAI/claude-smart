@@ -1796,6 +1796,11 @@ def test_uninstall_checks_surviving_codex_home(
     assert command.returncode == 0, command.stderr
     assert command.stdout.strip() == f"{saved / 'scripts'}:show"
     home = Path(env["CODEX_HOME"])
+    if legacy_hook_repointed:
+        newer = record.parent / "runtime-AbZ123"
+        shutil.copytree(saved.parent, newer, symlinks=True)
+        adapter = home / "claude-smart/marketplace/plugin/guided-runtime-id"
+        adapter.write_text(newer.name)
     if not codex_stays_enabled:
         config = home / "config.toml"
         config.write_text(
