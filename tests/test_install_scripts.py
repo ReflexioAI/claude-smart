@@ -628,7 +628,7 @@ def test_detached_spawns_with_log_redirection_preserve_output_on_windows() -> No
     ) in dashboard
     assert (
         "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached "
-        '"$NEXT_BIN" start -p "$PORT" -H 127.0.0.1 >>"$LOG_FILE" 2>&1' in dashboard
+        '"$NEXT_BIN" start -p "$dashboard_port" -H 127.0.0.1 >>"$LOG_FILE" 2>&1' in dashboard
     )
     # The backend runner is a long-lived daemon and is squeezed from both
     # sides: it must NOT opt out of the default close, because opting out
@@ -3275,7 +3275,10 @@ def test_dashboard_service_accepts_healthy_shared_dashboard_marker() -> None:
     dashboard = (REPO_ROOT / "plugin" / "scripts" / "dashboard-service.sh").read_text()
 
     assert "curl -sfI --connect-timeout 1 --max-time 2" in dashboard
-    assert 'curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$PORT"' in dashboard
+    assert (
+        'curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$dashboard_port"'
+        in dashboard
+    )
     assert "stop_dashboard_listener" in dashboard
     assert "foreign listener" in dashboard
 
@@ -5961,7 +5964,6 @@ def test_codex_hook_recovers_missing_dependencies_without_cli_command() -> None:
     assert "SERVICE_SCRIPT_TIMEOUT_MS" in script
     assert "parsePort(process.env.BACKEND_PORT, 8071)" in script
     assert "parsePort(process.env.EMBEDDING_PORT, 8072)" in script
-    assert "parsePort(process.env.DASHBOARD_PORT" in script
     assert "port 8071 occupied; trying 8072" not in script
 
 
@@ -9509,6 +9511,66 @@ def test_prepared_dashboard_repair_does_not_mutate_generation(tmp_path, entrypoi
         diagnostic = result.stderr
     assert "npx claude-smart setup" in diagnostic
     assert not list((root / "dashboard").iterdir())
+
+
+@pytest.mark.parametrize(
+    ("custom_port", "expected_port"), [(None, 3001), ("13401", 13401)]
+)
+def test_dashboard_opener_and_service_use_the_same_port(
+    tmp_path: Path, custom_port: str | None, expected_port: int
+) -> None:
+    scripts = tmp_path / "plugin" / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("_lib.sh", "dashboard-service.sh", "dashboard-open.sh"):
+        shutil.copy2(LIB.with_name(name), scripts / name)
+    _write_executable(
+        scripts / "backend-service.sh",
+        '#!/bin/sh\n[ "$1" != status ] || echo "running on http://localhost:8071"\n',
+    )
+
+    bins = tmp_path / "bin"
+    bins.mkdir()
+    _write_executable(
+        bins / "curl",
+        "#!/bin/sh\n"
+        "for arg; do\n"
+        '  if [ "$arg" = "http://127.0.0.1:$EXPECTED_DASHBOARD_PORT/api/health" ]; then\n'
+        '    printf "x-claude-smart-dashboard: yes\\n"\n'
+        "    exit 0\n"
+        "  fi\n"
+        "done\n"
+        "exit 22\n",
+    )
+    _write_executable(bins / "sleep", "#!/bin/sh\nexit 0\n")
+    for python in ("py", "python", "python3"):
+        _write_executable(
+            bins / python,
+            '#!/bin/sh\n[ "$1" = "-V" ] || printf "%s\\n" "$*" > "$BROWSER_LOG"\n',
+        )
+
+    env = _isolated_env(tmp_path)
+    env.pop("DASHBOARD_PORT", None)
+    env.update(
+        PATH=f"{bins}{os.pathsep}{env['PATH']}",
+        PORT="13402",
+        EXPECTED_DASHBOARD_PORT=str(expected_port),
+        BROWSER_LOG=str(tmp_path / "browser.log"),
+        SHELL="",
+    )
+    if custom_port is not None:
+        env["DASHBOARD_PORT"] = custom_port
+    result = subprocess.run(
+        ["bash", str(scripts / "dashboard-open.sh")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    url = f"http://localhost:{expected_port}"
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"dashboard: running on {url}" in result.stdout
+    assert (tmp_path / "browser.log").read_text().strip().endswith(url)
 
 
 @pytest.mark.parametrize("launcher", ["missing", "broken", "ready"])

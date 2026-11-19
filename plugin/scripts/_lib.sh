@@ -78,6 +78,10 @@ claude_smart_prepend_node_bins() {
   fi
 }
 
+claude_smart_dashboard_port() {
+  printf '%s\n' "${DASHBOARD_PORT:-3001}"
+}
+
 claude_smart_env_unquote() {
   local value first last
   value="$1"
