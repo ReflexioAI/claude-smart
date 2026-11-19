@@ -498,8 +498,7 @@ function stripJsonc(text) {
   return out;
 }
 
-function readJsoncObject(path) {
-  const text = existsSync(path) ? readFileSync(path, "utf8") : "{}";
+function parseJsoncObject(text, path) {
   const parsed = JSON.parse(stripJsonc(text || "{}"));
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`OpenCode config ${path} must be a JSON object`);
@@ -822,8 +821,17 @@ function isOpenCodeClaudeSmartSpec(spec) {
   return packagePath !== null && resolve(packagePath) === resolve(OPENCODE_LOCAL_PACKAGE_DIR);
 }
 
-function readOpenCodePluginConfig(configPath) {
-  const data = readJsoncObject(configPath);
+function readOpenCodeConfigSource(configPath) {
+  try {
+    return readFileSync(configPath, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function parseOpenCodePluginConfig(configPath, source) {
+  const data = parseJsoncObject(source, configPath);
   for (const field of ["plugins", "plugin"]) {
     if (data[field] !== undefined && !Array.isArray(data[field])) {
       throw new Error(`OpenCode config ${configPath} field "${field}" must be a JSON array`);
@@ -832,46 +840,46 @@ function readOpenCodePluginConfig(configPath) {
   return data;
 }
 
-function patchOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
-  const resolvedPluginSpec = install ? pluginSpec || opencodeLocalPluginSpec() : pluginSpec;
-  const data = readOpenCodePluginConfig(configPath);
-  const current = [
-    ...(Array.isArray(data.plugin) ? data.plugin : []),
-    ...(Array.isArray(data.plugins) ? data.plugins : []),
-  ];
+function planOpenCodePluginConfig(configPath, source, { install, pluginSpec = null }) {
+  const data = parseOpenCodePluginConfig(configPath, source);
+  const current = [...(data.plugin ?? []), ...(data.plugins ?? [])];
   const kept = current.filter((entry) => !isOpenCodeClaudeSmartSpec(opencodePluginSpec(entry)));
-  const next = install ? [...kept, resolvedPluginSpec] : kept;
+  const next = install ? [...kept, pluginSpec || opencodeLocalPluginSpec()] : kept;
   const changed =
     data.plugins !== undefined ||
     (Array.isArray(data.plugin)
       ? next.length !== data.plugin.length ||
         next.some((entry, index) => entry !== data.plugin[index])
       : install && next.length > 0);
-  if (!changed) return { changed: false, configPath };
-  let backupPath = null;
-  if (existsSync(configPath)) {
-    const original = readFileSync(configPath, "utf8");
-    if (original.trim() && original !== stripJsonc(original)) {
-      backupPath = `${configPath}.bak`;
-      writeFileSync(backupPath, original);
-    }
-  }
+  if (!changed) return null;
   data.plugin = next;
   delete data.plugins;
+  return {
+    configPath,
+    contents: JSON.stringify(data, null, 2) + "\n",
+    backup: source?.trim() && source !== stripJsonc(source) ? source : null,
+  };
+}
+
+function publishOpenCodeConfigPlan({ configPath, contents, backup }) {
+  const backupPath = backup === null ? null : `${configPath}.bak`;
+  if (backupPath) writeFileSync(backupPath, backup);
   mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, JSON.stringify(data, null, 2) + "\n");
+  writeFileSync(configPath, contents);
   return { changed: true, configPath, backupPath };
 }
 
-// Removes claude-smart entries from every config the scope loads. Every existing
-// config is validated before any is rewritten, so a malformed one fails the
-// command without a partial edit. Returns the rewritten configs.
+function patchOpenCodePluginConfig(configPath, options) {
+  const plan = planOpenCodePluginConfig(configPath, readOpenCodeConfigSource(configPath), options);
+  return plan ? publishOpenCodeConfigPlan(plan) : { changed: false, configPath };
+}
+
+// Validate and plan every config the scope loads before publishing any changes.
 function removeOpenCodeLegacyEntries(args = [], cwd = process.cwd()) {
-  const existing = opencodeScopeConfigPaths(args, cwd).filter((file) => existsSync(file));
-  for (const file of existing) readOpenCodePluginConfig(file);
-  return existing
-    .map((file) => patchOpenCodePluginConfig(file, { install: false }))
-    .filter((result) => result.changed);
+  return opencodeScopeConfigPaths(args, cwd)
+    .map((path) => planOpenCodePluginConfig(path, readOpenCodeConfigSource(path), { install: false }))
+    .filter(Boolean)
+    .map(publishOpenCodeConfigPlan);
 }
 
 function hasExtractionProvider() {
@@ -4820,7 +4828,7 @@ function assertOpenCodeInstallConfiguration(args) {
     );
   }
   for (const file of opencodeScopeConfigPaths(args)) {
-    if (existsSync(file)) readOpenCodePluginConfig(file);
+    parseOpenCodePluginConfig(file, readOpenCodeConfigSource(file));
   }
   return { path, contents, identity };
 }
