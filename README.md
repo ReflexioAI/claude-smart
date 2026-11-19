@@ -229,6 +229,8 @@ Codex stages its marketplace under `CODEX_HOME/claude-smart/marketplace` (defaul
 `~/.codex/claude-smart/marketplace`), separate from Claude's legacy marketplace.
 Installing or removing Codex leaves that legacy runtime intact. Codex writes
 the commands for its prepared runtime to the marketplace and cache manifests.
+New Codex hooks use a pinned Node executable so replacing the installer's
+current Node does not interrupt them.
 The prepared package retains the bundled manifests. When Codex is the only
 selected integration, the guide prepares its runtime before saving confirmed
 settings and any missing local defaults through that runtime's interpreter. On

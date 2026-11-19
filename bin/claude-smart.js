@@ -35,6 +35,7 @@ const {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -47,7 +48,7 @@ const {
 const http = require("http");
 const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
-const { dirname, isAbsolute, join, resolve, sep } = require("path");
+const { dirname, isAbsolute, join, relative, resolve, sep } = require("path");
 const { fileURLToPath, pathToFileURL } = require("url");
 const guide = require("./install-guide");
 
@@ -2827,6 +2828,89 @@ function privateNodeTools(root = privateNodeRoot()) {
   return node && npm ? { node, npm } : null;
 }
 
+function hookNodeDistributionHash(root) {
+  const hash = crypto.createHash("sha256");
+  const visit = (directory) => {
+    for (const name of readdirSync(directory).sort()) {
+      const path = join(directory, name);
+      const entry = lstatSync(path);
+      const key = relative(root, path);
+      if (entry.isSymbolicLink()) {
+        const target = readlinkSync(path);
+        const resolved = realpathSync(path);
+        if (isAbsolute(target) || !resolved.startsWith(root + sep))
+          throw new Error("The private Node distribution contains a link outside its install directory.");
+        hash.update(JSON.stringify([key, "link", target]));
+      } else if (entry.isDirectory()) {
+        hash.update(JSON.stringify([key, "directory"]));
+        visit(path);
+      } else if (entry.isFile()) {
+        hash.update(JSON.stringify([key, "file", fileSha256(path)]));
+      } else {
+        throw new Error("The private Node distribution contains an unsupported file type.");
+      }
+    }
+  };
+  visit(root);
+  return hash.digest("hex");
+}
+
+// Published hooks can outlive node/current. Pin the complete distribution so
+// an executable that uses relative libraries keeps the same layout.
+function pinHookNode(source) {
+  const current = privateNodeRoot();
+  const root = realpathSync(current);
+  const nodePath = relative(current, source);
+  if (!nodePath || isAbsolute(nodePath) || nodePath === ".." || nodePath.startsWith(`..${sep}`))
+    throw new Error("The prepared hook executable is outside the private Node distribution.");
+  const digest = hookNodeDistributionHash(root);
+  const directory = join(dirname(current), "launchers");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (!lstatSync(directory).isDirectory())
+    throw new Error("The Codex hook launcher directory must be a regular directory.");
+  const owner = realpathSync(directory);
+  const destination = join(owner, digest);
+  const executable = join(destination, nodePath);
+  const verify = () => {
+    if (
+      !lstatSync(destination).isDirectory() ||
+      !isExecutableFile(executable) ||
+      hookNodeDistributionHash(destination) !== digest
+    ) {
+      throw new Error("The installed Codex hook launcher does not match the prepared Node distribution.");
+    }
+    return executable;
+  };
+  if (pathEntryExists(destination)) return verify();
+
+  const staging = mkdtempSync(join(owner, ".prepare-"));
+  try {
+    cpSync(root, staging, {
+      recursive: true,
+      mode: constants.COPYFILE_FICLONE,
+      verbatimSymlinks: true,
+    });
+    if (hookNodeDistributionHash(staging) !== digest)
+      throw new Error("Private Node changed while preparing the Codex hook launcher; retry setup.");
+    const probe = spawnSync(join(staging, nodePath), ["--version"], {
+      stdio: "ignore",
+      timeout: 10000,
+      windowsHide: true,
+    });
+    if (probe.status !== 0)
+      throw new Error("The prepared Codex hook launcher could not run Node.");
+    try {
+      renameSync(staging, destination);
+    } catch (error) {
+      // Another installer can publish the same distribution concurrently.
+      if (!pathEntryExists(destination)) throw error;
+    }
+    return verify();
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
 function runtimeEnv(extraDirs = []) {
   const delimiter = isWindows() ? ";" : ":";
   const dirs = [
@@ -3394,7 +3478,7 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   assertSupportedRuntimePlatform();
   reportRuntimePhase("Preparing Python and runtime dependencies…", options.settings);
   if (!options.settings) rmSync(INSTALL_FAILURE_MARKER, { force: true });
-  const nodeRuntime = await ensurePrivateNode();
+  const nodeRuntime = options.nodeRuntime ?? (await ensurePrivateNode());
   if (options.readOnly) prunePublishHooksForReadOnly(pluginRoot);
   const uv = await ensureUv();
   const toolPaths = [dirname(uv), ...privateNodeBinDirs()];
@@ -4128,13 +4212,15 @@ async function runInstallCodex(settings) {
   let renderedHooks;
   try {
     installLocalPluginPackage(CODEX_RUNTIME_PACKAGE_DIR, "Codex runtime");
-    const { node } = await bootstrapPluginRuntime(CODEX_RUNTIME_PLUGIN_ROOT, { settings });
+    const nodeRuntime = await ensurePrivateNode();
+    const launcher = pinHookNode(nodeRuntime.node);
+    await bootstrapPluginRuntime(CODEX_RUNTIME_PLUGIN_ROOT, { settings, nodeRuntime });
     if (settings) setup = readInstallPolicy();
     const bundled = join(PACKAGE_ROOT, "plugin", "hooks", "codex-hooks.json");
     renderedHooks = renderCodexHooksForNode(
       JSON.parse(readFileSync(bundled, "utf8")),
       CODEX_RUNTIME_PLUGIN_ROOT,
-      node,
+      launcher,
       setup.readOnly,
     );
   } catch (err) {
@@ -4675,6 +4761,7 @@ module.exports = {
   installedPluginRoots,
   publishInstallSettings,
   reusePreparedRuntime,
+  pinHookNode,
   learningProviderVersion,
   assertSupportedRuntimePlatform,
   bootstrapPluginRuntime,
