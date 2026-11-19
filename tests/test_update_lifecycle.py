@@ -1861,6 +1861,23 @@ def test_guided_uninstall_keeps_registered_standalone_codex_home(tmp_path):
     # must still select the verified standalone registration.
     loader = tmp_path / ".opencode/plugins/claude-smart.js"
     loader.unlink()
+    observed = subprocess.run(
+        [
+            node_bin(),
+            "-e",
+            "console.log(JSON.stringify(require(process.argv[1]).installedPluginRoots()))",
+            launcher[1],
+        ],
+        cwd=tmp_path,
+        env={**env, "CODEX_HOME": str(guided_home)},
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=20,
+    )
+    survivors = json.loads(observed.stdout)
+    assert str(guided_root) not in survivors
+    assert str(standalone_home / "claude-smart/runtime/plugin") in survivors
     result = run("uninstall", "--host", "opencode", codex_home=guided_home)
     assert "Refreshing shared services" in result
     assert selector.resolve() == standalone_home / "claude-smart/runtime/plugin"
