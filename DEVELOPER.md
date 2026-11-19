@@ -146,7 +146,10 @@ Stop old writers before upgrading: this check is not a reservation or a
 cross-port writer detector. A failed preparation or identity pin now aborts
 startup, preventing an unpinned resolver from choosing an empty derived file
 beside existing history. Fix the saved policy/permissions and retry rather than
-continuing into another database.
+continuing into another database. With an SDK that has retired
+`REFLEXIO_DEFAULT_ORG_ID`, the Claude Smart launcher drops an inherited
+assignment and uses the SDK's saved local binding for `claude-smart`. Remove
+any hand-written assignment from the dotenv file before upgrading.
 
 Untagged SQLite still selects SQLite. If startup reports historical aliases such
 as `storage_type`, use its existing

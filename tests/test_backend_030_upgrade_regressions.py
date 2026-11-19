@@ -147,7 +147,12 @@ def test_undrained_selected_database_refuses_before_incompatible_config_publicat
 
 def _env(home: Path) -> dict[str, str]:
     env = os.environ.copy()
-    for key in ("REFLEXIO_URL", "REFLEXIO_ENV_FILE", "REFLEXIO_LOG_DIR"):
+    for key in (
+        "REFLEXIO_URL",
+        "REFLEXIO_ENV_FILE",
+        "REFLEXIO_LOG_DIR",
+        "REFLEXIO_DEFAULT_ORG_ID",
+    ):
         env.pop(key, None)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -158,11 +163,12 @@ def _env(home: Path) -> dict[str, str]:
             "BACKEND_PORT": str(port),
             "LITELLM_LOCAL_MODEL_COST_MAP": "true",
             "LOCAL_STORAGE_PATH": str(home / "data"),
-            "REFLEXIO_DEFAULT_ORG_ID": ORG,
             "OPENAI_API_KEY": "sk-placeholder-test",
             "PYTHONPATH": str(VENDOR),
         }
     )
+    if not _supports_binding(VENDOR):
+        env["REFLEXIO_DEFAULT_ORG_ID"] = ORG
     return env
 
 
@@ -187,7 +193,7 @@ def _run_selected_command(home: Path, args: list[str], metadata: tuple[str, ...]
         "raise SystemExit(runner['main']())\n"
     )
     env = _env(home)
-    env.pop("REFLEXIO_DEFAULT_ORG_ID")
+    env.pop("REFLEXIO_DEFAULT_ORG_ID", None)
     return subprocess.run(
         [sys.executable, "-P", "-c", script, str(RUNNER), *metadata, "--", *args],
         env=env,
@@ -501,7 +507,7 @@ def test_backend_runner_uses_sdk_binding_capability_without_exporting_selector(
     storage: str,
 ) -> None:
     env = _env(tmp_path)
-    env.pop("REFLEXIO_DEFAULT_ORG_ID")
+    env.pop("REFLEXIO_DEFAULT_ORG_ID", None)
     env["PYTHON_DOTENV_DISABLED"] = "1"
     if stale:
         env["REFLEXIO_DEFAULT_ORG_ID"] = "self-host-org"
@@ -539,7 +545,15 @@ if importlib.util.find_spec("reflexio.local_instance") is None:
 else:
     from reflexio import local_instance
 calls = []
-selector = "claude-smart" if "REFLEXIO_DEFAULT_ORG_ID" in os.environ else None
+retired_selector = False
+if importlib.util.find_spec("reflexio.removed_env") is not None:
+    from reflexio.removed_env import REMOVED_ENV_ALIASES
+    retired_selector = "REFLEXIO_DEFAULT_ORG_ID" in REMOVED_ENV_ALIASES
+selector = (
+    "claude-smart"
+    if not retired_selector and "REFLEXIO_DEFAULT_ORG_ID" in os.environ
+    else None
+)
 
 def prepare(org, path):
     assert os.environ.get("REFLEXIO_DEFAULT_ORG_ID") == selector

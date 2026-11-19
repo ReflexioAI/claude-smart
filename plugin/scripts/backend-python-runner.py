@@ -13,6 +13,7 @@ from pathlib import Path
 # The one file every claude-smart release up to 0.2.x stored memory in.
 LEGACY_DB_FILENAME = "reflexio.db"
 ORG_ID = "claude-smart"
+LEGACY_ORG_ENV = "REFLEXIO_DEFAULT_ORG_ID"
 LEGACY_MODEL_ENV = "CLAUDE_SMART_CLI_MODEL"
 LEGACY_MODEL_GUIDANCE = (
     "CLAUDE_SMART_CLI_MODEL has been retired. Move the effective model to "
@@ -173,6 +174,15 @@ def pin_legacy_sqlite_db_path(
         from reflexio.cli.env_loader import block_implicit_dotenv_walkup
 
         block_implicit_dotenv_walkup()
+        retired_org_selector = False
+        if find_spec("reflexio.removed_env") is not None:
+            from reflexio.removed_env import REMOVED_ENV_ALIASES
+
+            retired_org_selector = LEGACY_ORG_ENV in REMOVED_ENV_ALIASES
+        if retired_org_selector:
+            # This launcher has always owned Claude Smart's fixed organization.
+            # A stale inherited selector cannot override the saved SDK binding.
+            os.environ.pop(LEGACY_ORG_ENV, None)
         from reflexio.cli.run_services import DEFAULT_OSS_PORTS, get_env_port
         from reflexio.cli.utils import ensure_requested_ports_available
         from reflexio.config_file import FILE_FORMAT_VERSION, LocalConfigFile
@@ -196,11 +206,13 @@ def pin_legacy_sqlite_db_path(
                 local_instance, "prepare_local_sqlite_instance", None
             )
         org_id = ORG_ID
-        if prepare_instance is None or os.environ.get("REFLEXIO_DEFAULT_ORG_ID"):
+        if not retired_org_selector and (
+            prepare_instance is None or os.environ.get(LEGACY_ORG_ENV)
+        ):
             # Old bundles require the selector, and older dotenv templates
             # can supply the standalone default. The former launcher always
             # replaced that value for Claude Smart.
-            os.environ["REFLEXIO_DEFAULT_ORG_ID"] = org_id
+            os.environ[LEGACY_ORG_ENV] = org_id
 
         port = (
             backend_port
