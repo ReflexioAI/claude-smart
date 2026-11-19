@@ -192,7 +192,9 @@ runtime and saves confirmed settings through that runtime's Python interpreter.
 The selected integrations register against it without rebuilding Python or
 the dashboard. A registration can be retried after settings were saved.
 Previous prepared runtimes are retained for integrations and OpenCode project
-loaders that still reference them.
+loaders that still reference them. Hooks use the generation's existing Python
+environment. If that environment becomes unusable, rerun `npx claude-smart setup`
+to prepare a replacement.
 
 Dashboard saves use the prepared Python settings owner too. They share the
 repair lock and publish privately with one atomic file replacement. An explicit

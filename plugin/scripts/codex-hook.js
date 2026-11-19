@@ -324,7 +324,8 @@ function detached(command, args, options = {}) {
 }
 
 function startInstallerDetached(root, reason) {
-  if (process.env.CLAUDE_SMART_BOOTSTRAPPING === "1") return false;
+  if (process.env.CLAUDE_SMART_BOOTSTRAPPING === "1" ||
+      fs.existsSync(path.join(root, "guide-prepared-runtime"))) return false;
   const script = path.join(root, "scripts", "smart-install.sh");
   const bash = bashPath();
   if (!bash || !fs.existsSync(script)) return false;

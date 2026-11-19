@@ -6078,12 +6078,15 @@ def test_codex_session_start_hook_has_install_recovery_budget() -> None:
     assert dashboard_hook["timeout"] == 300
 
 
+@pytest.mark.parametrize("guided", [False, True])
 @pytest.mark.parametrize("failure", ["missing-uv", "broken-import"])
 def test_hook_entry_self_heal_preserves_declared_host(
-    tmp_path: Path, failure: str
+    tmp_path: Path, failure: str, guided: bool
 ) -> None:
     scripts = tmp_path / "plugin" / "scripts"
     scripts.mkdir(parents=True)
+    if guided:
+        (scripts.parent / "guide-prepared-runtime").write_text("runtime-AbCd12")
     shutil.copy2(LIB, scripts / "_lib.sh")
     shutil.copy2(HOOK_ENTRY, scripts / "hook_entry.sh")
     _write_executable(
@@ -6124,7 +6127,8 @@ def test_hook_entry_self_heal_preserves_declared_host(
             python,
             "#!/bin/bash\n"
             'if [ "$1" = -P ]; then exit 0; fi\n'
-            "printf '{\"continue\":true}\\n'\n",
+            "printf '{\"continue\":true}\\n'\n"
+            'printf "dispatched\\n" > "$HOME/dispatched"\n',
         )
 
     env = {
@@ -6143,11 +6147,37 @@ def test_hook_entry_self_heal_preserves_declared_host(
     )
     assert json.loads(result.stdout) == {"continue": True}
     record = tmp_path / "repair-result"
+    if guided:
+        assert (tmp_path / "dispatched").exists() == (failure == "missing-uv")
+        assert not (tmp_path / ".claude-smart" / "install.log").exists()
+        assert not record.exists()
+        return
     deadline = time.monotonic() + 5
     while not record.exists() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert record.read_text() == "codex:1\n"
     assert not (tmp_path / "service-start").exists()
+
+
+def test_prepared_runtime_refuses_direct_dependency_install(tmp_path: Path) -> None:
+    root = tmp_path / "plugin"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
+    (root / "guide-prepared-runtime").write_text("runtime-AbCd12")
+    result = subprocess.run(
+        ["bash", str(scripts / "smart-install.sh")],
+        cwd=tmp_path,
+        env={"HOME": str(tmp_path), "PATH": os.defpath},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "Rerun npx claude-smart setup" in result.stderr
+    assert not (tmp_path / ".claude-smart").exists()
 
 
 def test_install_complete_requires_importable_hook_package() -> None:

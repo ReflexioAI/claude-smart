@@ -2727,6 +2727,8 @@ async function prepareGuidedRuntime(config, options, settings, baseline) {
     cpSync(PACKAGE_ROOT, directory, { recursive: true, filter: shouldCopyPath });
     verifyLocalPluginPackage(directory, "guided runtime");
     const tools = await bootstrapPluginRuntime(pluginRoot, { settings });
+    // Only the guide may replace the dependencies of a prepared generation.
+    writeFileSync(join(pluginRoot, "guide-prepared-runtime"), id, { flag: "wx", mode: 0o600 });
     const readOnly = settings.request.updates[CLAUDE_SMART_READ_ONLY_ENV] === "1";
     if (config.hosts.includes(HOST_CLAUDE_CODE)) {
       const hooks = renderSharedClaudeHooks(join(pluginRoot, "hooks", "hooks.json"), pluginRoot, readOnly);
