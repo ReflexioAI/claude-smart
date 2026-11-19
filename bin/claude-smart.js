@@ -2392,7 +2392,7 @@ async function runGuidedHost(command, host, options, label, settings) {
         if (!terminatingOnSignal) resolve(typeof code === "number" ? code : 1);
       });
     });
-    // A successful Codex worker requires a confirmed save, even if the
+    // A successful prepared worker requires a confirmed save, even if the
     // guide disconnected before receiving the acknowledgement.
     if (settings && code === 0) acceptSettings();
     if (code !== 0) process.stderr.write(`  ${label} failed. Details: ${log}\n`);
@@ -2456,7 +2456,7 @@ async function runGuidedCommand(command, args) {
       saved: () => saved,
       save: async (config) => {
         const settings = planInstallSettings(config, captured);
-        if (config.hosts.length === 1 && config.hosts[0] === HOST_CODEX) {
+        if (config.hosts.length === 1 && [HOST_CODEX, HOST_OPENCODE].includes(config.hosts[0])) {
           deferredSettings = settings;
           return;
         }
@@ -3494,6 +3494,7 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   await preparePluginPython(pluginRoot, uv, env);
   if (options.settings) {
     await preparePluginDashboard(pluginRoot, nodeRuntime, env, options.settings);
+    options.beforeSettingsPublish?.();
     await publishFromPreparedRuntime(pluginRoot, options.settings);
     return nodeRuntime;
   }
@@ -4059,26 +4060,29 @@ async function runUninstall(args) {
   );
 }
 
+function receivePreparedInstallSettings() {
+  // A closed IPC channel still identifies a guide worker. Refuse to install
+  // against legacy settings if the guide disconnected before sending them.
+  if (typeof process.send !== "function") return null;
+  return new Promise((resolve, reject) => {
+    const disconnected = () => reject(new Error("Installation guide disconnected before passing settings."));
+    if (!process.connected) return disconnected();
+    process.once("disconnect", disconnected);
+    process.once("message", (message) => {
+      process.removeListener("disconnect", disconnected);
+      resolve(message);
+    });
+  });
+}
+
 async function runInstall(args, options = {}) {
-  if (parseHost(args) === HOST_CODEX) {
-    // process.send identifies an IPC-launched worker even after its channel
-    // closes. Such a worker must never fall back to standalone installation.
-    const settings = typeof process.send === "function"
-      ? await new Promise((resolve, reject) => {
-          const disconnected = () => reject(new Error("Installation guide disconnected before passing settings."));
-          if (!process.connected) return disconnected();
-          process.once("disconnect", disconnected);
-          process.once("message", (message) => {
-            process.removeListener("disconnect", disconnected);
-            resolve(message);
-          });
-        })
-      : null;
-    await runInstallCodex(settings);
+  const host = parseHost(args);
+  if (host === HOST_CODEX) {
+    await runInstallCodex(await receivePreparedInstallSettings());
     return;
   }
-  if (parseHost(args) === HOST_OPENCODE) {
-    await runInstallOpenCode(args);
+  if (host === HOST_OPENCODE) {
+    await runInstallOpenCode(args, await receivePreparedInstallSettings());
     return;
   }
 
@@ -4356,16 +4360,18 @@ function assertOpenCodeInstallConfiguration(args) {
   }
 }
 
-async function runInstallOpenCode(args) {
-  const setup = readInstallPolicy();
+async function runInstallOpenCode(args, settings) {
+  let setup = settings ? null : readInstallPolicy();
   const prerequisiteError = opencodePrerequisiteError();
   if (prerequisiteError) {
     process.stderr.write(prerequisiteError);
     process.exit(1);
   }
   assertSupportedRuntimePlatform();
-  snapshotInstallState();
-  const readOnly = setup.readOnly;
+  snapshotInstallState({ preserveFailureMarker: Boolean(settings) });
+  const readOnly = settings
+    ? settings.request.updates[CLAUDE_SMART_READ_ONLY_ENV] === "1"
+    : setup.readOnly;
   if (!hasExtractionProvider()) {
     process.stderr.write(extractionProviderError());
     process.exit(1);
@@ -4387,7 +4393,12 @@ async function runInstallOpenCode(args) {
   const pluginRoot = join(packageRoot, "plugin");
   let results;
   try {
-    await bootstrapPluginRuntime(pluginRoot, { readOnly });
+    await bootstrapPluginRuntime(pluginRoot, {
+      readOnly,
+      settings,
+      beforeSettingsPublish: () => assertOpenCodeInstallConfiguration(args),
+    });
+    if (settings) setup = readInstallPolicy();
   } catch (err) {
     process.stderr.write(
       `error: claude-smart OpenCode setup failed during dependency bootstrap: ${err && err.message ? err.message : err}\n`,

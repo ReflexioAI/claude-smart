@@ -231,10 +231,10 @@ Installing or removing Codex leaves that legacy runtime intact. Codex writes
 the commands for its prepared runtime to the marketplace and cache manifests.
 New Codex hooks use a pinned Node executable so replacing the installer's
 current Node does not interrupt them.
-The prepared package retains the bundled manifests. When Codex is the only
-selected integration, the guide prepares its runtime before saving confirmed
-settings and any missing local defaults through that runtime's interpreter. On
-Windows, the interpreter checks the staged settings for local embedding
+The prepared Codex package retains the bundled manifests. For a guided install
+of Codex or OpenCode by itself, the installer prepares the runtime before
+saving confirmed settings and missing local defaults through its interpreter.
+On Windows, the interpreter checks the staged settings for local embedding
 prerequisites before it replaces the account file.
 
 Codex commits its prepared runtime and hook cache before asking Codex to trust the
