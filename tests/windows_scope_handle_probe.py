@@ -186,3 +186,40 @@ with tempfile.TemporaryDirectory(prefix="rx-open-scope-") as tmp:
             }
         )
     )
+
+
+from probe_opencode_scope import _publish, _snapshot  # noqa: E402
+
+with tempfile.TemporaryDirectory() as temporary:
+    scope = Path(temporary).resolve()
+    existing = scope / "opencode.jsonc"
+    existing.write_bytes(b"original")
+    new = scope / ".opencode/plugins/claude-smart.js"
+    plan = [
+        {"path": str(existing), **_snapshot(existing), "replacement": "updated"},
+        {"path": str(new), **_snapshot(new), "replacement": "generated"},
+    ]
+    _publish(plan, check=True)
+    assert existing.read_bytes() == b"original" and not new.exists()
+    assert not list(new.parent.glob("*.tmp"))
+    _publish(plan, check=False)
+    assert existing.read_bytes() == b"updated"
+    assert new.read_bytes() == b"generated"
+    with ExitStack() as stack:
+        created = []
+        rollback = scope / "new-file"
+        handle, _ = open_scoped_file(
+            rollback, stack, writable=True, rollback_creation=created
+        )
+        handle.write(b"partial")
+        handle.flush()
+        created[0]()
+    assert not rollback.exists()
+    print(
+        json.dumps(
+            {
+                "native_scoped_writer_checked_and_published": True,
+                "created_file_rollback": True,
+            }
+        )
+    )
