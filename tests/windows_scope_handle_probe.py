@@ -223,3 +223,16 @@ with tempfile.TemporaryDirectory() as temporary:
             }
         )
     )
+
+
+with tempfile.TemporaryDirectory() as temporary:
+    scope = Path(temporary).resolve()
+    loader = scope / ".opencode/plugins/claude-smart.js"
+    edit = {"path": str(loader), **_snapshot(loader), "replacement": "generated"}
+    _publish([edit], check=False)
+    remove = {"path": str(loader), **_snapshot(loader), "replacement": None}
+    _publish([remove], check=True)
+    assert loader.is_file()
+    _publish([remove], check=False)
+    assert not loader.exists()
+    print(json.dumps({"native_scoped_loader_removal": True}))

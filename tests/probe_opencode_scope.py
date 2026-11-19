@@ -19,6 +19,7 @@ def open_scoped_file(
     *,
     writable: bool = False,
     rollback_creation: list[Callable[[], None]] | None = None,
+    remove_existing: list[Callable[[], None]] | None = None,
 ) -> tuple[BinaryIO, str]:
     """Hold verified ancestors and a regular leaf for the requested operation."""
     parts = path.parts
@@ -27,7 +28,11 @@ def open_scoped_file(
     create = rollback_creation is not None
     if os.name == "nt":
         return _open_windows_file(
-            path, lifetime, writable=writable, rollback_creation=rollback_creation
+            path,
+            lifetime,
+            writable=writable,
+            rollback_creation=rollback_creation,
+            remove_existing=remove_existing,
         )
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     parent = os.open(parts[0], directory_flags)
@@ -50,18 +55,24 @@ def open_scoped_file(
         flags |= os.O_CREAT | os.O_EXCL
     fd = os.open(parts[-1], flags, 0o600, dir_fd=parent)
     source, identity = _open_regular_file(fd, lifetime, writable)
-    if rollback_creation is not None:
+    remove = rollback_creation if create else remove_existing
+    if remove is not None:
         name = parts[-1]
 
         def remove_created() -> None:
             try:
                 current = os.stat(name, follow_symlinks=False, dir_fd=parent)
             except FileNotFoundError:
-                return
-            if f"{current.st_dev}:{current.st_ino}" == identity:
-                os.unlink(name, dir_fd=parent)
+                if create:
+                    return
+                raise
+            if f"{current.st_dev}:{current.st_ino}" != identity:
+                if create:
+                    return
+                raise ValueError("OpenCode file changed before removal")
+            os.unlink(name, dir_fd=parent)
 
-        rollback_creation.append(remove_created)
+        remove.append(remove_created)
     return source, identity
 
 
@@ -85,6 +96,7 @@ def _open_windows_file(
     *,
     writable: bool,
     rollback_creation: list[Callable[[], None]] | None,
+    remove_existing: list[Callable[[], None]] | None,
 ) -> tuple[BinaryIO, str]:
     import ctypes
     import msvcrt
@@ -149,7 +161,7 @@ def _open_windows_file(
         # Directory data access makes Windows enforce sharing restrictions
         # on rename. FILE_READ_ATTRIBUTES alone does not enforce them.
         access = 0x81 if directory else 0xC0000000 if writable else 0x80000000
-        if create and not directory:
+        if (create or remove_existing is not None) and not directory:
             access |= 0x10000  # DELETE, for handle-based compensation on failure.
         flags = 0x00200000 | (0x02000000 if directory else 0)
         # The installer may already hold the validated leaf for refresh.
@@ -204,14 +216,15 @@ def _open_windows_file(
     except BaseException:
         os.close(fd)
         raise
-    if rollback_creation is not None:
+    remove = rollback_creation if create else remove_existing
+    if remove is not None:
 
         def remove_created() -> None:
             delete = wintypes.BOOL(True)
             if not set_info(leaf, 4, ctypes.byref(delete), ctypes.sizeof(delete)):
                 raise ctypes.WinError(ctypes.get_last_error())
 
-        rollback_creation.append(remove_created)
+        remove.append(remove_created)
     return source, identity
 
 
@@ -243,7 +256,7 @@ def _write_bytes(file: BinaryIO, data: bytes) -> None:
 
 class _Edit(TypedDict):
     path: str
-    replacement: str
+    replacement: str | None
     contents: str | None
     identity: str | None
 
@@ -252,13 +265,17 @@ def _publish(edits: list[_Edit], *, check: bool) -> None:
     """Verify the existing files in a plan before editing any of them."""
     with ExitStack() as lifetime:
         prepared = []
+        removals = []
         for edit in edits:
             path = Path(edit["path"])
-            replacement = edit["replacement"].encode("utf-8")
+            contents = edit["replacement"]
+            replacement = None if contents is None else contents.encode("utf-8")
             prior = edit["contents"]
-            if len(replacement) > _MAX_CONFIG_BYTES:
+            if replacement is not None and len(replacement) > _MAX_CONFIG_BYTES:
                 raise ValueError("OpenCode edit exceeds the installer limit")
             if prior is None:
+                if replacement is None:
+                    raise ValueError("OpenCode removal requires a file snapshot")
                 if (
                     edit["identity"] is not None
                     or _snapshot(path)["identity"] is not None
@@ -278,13 +295,18 @@ def _publish(edits: list[_Edit], *, check: bool) -> None:
                 continue
             original = prior.encode("utf-8")
             file, identity = open_scoped_file(
-                path, lifetime, writable=(original != replacement)
+                path,
+                lifetime,
+                writable=(replacement is not None and original != replacement),
+                remove_existing=removals if replacement is None else None,
             )
             if edit["identity"] != identity or _read_bytes(file) != original:
                 raise ValueError("OpenCode file changed before publication")
-            if original != replacement:
+            if replacement is not None and original != replacement:
                 prepared.append((path, file, original, replacement))
 
+        if len(removals) > 1:
+            raise ValueError("An OpenCode scope can remove only its loader")
         if check:
             return
         changed = []
@@ -301,6 +323,8 @@ def _publish(edits: list[_Edit], *, check: bool) -> None:
                         raise ValueError("OpenCode file changed before publication")
                     changed.append((file, prior))
                 _write_bytes(file, replacement)
+            for remove in removals:
+                remove()
         except (OSError, ValueError):
             for file, prior in reversed(changed):
                 _write_bytes(file, prior)
