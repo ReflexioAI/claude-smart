@@ -493,29 +493,8 @@ function stripJsonc(text) {
   return out;
 }
 
-function readOpenCodeConfigFile(path, expectedMode) {
-  const info = openCodeConfigStat(path);
-  if (!info) return null;
-  const file = openSync(
-    path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0),
-  );
-  try {
-    const opened = fstatSync(file, { bigint: true });
-    const conflict = () => new Error(`OpenCode config changed while reading ${path}; retry setup.`);
-    if (!opened.isFile() || !sameFileIdentity(info, opened)) throw conflict();
-    const bytes = readFileSync(file);
-    const current = openCodeConfigStat(path);
-    if (!current || !sameFileIdentity(current, opened) ||
-        current.mtimeNs !== opened.mtimeNs || current.ctimeNs !== opened.ctimeNs ||
-        current.size !== opened.size ||
-        (expectedMode !== undefined && current.mode !== expectedMode)) throw conflict();
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-  } finally {
-    closeSync(file);
-  }
-}
-
-function readJsoncObject(path, text = readOpenCodeConfigFile(path)) {
+function readJsoncObject(path) {
+  const text = existsSync(path) ? readFileSync(path, "utf8") : "{}";
   const parsed = JSON.parse(stripJsonc(text || "{}"));
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`OpenCode config ${path} must be a JSON object`);
@@ -833,8 +812,8 @@ function isOpenCodeClaudeSmartSpec(spec) {
   return false;
 }
 
-function readOpenCodePluginConfig(configPath, original) {
-  const data = readJsoncObject(configPath, original);
+function readOpenCodePluginConfig(configPath) {
+  const data = readJsoncObject(configPath);
   for (const field of ["plugins", "plugin"]) {
     if (data[field] !== undefined && !Array.isArray(data[field])) {
       throw new Error(`OpenCode config ${configPath} field "${field}" must be a JSON array`);
@@ -843,10 +822,9 @@ function readOpenCodePluginConfig(configPath, original) {
   return data;
 }
 
-function planOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
+function patchOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
   const resolvedPluginSpec = install ? pluginSpec || opencodeLocalPluginSpec() : pluginSpec;
-  const original = readOpenCodeConfigFile(configPath);
-  const data = readOpenCodePluginConfig(configPath, original);
+  const data = readOpenCodePluginConfig(configPath);
   const current = [
     ...(Array.isArray(data.plugin) ? data.plugin : []),
     ...(Array.isArray(data.plugins) ? data.plugins : []),
@@ -860,108 +838,30 @@ function planOpenCodePluginConfig(configPath, { install, pluginSpec = null }) {
         next.some((entry, index) => entry !== data.plugin[index])
       : install && next.length > 0);
   if (!changed) return { changed: false, configPath };
-  const backupPath = original?.trim() && original !== stripJsonc(original)
-    ? `${configPath}.bak`
-    : null;
+  let backupPath = null;
+  if (existsSync(configPath)) {
+    const original = readFileSync(configPath, "utf8");
+    if (original.trim() && original !== stripJsonc(original)) {
+      backupPath = `${configPath}.bak`;
+      writeFileSync(backupPath, original);
+    }
+  }
   data.plugin = next;
   delete data.plugins;
-  return { changed: true, configPath, backupPath, original, data };
-}
-
-function openCodeConfigStat(path) {
-  try {
-    const info = lstatSync(path, { bigint: true });
-    if (!info.isFile()) throw new Error(`OpenCode config write requires a regular file at ${path}`);
-    return info;
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-function assertOpenCodeConfigSnapshot(plan, expectedMode) {
-  if (readOpenCodeConfigFile(plan.configPath, expectedMode) !== plan.original)
-    throw new Error(`OpenCode config changed at ${plan.configPath}; retry setup.`);
-}
-
-function writeOpenCodeConfigAtomically(path, contents, plan) {
-  const info = openCodeConfigStat(path);
-  const directory = mkdtempSync(join(dirname(path), ".claude-smart-config-"));
-  const temporary = join(directory, "new");
-  try {
-    const mode = info ? Number(info.mode & 0o777n) : 0o600;
-    writeFileSync(temporary, contents, { flag: "wx", mode });
-    if (info && !isWindows()) chmodSync(temporary, mode);
-    if (path === plan.configPath) {
-      assertOpenCodeConfigSnapshot(plan, info?.mode);
-    } else {
-      assertOpenCodeConfigSnapshot(plan);
-      if (openCodeConfigStat(path)?.mode !== info?.mode)
-        throw new Error(`OpenCode backup permissions changed at ${path}; retry setup.`);
-    }
-    // A same-directory move commits the complete bytes without opening an
-    // existing destination (including a substituted symlink) for writing.
-    renameSync(temporary, path);
-  } finally {
-    try {
-      rmSync(temporary, { force: true });
-      rmdirSync(directory);
-    } catch {
-      process.stderr.write(`warning: could not clean OpenCode config stage at ${directory}.\n`);
-    }
-  }
-}
-
-function applyOpenCodePluginConfig(plan) {
-  const { changed, configPath, backupPath } = plan;
-  if (!changed) return { changed, configPath };
-  assertOpenCodeConfigSnapshot(plan);
   mkdirSync(dirname(configPath), { recursive: true });
-  if (backupPath)
-    writeOpenCodeConfigAtomically(backupPath, plan.original, plan);
-  writeOpenCodeConfigAtomically(
-    configPath,
-    JSON.stringify(plan.data, null, 2) + "\n",
-    plan,
-  );
-  return { changed, configPath, backupPath };
+  writeFileSync(configPath, JSON.stringify(data, null, 2) + "\n");
+  return { changed: true, configPath, backupPath };
 }
 
-function patchOpenCodePluginConfig(configPath, options) {
-  return applyOpenCodePluginConfig(planOpenCodePluginConfig(configPath, options));
-}
-
-function planOpenCodeLegacyEntries(args, cwd) {
-  return opencodeScopeConfigPaths(args, cwd)
-    .filter((file) => existsSync(file))
-    .map((file) => planOpenCodePluginConfig(file, { install: false }))
-    .filter((plan) => plan.changed);
-}
-
+// Removes claude-smart entries from every config the scope loads. Every existing
+// config is validated before any is rewritten, so a malformed one fails the
+// command without a partial edit. Returns the rewritten configs.
 function removeOpenCodeLegacyEntries(args = [], cwd = process.cwd()) {
-  // Parse every file before applying any rewrite.
-  return planOpenCodeLegacyEntries(args, cwd).map(applyOpenCodePluginConfig);
-}
-
-function assertOpenCodeLegacyEntriesWritable(plans) {
-  for (const { configPath, backupPath } of plans) {
-    for (const path of [configPath, backupPath].filter(Boolean)) {
-      try {
-        const info = openCodeConfigStat(path);
-        accessSync(dirname(path), constants.W_OK);
-        if (info) {
-          const fd = openSync(path, constants.O_WRONLY | constants.O_NONBLOCK);
-          try {
-            if (!fstatSync(fd).isFile()) throw new Error("not a regular file");
-          } finally {
-            closeSync(fd);
-          }
-        }
-      } catch (error) {
-        throw new Error(`Could not prepare OpenCode legacy config rewrite at ${path}: ${error.message}`, { cause: error });
-      }
-    }
-  }
+  const existing = opencodeScopeConfigPaths(args, cwd).filter((file) => existsSync(file));
+  for (const file of existing) readOpenCodePluginConfig(file);
+  return existing
+    .map((file) => patchOpenCodePluginConfig(file, { install: false }))
+    .filter((result) => result.changed);
 }
 
 function hasExtractionProvider() {
@@ -4640,7 +4540,6 @@ async function runInstallOpenCode(args, settings) {
   const pluginRoot = join(packageRoot, "plugin");
   await bootstrapPluginRuntime(pluginRoot, { readOnly, settings });
   const loader = assertOpenCodeInstallConfiguration(args);
-  assertOpenCodeLegacyEntriesWritable(planOpenCodeLegacyEntries(args, process.cwd()));
   const prepared = prepareOpenCodeV2Plugin(loader, packageRoot);
   const conflict = () => new Error(
     `OpenCode loader changed during install at ${loader.path}; reinstall after resolving the conflict.`,
@@ -4649,7 +4548,7 @@ async function runInstallOpenCode(args, settings) {
   // The signal handler exits after waiting for the settings owner. Release
   // this stage on that path as well as on ordinary failure and success.
   process.once("exit", prepared.close);
-  let legacyEntries;
+  let results;
   let v2PluginFile;
   try {
     if (settings) {
@@ -4657,10 +4556,12 @@ async function runInstallOpenCode(args, settings) {
       setup = readInstallPolicy();
     }
     assertOpenCodeInstallConfiguration(args);
-    legacyEntries = planOpenCodeLegacyEntries(args, process.cwd());
-    assertOpenCodeLegacyEntriesWritable(legacyEntries);
     ensurePluginRoot(pluginRoot);
-    v2PluginFile = prepared.publish();
+    // Keep the legacy migration order. The loader and old config entries
+    // must not both be published for the same OpenCode scope.
+    v2PluginFile = prepared.publish(() => {
+      results = removeOpenCodeLegacyEntries(args);
+    });
     if (v2PluginFile.status === "conflict") throw conflict();
     // The loader now references this package. Keep it if later cleanup fails.
     commitLocalPluginPackages([packageRoot]);
@@ -4672,14 +4573,6 @@ async function runInstallOpenCode(args, settings) {
     process.stdout.write(
       "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
     );
-  }
-  // Keep the old registration until its replacement is usable. If cleanup
-  // fails, retry with the published loader and its prepared package intact.
-  let results;
-  try {
-    results = legacyEntries.map(applyOpenCodePluginConfig);
-  } catch (error) {
-    throw new Error(`The OpenCode loader was published but a legacy config entry may still be active. Fix the config and rerun setup before restarting OpenCode: ${error.message}`, { cause: error });
   }
   clearRecoveredOpenCodeFailure(pluginRoot, previousFailure);
   await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);

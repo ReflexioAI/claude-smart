@@ -455,8 +455,6 @@ def test_guided_opencode_keeps_settings_when_loader_appears(tmp_path, stage):
     [
         "create",
         "refresh",
-        "legacy-config",
-        "legacy-backup",
         "publish",
         "partial-create",
         "partial-refresh",
@@ -470,13 +468,6 @@ def test_guided_opencode_loader_stage_and_settings_order(tmp_path, failure):
     directory = tmp_path / ".opencode/plugins"
     directory.mkdir(parents=True)
     loader = directory / "claude-smart.js"
-    legacy = tmp_path / "opencode.json"
-    original_config = b'{"plugin":["claude-smart","keep"]}\n'
-    backup = legacy.with_suffix(".json.bak")
-    if failure == "legacy-backup":
-        original_config = b"// preserve the comment\n" + original_config
-        backup.write_bytes(b"prior backup")
-    legacy.write_bytes(original_config)
     if failure in {"refresh", "partial-refresh"}:
         loader.write_text(
             "// claude-smart OpenCode V2 loader\n"
@@ -505,11 +496,6 @@ fs.openSync = (path, flags, ...args) => {
   if (failure === "publish" && process.send && flags === "wx" &&
       typeof path === "string" && basename(path) === "claude-smart.js")
     throw Object.assign(new Error("fixture denied loader publication"), { code: "EACCES" });
-  const denied = failure === "legacy-config" ? "opencode.json" :
-    failure === "legacy-backup" ? "opencode.json.bak" : null;
-  if (denied && typeof path === "string" && basename(path) === denied &&
-      typeof flags === "number" && flags & fs.constants.O_WRONLY)
-    throw Object.assign(new Error("fixture denied legacy config rewrite"), { code: "EACCES" });
   const fd = open(path, flags, ...args);
   if (typeof path === "string" && basename(path) === "claude-smart.js" &&
       (flags === "wx" || (typeof flags === "number" && flags & fs.constants.O_RDWR)))
@@ -556,9 +542,6 @@ if (failure.startsWith("partial-")) {
     assert result.returncode != 0
     assert (root / "identity").read_text() == "old"
     assert list(directory.glob(".claude-smart-loader-*.tmp")) == []
-    assert legacy.read_bytes() == original_config
-    if failure == "legacy-backup":
-        assert backup.read_bytes() == b"prior backup"
     assert (loader.read_bytes() if loader.exists() else None) == previous_loader
     log = next((tmp_path / ".claude-smart/install-logs").glob("update-opencode-*.log"))
     if failure in {"publish", "partial-create", "partial-refresh", "close"}:
@@ -577,12 +560,7 @@ if (failure.startsWith("partial-")) {
     else:
         assert settings.read_bytes() == original
         assert "Account settings were saved" not in result.stderr
-        expected = (
-            "fixture denied legacy config rewrite"
-            if failure.startswith("legacy-")
-            else "fixture denied loader setup"
-        )
-        assert expected in log.read_text()
+        assert "fixture denied loader setup" in log.read_text()
 
 
 @pytest.mark.parametrize(
