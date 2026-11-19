@@ -232,10 +232,12 @@ the commands for its prepared runtime to the marketplace and cache manifests.
 New Codex hooks use a pinned Node executable so replacing the installer's
 current Node does not interrupt them.
 The prepared Codex package retains the bundled manifests. For a guided install
-of Codex or OpenCode by itself, the installer prepares the runtime before
-saving confirmed settings and missing local defaults through its interpreter.
-On Windows, the interpreter checks the staged settings for local embedding
-prerequisites before it replaces the account file.
+of Codex or OpenCode by itself, the installer prepares the runtime and the
+host's hook manifest or loader before saving confirmed settings through the
+prepared interpreter. On Windows, the interpreter checks the staged settings
+for local embedding prerequisites before it replaces the account file. If
+registration fails after the save, the guide reports that the settings were
+saved and that setup can be retried.
 
 Codex commits its prepared runtime and hook cache before asking Codex to trust the
 hooks. A later trust failure keeps that new runtime; follow the reported `/hooks`

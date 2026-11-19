@@ -379,7 +379,7 @@ if (typeof process.send === "function") {
     assert expected_error in log.read_text()
 
 
-def _run_guided_opencode_update(home, package, env):
+def _run_guided_node_update(home, package, env, host):
     env = {
         key: value for key, value in env.items() if key != "CLAUDE_SMART_INSTALL_CHILD"
     }
@@ -389,11 +389,11 @@ def _run_guided_opencode_update(home, package, env):
             str(package / "bin/claude-smart.js"),
             "update",
             "--host",
-            "opencode",
+            host,
             "--backend",
             "local",
             "--provider",
-            "opencode",
+            host,
             "--read-only",
             "--yes",
         ],
@@ -437,7 +437,7 @@ def test_guided_opencode_keeps_settings_when_loader_appears(tmp_path, stage):
             )
         )
 
-    result = _run_guided_opencode_update(tmp_path, package, env)
+    result = _run_guided_node_update(tmp_path, package, env, "opencode")
     assert result.returncode != 0
     assert settings.read_bytes() == original
     assert adapter.read_text() == "foreign loader\n"
@@ -448,6 +448,91 @@ def test_guided_opencode_keeps_settings_when_loader_appears(tmp_path, stage):
         "publish": "OpenCode loader changed before settings were saved",
     }
     assert expected[stage] in log.read_text()
+
+
+@pytest.mark.parametrize("failure", ["create", "refresh", "publish"])
+def test_guided_opencode_loader_stage_and_settings_order(tmp_path, failure):
+    package, root, uv, env = _fixture(tmp_path, "opencode", running="none")
+    settings = tmp_path / ".claude-smart/.env"
+    original = settings.read_bytes()
+    directory = tmp_path / ".opencode/plugins"
+    directory.mkdir(parents=True)
+    loader = directory / "claude-smart.js"
+    if failure == "refresh":
+        loader.write_text(
+            "// claude-smart OpenCode V2 loader\n"
+            "// OpenCode V2 auto-loads this directory. Reinstall claude-smart to refresh.\n"
+            'export { default } from "file:///older/runtime/server.mjs";\n'
+        )
+    previous_loader = loader.read_bytes() if loader.exists() else None
+    _write_bootstrap_uv(uv, mode="fresh")
+    preload = tmp_path / "loader-denied.cjs"
+    preload.write_text(
+        """
+const fs = require("node:fs");
+const { basename } = require("node:path");
+const failure = """
+        + json.dumps(failure)
+        + """;
+const open = fs.openSync;
+fs.openSync = (path, flags, ...args) => {
+  if (typeof path === "string" &&
+      ((failure === "create" && basename(path).startsWith(".claude-smart-loader-")) ||
+       (failure === "refresh" && basename(path) === "claude-smart.js" &&
+        (flags === "r+" || (typeof flags === "number" && flags & fs.constants.O_RDWR)))))
+    throw Object.assign(new Error("fixture denied loader setup"), { code: "EACCES" });
+  return open(path, flags, ...args);
+};
+if (failure === "publish" && process.send) {
+  const copy = fs.copyFileSync;
+  fs.copyFileSync = (source, target, ...args) => {
+    if (basename(source).startsWith(".claude-smart-loader-"))
+      throw Object.assign(new Error("fixture denied loader publication"), { code: "EACCES" });
+    return copy(source, target, ...args);
+  };
+}
+"""
+    )
+    env["NODE_OPTIONS"] = f'--require "{preload}"'
+
+    result = _run_guided_node_update(tmp_path, package, env, "opencode")
+
+    assert result.returncode != 0
+    assert (root / "identity").read_text() == "old"
+    assert list(directory.glob(".claude-smart-loader-*.tmp")) == []
+    assert (loader.read_bytes() if loader.exists() else None) == previous_loader
+    log = next((tmp_path / ".claude-smart/install-logs").glob("update-opencode-*.log"))
+    if failure == "publish":
+        assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
+        assert (
+            "Account settings were saved. Retry setup to finish registration."
+            in result.stderr
+        )
+        assert "fixture denied loader publication" in log.read_text()
+    else:
+        assert settings.read_bytes() == original
+        assert "Account settings were saved" not in result.stderr
+        assert "fixture denied loader setup" in log.read_text()
+
+
+def test_guided_codex_keeps_settings_when_hook_manifest_is_invalid(tmp_path):
+    package, root, uv, env = _fixture(tmp_path, "codex", running="none")
+    settings = tmp_path / ".claude-smart/.env"
+    before = settings.read_bytes()
+    _write_bootstrap_uv(uv, mode="fresh")
+    node = tmp_path / ".claude-smart/node/current/bin/node"
+    _write_executable(node, f'#!/bin/sh\nexec {shlex.quote(node_bin())} "$@"\n')
+    (package / "plugin/hooks/codex-hooks.json").write_text("{invalid JSON}")
+
+    result = _run_guided_node_update(tmp_path, package, env, "codex")
+
+    assert result.returncode != 0
+    assert settings.read_bytes() == before
+    assert (root / "identity").read_text() == "old"
+    assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
+    log = next((tmp_path / ".claude-smart/install-logs").glob("update-codex-*.log"))
+    assert "could not prepare claude-smart Codex runtime" in log.read_text()
+    assert "JSON" in log.read_text()
 
 
 @pytest.mark.parametrize("marker_change", ["owned", "unrelated", "replaced"])
@@ -489,7 +574,7 @@ def test_guided_opencode_retry_clears_only_its_previous_failure(
                 1,
             ),
         )
-    result = _run_guided_opencode_update(tmp_path, package, env)
+    result = _run_guided_node_update(tmp_path, package, env, "opencode")
     assert result.returncode == 0, (result.stderr, result.stdout)
     assert (root / "identity").read_text() == "new"
     if marker_change == "owned":
