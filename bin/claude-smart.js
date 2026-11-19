@@ -493,7 +493,7 @@ function stripJsonc(text) {
   return out;
 }
 
-function readOpenCodeConfigFile(path) {
+function readOpenCodeConfigFile(path, expectedMode) {
   const info = openCodeConfigStat(path);
   if (!info) return null;
   const file = openSync(
@@ -507,7 +507,8 @@ function readOpenCodeConfigFile(path) {
     const current = openCodeConfigStat(path);
     if (!current || !sameFileIdentity(current, opened) ||
         current.mtimeNs !== opened.mtimeNs || current.ctimeNs !== opened.ctimeNs ||
-        current.size !== opened.size) throw conflict();
+        current.size !== opened.size ||
+        (expectedMode !== undefined && current.mode !== expectedMode)) throw conflict();
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } finally {
     closeSync(file);
@@ -878,12 +879,12 @@ function openCodeConfigStat(path) {
   }
 }
 
-function assertOpenCodeConfigSnapshot(plan) {
-  if (readOpenCodeConfigFile(plan.configPath) !== plan.original)
+function assertOpenCodeConfigSnapshot(plan, expectedMode) {
+  if (readOpenCodeConfigFile(plan.configPath, expectedMode) !== plan.original)
     throw new Error(`OpenCode config changed at ${plan.configPath}; retry setup.`);
 }
 
-function writeOpenCodeConfigAtomically(path, contents, validate) {
+function writeOpenCodeConfigAtomically(path, contents, plan) {
   const info = openCodeConfigStat(path);
   const directory = mkdtempSync(join(dirname(path), ".claude-smart-config-"));
   const temporary = join(directory, "new");
@@ -891,8 +892,13 @@ function writeOpenCodeConfigAtomically(path, contents, validate) {
     const mode = info ? Number(info.mode & 0o777n) : 0o600;
     writeFileSync(temporary, contents, { flag: "wx", mode });
     if (info && !isWindows()) chmodSync(temporary, mode);
-    openCodeConfigStat(path);
-    validate?.();
+    if (path === plan.configPath) {
+      assertOpenCodeConfigSnapshot(plan, info?.mode);
+    } else {
+      assertOpenCodeConfigSnapshot(plan);
+      if (openCodeConfigStat(path)?.mode !== info?.mode)
+        throw new Error(`OpenCode backup permissions changed at ${path}; retry setup.`);
+    }
     // A same-directory move commits the complete bytes without opening an
     // existing destination (including a substituted symlink) for writing.
     renameSync(temporary, path);
@@ -912,11 +918,11 @@ function applyOpenCodePluginConfig(plan) {
   assertOpenCodeConfigSnapshot(plan);
   mkdirSync(dirname(configPath), { recursive: true });
   if (backupPath)
-    writeOpenCodeConfigAtomically(backupPath, plan.original, () => assertOpenCodeConfigSnapshot(plan));
+    writeOpenCodeConfigAtomically(backupPath, plan.original, plan);
   writeOpenCodeConfigAtomically(
     configPath,
     JSON.stringify(plan.data, null, 2) + "\n",
-    () => assertOpenCodeConfigSnapshot(plan),
+    plan,
   );
   return { changed, configPath, backupPath };
 }

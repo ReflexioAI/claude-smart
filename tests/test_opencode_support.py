@@ -1716,6 +1716,48 @@ def test_opencode_config_preflight_rejects_pipe_without_blocking(
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX file permissions")
+@pytest.mark.parametrize("destination", ["config", "backup"])
+def test_opencode_config_preserves_permissions_restricted_during_staging(
+    tmp_path: Path, destination: str
+):
+    config = tmp_path / "opencode.jsonc"
+    original = '{"plugin":["claude-smart","keep"]}\n'
+    target = config
+    if destination == "backup":
+        original = "// preserve the comment\n" + original
+        target = tmp_path / "opencode.jsonc.bak"
+        target.write_text("previous backup")
+    config.write_text(original)
+    target.chmod(0o644)
+    installer = REPO_ROOT / "bin" / "claude-smart.js"
+    script = f"""
+        const fs = require("node:fs");
+        const assert = require("node:assert/strict");
+        const path = require("node:path");
+        const write = fs.writeFileSync;
+        const target = {json.dumps(str(target))};
+        fs.writeFileSync = (file, ...args) => {{
+          const result = write(file, ...args);
+          if (typeof file === "string" &&
+              path.basename(path.dirname(file)).startsWith(".claude-smart-config-"))
+            fs.chmodSync(target, 0o600);
+          return result;
+        }};
+        const installer = require({json.dumps(str(installer))});
+        assert.throws(() => installer.patchOpenCodePluginConfig(
+          {json.dumps(str(config))}, {{install:false}}), /changed/);
+    """
+    result = _run_node_script(script)
+    if result is None:
+        pytest.skip("node is not installed")
+    assert result.returncode == 0, result.stderr
+    assert config.read_text() == original
+    assert target.stat().st_mode & 0o777 == 0o600
+    if destination == "backup":
+        assert target.read_text() == "previous backup"
+
+
 def test_node_installer_reports_unusable_loader_path_as_conflict(
     tmp_path: Path,
 ) -> None:
