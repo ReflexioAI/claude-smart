@@ -117,8 +117,11 @@ def test_unstartable_environment_is_reported_without_payload(tmp_path):
     )
 
 
-def test_missing_environment_requests_detached_installer_recovery(tmp_path):
+@pytest.mark.parametrize("guided", [False, True])
+def test_missing_environment_requests_recovery_only_for_standalone(tmp_path, guided):
     launcher, home, env = project(tmp_path, None)
+    if guided:
+        (launcher.parents[1] / "guide-prepared-runtime").write_text("runtime-AbCd12")
     installer = launcher.parent / "smart-install.sh"
     installer.write_text(
         '#!/bin/sh\nprintf "%s" "$CLAUDE_SMART_BOOTSTRAPPING" > "$HOME/recovery-requested"\n'
@@ -126,11 +129,15 @@ def test_missing_environment_requests_detached_installer_recovery(tmp_path):
     result = run(launcher, env)
     assert result.returncode == 0
     marker = home / "recovery-requested"
+    assert json.loads(result.stdout)["continue"] is True
+    if guided:
+        assert not (home / ".claude-smart" / "backend.log").exists()
+        assert not marker.exists()
+        return
     deadline = time.monotonic() + 2
     while not marker.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert marker.read_text() == "1"
-    assert json.loads(result.stdout)["continue"] is True
 
 
 def test_hung_python_ignoring_sigterm_is_killed_before_host_limit(tmp_path):

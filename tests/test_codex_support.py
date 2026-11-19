@@ -42,10 +42,18 @@ def test_codex_skill_documents_command_mapping() -> None:
 
     assert "name: claude-smart" in skill
     assert "Codex does not currently support plugin-provided slash commands" in skill
-    assert "bash ~/.reflexio/plugin-root/scripts/cli.sh show" in skill
-    assert "bash ~/.reflexio/plugin-root/scripts/cli.sh learn --note" in skill
-    assert "bash ~/.reflexio/plugin-root/scripts/cli.sh restart" in skill
-    assert "bash ~/.reflexio/plugin-root/scripts/cli.sh clear-all --yes" in skill
+    assert "bash ~/.claude-smart/guided-runtimes/guided-command.sh cli.sh show" in skill
+    assert (
+        "bash ~/.claude-smart/guided-runtimes/guided-command.sh cli.sh learn --note"
+        in skill
+    )
+    assert (
+        "bash ~/.claude-smart/guided-runtimes/guided-command.sh cli.sh restart" in skill
+    )
+    assert (
+        "bash ~/.claude-smart/guided-runtimes/guided-command.sh cli.sh clear-all --yes"
+        in skill
+    )
 
 
 def test_codex_hook_loads_managed_reflexio_env_and_skips_backend_start() -> None:

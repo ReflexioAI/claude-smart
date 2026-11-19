@@ -187,6 +187,19 @@ Python repair owner to supply only missing local defaults, with native locking
 and private atomic publication. Existing values, including zero and explicit
 empty values, are preserved. Ordinary standalone self-repair remains supported.
 
+When a guide installs multiple integrations together, it prepares one account
+runtime and saves confirmed settings through that runtime's Python interpreter.
+The selected integrations register against it without rebuilding Python or
+the dashboard. A registration can be retried after settings were saved.
+If setup stops after selecting a prepared runtime, the next setup resumes
+starting its services before preparing another replacement. Setup retains that
+startup record until the configured local services answer their readiness probes,
+so an unsuccessful replacement cannot lose the current startup work. The default
+Codex home, another recorded Codex home, or an OpenCode project counts as installed
+while its enabled plugin or loader points to a usable runtime. Hooks and commands
+use the prepared Python environment. Restart uses the prepared dashboard build.
+Rerun `npx claude-smart setup` to repair the environment or dashboard build.
+
 Dashboard saves use the prepared Python settings owner too. They share the
 repair lock and publish privately with one atomic file replacement. An explicit
 empty value stays present; omitted settings stay unchanged. If relevant settings
@@ -213,7 +226,7 @@ shared-service refresh.
 
 Run `/reload-plugins` in your existing Claude Code session, or use the update in your next session.
 Start a new Codex session to load the update; you can finish your existing session first. If hook trust needs review, use `/hooks`.
-Then restart OpenCode in your project so it loads the plugin. The installer writes a loader into the selected scope's `plugins` directory — the project's `.opencode/plugins/` for a project install — and both OpenCode lines load the plugin from there: OpenCode 1.x auto-loads the plugins directory, and OpenCode V2 rejects the old `file://` config-entry shape. Any legacy `opencode.json` entry is removed so the package loads exactly once. `--global` installs for all OpenCode projects on this machine instead, writing the loader under your user config directory.
+Then restart OpenCode in your project so it loads the plugin. The installer writes a loader into the selected scope's `plugins` directory — the project's `.opencode/plugins/` for a project install — and both OpenCode lines load the plugin from there: OpenCode 1.x auto-loads the plugins directory, and OpenCode V2 rejects the old `file://` config-entry shape. The installer removes legacy registry entries for `claude-smart` and entries that point to its account-managed package. Custom file references are preserved. `--global` installs for all OpenCode projects on this machine instead, writing the loader under your user config directory. Scope files must be regular local files in directories without filesystem redirects. On POSIX, loader creation and removal need a protected directory on the project's volume. The installer uses the account directory when it shares that volume, or an owned directory whose ancestors protect it from unrelated writers. If the loader or config changes during installation, resolve the conflict and rerun setup.
 
 Install and update use the same tracked service lifecycle for every coding agent.
 Validation of the platform, settings, and OpenCode loader/config happens before
@@ -231,6 +244,11 @@ Installing or removing Codex leaves that legacy runtime intact. Codex writes
 the commands for its prepared runtime to the marketplace and cache manifests.
 New Codex hooks use a pinned Node executable so replacing the installer's
 current Node does not interrupt them.
+Guided setup records the selected runtime under the claude-smart account. Current
+commands use that selection even if a running legacy hook rewrites
+`~/.reflexio/plugin-root`. Standalone installs can still use that compatibility
+path.
+
 The prepared Codex package retains the bundled manifests. For a guided install
 of Codex or OpenCode by itself, the installer prepares the runtime and the
 host's hook manifest or loader before saving confirmed settings through the

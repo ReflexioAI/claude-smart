@@ -1330,7 +1330,7 @@ def test_node_installer_restores_publish_hooks_from_source(tmp_path: Path) -> No
 def _copy_prepared_policy_owner(plugin_root: Path) -> None:
     owner = plugin_root / "src/claude_smart"
     owner.mkdir(parents=True, exist_ok=True)
-    for name in ("__init__.py", "env_config.py"):
+    for name in ("__init__.py", "env_config.py", "opencode_scope.py"):
         shutil.copy2(REPO_ROOT / "plugin/src/claude_smart" / name, owner / name)
 
 
@@ -1363,6 +1363,7 @@ def _fake_claude_code_package(tmp_path: Path, smart_install: str) -> Path:
         shutil.copy2(REPO_ROOT / "plugin" / name, package_root / "plugin" / name)
     # Shared Node preparation invokes the real import-light repair owner.
     _copy_prepared_policy_owner(package_root / "plugin")
+    shutil.copy2(REPO_ROOT / "plugin/scripts/guided-command.sh", scripts)
     _write_executable(scripts / "smart-install.sh", smart_install)
     _write_executable(
         scripts / "backend-service.sh",
@@ -2419,8 +2420,10 @@ def test_node_opencode_uninstall_preserves_learning_host_and_repairs_root(
     assert not opencode_root.exists()
 
 
+@pytest.mark.parametrize("unreadable_sibling", [False, True])
 def test_node_opencode_project_uninstall_keeps_the_shared_package(
     tmp_path: Path,
+    unreadable_sibling: bool,
 ) -> None:
     # Both scopes share one package copy and every loader re-exports its
     # server.mjs, so a project-scoped uninstall must not delete the package a
@@ -2445,6 +2448,14 @@ def test_node_opencode_project_uninstall_keeps_the_shared_package(
         tmp_path / "xdg" / "opencode" / "plugins" / "claude-smart.js"
     )
 
+    if unreadable_sibling:
+        foreign = tmp_path / "foreign.json"
+        foreign.write_text('{"plugin":[]}')
+        try:
+            (global_loader.parent.parent / "opencode.json").symlink_to(foreign)
+        except OSError:
+            pytest.skip("filesystem does not support this test's symlink")
+
     result = subprocess.run(
         [node, str(NODE_INSTALLER), "uninstall", "--host", "opencode"],
         cwd=project,
@@ -2460,8 +2471,10 @@ def test_node_opencode_project_uninstall_keeps_the_shared_package(
     assert (package_root / "scripts" / "backend-service.sh").exists()
 
 
+@pytest.mark.parametrize("unreadable_sibling", [False, True])
 def test_node_opencode_global_uninstall_keeps_the_shared_package(
     tmp_path: Path,
+    unreadable_sibling: bool,
 ) -> None:
     # The mirror case: a --global uninstall must not delete the package that a
     # project loader in the same tree still imports.
@@ -2483,6 +2496,14 @@ def test_node_opencode_global_uninstall_keeps_the_shared_package(
     global_loader = _seed_opencode_v2_loader(
         tmp_path / "xdg" / "opencode" / "plugins" / "claude-smart.js"
     )
+
+    if unreadable_sibling:
+        foreign = tmp_path / "foreign.json"
+        foreign.write_text('{"plugin":[]}')
+        try:
+            (project / "opencode.json").symlink_to(foreign)
+        except OSError:
+            pytest.skip("filesystem does not support this test's symlink")
 
     result = subprocess.run(
         [node, str(NODE_INSTALLER), "uninstall", "--host", "opencode", "--global"],
@@ -3425,7 +3446,7 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
         "startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup)" in node_installer
     )
     assert (
-        "startAndReportServices(CODEX_RUNTIME_PLUGIN_ROOT, HOST_CODEX, setup)"
+        "startAndReportServices(pluginRoot, HOST_CODEX, setup)"
         in node_installer
     )
     assert (
@@ -3461,7 +3482,7 @@ def test_cli_sh_self_heals_when_claude_smart_unimportable() -> None:
 
 
 @pytest.mark.parametrize(
-    "state", ["self-heal", "ready-with-marker", "broken-with-marker"]
+    "state", ["self-heal", "ready-with-marker", "broken-with-marker", "guided-no-uv"]
 )
 def test_cli_sh_uses_selected_runtime_readiness(tmp_path: Path, state: str) -> None:
     plugin_root = tmp_path / "plugin"
@@ -3497,8 +3518,11 @@ def test_cli_sh_uses_selected_runtime_readiness(tmp_path: Path, state: str) -> N
     ]:
         executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
 
-    if state == "ready-with-marker":
+    if state in {"ready-with-marker", "guided-no-uv"}:
         (tmp_path / "import-ok").touch()
+    if state == "guided-no-uv":
+        (bin_dir / "uv").unlink()
+        (plugin_root / "guide-prepared-runtime").write_text("runtime-AbCd12")
     marker = tmp_path / ".claude-smart/install-failed"
     if state != "self-heal":
         marker.parent.mkdir()
@@ -6058,12 +6082,15 @@ def test_codex_session_start_hook_has_install_recovery_budget() -> None:
     assert dashboard_hook["timeout"] == 300
 
 
+@pytest.mark.parametrize("guided", [False, True])
 @pytest.mark.parametrize("failure", ["missing-uv", "broken-import"])
 def test_hook_entry_self_heal_preserves_declared_host(
-    tmp_path: Path, failure: str
+    tmp_path: Path, failure: str, guided: bool
 ) -> None:
     scripts = tmp_path / "plugin" / "scripts"
     scripts.mkdir(parents=True)
+    if guided:
+        (scripts.parent / "guide-prepared-runtime").write_text("runtime-AbCd12")
     shutil.copy2(LIB, scripts / "_lib.sh")
     shutil.copy2(HOOK_ENTRY, scripts / "hook_entry.sh")
     _write_executable(
@@ -6104,7 +6131,8 @@ def test_hook_entry_self_heal_preserves_declared_host(
             python,
             "#!/bin/bash\n"
             'if [ "$1" = -P ]; then exit 0; fi\n'
-            "printf '{\"continue\":true}\\n'\n",
+            "printf '{\"continue\":true}\\n'\n"
+            'printf "dispatched\\n" > "$HOME/dispatched"\n',
         )
 
     env = {
@@ -6123,11 +6151,37 @@ def test_hook_entry_self_heal_preserves_declared_host(
     )
     assert json.loads(result.stdout) == {"continue": True}
     record = tmp_path / "repair-result"
+    if guided:
+        assert (tmp_path / "dispatched").exists() == (failure == "missing-uv")
+        assert not (tmp_path / ".claude-smart" / "install.log").exists()
+        assert not record.exists()
+        return
     deadline = time.monotonic() + 5
     while not record.exists() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert record.read_text() == "codex:1\n"
     assert not (tmp_path / "service-start").exists()
+
+
+def test_prepared_runtime_refuses_direct_dependency_install(tmp_path: Path) -> None:
+    root = tmp_path / "plugin"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
+    (root / "guide-prepared-runtime").write_text("runtime-AbCd12")
+    result = subprocess.run(
+        ["bash", str(scripts / "smart-install.sh")],
+        cwd=tmp_path,
+        env={"HOME": str(tmp_path), "PATH": os.defpath},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "Rerun npx claude-smart setup" in result.stderr
+    assert not (tmp_path / ".claude-smart").exists()
 
 
 def test_install_complete_requires_importable_hook_package() -> None:
@@ -7397,7 +7451,7 @@ def test_opencode_unwritable_loader_directory_preserves_legacy_registration(
     )
 
     assert result.returncode == 1
-    assert "EACCES" in result.stderr
+    assert "Permission denied" in result.stderr
     assert "uv sync --locked" in (home / "uv.log").read_text()
     assert (xdg / "opencode" / "opencode.json").read_bytes() == (
         b'{"plugin":["claude-smart"]}\n'
@@ -9407,3 +9461,68 @@ def test_smart_install_fast_success_still_repairs_a_missing_history_cap(
     assert second.returncode == 0, second.stderr
     assert "REFLEXIO_ROW_LIMIT_INTERACTIONS=500\n" in selected.read_text()
     assert not (selected.parent / "install-failed").exists()
+
+
+@pytest.mark.parametrize("entrypoint", ["dashboard-service.sh", "dashboard-build.sh"])
+def test_prepared_dashboard_repair_does_not_mutate_generation(tmp_path, entrypoint):
+    root = tmp_path / "plugin"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    (root / "dashboard").mkdir()
+    (root / "guide-prepared-runtime").write_text("runtime-AbCd12")
+    for name in ("_lib.sh", entrypoint):
+        shutil.copy2(LIB.with_name(name), scripts / name)
+    env = _isolated_env(tmp_path)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        env["DASHBOARD_PORT"] = str(listener.getsockname()[1])
+    result = subprocess.run(
+        ["bash", str(scripts / entrypoint), "start"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if entrypoint == "dashboard-service.sh":
+        assert result.returncode == 0, result.stderr
+        diagnostic = (tmp_path / ".claude-smart/dashboard-unavailable").read_text()
+    else:
+        assert result.returncode == 1
+        diagnostic = result.stderr
+    assert "npx claude-smart setup" in diagnostic
+    assert not list((root / "dashboard").iterdir())
+
+
+@pytest.mark.parametrize("launcher", ["missing", "broken", "ready"])
+def test_prepared_dashboard_preflight_checks_the_actual_launcher(tmp_path, launcher):
+    root = tmp_path / "plugin"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    build = root / "dashboard/.next"
+    build.mkdir(parents=True)
+    (build / "BUILD_ID").write_text("prepared-test-build")
+    (root / "guide-prepared-runtime").write_text("runtime-AbCd12")
+    for name in ("_lib.sh", "dashboard-service.sh"):
+        shutil.copy2(LIB.with_name(name), scripts / name)
+    if launcher != "missing":
+        binary = root / "dashboard/node_modules/.bin/next"
+        binary.parent.mkdir(parents=True)
+        exit_code = 0 if launcher == "ready" else 33
+        binary.write_text(f"#!/bin/sh\nexit {exit_code}\n")
+        binary.chmod(0o700)
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_DASHBOARD_AUTOSTART"] = "1"
+    result = subprocess.run(
+        ["bash", str(scripts / "dashboard-service.sh"), "preflight"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if launcher == "ready":
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 1, result.stderr
+        assert "npx claude-smart setup" in result.stderr

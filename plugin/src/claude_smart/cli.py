@@ -677,6 +677,12 @@ def cmd_restart(args: argparse.Namespace) -> int:
         sys.stdout.write("Nothing to restart (both services skipped).\n")
         return 0
 
+    prepared = (_PLUGIN_ROOT / "guide-prepared-runtime").is_file()
+    if do_dashboard and prepared:
+        preflight_rc = _run_service(_DASHBOARD_SCRIPT, "preflight")
+        if preflight_rc != 0:
+            return preflight_rc
+
     if do_backend:
         # Preparing the replacement can reinstall the vendored Reflexio if its
         # version drifted, so this both validates and repairs. It must succeed
@@ -698,7 +704,7 @@ def cmd_restart(args: argparse.Namespace) -> int:
         sys.stdout.write("Stopping dashboard…\n")
         _run_service(_DASHBOARD_SCRIPT, "stop")
 
-    if do_dashboard and not args.no_rebuild:
+    if do_dashboard and not (args.no_rebuild or prepared):
         if not _DASHBOARD_DIR.is_dir():
             sys.stderr.write(
                 f"warning: dashboard dir {_DASHBOARD_DIR} missing; skipping rebuild\n"

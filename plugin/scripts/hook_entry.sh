@@ -88,7 +88,7 @@ PY
   fi
 fi
 
-if ! command -v uv >/dev/null 2>&1; then
+if [ ! -f "$PLUGIN_ROOT/guide-prepared-runtime" ] && ! command -v uv >/dev/null 2>&1; then
   # Self-heal from skipped setup without blocking the first prompt. The
   # installer and Setup hook own dependency bootstrap; hooks only schedule
   # recovery and return so SessionStart stays lightweight.
@@ -113,7 +113,8 @@ ensure_hook_package_importable() {
     return 0
   fi
 
-  if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" = "1" ]; then
+  if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ] ||
+     [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" = "1" ]; then
     return 1
   fi
   if [ ! -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then

@@ -502,7 +502,7 @@ async function runGuide(command, args, api) {
       return;
     }
   }
-  if (command !== "uninstall") await api.save(config);
+  if (command !== "uninstall") await api.save(config, options);
   const results = [];
   for (const host of config.hosts) {
     const label = `${command === "uninstall" ? "Removing" : "Installing"} ${LABELS[host]} integration`;

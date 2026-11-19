@@ -247,6 +247,33 @@ def test_restart_no_rebuild_flag_skips_npm(fake_services) -> None:
     assert build_calls == []
 
 
+@pytest.mark.parametrize("launchable", [False, True])
+def test_prepared_restart_preflights_and_reuses_the_dashboard(
+    tmp_path, monkeypatch, fake_services, launchable
+) -> None:
+    monkeypatch.setattr(cli, "_PLUGIN_ROOT", tmp_path)
+    (tmp_path / "guide-prepared-runtime").write_text("runtime-AbCd12")
+    service_calls, build_calls = fake_services
+    original = cli._run_service
+
+    def run_service(script, action):
+        if (script, action) == (cli._DASHBOARD_SCRIPT, "preflight"):
+            service_calls.append(("dashboard-service.sh", "preflight"))
+            return 0 if launchable else 1
+        return original(script, action)
+
+    monkeypatch.setattr(cli, "_run_service", run_service)
+    result = cli.cmd_restart(_make_args())
+    assert build_calls == []
+    assert service_calls[0] == ("dashboard-service.sh", "preflight")
+    if launchable:
+        assert result == 0
+        assert ("dashboard-service.sh", "start") in service_calls
+    else:
+        assert result == 1
+        assert len(service_calls) == 1
+
+
 def test_restart_failed_backend_preflight_preserves_services(
     fake_services, monkeypatch, capsys
 ) -> None:

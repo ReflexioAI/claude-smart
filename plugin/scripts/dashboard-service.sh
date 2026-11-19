@@ -118,6 +118,15 @@ resolve_next_bin() {
   return 1
 }
 
+prepared_dashboard_launchable() {
+  local launcher
+  [ -f "$DASHBOARD_DIR/.next/BUILD_ID" ] || return 1
+  launcher="$(resolve_next_bin)" || return 1
+  (cd "$DASHBOARD_DIR" && "$launcher" --version) >/dev/null 2>&1
+}
+
+prepared_dashboard_error="the prepared dashboard build or launcher is unusable; rerun npx claude-smart setup"
+
 spawn_dashboard() {
   NEXT_BIN="$(resolve_next_bin || true)"
   if [ -z "$NEXT_BIN" ]; then
@@ -146,6 +155,13 @@ wait_for_dashboard_marker() {
 }
 
 case "$CMD" in
+  preflight)
+    [ "${CLAUDE_SMART_DASHBOARD_AUTOSTART:-1}" = "0" ] && exit 0
+    if ! prepared_dashboard_launchable; then
+      printf '%s\n' "$prepared_dashboard_error" >&2
+      exit 1
+    fi
+    ;;
   start)
     if claude_smart_is_internal_invocation_env; then
       emit_ok; exit 0
@@ -173,35 +189,43 @@ case "$CMD" in
       echo "[claude-smart] dashboard: port $PORT held by another process; skipping" >>"$LOG_FILE"
       emit_ok; exit 0
     fi
-    NPM_BIN=$(claude_smart_resolve_npm || true)
-    if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
-      if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
-        echo "[claude-smart] dashboard: npm is not on PATH; starting installer in background" >>"$LOG_FILE"
-        CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
-          bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
-          >>"$STATE_DIR/install.log" 2>&1 || true
-      fi
-      if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
-        reason="npm is not on PATH; installer recovery scheduled; dashboard cannot start yet"
-        echo "[claude-smart] dashboard: $reason; skipping" >>"$LOG_FILE"
-        claude_smart_write_dashboard_unavailable "$reason"
+    if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
+      if ! prepared_dashboard_launchable; then
+        echo "[claude-smart] dashboard: $prepared_dashboard_error" >>"$LOG_FILE"
+        claude_smart_write_dashboard_unavailable "$prepared_dashboard_error"
         emit_ok; exit 0
       fi
-    fi
-
-    # `npm run start` requires a prior `next build`. Do NOT build in the
-    # foreground here — SessionStart hooks have a tight timeout and a cold
-    # Next build easily exceeds it. If .next is missing, spawn a detached
-    # build (dashboard-build.sh) so the first-install cost is paid out of
-    # band. dashboard-open.sh detects the build-pid file to surface a
-    # "still building" message instead of a generic error.
-    if [ ! -d "$DASHBOARD_DIR/.next" ]; then
-      BUILD_PID_FILE="$STATE_DIR/dashboard-build.pid"
-      if ! claude_smart_pid_alive_file "$BUILD_PID_FILE"; then
-        echo "[claude-smart] dashboard: .next missing — starting background build (~1-2 min)" >>"$LOG_FILE"
-        CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached bash "$HERE/dashboard-build.sh" >>"$LOG_FILE" 2>&1
+    else
+      NPM_BIN=$(claude_smart_resolve_npm || true)
+      if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
+        if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
+          echo "[claude-smart] dashboard: npm is not on PATH; starting installer in background" >>"$LOG_FILE"
+          CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+            bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
+            >>"$STATE_DIR/install.log" 2>&1 || true
+        fi
+        if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
+          reason="npm is not on PATH; installer recovery scheduled; dashboard cannot start yet"
+          echo "[claude-smart] dashboard: $reason; skipping" >>"$LOG_FILE"
+          claude_smart_write_dashboard_unavailable "$reason"
+          emit_ok; exit 0
+        fi
       fi
-      emit_ok; exit 0
+
+      # `npm run start` requires a prior `next build`. Do NOT build in the
+      # foreground here — SessionStart hooks have a tight timeout and a cold
+      # Next build easily exceeds it. If .next is missing, spawn a detached
+      # build (dashboard-build.sh) so the first-install cost is paid out of
+      # band. dashboard-open.sh detects the build-pid file to surface a
+      # "still building" message instead of a generic error.
+      if [ ! -d "$DASHBOARD_DIR/.next" ]; then
+        BUILD_PID_FILE="$STATE_DIR/dashboard-build.pid"
+        if ! claude_smart_pid_alive_file "$BUILD_PID_FILE"; then
+          echo "[claude-smart] dashboard: .next missing — starting background build (~1-2 min)" >>"$LOG_FILE"
+          CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached bash "$HERE/dashboard-build.sh" >>"$LOG_FILE" 2>&1
+        fi
+        emit_ok; exit 0
+      fi
     fi
 
     # Detach so the hook returns immediately. claude_smart_spawn_detached

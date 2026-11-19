@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -32,12 +33,11 @@ CODEX_INLINE_CONTEXT_BUDGET_CHARS = 6_000
 # Upper bound for the "when it applies" text on one index line.
 INDEX_LABEL_MAX_CHARS = 150
 
-# Shell command that prints an injected item's full text (``cli.py load``).
-# ``~/.reflexio/plugin-root`` is the symlink ``ensure-plugin-root.sh``
-# refreshes on every SessionStart for both Claude Code and Codex, and
-# ``cli.sh`` bootstraps PATH and the plugin venv, so the model can run this
-# from any shell either host gives it.
+# The guided launcher resolves the selected generation independently of legacy hooks.
 LOADER_COMMAND = "bash ~/.reflexio/plugin-root/scripts/cli.sh load"
+_GUIDED_LOADER_COMMAND = (
+    "bash ~/.claude-smart/guided-runtimes/guided-command.sh cli.sh load"
+)
 
 # Upper bound for a citation-marker link label shown in the footer.
 _MARKER_TITLE_MAX_CHARS = 60
@@ -382,7 +382,8 @@ def _assemble_compact(
 
 
 def _index_header(session_id: str) -> str:
-    command = LOADER_COMMAND
+    launcher = Path("~/.claude-smart/guided-runtimes/guided-command.sh").expanduser()
+    command = _GUIDED_LOADER_COMMAND if launcher.is_file() else LOADER_COMMAND
     if session_id:
         command += f" --session {session_id}"
     return (

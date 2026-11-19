@@ -10,4 +10,4 @@ note is provided after the command, it is appended as a neutral User turn
 before extraction so claude-smart can learn from it directly.
 Run the bash command below and show its output verbatim.
 
-!`bash "$HOME/.reflexio/plugin-root/scripts/cli.sh" learn --note "$ARGUMENTS"`
+!`launcher="$HOME/.claude-smart/guided-runtimes/guided-command.sh"; if [ -f "$launcher" ]; then bash "$launcher" cli.sh learn --note "$ARGUMENTS"; else root="$HOME/.reflexio/plugin-root"; if [ ! -d "$root" ]; then IFS= read -r root <"$root.txt" || exit 1; if command -v cygpath >/dev/null 2>&1; then root="$(cygpath -u "$root")"; fi; fi; bash "$root/scripts/cli.sh" learn --note "$ARGUMENTS"; fi`

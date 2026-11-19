@@ -28,6 +28,10 @@ claude_smart_prepend_node_bins
 
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "dashboard-build.sh" "$@"
+if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
+  echo "claude-smart: the guide prepares this dashboard. Rerun npx claude-smart setup to repair it." >&2
+  exit 1
+fi
 DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
 
 STATE_DIR="$HOME/.claude-smart"
