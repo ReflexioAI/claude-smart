@@ -96,8 +96,24 @@ if (process.platform === "darwin") {
     }
   }
 }
+const escape = path.join(current, "escape");
+if (process.platform === "win32") {
+  const outside = path.join(owner, "outside");
+  fs.mkdirSync(outside);
+  fs.symlinkSync(outside, escape, "junction");
+} else {
+  fs.mkdirSync(path.join(current, "deep"));
+  fs.mkdirSync(path.join(current, "real"));
+  fs.writeFileSync(path.join(current, "outside"), "inside");
+  fs.writeFileSync(path.join(owner, "outside"), "outside");
+  fs.symlinkSync("../real", path.join(current, "deep", "hop"));
+  fs.symlinkSync("deep/hop/../../outside", escape);
+}
+assert.throws(() => pinHookNode(mutable), /link outside/);
+fs.unlinkSync(escape);
+fs.writeFileSync(path.join(current, "sibling"), "also part of the snapshot");
 const pinned = pinHookNode(mutable);
-const launchers = path.join(fs.realpathSync(owner), "launchers");
+const launchers = path.join(fs.realpathSync.native(owner), "launchers");
 assert.ok(pinned.startsWith(launchers + path.sep));
 assert.equal(pinHookNode(mutable), pinned);
 assert.throws(() => pinHookNode(process.execPath), /outside the private Node distribution/);
@@ -110,6 +126,14 @@ assert.equal(launched.stdout.trim(), process.version);
 
 fs.rmSync(current, { recursive: true });
 fs.renameSync(path.join(owner, "previous"), current);
+if (process.platform !== "win32") {
+  const snapshot = path.join(launchers, fs.readdirSync(launchers)[0]);
+  const sibling = path.join(snapshot, "sibling");
+  const mode = fs.statSync(sibling).mode & 0o777;
+  fs.chmodSync(sibling, mode ^ 0o100);
+  assert.throws(() => pinHookNode(mutable), /does not match/);
+  fs.chmodSync(sibling, mode);
+}
 fs.chmodSync(pinned, 0o700);
 fs.writeFileSync(pinned, "bad cached executable");
 assert.throws(() => pinHookNode(mutable), /does not match/);

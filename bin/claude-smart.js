@@ -2828,6 +2828,11 @@ function privateNodeTools(root = privateNodeRoot()) {
   return node && npm ? { node, npm } : null;
 }
 
+function isInsideDirectory(relativePath) {
+  return relativePath && !isAbsolute(relativePath) &&
+    relativePath !== ".." && !relativePath.startsWith(`..${sep}`);
+}
+
 function hookNodeDistributionHash(root) {
   const hash = crypto.createHash("sha256");
   const visit = (directory) => {
@@ -2835,17 +2840,20 @@ function hookNodeDistributionHash(root) {
       const path = join(directory, name);
       const entry = lstatSync(path);
       const key = relative(root, path);
+      const mode = process.platform === "win32" ? 0 : entry.mode & 0o777;
       if (entry.isSymbolicLink()) {
         const target = readlinkSync(path);
-        const resolved = realpathSync(path);
-        if (isAbsolute(target) || !resolved.startsWith(root + sep))
+        // Native resolution follows symlink components before interpreting ..,
+        // just as the OS does when it opens the executable or its libraries.
+        const resolved = relative(root, realpathSync.native(path));
+        if (isAbsolute(target) || !isInsideDirectory(resolved))
           throw new Error("The private Node distribution contains a link outside its install directory.");
         hash.update(JSON.stringify([key, "link", target]));
       } else if (entry.isDirectory()) {
-        hash.update(JSON.stringify([key, "directory"]));
+        hash.update(JSON.stringify([key, "directory", mode]));
         visit(path);
       } else if (entry.isFile()) {
-        hash.update(JSON.stringify([key, "file", fileSha256(path)]));
+        hash.update(JSON.stringify([key, "file", mode, fileSha256(path)]));
       } else {
         throw new Error("The private Node distribution contains an unsupported file type.");
       }
@@ -2859,16 +2867,16 @@ function hookNodeDistributionHash(root) {
 // an executable that uses relative libraries keeps the same layout.
 function pinHookNode(source) {
   const current = privateNodeRoot();
-  const root = realpathSync(current);
+  const root = realpathSync.native(current);
   const nodePath = relative(current, source);
-  if (!nodePath || isAbsolute(nodePath) || nodePath === ".." || nodePath.startsWith(`..${sep}`))
+  if (!isInsideDirectory(nodePath))
     throw new Error("The prepared hook executable is outside the private Node distribution.");
   const digest = hookNodeDistributionHash(root);
   const directory = join(dirname(current), "launchers");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (!lstatSync(directory).isDirectory())
     throw new Error("The Codex hook launcher directory must be a regular directory.");
-  const owner = realpathSync(directory);
+  const owner = realpathSync.native(directory);
   const destination = join(owner, digest);
   const executable = join(destination, nodePath);
   const verify = () => {
