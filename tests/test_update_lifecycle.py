@@ -465,7 +465,20 @@ def test_multihost_preparation_failure_preserves_settings_and_registration(
     assert not (tmp_path / "service-calls.jsonl").exists()
 
 
-@pytest.mark.parametrize("failure", [None, "selection", "shutdown"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "selection",
+        "shutdown",
+        pytest.param(
+            "interrupted-selection",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="uses POSIX SIGKILL to model a crash"
+            ),
+        ),
+    ],
+)
 def test_multihost_cutover_observes_prior_services_before_settings(tmp_path, failure):
     package, old_root, uv, env = _fixture(tmp_path, "codex")
     env.pop("CLAUDE_SMART_INSTALL_CHILD")
@@ -481,6 +494,29 @@ def test_multihost_cutover_observes_prior_services_before_settings(tmp_path, fai
         shutil.copytree(old_root, selected)
     if failure == "shutdown":
         env["FIXTURE_UNSTOPPABLE"] = "backend"
+    if failure == "interrupted-selection":
+        preload = tmp_path / "interrupted-selection.cjs"
+        preload.write_text(
+            """
+const fs = require("node:fs");
+const { join } = require("node:path");
+const selector = join(process.env.HOME, ".reflexio/plugin-root");
+if (!process.send) {
+  const rename = fs.renameSync;
+  const remove = fs.rmSync;
+  fs.renameSync = (from, to) => {
+    if (to === selector) throw Object.assign(new Error("fixture simulates a junction collision"), { code: "EPERM" });
+    return rename(from, to);
+  };
+  fs.rmSync = (path, options) => {
+    const result = remove(path, options);
+    if (path === selector) process.kill(process.pid, "SIGKILL");
+    return result;
+  };
+}
+"""
+        )
+        env["NODE_OPTIONS"] = f'--require "{preload}"'
     args = [
         node_bin(),
         str(package / "bin/claude-smart.js"),
@@ -515,6 +551,26 @@ def test_multihost_cutover_observes_prior_services_before_settings(tmp_path, fai
         assert "runtime selection failed" in result.stderr
         assert selected.is_dir() and not selected.is_symlink()
         assert all(row["action"] == "status" for row in calls)
+    elif failure == "interrupted-selection":
+        assert result.returncode == -signal.SIGKILL
+        assert not selected.is_symlink()
+        text = selected.with_name("plugin-root.txt")
+        assert (Path(text.read_text().strip()) / "scripts/backend-service.sh").is_file()
+        records = tmp_path / ".claude-smart/guided-runtimes"
+        pending = records / "pending-shutdown.json"
+        assert json.loads(pending.read_text())["root"] == str(old_root)
+        # SIGKILL leaves the guide lock; simulate expiry of its existing lease.
+        os.utime(records / ".install.lock", (1, 1))
+        env.pop("NODE_OPTIONS")
+        recovered = subprocess.run(
+            args, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60
+        )
+        assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+        assert not pending.exists()
+        assert any(
+            row["action"] == "stop" and row["root"] == str(old_root)
+            for row in _calls(tmp_path)
+        )
     elif failure == "shutdown":
         assert result.returncode == 1
         assert "Could not confirm shutdown" in result.stderr

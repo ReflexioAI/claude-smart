@@ -61,20 +61,60 @@ def open_scoped_file(
         name = parts[-1]
 
         def remove_created() -> None:
-            try:
-                current = os.stat(name, follow_symlinks=False, dir_fd=parent)
-            except FileNotFoundError:
-                if create:
-                    return
-                raise
-            if f"{current.st_dev}:{current.st_ino}" != identity:
-                if create:
-                    return
-                raise ValueError("OpenCode file changed before removal")
-            os.unlink(name, dir_fd=parent)
+            _remove_posix_entry(parent, name, identity, discard_missing=create)
 
         remove.append(remove_created)
     return source, identity
+
+
+def _remove_posix_entry(
+    parent: int, name: str, identity: str, *, discard_missing: bool
+) -> None:
+    # A checked public pathname is not stable across unlink. Move its current
+    # entry to an owned directory, then inspect the entry we actually moved.
+    private = f".claude-smart-removal-{token_hex(12)}"
+    os.mkdir(private, 0o700, dir_fd=parent)
+    retained = False
+    try:
+        quarantine = os.open(
+            private, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
+        )
+        try:
+            try:
+                os.rename(name, "entry", src_dir_fd=parent, dst_dir_fd=quarantine)
+            except FileNotFoundError:
+                if discard_missing:
+                    return
+                raise
+            retained = True
+            moved = os.stat("entry", follow_symlinks=False, dir_fd=quarantine)
+            replaced = f"{moved.st_dev}:{moved.st_ino}" != identity
+            if replaced:
+                try:
+                    # Restore the substituted entry only if its original name
+                    # is still free. A second substitution is kept in place.
+                    os.link(
+                        "entry",
+                        name,
+                        src_dir_fd=quarantine,
+                        dst_dir_fd=parent,
+                        follow_symlinks=False,
+                    )
+                except OSError as error:
+                    raise ValueError(
+                        f"OpenCode file changed before removal; its replacement is preserved in {private}/entry"
+                    ) from error
+            os.unlink("entry", dir_fd=quarantine)
+            retained = False
+            if replaced:
+                raise ValueError(
+                    "OpenCode file changed before removal; its replacement was restored"
+                )
+        finally:
+            os.close(quarantine)
+    finally:
+        if not retained:
+            os.rmdir(private, dir_fd=parent)
 
 
 def _open_regular_file(

@@ -613,23 +613,29 @@ function removeOpenCodeV2Plugin(args = [], cwd = process.cwd()) {
 }
 
 function scopeHasClaudeSmart(args = [], cwd = process.cwd()) {
+  let unresolved = false;
   try {
-    const [loader, ...configs] = snapshotOpenCodeScope([
-      opencodeV2PluginFile(args, cwd), ...opencodeScopeConfigPaths(args, cwd),
-    ]);
+    const [loader] = snapshotOpenCodeScope([opencodeV2PluginFile(args, cwd)]);
     if (isGeneratedOpenCodeV2Loader(loader.contents)) return true;
-    return configs.some(({ contents }) => {
-      if (!contents) return false;
+  } catch {
+    unresolved = true;
+  }
+  try {
+    const configs = snapshotOpenCodeScope(opencodeScopeConfigPaths(args, cwd));
+    for (const { contents } of configs) {
+      if (!contents) continue;
       try {
         const data = JSON.parse(stripJsonc(contents));
-        return ["plugin", "plugins"].some((key) => Array.isArray(data[key]) &&
-          data[key].some((entry) => isOpenCodeClaudeSmartSpec(opencodePluginSpec(entry))));
+        if (["plugin", "plugins"].some((key) => Array.isArray(data[key]) &&
+          data[key].some((entry) => isOpenCodeClaudeSmartSpec(opencodePluginSpec(entry)))))
+          return true;
       } catch {
-        return false;
+        unresolved = true;
       }
-    });
+    }
+    return unresolved ? null : false;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -1028,19 +1034,38 @@ function forcePluginRoot(pluginRoot) {
   const link = join(REFLEXIO_DIR, "plugin-root");
   try {
     const existing = lstatSync(link);
-    if (existing.isSymbolicLink() || existing.isFile()) {
-      rmSync(link, { force: true });
-    } else {
+    if (!existing.isSymbolicLink() && !existing.isFile())
       throw new Error(`refusing to replace non-symlink plugin-root at ${link}`);
-    }
-  } catch (err) {
-    if (err && err.code !== "ENOENT") throw err;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
   }
+  const stagedLink = uniquePackagePath(link, ".plugin-root");
+  const text = join(REFLEXIO_DIR, "plugin-root.txt");
+  const stagedText = uniquePackagePath(text, ".plugin-root-text");
   try {
-    // Use a symlink when possible so slash commands follow the active plugin root.
-    symlinkSync(pluginRoot, link, isWindows() ? "junction" : "dir");
-  } catch {
-    writeFileSync(join(REFLEXIO_DIR, "plugin-root.txt"), `${pluginRoot}\n`);
+    // Junction replacement may require unlinking the old entry. Make the
+    // compatibility file valid before crossing any point without a link.
+    writeFileSync(stagedText, `${pluginRoot}\n`, { flag: "wx", mode: 0o600 });
+    renameSync(stagedText, text);
+    try {
+      symlinkSync(pluginRoot, stagedLink, isWindows() ? "junction" : "dir");
+      renameSync(stagedLink, link);
+      return;
+    } catch (error) {
+      if (!["EACCES", "EPERM", "ENOTSUP", "EEXIST", "ENOTEMPTY"].includes(error?.code))
+        throw error;
+    }
+    rmSync(link, { force: true });
+    if (pathEntryExists(stagedLink)) {
+      try {
+        renameSync(stagedLink, link);
+      } catch (error) {
+        if (!["EACCES", "EPERM", "ENOTSUP"].includes(error?.code)) throw error;
+      }
+    }
+  } finally {
+    rmSync(stagedLink, { force: true });
+    rmSync(stagedText, { force: true });
   }
 }
 
@@ -1907,7 +1932,7 @@ function installInventory(options = {}) {
   // loader write no config entry, so the config alone no longer proves anything.
   let openCodeInstalled = false;
   try {
-    openCodeInstalled = scopeHasClaudeSmart(args);
+    openCodeInstalled = scopeHasClaudeSmart(args) === true;
   } catch {
     /* A missing config is normal. Installation reports malformed configs. */
   }
@@ -2500,7 +2525,7 @@ function assertOpenCodeRuntimeEntry(pluginRoot) {
   const dist = join(opencode, "dist");
   const entry = join(dist, "server.mjs");
   if (!lstatSync(opencode).isDirectory() || !lstatSync(dist).isDirectory() ||
-      !lstatSync(entry).isFile()) throw new Error("Prepared OpenCode runtime entry is invalid");
+      !lstatSync(entry).isFile()) throw new Error(`Prepared OpenCode runtime entry is invalid at ${entry}`);
 }
 
 function openCodeGuidedPluginRoots() {
@@ -2613,7 +2638,10 @@ async function resumeGuidedShutdown() {
       throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
     await stopServicesForInstall(pending.root, null, pending.status);
   } else if (current !== pending.root) {
-    throw new Error("The shared runtime selection changed during shutdown; resolve it before retrying setup");
+    const predecessor = join(pending.root, "scripts", "backend-service.sh");
+    if (current !== null || pathEntryExists(join(REFLEXIO_DIR, "plugin-root")) || !existsSync(predecessor))
+      throw new Error("The shared runtime selection changed during shutdown; resolve it before retrying setup");
+    forcePluginRoot(pending.root);
   }
   rmSync(GUIDED_PENDING_SHUTDOWN);
 }
@@ -4869,7 +4897,7 @@ async function runUninstallOpenCode(args) {
   // uninstall can still strand them; upgrade when installs are tracked machine-wide.
   publishOpenCodeRegistration(opencodeV2PluginFile(args), null);
   const otherScopeInstalled = scopeHasClaudeSmart(parseGlobalFlag(args) ? [] : ["--global"]);
-  if (!otherScopeInstalled) {
+  if (otherScopeInstalled === false) {
     rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
     repairPluginRoot();
     try {

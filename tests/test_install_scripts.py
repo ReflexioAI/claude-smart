@@ -2419,8 +2419,10 @@ def test_node_opencode_uninstall_preserves_learning_host_and_repairs_root(
     assert not opencode_root.exists()
 
 
+@pytest.mark.parametrize("unreadable_sibling", [False, True])
 def test_node_opencode_project_uninstall_keeps_the_shared_package(
     tmp_path: Path,
+    unreadable_sibling: bool,
 ) -> None:
     # Both scopes share one package copy and every loader re-exports its
     # server.mjs, so a project-scoped uninstall must not delete the package a
@@ -2445,6 +2447,14 @@ def test_node_opencode_project_uninstall_keeps_the_shared_package(
         tmp_path / "xdg" / "opencode" / "plugins" / "claude-smart.js"
     )
 
+    if unreadable_sibling:
+        foreign = tmp_path / "foreign.json"
+        foreign.write_text('{"plugin":[]}')
+        try:
+            (global_loader.parent.parent / "opencode.json").symlink_to(foreign)
+        except OSError:
+            pytest.skip("filesystem does not support this test's symlink")
+
     result = subprocess.run(
         [node, str(NODE_INSTALLER), "uninstall", "--host", "opencode"],
         cwd=project,
@@ -2460,8 +2470,10 @@ def test_node_opencode_project_uninstall_keeps_the_shared_package(
     assert (package_root / "scripts" / "backend-service.sh").exists()
 
 
+@pytest.mark.parametrize("unreadable_sibling", [False, True])
 def test_node_opencode_global_uninstall_keeps_the_shared_package(
     tmp_path: Path,
+    unreadable_sibling: bool,
 ) -> None:
     # The mirror case: a --global uninstall must not delete the package that a
     # project loader in the same tree still imports.
@@ -2483,6 +2495,14 @@ def test_node_opencode_global_uninstall_keeps_the_shared_package(
     global_loader = _seed_opencode_v2_loader(
         tmp_path / "xdg" / "opencode" / "plugins" / "claude-smart.js"
     )
+
+    if unreadable_sibling:
+        foreign = tmp_path / "foreign.json"
+        foreign.write_text('{"plugin":[]}')
+        try:
+            (project / "opencode.json").symlink_to(foreign)
+        except OSError:
+            pytest.skip("filesystem does not support this test's symlink")
 
     result = subprocess.run(
         [node, str(NODE_INSTALLER), "uninstall", "--host", "opencode", "--global"],
@@ -7397,7 +7417,7 @@ def test_opencode_unwritable_loader_directory_preserves_legacy_registration(
     )
 
     assert result.returncode == 1
-    assert "EACCES" in result.stderr
+    assert "Permission denied" in result.stderr
     assert "uv sync --locked" in (home / "uv.log").read_text()
     assert (xdg / "opencode" / "opencode.json").read_bytes() == (
         b'{"plugin":["claude-smart"]}\n'
