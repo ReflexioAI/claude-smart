@@ -8,7 +8,7 @@ import tempfile
 from ctypes import wintypes
 from pathlib import Path
 
-READ_ATTRIBUTES = 0x80
+READ_DIRECTORY = 0x81
 SHARE_READ = 0x1
 OPEN_EXISTING = 3
 BACKUP_SEMANTICS = 0x02000000
@@ -44,7 +44,7 @@ close.restype = wintypes.BOOL
 def open_directory(path):
     handle = create_file(
         str(path),
-        READ_ATTRIBUTES,
+        READ_DIRECTORY,
         SHARE_READ,
         None,
         OPEN_EXISTING,
