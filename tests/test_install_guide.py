@@ -813,6 +813,18 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     )
     env.pop("CLAUDE_SMART_INSTALL_CHILD", None)
     config_path = home / ".claude-smart" / ".env"
+    if provider_mode == "cloud":
+        # Start with a real standalone Codex runtime that must not supersede
+        # the cache binding written by the following shared install.
+        previous = subprocess.run(
+            [str(installer), "install", "--host", "codex", "--yes"],
+            cwd=project,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert previous.returncode == 0, previous.stdout + previous.stderr
     config_path.unlink()
     provider_args = ["--provider", "codex", "--read-only"]
     if provider_mode == "custom":
@@ -893,7 +905,8 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     assert (home / ".reflexio/plugin-root").resolve() == runtime.resolve()
     adapter = home / ".claude-smart/claude-code/claude-smart/plugin"
     assert not (adapter / ".venv").exists()
-    assert not (home / ".codex/claude-smart/runtime/plugin/.venv").exists()
+    standalone_codex = home / ".codex/claude-smart/runtime/plugin/.venv"
+    assert standalone_codex.exists() == (provider_mode == "cloud")
     assert (home / "uv.log").read_text().count("uv sync --locked") == 1
     assert "uv venv" not in (home / "uv.log").read_text()
     claude_manifest = json.loads((adapter / "hooks/hooks.json").read_text())
@@ -933,6 +946,8 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         == "global_user"
     )
 
+    unrelated_project = tmp_path / "unrelated"
+    unrelated_project.mkdir()
     if provider_mode == "named":
         original_loader = loader.read_text()
         loader.write_text(
@@ -952,6 +967,22 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         assert status.returncode == 0, status.stdout + status.stderr
         assert "Prepared runtime version: not installed" in status.stdout
         loader.write_text(original_loader)
+        # A generated-looking loader in a different project confers no
+        # account registration, even when it names a real prepared runtime.
+        foreign_loader = unrelated_project / ".opencode/plugins/claude-smart.js"
+        foreign_loader.parent.mkdir(parents=True)
+        foreign_loader.write_text(original_loader)
+        foreign = subprocess.run(
+            [str(installer), "status", "--host", "opencode"],
+            cwd=unrelated_project,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        assert foreign.returncode == 0, foreign.stdout + foreign.stderr
+        assert "Prepared runtime version: not installed" in foreign.stdout
+        foreign_loader.unlink()
 
     # A standalone update reselects its runtime. Removing it must recover
     # the still-registered shared runtime, not a host adapter without Python.
@@ -962,7 +993,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     for host in surviving_hosts.get(provider_mode, []):
         removal = subprocess.run(
             [str(installer), "uninstall", "--host", host, "--yes"],
-            cwd=project,
+            cwd=unrelated_project,
             env=env,
             text=True,
             capture_output=True,

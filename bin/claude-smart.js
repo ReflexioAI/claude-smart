@@ -80,6 +80,7 @@ const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const GUIDED_RUNTIME_DIR = join(CLAUDE_SMART_STATE_DIR, "guided-runtimes");
 const GUIDE_INSTALL_LOCK = join(GUIDED_RUNTIME_DIR, "guide");
+const GUIDED_OPENCODE_REGISTRATIONS = join(GUIDED_RUNTIME_DIR, "opencode-registrations");
 const GUIDED_RUNTIME_BINDING = "guided-runtime-id";
 const INSTALL_FAILURE_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-failed");
 // Written the first time install considers ~/.reflexio/.env, whatever the
@@ -757,7 +758,7 @@ function removeOpenCodeV2Plugin(args = [], cwd = process.cwd()) {
   const target = opencodeV2PluginFile(args, cwd);
   let text = "";
   try {
-    text = readFileSync(target, "utf8");
+    text = readLocalOpenCodeFile(target, 8192);
   } catch {
     return false;
   }
@@ -766,23 +767,21 @@ function removeOpenCodeV2Plugin(args = [], cwd = process.cwd()) {
   return true;
 }
 
-function isOpenCodeLocalPackagePath(packagePath) {
-  return (
-    sameRealPath(packagePath, OPENCODE_LOCAL_PACKAGE_DIR) ||
-    resolve(packagePath) === resolve(OPENCODE_LOCAL_PACKAGE_DIR)
-  );
-}
-
 function scopeHasClaudeSmart(args = [], cwd = process.cwd()) {
-  if (existsSync(opencodeV2PluginFile(args, cwd))) return true;
-  return opencodeScopeConfigPaths(args, cwd).some(
-    (file) => existsSync(file) && configListsClaudeSmart(file),
-  );
+  try {
+    if (isGeneratedOpenCodeV2Loader(readLocalOpenCodeFile(opencodeV2PluginFile(args, cwd), 8192)))
+      return true;
+  } catch {
+    // A missing or unreadable loader is not a registration.
+  }
+  return opencodeScopeConfigPaths(args, cwd).some(configListsClaudeSmart);
 }
 
 function configListsClaudeSmart(configPath) {
   try {
-    const data = readJsoncObject(configPath);
+    const contents = readLocalOpenCodeFile(configPath, 1024 * 1024);
+    if (!contents) return false;
+    const data = JSON.parse(stripJsonc(contents));
     return ["plugin", "plugins"].some(
       (key) =>
         Array.isArray(data[key]) &&
@@ -799,20 +798,10 @@ function isOpenCodeClaudeSmartSpec(spec) {
     return true;
   }
   if (!spec.startsWith("file://")) return false;
-  let packagePath = null;
-  try {
-    packagePath = fileURLToPath(spec);
-  } catch {
-    return false;
-  }
-  if (isOpenCodeLocalPackagePath(packagePath)) return true;
-  try {
-    const manifest = JSON.parse(readFileSync(join(packagePath, "package.json"), "utf8"));
-    if (manifest && manifest.name === OPENCODE_BARE_PLUGIN_SPEC) return true;
-  } catch {
-    // Missing or malformed manifests are not enough to identify arbitrary file specs.
-  }
-  return false;
+  // Legacy installer-owned entries identified the stable account package.
+  // A project config does not authorize inspecting arbitrary plugin manifests.
+  const packagePath = localOpenCodeFilePath(spec);
+  return packagePath !== null && resolve(packagePath) === resolve(OPENCODE_LOCAL_PACKAGE_DIR);
 }
 
 function readOpenCodePluginConfig(configPath) {
@@ -1028,34 +1017,18 @@ function installedPluginRoots() {
       : plugin.installPath;
     if (typeof root === "string" && isAbsolute(root)) roots.push(root);
   }
-  for (const args of [[], ["--global"]]) {
-    const runtime = installedOpenCodeRuntime(args);
-    if (runtime) roots.push(runtime);
-  }
-  roots.push(
-    join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin"),
-    join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"),
-    CODEX_RUNTIME_PLUGIN_ROOT,
-  );
-  try {
-    const versions = readdirSync(CODEX_PLUGIN_CACHE_DIR).map((name) =>
-      join(CODEX_PLUGIN_CACHE_DIR, name),
-    );
-    // Same order as findCodexPluginRoot: newest version first, not lexical.
-    versions.sort((a, b) => compareSemverLikePathNames(b, a));
-    roots.push(...versions);
-  } catch {
-    // No Codex install.
-  }
+  roots.push(join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin"));
+  const codex = findCodexPluginRoot();
+  const boundCodex = codex && boundGuidedPluginRoot(codex);
+  if (boundCodex) roots.push(boundCodex);
+  roots.push(...openCodeGuidedPluginRoots());
+  roots.push(join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"), CODEX_RUNTIME_PLUGIN_ROOT);
+  if (codex && !boundCodex) roots.push(codex);
   return roots.flatMap((root) => {
-    const binding = join(root, GUIDED_RUNTIME_BINDING);
-    try {
-      if (lstatSync(binding).isFile())
-        return [readGuidedRuntime(readFileSync(binding, "utf8")).pluginRoot];
-    } catch (error) {
-      if (error?.code !== "ENOENT") return [];
-    }
-    return existsSync(join(root, "scripts", "backend-service.sh")) ? [root] : [];
+    const prepared = boundGuidedPluginRoot(root);
+    if (prepared) return [prepared];
+    return !pathEntryExists(join(root, GUIDED_RUNTIME_BINDING)) &&
+      existsSync(join(root, "scripts", "backend-service.sh")) ? [root] : [];
   });
 }
 
@@ -1500,19 +1473,21 @@ function servicePortRefusesConnections(status) {
   return !probe.error && !probe.signal && probe.status === 0;
 }
 
-async function stopServicesForInstall(installedRoot, host) {
+async function stopServicesForInstall(installedRoot, host, previousStatus = null) {
   // Shared services may belong to another integration. Never use a candidate
   // npm source as the recovery runtime for a first installation.
-  const root = installStateSnapshot.pluginRoot || installedRoot;
+  const root = installStateSnapshot?.pluginRoot || installedRoot;
   if (!root || !existsSync(join(root, "scripts", "backend-service.sh"))) return;
-  stoppedServices = { root, host, backend: false, dashboard: false };
+  // Guided publication has already committed settings. Its cutover recovers
+  // forward, since restarting an old service would read the new settings.
+  if (!previousStatus) stoppedServices = { root, host, backend: false, dashboard: false };
   ensureRollbackOnExit();
   const failed = [];
   const reportsActiveService = /^(running on |stale claude-smart backend on )/;
   for (const kind of ["dashboard", "backend"]) {
     const scriptName = `${kind}-service.sh`;
     if (!existsSync(join(root, "scripts", scriptName))) continue;
-    const before = pluginServiceStatus(root, scriptName);
+    const before = previousStatus ? previousStatus[kind] : pluginServiceStatus(root, scriptName);
     if (!before) {
       // An interrupted or failed initial status gives no recovery baseline.
       failed.push(kind);
@@ -1525,20 +1500,25 @@ async function stopServicesForInstall(installedRoot, host) {
     const portClosed = observed && !stillActive && servicePortRefusesConnections(before);
     // Record recovery before yielding for a pending signal. Even a failed
     // status command can follow a successful stop of a previously live service.
-    stoppedServices[kind] = portClosed;
-    if (!stopped || stillActive || (observed && (!portClosed || after !== "not running"))) {
+    if (!previousStatus) stoppedServices[kind] = portClosed;
+    const switchedEndpoint = previousStatus && kind === "backend" &&
+      /^(remote configured at |custom local server configured at )/.test(after);
+    if (!stopped || !after || stillActive ||
+        (observed && (!portClosed || (after !== "not running" && !switchedEndpoint)))) {
       failed.push(kind);
     }
   }
   // A refusal has no package or selector changes to roll back.
-  if (failed.length) commitInstallState();
+  if (failed.length && !previousStatus) commitInstallState();
   // Let a queued interruption restore the old services before any package write.
   await new Promise(setImmediate);
   if (terminatingOnSignal) await new Promise(() => {});
   if (failed.length)
     throw new Error(
       `Could not confirm shutdown of the previous ${failed.join(" and ")} service; ` +
-        "the runtime was not replaced. Resolve the service shutdown failure and retry installation.",
+        (previousStatus
+          ? "settings and runtime selection are saved. Resolve shutdown and rerun setup to start shared services."
+          : "the runtime was not replaced. Resolve the service shutdown failure and retry installation."),
     );
 }
 
@@ -2554,6 +2534,119 @@ function readGuidedRuntime(id) {
   return { id, packageRoot, pluginRoot };
 }
 
+function boundGuidedPluginRoot(root) {
+  const path = join(root, GUIDED_RUNTIME_BINDING);
+  try {
+    if (lstatSync(path).isFile()) return readGuidedRuntime(readFileSync(path, "utf8")).pluginRoot;
+  } catch {
+    // An absent or incomplete registration cannot select a runtime.
+  }
+  return null;
+}
+
+function openCodeRegistrationPath(loader) {
+  const path = isWindows() ? loader.toLowerCase() : loader;
+  const key = crypto.createHash("sha256").update(path).digest("hex");
+  return join(GUIDED_OPENCODE_REGISTRATIONS, key);
+}
+
+function openCodeGuidedRuntime(binding) {
+  try {
+    if (!lstatSync(binding).isFile()) return null;
+    const runtime = readGuidedRuntime(readFileSync(binding, "utf8"));
+    const opencode = join(runtime.pluginRoot, "opencode");
+    const dist = join(opencode, "dist");
+    const entry = join(dist, "server.mjs");
+    if (!lstatSync(opencode).isDirectory() || !lstatSync(dist).isDirectory() ||
+        !lstatSync(entry).isFile()) return null;
+    return runtime;
+  } catch {
+    return null;
+  }
+}
+
+function openCodeGuidedPluginRoots() {
+  try {
+    return readdirSync(GUIDED_OPENCODE_REGISTRATIONS)
+      .filter((name) => /^[0-9a-f]{64}$/.test(name))
+      .map((name) => openCodeGuidedRuntime(join(GUIDED_OPENCODE_REGISTRATIONS, name))?.pluginRoot)
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function publishOpenCodeRegistration(loader, runtime) {
+  const binding = openCodeRegistrationPath(loader);
+  if (!runtime) {
+    rmSync(binding, { force: true });
+    return;
+  }
+  mkdirSync(GUIDED_OPENCODE_REGISTRATIONS, { recursive: true, mode: 0o700 });
+  const candidate = uniquePackagePath(binding, ".scope");
+  try {
+    writeFileSync(candidate, runtime.id, { flag: "wx", mode: 0o600 });
+    renameSync(candidate, binding);
+  } finally {
+    rmSync(candidate, { force: true });
+  }
+}
+
+function guidedAdapterStage(target, id) {
+  return join(dirname(target), `.adapter-${id}`);
+}
+
+function prepareGuidedPackageAdapter(target, id, prepare) {
+  const stage = guidedAdapterStage(target, id);
+  mkdirSync(dirname(stage), { recursive: true });
+  mkdirSync(stage, { mode: 0o700 });
+  const discard = () => rmSync(stage, { recursive: true, force: true });
+  process.once("exit", discard);
+  try {
+    prepare(stage);
+  } catch (error) {
+    process.removeListener("exit", discard);
+    discard();
+    throw error;
+  }
+  return () => {
+    process.removeListener("exit", discard);
+    discard();
+  };
+}
+
+function publishGuidedPackageAdapter(target, id, adapterPath, label) {
+  holdPackageInstallLock(target, label);
+  const stage = guidedAdapterStage(target, id);
+  if (readFileSync(join(adapterPath(stage), GUIDED_RUNTIME_BINDING), "utf8") !== id)
+    throw new Error(`Prepared ${label} changed before registration`);
+  replaceLocalPluginPackage(stage, target);
+  return target;
+}
+
+function openCodeLoaderIdentity(path) {
+  try {
+    const stat = lstatSync(path, { bigint: true });
+    return `${stat.dev}:${stat.ino}`;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    return null;
+  }
+}
+
+function observePreviousServices() {
+  const root = activePluginRoot();
+  if (!root) return { root, status: {} };
+  const status = {};
+  for (const kind of ["dashboard", "backend"]) {
+    const script = `${kind}-service.sh`;
+    if (!existsSync(join(root, "scripts", script))) continue;
+    status[kind] = pluginServiceStatus(root, script);
+    if (!status[kind]) throw new Error(`Could not observe the previous ${kind} before saving settings`);
+  }
+  return { root, status };
+}
+
 async function prepareGuidedRuntime(config, options, settings) {
   assertSupportedRuntimePlatform();
   const openCodeArgs = options.global ? ["--global"] : [];
@@ -2563,10 +2656,15 @@ async function prepareGuidedRuntime(config, options, settings) {
   mkdirSync(GUIDED_RUNTIME_DIR, { recursive: true, mode: 0o700 });
   const directory = mkdtempSync(join(realpathSync(GUIDED_RUNTIME_DIR), "runtime-"));
   const pluginRoot = join(directory, "plugin");
+  const id = basename(directory);
+  const discardAdapters = [];
   // The interpreter embeds its prefix, so build at the final physical path.
   let published = false;
   const discard = () => {
-    if (!published) rmSync(directory, { recursive: true, force: true });
+    if (!published) {
+      for (const discardAdapter of discardAdapters) discardAdapter();
+      rmSync(directory, { recursive: true, force: true });
+    }
   };
   process.once("exit", discard);
   try {
@@ -2576,19 +2674,42 @@ async function prepareGuidedRuntime(config, options, settings) {
     const readOnly = settings.request.updates[CLAUDE_SMART_READ_ONLY_ENV] === "1";
     if (config.hosts.includes(HOST_CLAUDE_CODE)) {
       const hooks = renderSharedClaudeHooks(join(pluginRoot, "hooks", "hooks.json"), pluginRoot, readOnly);
-      writeFileSync(join(directory, "claude-hooks.json"), hooks, { flag: "wx" });
+      discardAdapters.push(prepareGuidedPackageAdapter(CLAUDE_CODE_LOCAL_PACKAGE_DIR, id, (stage) => {
+        cpSync(PACKAGE_ROOT, stage, { recursive: true, filter: shouldCopyPath });
+        verifyLocalPluginPackage(stage, "Claude Code adapter");
+        const adapter = join(stage, "plugin");
+        writeFileSync(join(adapter, "hooks", "hooks.json"), hooks);
+        writeFileSync(join(adapter, GUIDED_RUNTIME_BINDING), id);
+      }));
     }
     if (config.hosts.includes(HOST_CODEX)) {
       const hooks = renderPreparedCodexHooks(pluginRoot, pinHookNode(tools.node), readOnly, true);
-      writeFileSync(join(directory, "codex-hooks.json"), hooks, { flag: "wx" });
+      discardAdapters.push(prepareGuidedPackageAdapter(CODEX_MARKETPLACE_DIR, id, (stage) => {
+        copyCodexMarketplace(stage, { fresh: true });
+        const adapter = codexMarketplacePluginRoot(stage);
+        writeFileSync(join(adapter, "hooks", "codex-hooks.json"), hooks);
+        writeFileSync(join(adapter, GUIDED_RUNTIME_BINDING), id);
+      }));
     }
     const loader = config.hosts.includes(HOST_OPENCODE)
       ? assertOpenCodeInstallConfiguration(openCodeArgs)
       : undefined;
+    if (loader) {
+      const identity = openCodeLoaderIdentity(loader.path);
+      const prepared = prepareOpenCodeV2Plugin(loader, directory);
+      if (!prepared) throw new Error("OpenCode loader changed during preparation");
+      try {
+        writeFileSync(join(directory, "opencode-loader-input.json"),
+          JSON.stringify({ ...loader, identity }), { flag: "wx", mode: 0o600 });
+      } finally {
+        prepared.close();
+      }
+    }
+    const previous = observePreviousServices();
     await publishFromPreparedRuntime(pluginRoot, settings, loader, { guideWorker: false });
     published = true;
     acceptGuideSettings(settings);
-    return basename(directory);
+    return { id, previous };
   } finally {
     process.removeListener("exit", discard);
     discard();
@@ -2611,7 +2732,7 @@ async function runGuidedCommand(command, args) {
     `claude-smart ${JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version} · ${command}\n`,
   );
   let deferredSettings;
-  let generation;
+  let preparedRuntime;
   await guide
     .runGuide(command, args, {
       inventory: installInventory,
@@ -2620,7 +2741,7 @@ async function runGuidedCommand(command, args) {
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
         const settings = planInstallSettings(config, captured);
         if (config.hosts.length > 1) {
-          generation = await prepareGuidedRuntime(config, options, settings);
+          preparedRuntime = await prepareGuidedRuntime(config, options, settings);
           return;
         }
         if (config.hosts.length === 1 && [HOST_CODEX, HOST_OPENCODE].includes(config.hosts[0])) {
@@ -2654,17 +2775,18 @@ async function runGuidedCommand(command, args) {
       runHost: (action, host, options, label) => {
         if (action === "uninstall" && !heldPackageLocks.has(GUIDE_INSTALL_LOCK))
           holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
-        return runGuidedHost(action, host, options, label, deferredSettings, generation);
+        return runGuidedHost(action, host, options, label, deferredSettings, preparedRuntime?.id);
       },
       finish: async (action, config, results) => {
         if (action !== "uninstall" && !results.some((result) => result.code === 0)) return;
-        const root = generation ? readGuidedRuntime(generation).pluginRoot : activePluginRoot();
+        const root = preparedRuntime ? readGuidedRuntime(preparedRuntime.id).pluginRoot : activePluginRoot();
         if (!root || !existsSync(join(root, "scripts", "backend-service.sh")))
           return;
         if (action === "uninstall") {
           const current = installInventory();
           const global = installInventory({ global: true });
-          if (![...current, ...global].some((agent) => agent.installed)) {
+          if (![...current, ...global].some((agent) => agent.installed) &&
+              openCodeGuidedPluginRoots().length === 0) {
             stopClaudeSmartServices(root);
             return [
               "Shared services stopped; no integrations remain in this project/account or global OpenCode config.",
@@ -2675,16 +2797,20 @@ async function runGuidedCommand(command, args) {
           process.stdout.write(
             "\nRefreshing shared services for remaining integrations…\n",
           );
-        } else if (generation) {
+        } else if (preparedRuntime) {
+          const { root: previousRoot, status } = preparedRuntime.previous;
+          if (activePluginRoot() !== previousRoot)
+            throw new Error("Account settings and registrations were saved, but the selected runtime changed. Rerun setup to refresh shared services.");
           snapshotInstallState({ preserveFailureMarker: true });
           try {
-            await stopServicesForInstall(null, installStateSnapshot.restartHost);
+            // A refused selection must leave the previous services running.
             forcePluginRoot(root);
           } catch (error) {
             rollbackLocalPluginPackages();
             throw new Error(`Account settings and registrations were saved, but runtime selection failed: ${error.message}`, { cause: error });
           }
-          commitLocalPluginPackages([]);
+          commitInstallState();
+          await stopServicesForInstall(previousRoot, null, status);
         }
         let setup;
         try {
@@ -3780,9 +3906,9 @@ function validateCodexPackage() {
   }
 }
 
-function copyCodexMarketplace(directory) {
+function copyCodexMarketplace(directory = CODEX_MARKETPLACE_DIR, { fresh = false } = {}) {
   validateCodexPackage();
-  rmSync(directory, { recursive: true, force: true });
+  if (!fresh) rmSync(directory, { recursive: true, force: true });
   mkdirSync(join(directory, ".agents", "plugins"), { recursive: true });
   mkdirSync(join(directory, "plugins"), { recursive: true });
 
@@ -4318,7 +4444,11 @@ async function runInstall(args, options = {}) {
   if (!runtime && previousRoot) await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
   let source;
   try {
-    source = installLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "Claude Code");
+    source = runtime
+      ? publishGuidedPackageAdapter(
+        CLAUDE_CODE_LOCAL_PACKAGE_DIR, runtime.id, (stage) => join(stage, "plugin"), "Claude Code adapter",
+      )
+      : installLocalPluginPackage(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "Claude Code");
   } catch (err) {
     process.stderr.write(
       `error: could not prepare claude-smart Claude Code package: ${err && err.message ? err.message : err}\n`,
@@ -4337,12 +4467,7 @@ async function runInstall(args, options = {}) {
     // copy's plugin dir is the one runtime root to bootstrap and report.
     if (runtime) {
       pluginRoot = runtime.pluginRoot;
-      const adapter = join(source, "plugin");
-      writeFileSync(
-        join(adapter, "hooks", "hooks.json"),
-        readFileSync(join(runtime.packageRoot, "claude-hooks.json")),
-      );
-      writeFileSync(join(adapter, GUIDED_RUNTIME_BINDING), runtime.id);
+
     } else {
       pluginRoot = await bootstrapClaudeCodeInstall(join(source, "plugin"));
       restorePublishHooksFromSource(pluginRoot);
@@ -4466,9 +4591,7 @@ async function runInstallCodex(settings, runtime) {
   if (!runtime) await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
   let renderedHooks;
   try {
-    if (runtime) {
-      renderedHooks = readFileSync(join(runtime.packageRoot, "codex-hooks.json"), "utf8");
-    } else {
+    if (!runtime) {
       installLocalPluginPackage(CODEX_RUNTIME_PACKAGE_DIR, "Codex runtime");
       const nodeRuntime = await ensurePrivateNode();
       const launcher = pinHookNode(nodeRuntime.node);
@@ -4492,19 +4615,9 @@ async function runInstallCodex(settings, runtime) {
   const readOnly = setup.readOnly;
   const marketplaceRoot = CODEX_MARKETPLACE_DIR;
   if (runtime) {
-    holdPackageInstallLock(marketplaceRoot, "Codex marketplace");
-    const stage = mkdtempSync(join(dirname(marketplaceRoot), ".marketplace-"));
-    try {
-      copyCodexMarketplace(stage);
-      const adapter = codexMarketplacePluginRoot(stage);
-      writeFileSync(join(adapter, "hooks", "codex-hooks.json"), renderedHooks);
-      writeFileSync(join(adapter, GUIDED_RUNTIME_BINDING), runtime.id);
-      replaceLocalPluginPackage(stage, marketplaceRoot);
-    } finally {
-      rmSync(stage, { recursive: true, force: true });
-    }
+    publishGuidedPackageAdapter(marketplaceRoot, runtime.id, codexMarketplacePluginRoot, "Codex marketplace");
   } else {
-    copyCodexMarketplace(marketplaceRoot);
+    copyCodexMarketplace();
     if (readOnly) prunePublishHooksForReadOnly(codexMarketplacePluginRoot(marketplaceRoot));
   }
   process.stdout.write(`Prepared Codex marketplace at ${marketplaceRoot}.\n`);
@@ -4693,10 +4806,15 @@ async function runInstallOpenCode(args, settings, runtime) {
   const pluginRoot = join(packageRoot, "plugin");
   if (!runtime) await bootstrapPluginRuntime(pluginRoot, { readOnly, settings });
   const loader = assertOpenCodeInstallConfiguration(args);
-  const prepared = prepareOpenCodeV2Plugin(loader, packageRoot);
   const conflict = () => new Error(
     `OpenCode loader changed during install at ${loader.path}; reinstall after resolving the conflict.`,
   );
+  if (runtime) {
+    const expected = JSON.parse(readFileSync(join(packageRoot, "opencode-loader-input.json"), "utf8"));
+    if (expected.path !== loader.path || expected.contents !== loader.contents ||
+        expected.identity !== openCodeLoaderIdentity(loader.path)) throw conflict();
+  }
+  const prepared = prepareOpenCodeV2Plugin(loader, packageRoot);
   if (!prepared) throw conflict();
   // The signal handler exits after waiting for the settings owner. Release
   // this stage on that path as well as on ordinary failure and success.
@@ -4716,6 +4834,7 @@ async function runInstallOpenCode(args, settings, runtime) {
       results = removeOpenCodeLegacyEntries(args);
     });
     if (v2PluginFile.status === "conflict") throw conflict();
+    publishOpenCodeRegistration(loader.path, runtime);
     // The loader now references this package. Keep it if later cleanup fails.
     commitLocalPluginPackages([packageRoot]);
   } finally {
@@ -4805,6 +4924,7 @@ async function runUninstallOpenCode(args) {
   // scope for a project uninstall, and the current project for a --global one.
   // shortcut: loaders in other projects are not enumerable, so a --global
   // uninstall can still strand them; upgrade when installs are tracked machine-wide.
+  publishOpenCodeRegistration(opencodeV2PluginFile(args), null);
   const otherScopeInstalled = scopeHasClaudeSmart(parseGlobalFlag(args) ? [] : ["--global"]);
   if (!otherScopeInstalled) {
     rmSync(OPENCODE_LOCAL_PACKAGE_DIR, { recursive: true, force: true });
@@ -4891,7 +5011,7 @@ function writeDisabledCodexHookWarnings(configPath = CODEX_CONFIG_PATH) {
   );
 }
 
-function readInstalledOpenCodeLoader(path) {
+function readLocalOpenCodeFile(path, maxBytes) {
   const directory = dirname(path);
   if (!lstatSync(dirname(directory)).isDirectory() || !lstatSync(directory).isDirectory())
     return null;
@@ -4902,7 +5022,8 @@ function readInstalledOpenCodeLoader(path) {
     const actual = fstatSync(fd);
     if (!actual.isFile() || expected.dev !== actual.dev || expected.ino !== actual.ino)
       return null;
-    const buffer = Buffer.alloc(8193);
+    if (actual.size > maxBytes) return null;
+    const buffer = Buffer.alloc(actual.size + 1);
     const length = readSync(fd, buffer, 0, buffer.length);
     if (length === buffer.length || length !== actual.size) return null;
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, length));
@@ -4911,22 +5032,26 @@ function readInstalledOpenCodeLoader(path) {
   }
 }
 
+function localOpenCodeFilePath(spec) {
+  try {
+    const url = new URL(spec);
+    if (url.protocol !== "file:" || url.host || url.pathname.startsWith("//")) return null;
+    return fileURLToPath(url);
+  } catch {
+    return null;
+  }
+}
+
 function installedOpenCodeRuntime(args) {
   try {
-    const loader = readInstalledOpenCodeLoader(opencodeV2PluginFile(args));
+    const path = opencodeV2PluginFile(args);
+    const runtime = openCodeGuidedRuntime(openCodeRegistrationPath(path));
+    if (!runtime) return null;
+    const loader = readLocalOpenCodeFile(path, 8192);
     if (!loader || !isGeneratedOpenCodeV2Loader(loader)) return null;
     const spec = loader.split("\n")[2].slice("export { default } from ".length, -1);
-    const url = new URL(JSON.parse(spec));
-    // A project can control this loader. Never resolve a UNC or device path
-    // or stat any filesystem location taken from the file.
-    if (url.protocol !== "file:" || url.host || url.pathname.startsWith("//")) return null;
-    const entry = fileURLToPath(url);
-    const root = dirname(dirname(dirname(entry)));
-    const id = basename(dirname(root));
-    if (!/^runtime-[A-Za-z0-9]{6}$/.test(id)) return null;
-    const base = realpathSync(GUIDED_RUNTIME_DIR);
-    if (entry !== join(base, id, "plugin", "opencode", "dist", "server.mjs")) return null;
-    return readGuidedRuntime(id).pluginRoot;
+    return localOpenCodeFilePath(JSON.parse(spec)) === join(runtime.pluginRoot, "opencode", "dist", "server.mjs")
+      ? runtime.pluginRoot : null;
   } catch {
     return null;
   }

@@ -367,7 +367,10 @@ if (typeof process.send === "function") {
     assert expected_error in log.read_text()
 
 
-def test_multihost_preparation_failure_preserves_settings_and_registration(tmp_path):
+@pytest.mark.parametrize("failure", ["python", "opencode-loader"])
+def test_multihost_preparation_failure_preserves_settings_and_registration(
+    tmp_path, failure
+):
     package, old_root, uv, env = _fixture(tmp_path, "codex", running="none")
     env.pop("CLAUDE_SMART_INSTALL_CHILD")
     settings = tmp_path / ".claude-smart/.env"
@@ -380,6 +383,13 @@ def test_multihost_preparation_failure_preserves_settings_and_registration(tmp_p
         'export { default } from "file:///older/runtime/server.mjs";\n'
     )
     loader.write_text(original_loader)
+    expected = "uv sync failed"
+    if failure == "opencode-loader":
+        if os.name == "nt" or os.geteuid() == 0:
+            pytest.skip("requires unprivileged POSIX file permissions")
+        _write_bootstrap_uv(uv, mode="fresh")
+        loader.chmod(0o400)
+        expected = "EACCES"
     result = subprocess.run(
         [
             node_bin(),
@@ -402,13 +412,70 @@ def test_multihost_preparation_failure_preserves_settings_and_registration(tmp_p
         check=False,
     )
     assert result.returncode != 0
-    assert "uv sync failed" in result.stderr
+    assert expected in result.stderr, result.stderr
     assert settings.read_bytes() == original
     assert loader.read_text() == original_loader
     assert (tmp_path / ".reflexio/plugin-root").resolve() == old_root.resolve()
     assert not list((tmp_path / ".claude-smart/guided-runtimes").glob("runtime-*"))
     assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
     assert not (tmp_path / "service-calls.jsonl").exists()
+
+
+@pytest.mark.parametrize("refuse_selection", [False, True])
+def test_multihost_cutover_observes_prior_services_before_settings(
+    tmp_path, refuse_selection
+):
+    package, old_root, uv, env = _fixture(tmp_path, "codex")
+    env.pop("CLAUDE_SMART_INSTALL_CHILD")
+    env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
+    _write_bootstrap_uv(uv, mode="fresh")
+    codex = tmp_path / "fake-bin/codex"
+    codex.write_text(
+        codex.read_text().replace("#!/usr/bin/env node", f"#!{node_bin()}", 1)
+    )
+    selected = tmp_path / ".reflexio/plugin-root"
+    if refuse_selection:
+        selected.unlink()
+        shutil.copytree(old_root, selected)
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(package / "bin/claude-smart.js"),
+            "update",
+            "--host",
+            "codex,opencode",
+            "--backend",
+            "local",
+            "--provider",
+            "codex",
+            "--url",
+            "http://localhost:9090/",
+            "--yes",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    calls = [
+        json.loads(line)
+        for line in (tmp_path / "service-calls.jsonl").read_text().splitlines()
+    ]
+    assert [row["action"] for row in calls[:2]] == ["status", "status"]
+    assert all("http://localhost:8071/" in row["file"] for row in calls[:2])
+    if refuse_selection:
+        assert result.returncode == 1
+        assert "runtime selection failed" in result.stderr
+        assert selected.is_dir() and not selected.is_symlink()
+        assert all(row["action"] == "status" for row in calls)
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        stops = [row for row in calls if row["action"] == "stop"]
+        assert {row["kind"] for row in stops} == {"backend", "dashboard"}
+        assert all(row["root"] == str(old_root) for row in stops)
+        assert all(row["selected_root"] == str(selected.resolve()) for row in stops)
 
 
 def _run_guided_node_update(home, package, env, host):
