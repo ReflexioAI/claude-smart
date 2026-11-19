@@ -191,10 +191,12 @@ When a guide installs multiple integrations together, it prepares one account
 runtime and saves confirmed settings through that runtime's Python interpreter.
 The selected integrations register against it without rebuilding Python or
 the dashboard. A registration can be retried after settings were saved.
-Previous prepared runtimes are retained for integrations and OpenCode project
-loaders that still reference them. Hooks use the generation's existing Python
-environment. If that environment becomes unusable, rerun `npx claude-smart setup`
-to prepare a replacement.
+If setup stops after selecting a prepared runtime, the next setup resumes
+starting its services before preparing another replacement. A registered Codex
+home or OpenCode project counts as installed while its enabled plugin or loader
+still points to a usable runtime. Hooks and commands use the prepared Python
+environment. Rerun `npx claude-smart setup` to repair that environment or its
+dashboard build.
 
 Dashboard saves use the prepared Python settings owner too. They share the
 repair lock and publish privately with one atomic file replacement. An explicit

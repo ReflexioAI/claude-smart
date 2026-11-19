@@ -1819,3 +1819,120 @@ def test_uninstall_checks_surviving_codex_home(
         assert cleared.returncode == 0, cleared.stdout + cleared.stderr
     assert not selector.exists()
     assert not record.exists()
+
+
+def test_guided_uninstall_keeps_registered_standalone_codex_home(tmp_path):
+    package, _old, uv, env = _fixture(tmp_path, "codex", installed=False)
+    _write_bootstrap_uv(uv, mode="fresh")
+    env.pop("CLAUDE_SMART_INSTALL_CHILD")
+    env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
+    codex = tmp_path / "fake-bin/codex"
+    codex.write_text(
+        codex.read_text().replace("#!/usr/bin/env node", f"#!{node_bin()}", 1)
+    )
+    launcher = [node_bin(), str(package / "bin/claude-smart.js")]
+    standalone_home = Path(env["CODEX_HOME"])
+    guided_home = tmp_path / "guided-codex-home"
+
+    def run(*args, codex_home):
+        result = subprocess.run(
+            [*launcher, *args],
+            cwd=tmp_path,
+            env={**env, "CODEX_HOME": str(codex_home)},
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result.stdout
+
+    setup = ["setup", "--backend", "local", "--provider", "codex", "--yes"]
+    run(*setup, "--host", "codex", codex_home=standalone_home)
+    run(*setup, "--host", "codex,opencode", codex_home=guided_home)
+
+    selector = tmp_path / ".reflexio/plugin-root"
+    guided_root = selector.resolve()
+    assert "guided-runtimes" in str(guided_root)
+    run("uninstall", "--host", "codex", codex_home=guided_home)
+    assert selector.resolve() == guided_root
+
+    # A project deletion leaves its account record behind. Survivor discovery
+    # must still select the verified standalone registration.
+    loader = tmp_path / ".opencode/plugins/claude-smart.js"
+    loader.unlink()
+    result = run("uninstall", "--host", "opencode", codex_home=guided_home)
+    assert "Refreshing shared services" in result
+    assert selector.resolve() == standalone_home / "claude-smart/runtime/plugin"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="uses POSIX SIGKILL")
+def test_retry_starts_selected_runtime_before_preparing_replacement(tmp_path):
+    package, predecessor, uv, env = _fixture(tmp_path, "codex")
+    _write_bootstrap_uv(uv, mode="fresh")
+    env.pop("CLAUDE_SMART_INSTALL_CHILD")
+    codex = tmp_path / "fake-bin/codex"
+    codex.write_text(
+        codex.read_text().replace("#!/usr/bin/env node", f"#!{node_bin()}", 1)
+    )
+    preload = tmp_path / "interrupt-after-runtime-selection.cjs"
+    preload.write_text("""
+const fs = require("node:fs"), path = require("node:path");
+const rename = fs.renameSync;
+fs.renameSync = (source, target) => {
+  const result = rename(source, target);
+  if (target === path.join(process.env.HOME, ".claude-smart/guided-runtimes/selected"))
+    process.kill(process.pid, "SIGKILL");
+  return result;
+};
+""")
+    env["NODE_OPTIONS"] = f'--require "{preload}"'
+    env["CLAUDE_SMART_BACKEND_AUTOSTART"] = "1"
+    env["BACKEND_PORT"] = env["FIXTURE_PORT"]
+    command = [
+        node_bin(),
+        str(package / "bin/claude-smart.js"),
+        "setup",
+        "--host",
+        "codex,opencode",
+        "--backend",
+        "local",
+        "--url",
+        f"http://localhost:{env['FIXTURE_PORT']}/",
+        "--provider",
+        "codex",
+        "--yes",
+    ]
+
+    def run():
+        return subprocess.run(
+            command,
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+
+    interrupted = run()
+    assert interrupted.returncode == -signal.SIGKILL, interrupted.stderr
+    state = tmp_path / ".claude-smart/guided-runtimes"
+    selected = tmp_path / ".reflexio/plugin-root"
+    chosen = selected.resolve()
+    receipt = state / "pending-shutdown.json"
+    assert receipt.is_file()
+    assert all(row["action"] != "stop" for row in _calls(tmp_path))
+
+    os.utime(state / ".install.lock", (1, 1))
+    env.pop("NODE_OPTIONS")
+    _write_bootstrap_uv(uv, mode="non_lock_failure")
+    failed_retry = run()
+    assert failed_retry.returncode == 1, failed_retry.stdout + failed_retry.stderr
+    assert "uv sync failed" in failed_retry.stderr
+    assert selected.resolve() == chosen
+    assert not receipt.exists()
+    events = [(row["root"], row["action"]) for row in _calls(tmp_path)]
+    assert events.index((str(predecessor), "stop")) < events.index(
+        (str(chosen), "start")
+    )

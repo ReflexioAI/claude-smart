@@ -28,8 +28,18 @@ claude_smart_source_reflexio_env
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "cli.sh" "$@"
 
-# This account-wide diagnostic may come from another host. Only an
-# unprepared runtime should be blocked by it.
+# A guided generation already owns its interpreter. Repair belongs to setup.
+if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
+  if ! claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.cli; then
+    echo "claude-smart: the prepared Python runtime is unavailable. Rerun npx claude-smart setup." >&2
+    exit 1
+  fi
+  PLUGIN_PYTHON="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
+  exec "$PLUGIN_PYTHON" -m claude_smart.cli "$@"
+fi
+
+# This account-wide diagnostic may come from another host. Only a
+# runtime with a broken interpreter should be blocked by it.
 FAILURE_MARKER="$HOME/.claude-smart/install-failed"
 if [ -f "$FAILURE_MARKER" ] && ! claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.cli; then
   msg="$(head -n 1 "$FAILURE_MARKER" 2>/dev/null || echo "")"

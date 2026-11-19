@@ -947,7 +947,7 @@ function activePluginRoot() {
 
 // Installed runtime roots other integrations may still use, newest host
 // first. Codex keeps one cache dir per version.
-function installedPluginRoots(codexSurvivors = guidedCodexPluginRoots()) {
+function installedPluginRoots(codexSurvivors = registeredCodexPluginRoots()) {
   // The host owns its effective load source. A local marketplace can report
   // readFromFolder alongside an older installPath; prefer its declared source.
   // Discovery is read-only and does not establish ownership for deletion.
@@ -1755,7 +1755,8 @@ async function bootstrapClaudeCodeInstall(pluginRoot) {
 // dashboard's first build (detached, as smart-install does); the backend and
 // dashboard are then started and reported by startAndReportServices.
 function startDeferredDashboardBuild(pluginRoot) {
-  if (process.env.CLAUDE_SMART_DEFER_SHARED_SERVICES === "1") return;
+  if (process.env.CLAUDE_SMART_DEFER_SHARED_SERVICES === "1" ||
+      pathEntryExists(join(pluginRoot, "guide-prepared-runtime"))) return;
   const dashboardDir = join(pluginRoot, "dashboard");
   const bash = resolveUsableBash();
   if (!bash || !existsSync(dashboardDir) || existsSync(join(dashboardDir, ".next"))) return;
@@ -2551,17 +2552,6 @@ function openCodeRegistrationPath(loader) {
   return join(GUIDED_OPENCODE_REGISTRATIONS, key);
 }
 
-function openCodeGuidedRuntime(binding) {
-  try {
-    if (!lstatSync(binding).isFile()) return null;
-    const runtime = readGuidedRuntime(readFileSync(binding, "utf8"));
-    assertOpenCodeRuntimeEntry(runtime.pluginRoot);
-    return runtime;
-  } catch {
-    return null;
-  }
-}
-
 function assertOpenCodeRuntimeEntry(pluginRoot) {
   const opencode = join(pluginRoot, "opencode");
   const dist = join(opencode, "dist");
@@ -2582,33 +2572,37 @@ function openCodeRuntimeMatchesLoader(runtime, path, strict = false) {
   }
 }
 
-function recoverOpenCodeBinding(binding, strict = false) {
-  const pending = `${binding}.pending`;
-  if (!pathEntryExists(pending)) return null;
+function readOpenCodeBinding(binding, { pending = false, strict = false } = {}) {
+  const record = pending ? `${binding}.pending` : binding;
+  if (!pathEntryExists(record)) return null;
   try {
-    if (!lstatSync(pending).isFile()) throw new Error("Invalid pending OpenCode binding");
-    const { path, id } = JSON.parse(readFileSync(pending, "utf8"));
-    if (openCodeRegistrationPath(path) !== binding) throw new Error("Pending OpenCode binding changed scope");
+    if (!lstatSync(record).isFile()) throw new Error("Invalid OpenCode binding");
+    const { path, id } = JSON.parse(readFileSync(record, "utf8"));
+    if (openCodeRegistrationPath(path) !== binding) throw new Error("OpenCode binding changed scope");
     const runtime = readGuidedRuntime(id);
     assertOpenCodeRuntimeEntry(runtime.pluginRoot);
-    return openCodeRuntimeMatchesLoader(runtime, path, strict) ? runtime : null;
+    return openCodeRuntimeMatchesLoader(runtime, path, strict) ? { ...runtime, path } : null;
   } catch (error) {
     if (strict) throw error;
     return null;
   }
 }
 
+function recoverOpenCodeBinding(binding, strict = false) {
+  return readOpenCodeBinding(binding, { pending: true, strict });
+}
+
 function codexHomeKey(home) {
   return crypto.createHash("sha256").update(isWindows() ? home.toLowerCase() : home).digest("hex");
 }
 
-function rememberGuidedCodexHome() {
+function rememberCodexHome() {
   // Discovery only. A recorded location still needs the host's enabled config
   // and matching installed cache before it can keep a generation alive.
   writeGuidedRecord(join(GUIDED_CODEX_HOMES, codexHomeKey(CODEX_HOME)), CODEX_HOME);
 }
 
-function guidedCodexPluginRoots() {
+function registeredCodexPluginRoots() {
   let names;
   try {
     names = readdirSync(GUIDED_CODEX_HOMES);
@@ -2625,7 +2619,9 @@ function guidedCodexPluginRoots() {
       const adapter = join(home, "claude-smart", "marketplace", CODEX_MARKETPLACE_PLUGIN_PATH);
       const root = boundGuidedPluginRoot(adapter);
       const id = root && basename(dirname(root));
-      return id && preparedCodexRegistration(id, home) ? [root] : [];
+      if (id) return preparedCodexRegistration(id, home) ? [root] : [];
+      const standalone = join(home, "claude-smart", "runtime", "plugin");
+      return standaloneCodexRegistration(standalone, home) ? [standalone] : [];
     } catch {
       return [];
     }
@@ -2637,8 +2633,7 @@ function preparedOpenCodeRegistration(runtime) {
   const loader = runtime.openCode.loader.path;
   const binding = openCodeRegistrationPath(loader);
   if (recoverOpenCodeBinding(binding)?.id === runtime.id) return true;
-  const committed = openCodeGuidedRuntime(binding);
-  return committed?.id === runtime.id && openCodeRuntimeMatchesLoader(committed, loader);
+  return readOpenCodeBinding(binding)?.id === runtime.id;
 }
 
 function openCodeGuidedPluginRoots() {
@@ -2648,7 +2643,7 @@ function openCodeGuidedPluginRoots() {
       .map((name) => name.replace(/\.pending$/, ""));
     return Array.from(new Set(names), (name) => {
       const binding = join(GUIDED_OPENCODE_REGISTRATIONS, name);
-      return (recoverOpenCodeBinding(binding) || openCodeGuidedRuntime(binding))?.pluginRoot;
+      return (recoverOpenCodeBinding(binding) || readOpenCodeBinding(binding))?.pluginRoot;
     }).filter(Boolean);
   } catch {
     return [];
@@ -2659,7 +2654,7 @@ function stageOpenCodeRegistration(loader, runtime) {
   if (!runtime) return;
   const binding = openCodeRegistrationPath(loader);
   const predecessor = recoverOpenCodeBinding(binding, true);
-  if (predecessor) writeGuidedRecord(binding, predecessor.id);
+  if (predecessor) writeGuidedRecord(binding, JSON.stringify({ path: predecessor.path, id: predecessor.id }));
   writeGuidedRecord(`${binding}.pending`, JSON.stringify({ path: loader, id: runtime.id }));
 }
 
@@ -2676,7 +2671,7 @@ function writeGuidedRecord(binding, contents) {
 
 function publishOpenCodeRegistration(loader, runtime) {
   const binding = openCodeRegistrationPath(loader);
-  if (runtime) writeGuidedRecord(binding, runtime.id);
+  if (runtime) writeGuidedRecord(binding, JSON.stringify({ path: loader, id: runtime.id }));
   else rmSync(binding, { force: true });
   rmSync(`${binding}.pending`, { force: true });
 }
@@ -2757,7 +2752,7 @@ function readGuidedShutdown() {
 
 async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
   const pending = readGuidedShutdown();
-  if (!pending) return;
+  if (!pending) return {};
   if (typeof pending.id !== "string" || !/^runtime-[A-Za-z0-9]{6}$/.test(pending.id))
     throw new Error("The pending shared service shutdown record is invalid");
   const target = join(realpathSync(GUIDED_RUNTIME_DIR), pending.id, "plugin");
@@ -2767,9 +2762,17 @@ async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
     throw new Error("The pending shared service shutdown record is invalid");
   if (current === target) {
     if (!pathEntryExists(GUIDED_SELECTED_RUNTIME)) recordGuidedSelection(target);
-    if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
-      throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
-    await stopServicesForInstall(pending.root, null, pending.status);
+    const setup = readInstallPolicy();
+    if (pending.predecessorStopped !== true) {
+      if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
+        throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
+      await stopServicesForInstall(pending.root, null, pending.status);
+      // A retry during startup must never stop the predecessor a second time.
+      recordGuidedShutdown({ id: pending.id, predecessorStopped: true }, pending);
+    }
+    const summary = await refreshSelectedServices(target, setup);
+    rmSync(GUIDED_PENDING_SHUTDOWN);
+    return { completed: true, summary };
   } else {
     if (current !== pending.root) {
       const predecessor = join(pending.root, "scripts", "backend-service.sh");
@@ -2779,9 +2782,16 @@ async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
     }
     // Settings may have changed independently. Preserve the verified baseline
     // until the next attempt has prepared and selected its replacement.
-    if (retainBaseline) return { root: pending.root, status: pending.status };
+    if (retainBaseline) return { baseline: { root: pending.root, status: pending.status } };
   }
   rmSync(GUIDED_PENDING_SHUTDOWN);
+  return {};
+}
+
+async function refreshSelectedServices(root, setup) {
+  const host = setup.provider || hostForPluginRoot(root);
+  startDeferredDashboardBuild(root);
+  return startAndReportServices(root, host, setup, { summaryOnly: true });
 }
 
 async function prepareGuidedRuntime(config, options, settings, baseline) {
@@ -2823,7 +2833,7 @@ async function prepareGuidedRuntime(config, options, settings, baseline) {
       }));
     }
     if (config.hosts.includes(HOST_CODEX)) {
-      rememberGuidedCodexHome();
+      rememberCodexHome();
       const hooks = renderPreparedCodexHooks(pluginRoot, pinHookNode(tools.node), readOnly, true);
       discardAdapters.push(prepareGuidedPackageAdapter(CODEX_MARKETPLACE_DIR, id, (stage) => {
         copyCodexMarketplace(stage, { fresh: true });
@@ -2873,7 +2883,7 @@ async function runGuidedCommand(command, args) {
       saved: () => saved,
       save: async (config, options) => {
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
-        const baseline = await resumeGuidedShutdown();
+        const { baseline } = await resumeGuidedShutdown();
         const settings = planInstallSettings(config, captured);
         // Recovery keeps the previous generation intact until registration is
         // complete, even when the user retries with just one host.
@@ -2926,7 +2936,7 @@ async function runGuidedCommand(command, args) {
         if (!root || !existsSync(join(root, "scripts", "backend-service.sh")))
           return;
         if (action === "uninstall") {
-          const codexSurvivors = guidedCodexPluginRoots();
+          const codexSurvivors = registeredCodexPluginRoots();
           if (isGuidedPluginRoot(root)) {
             const survivors = installedPluginRoots(codexSurvivors);
             if (!survivors.includes(root)) {
@@ -2967,7 +2977,8 @@ async function runGuidedCommand(command, args) {
             throw new Error(`Account settings and registrations were saved, but runtime selection failed: ${error.message}`, { cause: error });
           }
           commitInstallState();
-          await resumeGuidedShutdown();
+          const cutover = await resumeGuidedShutdown();
+          if (cutover.completed) return cutover.summary;
         }
         let setup;
         try {
@@ -2978,11 +2989,7 @@ async function runGuidedCommand(command, args) {
             "Removal completed; repair saved settings with npx claude-smart setup before refreshing shared services.",
           ];
         }
-        const host = setup.provider || hostForPluginRoot(root);
-        startDeferredDashboardBuild(root);
-        return await startAndReportServices(root, host, setup, {
-          summaryOnly: true,
-        });
+        return refreshSelectedServices(root, setup);
       },
     })
     .finally(() => {
@@ -4440,14 +4447,32 @@ function installCodexPluginCache(pluginRoot) {
   }
 }
 
+function codexRegistrationCache(pluginRoot, home) {
+  const version = codexPluginVersion(pluginRoot);
+  if (!version || basename(version) !== version || version === "." || version === "..")
+    return null;
+  return join(home, "plugins", "cache", CODEX_MARKETPLACE_NAME, "claude-smart", version);
+}
+
 function preparedCodexRegistration(id, home = CODEX_HOME) {
   const { pluginRoot } = readGuidedRuntime(id);
-  const version = requireCodexPluginVersion(pluginRoot);
-  if (basename(version) !== version || version === "." || version === "..") return false;
-  const cache = join(home, "plugins", "cache", CODEX_MARKETPLACE_NAME, "claude-smart", version);
-  const config = join(home, "config.toml");
-  if (boundGuidedPluginRoot(cache) !== pluginRoot || !existsSync(config)) return false;
+  const cache = codexRegistrationCache(pluginRoot, home);
+  return !!cache && boundGuidedPluginRoot(cache) === pluginRoot &&
+    codexRegistrationEnabled(pluginRoot, home);
+}
 
+function standaloneCodexRegistration(pluginRoot, home) {
+  const cache = codexRegistrationCache(pluginRoot, home);
+  return !!cache && !pathEntryExists(join(cache, GUIDED_RUNTIME_BINDING)) &&
+    codexPluginVersion(cache) === codexPluginVersion(pluginRoot) &&
+    existsSync(join(cache, "hooks", "codex-hooks.json")) &&
+    isExecutableFile(pluginPythonPath(pluginRoot)) &&
+    codexRegistrationEnabled(pluginRoot, home);
+}
+
+function codexRegistrationEnabled(pluginRoot, home) {
+  const config = join(home, "config.toml");
+  if (!existsSync(config)) return false;
   // Check the host's actual configuration, including TOML quoting and boolean
   // types, without printing any values. The completed cache already binds the
   // installed hook manifest to this exact prepared generation.
@@ -4772,6 +4797,7 @@ async function runInstallCodex(settings, runtime) {
   const pluginRoot = runtime?.pluginRoot ?? CODEX_RUNTIME_PLUGIN_ROOT;
 
   validateCodexPackage();
+  if (!runtime) rememberCodexHome();
   const previousRoot = existsSync(CODEX_RUNTIME_PLUGIN_ROOT)
     ? CODEX_RUNTIME_PLUGIN_ROOT
     : findCodexPluginRoot();
@@ -5174,8 +5200,7 @@ function installedOpenCodeRuntime(args) {
   const binding = openCodeRegistrationPath(path);
   const recovered = recoverOpenCodeBinding(binding);
   if (recovered) return recovered.pluginRoot;
-  const runtime = openCodeGuidedRuntime(binding);
-  return runtime && openCodeRuntimeMatchesLoader(runtime, path) ? runtime.pluginRoot : null;
+  return readOpenCodeBinding(binding)?.pluginRoot || null;
 }
 
 function openCodeInstalledVersion(args) {

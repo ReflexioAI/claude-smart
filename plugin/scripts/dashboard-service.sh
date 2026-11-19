@@ -173,8 +173,20 @@ case "$CMD" in
       echo "[claude-smart] dashboard: port $PORT held by another process; skipping" >>"$LOG_FILE"
       emit_ok; exit 0
     fi
+    if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ] && [ ! -d "$DASHBOARD_DIR/.next" ]; then
+      reason="the prepared dashboard is missing; rerun npx claude-smart setup"
+      echo "[claude-smart] dashboard: $reason" >>"$LOG_FILE"
+      claude_smart_write_dashboard_unavailable "$reason"
+      emit_ok; exit 0
+    fi
     NPM_BIN=$(claude_smart_resolve_npm || true)
     if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
+      if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
+        reason="npm is unavailable for the prepared dashboard; rerun npx claude-smart setup"
+        echo "[claude-smart] dashboard: $reason" >>"$LOG_FILE"
+        claude_smart_write_dashboard_unavailable "$reason"
+        emit_ok; exit 0
+      fi
       if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
         echo "[claude-smart] dashboard: npm is not on PATH; starting installer in background" >>"$LOG_FILE"
         CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \

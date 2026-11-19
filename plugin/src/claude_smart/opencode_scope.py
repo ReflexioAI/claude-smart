@@ -66,13 +66,28 @@ def open_scoped_file(
     source, identity = _open_regular_file(fd, lifetime, writable)
     if remove is not None and quarantine_base is not None:
         name = parts[-1]
+        expected = None if create else _read_bytes(source)
+        source.seek(0)
 
-        def remove_created() -> None:
-            _remove_posix_entry(
-                parent, name, identity, quarantine_base, discard_missing=create
+        def same_contents() -> bool:
+            # Read the live descriptor after the entry moves into quarantine.
+            # A buffered read could replay bytes captured ahead of that move.
+            return (
+                expected is None
+                or os.pread(source.fileno(), _MAX_CONFIG_BYTES + 1, 0) == expected
             )
 
-        remove.append(remove_created)
+        def remove_entry() -> None:
+            _remove_posix_entry(
+                parent,
+                name,
+                identity,
+                quarantine_base,
+                same_contents,
+                discard_missing=create,
+            )
+
+        remove.append(remove_entry)
     return source, identity
 
 
@@ -146,6 +161,7 @@ def _remove_posix_entry(
     name: str,
     identity: str,
     base: tuple[Path, int],
+    same_contents: Callable[[], bool],
     *,
     discard_missing: bool,
 ) -> None:
@@ -166,7 +182,7 @@ def _remove_posix_entry(
                 raise
             retained = True
             moved = os.stat("entry", follow_symlinks=False, dir_fd=quarantine)
-            if f"{moved.st_dev}:{moved.st_ino}" != identity:
+            if f"{moved.st_dev}:{moved.st_ino}" != identity or not same_contents():
                 try:
                     _restore_posix_entry(quarantine, parent, name)
                 except OSError as error:

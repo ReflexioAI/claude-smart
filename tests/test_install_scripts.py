@@ -3482,7 +3482,7 @@ def test_cli_sh_self_heals_when_claude_smart_unimportable() -> None:
 
 
 @pytest.mark.parametrize(
-    "state", ["self-heal", "ready-with-marker", "broken-with-marker"]
+    "state", ["self-heal", "ready-with-marker", "broken-with-marker", "guided-no-uv"]
 )
 def test_cli_sh_uses_selected_runtime_readiness(tmp_path: Path, state: str) -> None:
     plugin_root = tmp_path / "plugin"
@@ -3518,8 +3518,11 @@ def test_cli_sh_uses_selected_runtime_readiness(tmp_path: Path, state: str) -> N
     ]:
         executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
 
-    if state == "ready-with-marker":
+    if state in {"ready-with-marker", "guided-no-uv"}:
         (tmp_path / "import-ok").touch()
+    if state == "guided-no-uv":
+        (bin_dir / "uv").unlink()
+        (plugin_root / "guide-prepared-runtime").write_text("runtime-AbCd12")
     marker = tmp_path / ".claude-smart/install-failed"
     if state != "self-heal":
         marker.parent.mkdir()
@@ -9458,3 +9461,34 @@ def test_smart_install_fast_success_still_repairs_a_missing_history_cap(
     assert second.returncode == 0, second.stderr
     assert "REFLEXIO_ROW_LIMIT_INTERACTIONS=500\n" in selected.read_text()
     assert not (selected.parent / "install-failed").exists()
+
+
+@pytest.mark.parametrize("entrypoint", ["dashboard-service.sh", "dashboard-build.sh"])
+def test_prepared_dashboard_repair_does_not_mutate_generation(tmp_path, entrypoint):
+    root = tmp_path / "plugin"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    (root / "dashboard").mkdir()
+    (root / "guide-prepared-runtime").write_text("runtime-AbCd12")
+    for name in ("_lib.sh", entrypoint):
+        shutil.copy2(LIB.with_name(name), scripts / name)
+    env = _isolated_env(tmp_path)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        env["DASHBOARD_PORT"] = str(listener.getsockname()[1])
+    result = subprocess.run(
+        ["bash", str(scripts / entrypoint), "start"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if entrypoint == "dashboard-service.sh":
+        assert result.returncode == 0, result.stderr
+        diagnostic = (tmp_path / ".claude-smart/dashboard-unavailable").read_text()
+    else:
+        assert result.returncode == 1
+        diagnostic = result.stderr
+    assert "npx claude-smart setup" in diagnostic
+    assert not list((root / "dashboard").iterdir())
