@@ -451,7 +451,17 @@ def test_guided_opencode_keeps_settings_when_loader_appears(tmp_path, stage):
 
 
 @pytest.mark.parametrize(
-    "failure", ["create", "refresh", "publish", "partial-create", "partial-refresh"]
+    "failure",
+    [
+        "create",
+        "refresh",
+        "legacy-config",
+        "legacy-backup",
+        "publish",
+        "partial-create",
+        "partial-refresh",
+        "close",
+    ],
 )
 def test_guided_opencode_loader_stage_and_settings_order(tmp_path, failure):
     package, root, uv, env = _fixture(tmp_path, "opencode", running="none")
@@ -462,6 +472,10 @@ def test_guided_opencode_loader_stage_and_settings_order(tmp_path, failure):
     loader = directory / "claude-smart.js"
     legacy = tmp_path / "opencode.json"
     original_config = b'{"plugin":["claude-smart","keep"]}\n'
+    backup = legacy.with_suffix(".json.bak")
+    if failure == "legacy-backup":
+        original_config = b"// preserve the comment\n" + original_config
+        backup.write_bytes(b"prior backup")
     legacy.write_bytes(original_config)
     if failure in {"refresh", "partial-refresh"}:
         loader.write_text(
@@ -491,12 +505,27 @@ fs.openSync = (path, flags, ...args) => {
   if (failure === "publish" && process.send && flags === "wx" &&
       typeof path === "string" && basename(path) === "claude-smart.js")
     throw Object.assign(new Error("fixture denied loader publication"), { code: "EACCES" });
+  const denied = failure === "legacy-config" ? "opencode.json" :
+    failure === "legacy-backup" ? "opencode.json.bak" : null;
+  if (denied && typeof path === "string" && basename(path) === denied &&
+      typeof flags === "number" && flags & fs.constants.O_WRONLY)
+    throw Object.assign(new Error("fixture denied legacy config rewrite"), { code: "EACCES" });
   const fd = open(path, flags, ...args);
   if (typeof path === "string" && basename(path) === "claude-smart.js" &&
       (flags === "wx" || (typeof flags === "number" && flags & fs.constants.O_RDWR)))
     loaderFd = fd;
   return fd;
 };
+if (failure === "close") {
+  const close = fs.closeSync;
+  fs.closeSync = fd => {
+    close(fd);
+    if (fd === loaderFd) {
+      loaderFd = undefined;
+      throw new Error("fixture could not close the published loader");
+    }
+  };
+}
 if (failure.startsWith("partial-")) {
   const truncate = fs.ftruncateSync;
   fs.ftruncateSync = (fd, length) => {
@@ -528,24 +557,32 @@ if (failure.startsWith("partial-")) {
     assert (root / "identity").read_text() == "old"
     assert list(directory.glob(".claude-smart-loader-*.tmp")) == []
     assert legacy.read_bytes() == original_config
+    if failure == "legacy-backup":
+        assert backup.read_bytes() == b"prior backup"
     assert (loader.read_bytes() if loader.exists() else None) == previous_loader
     log = next((tmp_path / ".claude-smart/install-logs").glob("update-opencode-*.log"))
-    if failure in {"publish", "partial-create", "partial-refresh"}:
+    if failure in {"publish", "partial-create", "partial-refresh", "close"}:
         assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
         assert (
             "Account settings were saved. Retry setup to finish registration."
             in result.stderr
         )
-        expected = (
-            "fixture denied loader publication"
-            if failure == "publish"
-            else "fixture interrupted loader write"
-        )
+        expected = {
+            "publish": "fixture denied loader publication",
+            "partial-create": "fixture interrupted loader write",
+            "partial-refresh": "fixture interrupted loader write",
+            "close": "fixture could not close the published loader",
+        }[failure]
         assert expected in log.read_text()
     else:
         assert settings.read_bytes() == original
         assert "Account settings were saved" not in result.stderr
-        assert "fixture denied loader setup" in log.read_text()
+        expected = (
+            "fixture denied legacy config rewrite"
+            if failure.startswith("legacy-")
+            else "fixture denied loader setup"
+        )
+        assert expected in log.read_text()
 
 
 @pytest.mark.parametrize(

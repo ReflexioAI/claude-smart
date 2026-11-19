@@ -2162,6 +2162,15 @@ def test_install_refreshes_owned_backend_without_rewriting_learning_host(
     assert log == ["stop", "start"]
 
 
+def _seed_node_for_codex_process_test(home: Path, node: str) -> None:
+    # These tests exercise the native CLI after preparation. Keep the pinned
+    # launcher's real Node and avoid downloading a distribution to reach it.
+    private = home / ".claude-smart/node/current/bin"
+    private.mkdir(parents=True)
+    _write_executable(private / "node", f'#!/bin/sh\nexec {shlex.quote(node)} "$@"\n')
+    _write_executable(private / "npm", "#!/bin/sh\nexit 0\n")
+
+
 def test_interrupt_during_a_codex_cli_step_stops_its_descendants(
     tmp_path: Path,
 ) -> None:
@@ -2187,6 +2196,7 @@ def test_interrupt_during_a_codex_cli_step_stops_its_descendants(
     )
     runtime_env = tmp_path / ".claude-smart" / ".env"
     runtime_env.parent.mkdir()
+    _seed_node_for_codex_process_test(tmp_path, node)
     runtime_env.write_text(
         'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\nCLAUDE_SMART_HOST=opencode\n'
     )
@@ -2226,6 +2236,7 @@ def test_codex_cli_timeout_stops_the_whole_process_group(tmp_path: Path) -> None
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for Node installer test")
+    _seed_node_for_codex_process_test(tmp_path, node)
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     _write_executable(
