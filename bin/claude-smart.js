@@ -80,6 +80,7 @@ const REFLEXIO_DIR = join(homedir(), ".reflexio");
 const CLAUDE_SMART_STATE_DIR = join(homedir(), ".claude-smart");
 const GUIDED_RUNTIME_DIR = join(CLAUDE_SMART_STATE_DIR, "guided-runtimes");
 const GUIDE_INSTALL_LOCK = join(GUIDED_RUNTIME_DIR, "guide");
+const GUIDED_PENDING_SHUTDOWN = join(GUIDED_RUNTIME_DIR, "pending-shutdown.json");
 const GUIDED_OPENCODE_REGISTRATIONS = join(GUIDED_RUNTIME_DIR, "opencode-registrations");
 const GUIDED_RUNTIME_BINDING = "guided-runtime-id";
 const INSTALL_FAILURE_MARKER = join(CLAUDE_SMART_STATE_DIR, "install-failed");
@@ -1059,6 +1060,19 @@ function pluginRootIsBroken() {
 // ~/.reflexio/plugin-root is used by every installed host's commands, so a
 // link left pointing at deleted files is repointed at a remaining install,
 // or removed when none is left.
+function clearPluginRoot() {
+  rmSync(join(REFLEXIO_DIR, "plugin-root"), { force: true });
+  rmSync(join(REFLEXIO_DIR, "plugin-root.txt"), { force: true });
+}
+
+function isGuidedPluginRoot(root) {
+  try {
+    return readGuidedRuntime(basename(dirname(root))).pluginRoot === root;
+  } catch {
+    return false;
+  }
+}
+
 function repairPluginRoot() {
   if (pluginRootIsBroken()) {
     const next = installedPluginRoots()[0];
@@ -1066,8 +1080,7 @@ function repairPluginRoot() {
       forcePluginRoot(next);
       process.stdout.write(`Repointed ${join(REFLEXIO_DIR, "plugin-root")} to ${next}.\n`);
     } else {
-      rmSync(join(REFLEXIO_DIR, "plugin-root"), { force: true });
-      rmSync(join(REFLEXIO_DIR, "plugin-root.txt"), { force: true });
+      clearPluginRoot();
     }
   }
 }
@@ -2554,15 +2567,19 @@ function openCodeGuidedRuntime(binding) {
   try {
     if (!lstatSync(binding).isFile()) return null;
     const runtime = readGuidedRuntime(readFileSync(binding, "utf8"));
-    const opencode = join(runtime.pluginRoot, "opencode");
-    const dist = join(opencode, "dist");
-    const entry = join(dist, "server.mjs");
-    if (!lstatSync(opencode).isDirectory() || !lstatSync(dist).isDirectory() ||
-        !lstatSync(entry).isFile()) return null;
+    assertOpenCodeRuntimeEntry(runtime.pluginRoot);
     return runtime;
   } catch {
     return null;
   }
+}
+
+function assertOpenCodeRuntimeEntry(pluginRoot) {
+  const opencode = join(pluginRoot, "opencode");
+  const dist = join(opencode, "dist");
+  const entry = join(dist, "server.mjs");
+  if (!lstatSync(opencode).isDirectory() || !lstatSync(dist).isDirectory() ||
+      !lstatSync(entry).isFile()) throw new Error("Prepared OpenCode runtime entry is invalid");
 }
 
 function openCodeGuidedPluginRoots() {
@@ -2647,6 +2664,49 @@ function observePreviousServices() {
   return { root, status };
 }
 
+function recordGuidedShutdown(id, previous) {
+  if (!previous.root) return;
+  const status = {};
+  for (const [kind, value] of Object.entries(previous.status)) {
+    const observed = value.match(/^(?:running on |stale claude-smart backend on )(http:\/\/(?:localhost|127\.0\.0\.1):[0-9]+)(?:\s|$)/);
+    status[kind] = observed ? `running on ${observed[1]}` : "not running";
+  }
+  const draft = uniquePackagePath(GUIDED_PENDING_SHUTDOWN, ".shutdown");
+  try {
+    writeFileSync(draft, JSON.stringify({ id, root: previous.root, status }), {
+      flag: "wx", mode: 0o600,
+    });
+    renameSync(draft, GUIDED_PENDING_SHUTDOWN);
+  } finally {
+    rmSync(draft, { force: true });
+  }
+}
+
+async function resumeGuidedShutdown() {
+  let pending;
+  try {
+    if (!lstatSync(GUIDED_PENDING_SHUTDOWN).isFile())
+      throw new Error("The pending shared service shutdown record is not a regular file");
+    pending = JSON.parse(readFileSync(GUIDED_PENDING_SHUTDOWN, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  const target = readGuidedRuntime(pending.id).pluginRoot;
+  const current = activePluginRoot();
+  if (typeof pending.root !== "string" || !isAbsolute(pending.root) ||
+      (!pending.status || typeof pending.status !== "object"))
+    throw new Error("The pending shared service shutdown record is invalid");
+  if (current === target) {
+    if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
+      throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
+    await stopServicesForInstall(pending.root, null, pending.status);
+  } else if (current !== pending.root) {
+    throw new Error("The shared runtime selection changed during shutdown; resolve it before retrying setup");
+  }
+  rmSync(GUIDED_PENDING_SHUTDOWN);
+}
+
 async function prepareGuidedRuntime(config, options, settings) {
   assertSupportedRuntimePlatform();
   const openCodeArgs = options.global ? ["--global"] : [];
@@ -2687,6 +2747,7 @@ async function prepareGuidedRuntime(config, options, settings) {
       discardAdapters.push(prepareGuidedPackageAdapter(CODEX_MARKETPLACE_DIR, id, (stage) => {
         copyCodexMarketplace(stage, { fresh: true });
         const adapter = codexMarketplacePluginRoot(stage);
+        requireCodexPluginVersion(adapter);
         writeFileSync(join(adapter, "hooks", "codex-hooks.json"), hooks);
         writeFileSync(join(adapter, GUIDED_RUNTIME_BINDING), id);
       }));
@@ -2695,6 +2756,7 @@ async function prepareGuidedRuntime(config, options, settings) {
       ? assertOpenCodeInstallConfiguration(openCodeArgs)
       : undefined;
     if (loader) {
+      assertOpenCodeRuntimeEntry(pluginRoot);
       const identity = openCodeLoaderIdentity(loader.path);
       const prepared = prepareOpenCodeV2Plugin(loader, directory);
       if (!prepared) throw new Error("OpenCode loader changed during preparation");
@@ -2739,6 +2801,7 @@ async function runGuidedCommand(command, args) {
       saved: () => saved,
       save: async (config, options) => {
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
+        await resumeGuidedShutdown();
         const settings = planInstallSettings(config, captured);
         if (config.hosts.length > 1) {
           preparedRuntime = await prepareGuidedRuntime(config, options, settings);
@@ -2772,17 +2835,32 @@ async function runGuidedCommand(command, args) {
           return;
         }
       },
-      runHost: (action, host, options, label) => {
-        if (action === "uninstall" && !heldPackageLocks.has(GUIDE_INSTALL_LOCK))
+      runHost: async (action, host, options, label) => {
+        if (action === "uninstall" && !heldPackageLocks.has(GUIDE_INSTALL_LOCK)) {
           holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
+          await resumeGuidedShutdown();
+        }
         return runGuidedHost(action, host, options, label, deferredSettings, preparedRuntime?.id);
       },
       finish: async (action, config, results) => {
         if (action !== "uninstall" && !results.some((result) => result.code === 0)) return;
-        const root = preparedRuntime ? readGuidedRuntime(preparedRuntime.id).pluginRoot : activePluginRoot();
+        let root = preparedRuntime ? readGuidedRuntime(preparedRuntime.id).pluginRoot : activePluginRoot();
         if (!root || !existsSync(join(root, "scripts", "backend-service.sh")))
           return;
         if (action === "uninstall") {
+          if (isGuidedPluginRoot(root)) {
+            const survivors = installedPluginRoots();
+            if (!survivors.includes(root)) {
+              const { status } = observePreviousServices();
+              await stopServicesForInstall(root, null, status);
+              root = survivors[0];
+              if (root) forcePluginRoot(root);
+              else {
+                clearPluginRoot();
+                return ["Shared services stopped; no integrations remain."];
+              }
+            }
+          }
           const current = installInventory();
           const global = installInventory({ global: true });
           if (![...current, ...global].some((agent) => agent.installed) &&
@@ -2798,9 +2876,10 @@ async function runGuidedCommand(command, args) {
             "\nRefreshing shared services for remaining integrations…\n",
           );
         } else if (preparedRuntime) {
-          const { root: previousRoot, status } = preparedRuntime.previous;
+          const { root: previousRoot } = preparedRuntime.previous;
           if (activePluginRoot() !== previousRoot)
             throw new Error("Account settings and registrations were saved, but the selected runtime changed. Rerun setup to refresh shared services.");
+          recordGuidedShutdown(preparedRuntime.id, preparedRuntime.previous);
           snapshotInstallState({ preserveFailureMarker: true });
           try {
             // A refused selection must leave the previous services running.
@@ -2810,7 +2889,7 @@ async function runGuidedCommand(command, args) {
             throw new Error(`Account settings and registrations were saved, but runtime selection failed: ${error.message}`, { cause: error });
           }
           commitInstallState();
-          await stopServicesForInstall(previousRoot, null, status);
+          await resumeGuidedShutdown();
         }
         let setup;
         try {
@@ -4253,12 +4332,16 @@ function codexPluginVersion(pluginRoot) {
   }
 }
 
-function installCodexPluginCache(pluginRoot) {
+function requireCodexPluginVersion(pluginRoot) {
   const version = codexPluginVersion(pluginRoot);
   if (!version) {
     throw new Error(`missing version in ${join(pluginRoot, ".codex-plugin", "plugin.json")}`);
   }
-  const cacheDir = join(CODEX_PLUGIN_CACHE_DIR, version);
+  return version;
+}
+
+function installCodexPluginCache(pluginRoot) {
+  const cacheDir = join(CODEX_PLUGIN_CACHE_DIR, requireCodexPluginVersion(pluginRoot));
   holdPackageInstallLock(cacheDir, "Codex");
   const staged = uniquePackagePath(cacheDir, ".claude-smart-copy");
   try {

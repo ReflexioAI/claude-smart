@@ -29,6 +29,9 @@ def _fixture(
 ):
     package = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
     _copy_codex_install_sources(package)
+    opencode_entry = package / "plugin/opencode/dist/server.mjs"
+    opencode_entry.parent.mkdir(parents=True)
+    opencode_entry.write_text("export default {};\n")
     (package / "plugin/identity").write_text("new")
     record = """import json, os, signal, sys, time
 from pathlib import Path
@@ -367,7 +370,9 @@ if (typeof process.send === "function") {
     assert expected_error in log.read_text()
 
 
-@pytest.mark.parametrize("failure", ["python", "opencode-loader"])
+@pytest.mark.parametrize(
+    "failure", ["python", "opencode-loader", "opencode-entry", "codex-version"]
+)
 def test_multihost_preparation_failure_preserves_settings_and_registration(
     tmp_path, failure
 ):
@@ -390,6 +395,16 @@ def test_multihost_preparation_failure_preserves_settings_and_registration(
         _write_bootstrap_uv(uv, mode="fresh")
         loader.chmod(0o400)
         expected = "EACCES"
+    elif failure == "opencode-entry":
+        _write_bootstrap_uv(uv, mode="fresh")
+        (package / "plugin/opencode/dist/server.mjs").unlink()
+        expected = "server.mjs"
+    elif failure == "codex-version":
+        _write_bootstrap_uv(uv, mode="fresh")
+        (package / "plugin/.codex-plugin/plugin.json").write_text(
+            '{"name":"claude-smart"}'
+        )
+        expected = "missing version"
     result = subprocess.run(
         [
             node_bin(),
@@ -421,10 +436,8 @@ def test_multihost_preparation_failure_preserves_settings_and_registration(
     assert not (tmp_path / "service-calls.jsonl").exists()
 
 
-@pytest.mark.parametrize("refuse_selection", [False, True])
-def test_multihost_cutover_observes_prior_services_before_settings(
-    tmp_path, refuse_selection
-):
+@pytest.mark.parametrize("failure", [None, "selection", "shutdown"])
+def test_multihost_cutover_observes_prior_services_before_settings(tmp_path, failure):
     package, old_root, uv, env = _fixture(tmp_path, "codex")
     env.pop("CLAUDE_SMART_INSTALL_CHILD")
     env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
@@ -434,24 +447,27 @@ def test_multihost_cutover_observes_prior_services_before_settings(
         codex.read_text().replace("#!/usr/bin/env node", f"#!{node_bin()}", 1)
     )
     selected = tmp_path / ".reflexio/plugin-root"
-    if refuse_selection:
+    if failure == "selection":
         selected.unlink()
         shutil.copytree(old_root, selected)
+    if failure == "shutdown":
+        env["FIXTURE_UNSTOPPABLE"] = "backend"
+    args = [
+        node_bin(),
+        str(package / "bin/claude-smart.js"),
+        "update",
+        "--host",
+        "codex,opencode",
+        "--backend",
+        "local",
+        "--provider",
+        "codex",
+        "--url",
+        "http://localhost:9090/",
+        "--yes",
+    ]
     result = subprocess.run(
-        [
-            node_bin(),
-            str(package / "bin/claude-smart.js"),
-            "update",
-            "--host",
-            "codex,opencode",
-            "--backend",
-            "local",
-            "--provider",
-            "codex",
-            "--url",
-            "http://localhost:9090/",
-            "--yes",
-        ],
+        args,
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -465,11 +481,33 @@ def test_multihost_cutover_observes_prior_services_before_settings(
     ]
     assert [row["action"] for row in calls[:2]] == ["status", "status"]
     assert all("http://localhost:8071/" in row["file"] for row in calls[:2])
-    if refuse_selection:
+    if failure == "selection":
         assert result.returncode == 1
         assert "runtime selection failed" in result.stderr
         assert selected.is_dir() and not selected.is_symlink()
         assert all(row["action"] == "status" for row in calls)
+    elif failure == "shutdown":
+        assert result.returncode == 1
+        assert "Could not confirm shutdown" in result.stderr
+        pending = tmp_path / ".claude-smart/guided-runtimes/pending-shutdown.json"
+        assert json.loads(pending.read_text())["root"] == str(old_root)
+        assert selected.resolve() != old_root
+        env.pop("FIXTURE_UNSTOPPABLE")
+        recovered = subprocess.run(
+            args, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60
+        )
+        assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+        assert not pending.exists()
+        attempts = [
+            json.loads(line)
+            for line in (tmp_path / "service-calls.jsonl").read_text().splitlines()
+        ][len(calls) :]
+        assert any(
+            row["action"] == "stop"
+            and row["kind"] == "backend"
+            and row["root"] == str(old_root)
+            for row in attempts
+        )
     else:
         assert result.returncode == 0, result.stdout + result.stderr
         stops = [row for row in calls if row["action"] == "stop"]

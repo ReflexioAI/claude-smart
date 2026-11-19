@@ -1004,6 +1004,33 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         assert (home / ".reflexio/plugin-root").resolve() == runtime.resolve()
         assert (runtime / ".venv/bin/python").is_file()
 
+    if provider_mode == "named":
+        # The selected generation still exists after uninstall. Recovery must
+        # use live account registrations, including a different project's loader.
+        next_install = subprocess.run(
+            [str(installer), "install", "--host", "claude-code,codex", "--yes"],
+            cwd=unrelated_project,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert next_install.returncode == 0, next_install.stdout + next_install.stderr
+        link = home / ".reflexio/plugin-root"
+        retired = link.resolve()
+        assert retired != runtime.resolve()
+        next_remove = subprocess.run(
+            [str(installer), "uninstall", "--host", "claude-code,codex", "--yes"],
+            cwd=unrelated_project,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert next_remove.returncode == 0, next_remove.stdout + next_remove.stderr
+        assert retired.is_dir()
+        assert link.resolve() == runtime.resolve()
+
 
 @pytest.mark.parametrize("provider", [None, "claude-code", "codex", "opencode"])
 @pytest.mark.parametrize("override", [False, True])
