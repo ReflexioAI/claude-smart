@@ -6061,14 +6061,26 @@ def test_hook_entry_self_heal_preserves_declared_host(
         target = shutil.which(tool)
         assert target is not None
         (tools / tool).symlink_to(target)
+    python = scripts.parent / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
     if failure == "broken-import":
         _write_executable(tools / "uv", "#!/bin/bash\nexit 22\n")
-        python = scripts.parent / ".venv/bin/python"
-        python.parent.mkdir(parents=True)
         _write_executable(python, "#!/bin/bash\nexit 1\n")
+    else:
+        # A healthy import makes the missing-uv branch the only repair path.
+        _write_executable(
+            python,
+            "#!/bin/bash\n"
+            'if [ "$1" = -P ]; then exit 0; fi\n'
+            "printf '{\"continue\":true}\\n'\n",
+        )
 
-    env = _isolated_env(tmp_path)
-    env.update(PATH=str(tools), SHELL="", CLAUDE_SMART_HOST="opencode")
+    env = {
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
+        "PATH": str(tools),
+        "CLAUDE_SMART_HOST": "opencode",
+    }
     result = subprocess.run(
         [str(tools / "bash"), str(scripts / "hook_entry.sh"), "codex", "stop"],
         env=env,
