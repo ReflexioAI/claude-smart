@@ -1,0 +1,19 @@
+name: Native Windows OpenCode scope diagnostic
+
+on:
+  push:
+    branches: [team/probe-windows-opencode-scope]
+
+permissions:
+  contents: read
+
+jobs:
+  scope:
+    runs-on: windows-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tests/windows_scope_handle_probe.py
