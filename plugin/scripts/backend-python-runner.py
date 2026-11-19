@@ -172,7 +172,9 @@ def pin_legacy_sqlite_db_path(
             )
             prepare(edit=pin, initial_document=initial)
         if prepare_instance is not None:
-            saved = storage.load_config().storage_config
+            saved = validate_stored_config(
+                LocalConfigFile(config_path).read_document()
+            ).storage_config
             saved_path = None
             if isinstance(saved, StorageConfigSQLite):
                 if saved.db_path is None:
