@@ -6172,6 +6172,29 @@ def test_hook_entry_failure_marker_uses_resolved_python_on_windows(
     assert not (tmp_path / "python3-called").exists()
 
 
+@pytest.mark.parametrize(
+    ("host", "inherited", "expected"),
+    [
+        ("codex", "opencode", {"continue": True}),
+        ("claude-code", "codex", {"continue": True, "suppressOutput": True}),
+        ("opencode", "codex", {"continue": True, "suppressOutput": True}),
+    ],
+)
+def test_early_hook_reply_uses_declared_host(tmp_path, host, inherited, expected):
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_HOST"] = inherited
+    env["CLAUDE_SMART_INTERNAL"] = "1"
+    result = subprocess.run(
+        ["bash", str(HOOK_ENTRY), host, "user-prompt"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=True,
+    )
+    assert json.loads(result.stdout) == expected
+
+
 def test_hook_entry_defaults_codex_citation_links_to_markdown(tmp_path: Path) -> None:
     plugin_root = tmp_path / "plugin"
     scripts = plugin_root / "scripts"

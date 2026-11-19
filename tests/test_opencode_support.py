@@ -66,7 +66,7 @@ def _write_fake_bash_recorder(tmp_path: Path, *, user_prompt_context: str = "") 
         'script="$1"\n'
         "shift\n"
         "payload=$(cat || true)\n"
-        'PAYLOAD="$payload" node -e \'require("fs").appendFileSync(process.env.CALL_LOG, JSON.stringify({ script: process.argv[1], args: process.argv.slice(2), payload: process.env.PAYLOAD }) + "\\n")\' "$script" "$@"\n'
+        'PAYLOAD="$payload" node -e \'require("fs").appendFileSync(process.env.CALL_LOG, JSON.stringify({ script: process.argv[1], args: process.argv.slice(2), payload: process.env.PAYLOAD, learningHost: process.env.CLAUDE_SMART_HOST }) + "\\n")\' "$script" "$@"\n'
         'if [ "${2:-}" = "user-prompt" ]; then\n'
         f"  printf '%s\\n' '{response}'\n"
         "else\n"
@@ -2199,6 +2199,7 @@ def test_node_opencode_server_dispatches_lifecycle_tool_idle_and_dispose(
     _write_fake_bash_recorder(tmp_path, user_prompt_context="learned context")
     script = f"""
       process.env.PATH = {json.dumps(str(tmp_path))} + ":" + process.env.PATH;
+      process.env.CLAUDE_SMART_HOST = "codex";
       process.env.CALL_LOG = {json.dumps(str(log_path))};
       import({json.dumps(str(REPO_ROOT / "plugin" / "opencode" / "dist" / "server.mjs"))}).then(async (mod) => {{
         const plugin = await mod.default.server({{ directory: "/repo" }});
@@ -2236,6 +2237,9 @@ def test_node_opencode_server_dispatches_lifecycle_tool_idle_and_dispose(
     assert ("hook_entry.sh", ["opencode", "stop"]) in command_pairs
     assert ("dashboard-service.sh", ["session-end"]) in command_pairs
     assert ("backend-service.sh", ["session-end"]) in command_pairs
+    for call in parsed["calls"]:
+        is_hook = Path(call["script"]).name == "hook_entry.sh"
+        assert call["learningHost"] == ("codex" if is_hook else "opencode")
     stop_calls = [
         json.loads(call["payload"])
         for call in parsed["calls"]

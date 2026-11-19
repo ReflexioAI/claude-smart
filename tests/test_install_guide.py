@@ -944,12 +944,11 @@ def test_actual_codex_node_hook_uses_selected_learning_provider(
     selection = source[
         source.index("learning_provider=") : source.index("\nSTATE_DIR=")
     ]
-    # Run the real Node entrypoint and the actual shell selection block through
-    # both child routes; keep service/model startup entirely inside the fixture.
+    # Exercise service fallback and hook attribution through the real Node
+    # entrypoint with a backend and interpreter confined to the test account.
     recorder = (
         "#!/bin/bash\n"
         f'. "{LIB}"\nclaude_smart_source_reflexio_env\n'
-        'printf "%s\\n" "$CLAUDE_SMART_HOST" > "$HOME/hook-identity"\n'
         f'PLUGIN_ROOT="{root}"\n{selection}\n'
         'printf "%s\\n" "$CLAUDE_SMART_CLI_PATH" > "$HOME/selected-cli"\n'
         'printf "%s\\n" "$CLAUDE_SMART_HOST" > "$HOME/learning-host"\n'
@@ -958,11 +957,19 @@ def test_actual_codex_node_hook_uses_selected_learning_provider(
     _write_executable(scripts / "backend-service.sh", recorder)
     prepared_python = root / ".venv" / "bin" / "python"
     prepared_python.parent.mkdir(parents=True)
-    _write_executable(prepared_python, recorder)
+    _write_executable(
+        prepared_python,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$3" > "$HOME/hook-identity"\n'
+        'printf "%s\\n" "$CLAUDE_SMART_HOST" > "$HOME/learning-host"\n'
+        'printf "%s\\n" "$CLAUDE_SMART_CLI_PATH" > "$HOME/selected-cli"\n'
+        "printf '{\"continue\":true}\\n'\n",
+    )
     _write_executable(fake_bin / "uv", "#!/bin/sh\nexit 99\n")
     env = guide_env(tmp_path)
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["CLAUDE_PLUGIN_ROOT"] = str(root)
+    env["CLAUDE_SMART_HOST"] = "opencode"
     env["CLAUDE_SMART_LEARNING_PROVIDER"] = "codex" if provider else ""
     if override:
         env["CLAUDE_SMART_CLI_PATH"] = "/explicit/learning-cli"
@@ -977,14 +984,17 @@ def test_actual_codex_node_hook_uses_selected_learning_provider(
         "/explicit/learning-cli"
         if override
         else str(fake_bin / "claude")
-        if provider == "claude-code"
+        if provider == "claude-code" and action == "backend"
         else str(scripts / "opencode-claude-compat")
         if provider == "opencode"
         else ""
     )
     assert (tmp_path / "selected-cli").read_text().strip() == expected
-    assert (tmp_path / "hook-identity").read_text().strip() == "codex"
-    assert (tmp_path / "learning-host").read_text().strip() == (provider or "codex")
+    if action == "hook":
+        assert (tmp_path / "hook-identity").read_text().strip() == "codex"
+    assert (tmp_path / "learning-host").read_text().strip() == (
+        "opencode" if action == "hook" else provider or "codex"
+    )
 
 
 @pytest.mark.parametrize("command", ["install", "update", "setup"])

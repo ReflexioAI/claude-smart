@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import re
 import sys
 import time
@@ -1128,7 +1129,9 @@ def test_hook_index_stays_within_host_budget_with_fifteen_items(
     """
     from claude_smart.events import pre_tool
 
-    monkeypatch.setenv("CLAUDE_SMART_HOST", host)
+    from claude_smart import runtime
+
+    runtime.set_host(host)
     # The character budget is under test, not the per-hook item cap.
     monkeypatch.setenv("CLAUDE_SMART_MAX_INJECTED_ITEMS", "0")
     hits = _fifteen_hits()
@@ -1165,7 +1168,11 @@ def test_user_prompt_injects_compact_context_for_codex(
     session_dir, monkeypatch
 ) -> None:
     """Codex receives a one-line context because the TUI displays it."""
-    monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+    from claude_smart import runtime
+
+    monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
+    runtime.set_host(runtime.HOST_CODEX)
+    assert os.environ["CLAUDE_SMART_HOST"] == "opencode"
     monkeypatch.delenv("CLAUDE_SMART_CITATION_LINK_STYLE", raising=False)
     _stub_user_prompt_adapter(
         monkeypatch,

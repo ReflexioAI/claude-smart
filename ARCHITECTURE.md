@@ -18,6 +18,11 @@ Technical reference for how `claude-smart` wires Claude Code's lifecycle hooks t
 3. **Reflexio backend** (`reflexio-ai` package, or a generated `plugin/vendor/reflexio` bundle in fast npm releases) — SQLite storage, hybrid search, preference/skill extraction, dedup, status lifecycle (`CURRENT` → `ARCHIVED`). Runs on `localhost:8071`.
 4. **Local host LLM provider** — a LiteLLM custom provider registered inside reflexio. Every generation call (extraction, update, dedup, evaluation) subprocesses the active host CLI (`claude -p` under Claude Code, `codex exec` under Codex), so no OpenAI/Anthropic key is needed for the learning loop.
 
+The launcher passes the hook host as a dispatcher argument. Python uses that
+identity for attribution and context formatting, with explicit Cursor detection
+for Cursor's Claude-compatible hooks. Service startup resolves the background
+learning provider separately from account settings.
+
 ## Data flow
 
 ```

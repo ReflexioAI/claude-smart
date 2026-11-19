@@ -102,12 +102,10 @@ def resolve_hook_host(declared_host: str, payload: Mapping[str, Any]) -> str:
 
 
 def set_host(value: str | None) -> str:
-    """Set the current host, returning the normalized value."""
+    """Record invocation identity without changing the learning environment."""
     global _current_host
     _current_host = value if value is not None else HOST_UNKNOWN
-    host = _resolve_host(_current_host, HOST_CLAUDE_CODE)
-    os.environ[HOST_ENV] = host
-    return host
+    return _resolve_host(_current_host, HOST_CLAUDE_CODE)
 
 
 def host() -> str:
