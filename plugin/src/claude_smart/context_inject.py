@@ -22,7 +22,7 @@ import os
 import sys
 import time
 
-from claude_smart import context_format, state
+from claude_smart import context_format, runtime, state
 from claude_smart.reflexio_adapter import SEARCHED_ENTITY_TYPE_COUNT, Adapter
 
 _LOGGER = logging.getLogger(__name__)
@@ -153,7 +153,7 @@ def emit_context(
     if reset_seen and len(getattr(adapter, "read_errors", ())) > errors_before:
         # The search never reached the server; keep the reset for the next one.
         state.request_search_reset(session_id)
-    host = os.environ.get("CLAUDE_SMART_HOST", "")
+    host = runtime.host()
     renderer = (
         context_format.render_inline_compact_with_registry
         if hook_event_name == "UserPromptSubmit" and host == "codex"

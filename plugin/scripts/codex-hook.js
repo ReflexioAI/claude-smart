@@ -462,7 +462,6 @@ function runHook(root, event) {
       env: {
         ...process.env,
         REFLEXIO_URL: readBackendUrl(),
-        CLAUDE_SMART_HOST: "codex",
         CLAUDE_SMART_CLI_PATH: learningCliPath(root),
         CLAUDE_SMART_CITATION_LINK_STYLE: process.env.CLAUDE_SMART_CITATION_LINK_STYLE || "markdown",
       },

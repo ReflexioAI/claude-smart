@@ -6026,13 +6026,76 @@ def test_codex_session_start_hook_has_install_recovery_budget() -> None:
     assert dashboard_hook["timeout"] == 300
 
 
-def test_hook_entry_self_heals_missing_uv_without_cli_command() -> None:
-    script = HOOK_ENTRY.read_text()
+@pytest.mark.parametrize("failure", ["missing-uv", "broken-import"])
+def test_hook_entry_self_heal_preserves_declared_host(
+    tmp_path: Path, failure: str
+) -> None:
+    scripts = tmp_path / "plugin" / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(HOOK_ENTRY, scripts / "hook_entry.sh")
+    _write_executable(
+        scripts / "smart-install.sh",
+        "#!/bin/bash\n"
+        'printf "%s:%s\\n" "$CLAUDE_SMART_HOST" "$CLAUDE_SMART_BOOTSTRAPPING" > "$HOME/repair.tmp"\n'
+        'mv "$HOME/repair.tmp" "$HOME/repair-result"\n',
+    )
+    for service in ("backend", "dashboard"):
+        _write_executable(
+            scripts / f"{service}-service.sh",
+            '#!/bin/bash\ntouch "$HOME/service-start"\n',
+        )
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for tool in (
+        "bash",
+        "date",
+        "dirname",
+        "env",
+        "mkdir",
+        "mv",
+        "nohup",
+        "touch",
+        "uname",
+    ):
+        target = shutil.which(tool)
+        assert target is not None
+        (tools / tool).symlink_to(target)
+    python = scripts.parent / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    if failure == "broken-import":
+        _write_executable(tools / "uv", "#!/bin/bash\nexit 22\n")
+        _write_executable(python, "#!/bin/bash\nexit 1\n")
+    else:
+        # A healthy import makes the missing-uv branch the only repair path.
+        _write_executable(
+            python,
+            "#!/bin/bash\n"
+            'if [ "$1" = -P ]; then exit 0; fi\n'
+            "printf '{\"continue\":true}\\n'\n",
+        )
 
-    assert "claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1" in script
-    assert 'bash "$PLUGIN_ROOT/scripts/smart-install.sh"' in script
-    assert 'bash "$HERE/backend-service.sh" start' not in script
-    assert 'bash "$HERE/dashboard-service.sh" start' not in script
+    env = {
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
+        "PATH": str(tools),
+        "CLAUDE_SMART_HOST": "opencode",
+    }
+    result = subprocess.run(
+        [str(tools / "bash"), str(scripts / "hook_entry.sh"), "codex", "stop"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    assert json.loads(result.stdout) == {"continue": True}
+    record = tmp_path / "repair-result"
+    deadline = time.monotonic() + 5
+    while not record.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert record.read_text() == "codex:1\n"
+    assert not (tmp_path / "service-start").exists()
 
 
 def test_install_complete_requires_importable_hook_package() -> None:
@@ -6170,6 +6233,29 @@ def test_hook_entry_failure_marker_uses_resolved_python_on_windows(
     assert result.returncode == 0, result.stderr
     assert "claude-smart is not installed correctly" in result.stdout
     assert not (tmp_path / "python3-called").exists()
+
+
+@pytest.mark.parametrize(
+    ("host", "inherited", "expected"),
+    [
+        ("codex", "opencode", {"continue": True}),
+        ("claude-code", "codex", {"continue": True, "suppressOutput": True}),
+        ("opencode", "codex", {"continue": True, "suppressOutput": True}),
+    ],
+)
+def test_early_hook_reply_uses_declared_host(tmp_path, host, inherited, expected):
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_HOST"] = inherited
+    env["CLAUDE_SMART_INTERNAL"] = "1"
+    result = subprocess.run(
+        ["bash", str(HOOK_ENTRY), host, "user-prompt"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=True,
+    )
+    assert json.loads(result.stdout) == expected
 
 
 def test_hook_entry_defaults_codex_citation_links_to_markdown(tmp_path: Path) -> None:

@@ -209,7 +209,8 @@ function runScript(script: string, args: string[], payload?: Record<string, unkn
       env: {
         ...process.env,
         CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT,
-        CLAUDE_SMART_HOST: "opencode",
+        // Service startup still needs the fallback for older account settings.
+        ...(script === HOOK_ENTRY ? {} : { CLAUDE_SMART_HOST: "opencode" }),
       },
       stdio: ["pipe", "pipe", "pipe"],
     })

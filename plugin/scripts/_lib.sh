@@ -204,7 +204,7 @@ claude_smart_is_internal_invocation_env() {
 }
 
 claude_smart_emit_continue() {
-  if [ "${CLAUDE_SMART_HOST:-claude-code}" = "codex" ]; then
+  if [ "${1:-${CLAUDE_SMART_HOST:-claude-code}}" = "codex" ]; then
     echo '{"continue":true}'
   else
     echo '{"continue":true,"suppressOutput":true}'

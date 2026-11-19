@@ -20,7 +20,6 @@ case "$EVENT" in
     EVENT="${2:-}"
     ;;
 esac
-export CLAUDE_SMART_HOST="$HOST"
 if [ "$HOST" = "codex" ] && [ -z "${CLAUDE_SMART_CITATION_LINK_STYLE:-}" ]; then
   export CLAUDE_SMART_CITATION_LINK_STYLE="markdown"
 fi
@@ -29,12 +28,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
 if [ -z "$EVENT" ]; then
-  claude_smart_emit_continue
+  claude_smart_emit_continue "$HOST"
   exit 0
 fi
 
 if claude_smart_is_internal_invocation_env; then
-  claude_smart_emit_continue
+  claude_smart_emit_continue "$HOST"
   exit 0
 fi
 # Pick up uv from the user's login-shell PATH (covers ~/.local/bin populated
@@ -83,7 +82,7 @@ print(json.dumps({
 }))
 PY
     else
-      claude_smart_emit_continue
+      claude_smart_emit_continue "$HOST"
     fi
     exit 0
   fi
@@ -94,17 +93,17 @@ if ! command -v uv >/dev/null 2>&1; then
   # installer and Setup hook own dependency bootstrap; hooks only schedule
   # recovery and return so SessionStart stays lightweight.
   if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" = "1" ]; then
-    claude_smart_emit_continue
+    claude_smart_emit_continue "$HOST"
     exit 0
   fi
   if [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
     mkdir -p "$STATE_DIR"
-    CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+    CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 CLAUDE_SMART_HOST="$HOST" \
       bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
       >>"$STATE_DIR/install.log" 2>&1 || true
   fi
   if ! command -v uv >/dev/null 2>&1; then
-    claude_smart_emit_continue
+    claude_smart_emit_continue "$HOST"
     exit 0
   fi
 fi
@@ -126,7 +125,7 @@ ensure_hook_package_importable() {
     printf '%s\n' "[claude-smart] hook: claude_smart.hook is not importable; retrying install in background"
     date 2>/dev/null || true
   } >>"$STATE_DIR/install.log" 2>&1
-  CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+  CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 CLAUDE_SMART_HOST="$HOST" \
     bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
     >>"$STATE_DIR/install.log" 2>&1 || true
 
@@ -134,7 +133,7 @@ ensure_hook_package_importable() {
 }
 
 if ! ensure_hook_package_importable; then
-  claude_smart_emit_continue
+  claude_smart_emit_continue "$HOST"
   exit 0
 fi
 
