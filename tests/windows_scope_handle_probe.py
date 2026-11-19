@@ -98,6 +98,35 @@ with tempfile.TemporaryDirectory(prefix="rx-open-scope-") as tmp:
             )
         )
         assert node_identities == [identity, identity]
+    with subprocess.Popen(
+        [
+            "node",
+            "-e",
+            "const fd = require('fs').openSync(process.argv[1], 'r+');"
+            "console.log('open');process.stdin.resume();"
+            "process.stdin.on('end', () => require('fs').closeSync(fd));",
+            str(leaf),
+        ],
+        text=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    ) as writer:
+        try:
+            assert writer.stdout.readline().strip() == "open"
+            with ExitStack() as stack:
+                guarded, identity = open_scoped_file(leaf, stack)
+                assert guarded.read() == b"original"
+                assert node_identities == [identity, identity]
+                print(
+                    json.dumps(
+                        {
+                            "existing_node_writer_coexisted_with_anchored_save_guard": True
+                        }
+                    )
+                )
+        finally:
+            writer.stdin.close()
+            assert writer.wait(timeout=10) == 0
     pinned_parent = open_directory(parent)
     pinned_scope = open_directory(scope)
     try:

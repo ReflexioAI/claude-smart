@@ -16,16 +16,13 @@ def open_scoped_file(path: Path, lifetime: ExitStack) -> tuple[BinaryIO, str]:
         raise ValueError("OpenCode path must be absolute and canonical")
     if os.name == "nt":
         return _open_windows_file(path, lifetime)
-    else:
-        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        parent = os.open(parts[0], directory_flags)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parent = os.open(parts[0], directory_flags)
+    lifetime.callback(os.close, parent)
+    for component in parts[1:-1]:
+        parent = os.open(component, directory_flags, dir_fd=parent)
         lifetime.callback(os.close, parent)
-        for component in parts[1:-1]:
-            parent = os.open(component, directory_flags, dir_fd=parent)
-            lifetime.callback(os.close, parent)
-        fd = os.open(
-            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
-        )
+    fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
     return _open_regular_file(fd, lifetime)
 
 
@@ -101,7 +98,10 @@ def _open_windows_file(path: Path, lifetime: ExitStack) -> tuple[BinaryIO, str]:
         # on rename. FILE_READ_ATTRIBUTES alone does not enforce them.
         access = 0x81 if directory else 0x80000000
         flags = 0x00200000 | (0x02000000 if directory else 0)
-        handle = create_file(str(name), access, 0x1, None, 3, flags, None)
+        # The installer may already hold the validated leaf for refresh.
+        # A leaf read may coexist with that writer but cannot be replaced.
+        share = 0x1 if directory else 0x3
+        handle = create_file(str(name), access, share, None, 3, flags, None)
         if handle == ctypes.c_void_p(-1).value:
             error = ctypes.get_last_error()
             if error in {2, 3}:
