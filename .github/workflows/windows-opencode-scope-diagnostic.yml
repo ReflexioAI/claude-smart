@@ -20,3 +20,4 @@ jobs:
         with:
           node-version: '26'
       - run: python tests/windows_scope_handle_probe.py
+      - run: node tests/windows_selector_publication_probe.cjs
