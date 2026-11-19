@@ -97,11 +97,6 @@ PLUGIN_VERSION="$(plugin_version_from_root "$PLUGIN_ROOT_CANONICAL")"
 learning_provider="${CLAUDE_SMART_LEARNING_PROVIDER:-${CLAUDE_SMART_HOST:-claude-code}}"
 # The backend performs learning; hook processes retain their coding identity.
 export CLAUDE_SMART_HOST="$learning_provider"
-if [ -z "${CLAUDE_SMART_LEARNING_MODEL:-}" ] && [ "$learning_provider" = "claude-code" ] \
-  && [ -z "${CLAUDE_SMART_CLI_PATH:-}" ] && [ "${CLAUDE_SMART_USE_LOCAL_CLI:-1}" != "0" ]; then
-  # Follow Claude Code's Sonnet family alias, independently of its coding default.
-  export CLAUDE_SMART_LEARNING_MODEL=sonnet
-fi
 if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
   if [ "$learning_provider" = "opencode" ]; then
     # Preserve Reflexio's Claude CLI provider contract while routing
@@ -139,18 +134,17 @@ emit_ok() { claude_smart_emit_continue; }
 # Reason string for a failed bundled-Reflexio preflight. Shared by every site
 # that reports it so the remedy text in emit_start_failure stays in sync.
 VENDOR_PREFLIGHT_FAILURE="bundled Reflexio import preflight failed"
-MODEL_PREFLIGHT_FAILURE="CLAUDE_SMART_CLI_MODEL has been retired. Move the effective model to CLAUDE_SMART_LEARNING_MODEL and remove the old assignment."
 
 emit_start_failure() {
   reason="$1"
   if py=$(claude_smart_resolve_python 2>/dev/null); then
-    "$py" - "$reason" "$VENDOR_PREFLIGHT_FAILURE" "$MODEL_PREFLIGHT_FAILURE" <<'PY'
+    "$py" - "$reason" "$VENDOR_PREFLIGHT_FAILURE" "${2:-0}" <<'PY'
 import json
 import sys
 
 reason = sys.argv[1].strip()
 vendor_preflight_failure = sys.argv[2]
-model_preflight_failure = sys.argv[3]
+model_preflight_failure = sys.argv[3] == "1"
 message = (
     "> **claude-smart learning backend is not running.** "
     "Interactions are being buffered locally, but learning will not publish "
@@ -168,7 +162,7 @@ if reason == vendor_preflight_failure:
         "(`--host opencode` for OpenCode). Then run `/reload-plugins` in "
         "Claude Code, start a new Codex session, or restart OpenCode."
     )
-elif reason != model_preflight_failure:
+elif not model_preflight_failure:
     message += (
         ">\n> Make sure the local model provider is available: Claude Code needs "
         "`claude`, Codex needs `codex`, and OpenCode needs `opencode`. "
@@ -613,14 +607,16 @@ prepare_backend_import_context() {
 # would stop or replace a running service.
 preflight_bundled_reflexio_runtime() {
   preflight_failure="$VENDOR_PREFLIGHT_FAILURE"
+  model_preflight_failure=0
   ensure_vendored_reflexio_active || return 1
   prepare_backend_import_context
   verify_bundled_reflexio_import "$backend_python" "$backend_pythonpath" "$VENDORED_REFLEXIO_FOR_PYTHON" || return 1
-  if PYTHONPATH="$backend_pythonpath" "$backend_python" "$HERE/backend-python-runner.py" --check-learning-model >/dev/null 2>&1; then
+  if selection_error=$(PYTHONPATH="$backend_pythonpath" "$backend_python" "$HERE/backend-python-runner.py" --check-learning-model 2>/dev/null); then
     return 0
   else
     if [ "$?" -eq 3 ]; then
-      preflight_failure="$MODEL_PREFLIGHT_FAILURE"
+      preflight_failure="$selection_error"
+      model_preflight_failure=1
     fi
     return 1
   fi
@@ -942,7 +938,7 @@ case "$CMD" in
     if ! preflight_bundled_reflexio_runtime; then
       claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
         "[claude-smart] backend: $preflight_failure; existing services were not changed"
-      emit_start_failure "$preflight_failure"
+      emit_start_failure "$preflight_failure" "$model_preflight_failure"
       exit 0
     fi
     if recorded_backend_pid_alive; then

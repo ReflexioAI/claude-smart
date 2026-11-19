@@ -47,6 +47,7 @@ def invocation(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return {"messages": [{"role": "user", "content": "owned task"}], "playbooks": []}
 
 
+@pytest.mark.parametrize("model", [None, "explicit-model"])
 @pytest.mark.parametrize("host", ["claude-code", "codex", "opencode"])
 @pytest.mark.parametrize(
     "provider,protocol,executable",
@@ -59,9 +60,12 @@ def test_native_compiler_never_launches_cli(
     provider: str,
     protocol: str,
     executable: str,
+    model: str | None,
 ) -> None:
     runtime.set_host(host)
     monkeypatch.setenv("CLAUDE_SMART_LEARNING_PROVIDER", provider)
+    if model is not None:
+        monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", model)
     launch = Mock(side_effect=AssertionError("compiler attempted model execution"))
     monkeypatch.setattr(helper.subprocess, "run", launch)
     rc, out, err = _invoke(monkeypatch, invocation)
@@ -69,7 +73,7 @@ def test_native_compiler_never_launches_cli(
     result = json.loads(out)["native_cli_v1"]
     assert result["protocol"] == protocol and result["executable"] == executable
     assert result["dialogue"] == "owned task"
-    assert result["model"] == ("sonnet" if provider == "claude-code" else None)
+    assert result["model"] == model
     assert set(result) == {
         "protocol",
         "executable",

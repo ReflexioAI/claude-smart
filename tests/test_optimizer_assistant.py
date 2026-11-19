@@ -119,7 +119,7 @@ def test_optimizer_compiles_saved_provider_independently_of_hook_host(
     launch.assert_not_called()
 
 
-@pytest.mark.parametrize("model", [None, "sonnet", "chosen-model"])
+@pytest.mark.parametrize("model", [None, "", "  ", "sonnet", "chosen-model"])
 @pytest.mark.parametrize("provider", ["claude-code", "codex"])
 def test_optimizer_preserves_model_and_native_defaults(
     monkeypatch: pytest.MonkeyPatch, model: str | None, provider: str
@@ -133,9 +133,7 @@ def test_optimizer_preserves_model_and_native_defaults(
     )
     rc, out, err = _run_main(monkeypatch, _payload())
     assert rc == 0 and err == ""
-    assert json.loads(out)["native_cli_v1"]["model"] == (
-        model or ("sonnet" if provider == "claude-code" else None)
-    )
+    assert json.loads(out)["native_cli_v1"]["model"] == ((model or "").strip() or None)
 
 
 @pytest.mark.parametrize(

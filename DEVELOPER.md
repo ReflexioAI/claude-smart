@@ -52,7 +52,7 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | --- | --- | --- |
 | `CLAUDE_SMART_USE_LOCAL_CLI` | `1` for missing local policy; explicit `0` preserved | Route generation through the selected learning CLI, independently of the coding integration. Confirmation preserves cloud opt-out and explicit overrides; repair supplies only a missing local default. |
 | `CLAUDE_SMART_LEARNING_PROVIDER` | unset (legacy host fallback) | Saved local background learning provider: `claude-code`, `codex`, or `opencode`. Independent of the agent collecting interactions. The guided installer saves the user's choice; session hooks and integration removal do not change it. An explicit `CLAUDE_SMART_CLI_PATH` still overrides the executable; the guide preserves it on unattended updates and clears it when choosing a provider interactively or with `--provider`. |
-| `CLAUDE_SMART_LEARNING_MODEL` | unset (provider-configured default) | Local learning model ID selected by the installer (`--model`). Routed to Claude Code extraction and optimizer calls native Codex and the OpenCode bridge. Unattended updates preserve the setting; choosing a different provider resets it unless a model is explicitly supplied. Applying it refreshes the local backend through the installer. Managed learning models are configured by the cloud service; the installer reports its configured model when the API exposes one. |
+| `CLAUDE_SMART_LEARNING_MODEL` | unset (provider-configured default) | Local learning model ID selected by the installer (`--model`). Routed to local extraction and the optimizer. A blank value lets the selected CLI choose. New Claude Code setup can recommend and save Sonnet explicitly. Unattended updates preserve the setting; choosing a different provider resets it unless a model is explicitly supplied. Applying it refreshes the local backend through the installer. Managed learning models are configured by the cloud service; the installer reports its configured model when the API exposes one. |
 | `CLAUDE_SMART_LOCAL_URL`, `CLAUDE_SMART_LOCAL_API_KEY` | unset (bundled loopback endpoint, no key) | Private saved local dashboard connection. The installer and Configure page retain the previous connection when changing runtime modes. These keys are not exposed to browser clients. |
 | `CLAUDE_SMART_MANAGED_URL`, `CLAUDE_SMART_MANAGED_API_KEY` | unset (managed view unavailable) | Private saved managed dashboard connection. Allows viewing managed data while the runtime remains local. Selecting a view does not rewrite runtime settings, start services, or send cloud credentials to the local endpoint. |
 | `REFLEXIO_EMBEDDING_PROVIDER` | model-derived when unset | Embedding provider mode: `cloud`, `local_service`, `internal_service`, or `off`. |
@@ -82,6 +82,11 @@ assignment in the saved environment and shell before starting the backend.
 Keep any existing saved model that already overrode the old value. The launcher
 translates the selected model for predecessor SDKs that still use their old
 process field.
+
+If a native Claude Code role already pins `local-cli/claude-code/sonnet`,
+save `CLAUDE_SMART_LEARNING_MODEL=sonnet` before restarting. The bundled
+launcher also checks for that pin in the inherited native model selector. A
+blank model otherwise delegates to Claude Code's configured default.
 
 ## Embeddings
 

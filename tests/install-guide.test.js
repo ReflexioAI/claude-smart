@@ -324,6 +324,21 @@ test("interactive provider changes reset the previous agent's model", async () =
   assert.equal(config.model, "sonnet");
 });
 
+test("keeping existing Claude settings without a model delegates to the CLI", async () => {
+  const agents = inventory.map((agent) => ({ ...agent, available: true }));
+  for (const saved of [{ provider: "claude-code" }, { provider: "claude-code", model: "" }]) {
+    const config = await configure(
+      parseOptions(["--host", "claude-code", "--backend", "local"]),
+      agents,
+      saved,
+      neverAsk,
+      false,
+    );
+    assert.equal(config.model, "");
+    assert.match(describe(config), /Provider-configured default/);
+  }
+});
+
 test("learning defaults are Sonnet for Claude Code and provider defaults otherwise", async () => {
   for (const provider of ["claude-code", "codex", "opencode"]) {
     const agents = inventory.map((agent) => ({ ...agent, available: true }));

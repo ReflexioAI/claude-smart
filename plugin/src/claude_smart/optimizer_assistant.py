@@ -193,7 +193,7 @@ def _prepare_result(
         provider == "codex"
         and (not override or _is_claude_smart_compat_bridge(override))
     ) or (not provider and runtime.is_codex())
-    model = os.environ.get("CLAUDE_SMART_LEARNING_MODEL")
+    model = os.environ.get("CLAUDE_SMART_LEARNING_MODEL", "").strip() or None
     if codex:
         protocol = "codex"
         executable = shutil.which("codex") or "codex"
@@ -210,12 +210,6 @@ def _prepare_result(
                 )
             }
         protocol = "claude-json"
-        if (
-            not model
-            and not override
-            and os.environ.get("CLAUDE_SMART_USE_LOCAL_CLI") != "0"
-        ):
-            model = "sonnet"
     _remaining(deadline)
     resolved = shutil.which(executable)
     if resolved is None and Path(executable).name == executable:
@@ -224,7 +218,7 @@ def _prepare_result(
         "native_cli_v1": {
             "protocol": protocol,
             "executable": str(Path(resolved or executable).absolute()),
-            "model": model or None,
+            "model": model,
             "dialogue": prompt,
             "system_prompt": system_prompt,
         }
