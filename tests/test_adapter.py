@@ -1735,14 +1735,6 @@ def test_search_all_omits_optional_fields_by_default() -> None:
     assert "reset_session_seen" not in client.search_kwargs
 
 
-def test_search_all_passes_configured_threshold() -> None:
-    client = _RecordingClient(unified_resp=_empty_unified())
-
-    _adapter_with(client).search_all(project_id="p", query="q", threshold=0.4)
-
-    assert client.search_kwargs["threshold"] == 0.4
-
-
 def test_search_all_sends_reset_when_client_accepts_it() -> None:
     client = _RecordingClient(unified_resp=_empty_unified())
 

@@ -2095,7 +2095,7 @@ def test_stop_bounds_its_synchronous_drain_inside_the_hook_limit(
 
 
 # -----------------------------------------------------------------------------
-# compaction reset, per-hook item cap, threshold
+# compaction reset, per-hook item cap, server-owned retrieval threshold
 # -----------------------------------------------------------------------------
 
 
@@ -2257,19 +2257,10 @@ def test_item_cap_asks_the_server_for_fewer_results(
     assert injected == set(adapter.returned)
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [(None, None), ("", None), ("0.35", 0.35), ("1", 1.0), ("1.5", None), ("x", None)],
-)
-def test_search_threshold_is_sent_only_when_configured(
-    session_dir, monkeypatch, raw: str | None, expected: float | None
-) -> None:
-    if raw is None:
-        monkeypatch.delenv("CLAUDE_SMART_SEARCH_THRESHOLD", raising=False)
-    else:
-        monkeypatch.setenv("CLAUDE_SMART_SEARCH_THRESHOLD", raw)
+def test_hook_search_leaves_threshold_to_server(session_dir, monkeypatch) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_SEARCH_THRESHOLD", "0.35")
     adapter = _SearchRecorder()
 
     _emit(adapter)
 
-    assert adapter.calls[0]["threshold"] == expected
+    assert "threshold" not in adapter.calls[0]

@@ -42,6 +42,10 @@ the published npm package ships neither directory.
 
 ## Environment variables
 
+Hook searches use the server's embedding-model cutoff. Remove
+`CLAUDE_SMART_SEARCH_THRESHOLD` from older hook settings. Clients that need an
+explicit threshold can pass it through the Reflexio search API.
+
 Tunables read by the plugin at runtime. Most users don't need to touch these — the confirmed guide saves policy in `~/.claude-smart/.env`, while one Python repair owner supplies genuinely missing local defaults for every host. Hook-side variables must be set in the Claude Code process environment, such as a project `.claude/settings.local.json` `env` block or user-scoped `~/.claude/settings.json`, because hooks do not read Reflexio's backend `.env` file.
 
 | Variable | Default | Purpose |
@@ -61,7 +65,6 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | `CLAUDE_SMART_DASHBOARD_URL` | `http://localhost:3001` | Base URL used in injected citation targets and the final `✨ claude-smart rule applied` marker links. Override only if the local dashboard is exposed on another host or port. Model-facing citation links use short `/rules/{citationId}` resolver URLs; canonical direct links remain `/skills/project/{id}`, `/skills/shared/{id}`, and `/preferences/project/{id}`. `/preferences/{id}` remains a compatibility alias. |
 | `CLAUDE_SMART_CLI_PATH` | `claude` on Claude Code; native `codex` on Codex | Override the executable Reflexio calls for local generation. |
 | `CLAUDE_SMART_MAX_INJECTED_ITEMS` | `6` | Total results one UserPromptSubmit or PreToolUse search may return across its three collections. Enforced as a per-collection `top_k` of `cap // 3` (at least 1), so nothing the server marks as served is dropped. `0` removes the cap (`top_k` 5); empty or invalid values use the default. Hook env. |
-| `CLAUDE_SMART_SEARCH_THRESHOLD` | unset (not sent) | Similarity threshold from 0 to 1 passed to Reflexio's `/api/search`. Unset, empty, or invalid leaves the server's embedding default in place. Hook env. |
 | `CLAUDE_SMART_STATE_DIR` | `~/.claude-smart/sessions/` | Where the per-session JSONL buffer lives. |
 | `CLAUDE_SMART_NODE_LTS_MAJOR` | `26` | Major version used when the installer downloads private Node.js/npm into `~/.claude-smart/node/current`. |
 | `CLAUDE_SMART_NODE_BASE_URL` | `https://nodejs.org/dist/latest-v${CLAUDE_SMART_NODE_LTS_MAJOR}.x` | Override the Node.js download base URL for tests, mirrors, or recovery. |
