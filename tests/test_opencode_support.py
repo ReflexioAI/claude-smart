@@ -1900,7 +1900,7 @@ def test_opencode_loader_preserves_file_created_during_preparation(tmp_path: Pat
         const directory = join(project, ".opencode", "plugins");
         const target = join(directory, "claude-smart.js");
         const installed = installer.writeOpenCodeV2Plugin([], project, project, () => {{
-            assert.deepEqual(fs.readdirSync(directory).map(name => name.slice(-4)), [".tmp"]);
+            assert.ok(!fs.existsSync(target));
             fs.writeFileSync(target, "foreign loader", {{flag: "wx"}});
         }});
         assert.equal(installed.status, "conflict");

@@ -371,7 +371,15 @@ if (typeof process.send === "function") {
 
 
 @pytest.mark.parametrize(
-    "failure", ["python", "opencode-loader", "opencode-entry", "codex-version"]
+    "failure",
+    [
+        "python",
+        "opencode-loader",
+        "opencode-entry",
+        "codex-version",
+        "redirected-scope",
+        "redirected-backup",
+    ],
 )
 def test_multihost_preparation_failure_preserves_settings_and_registration(
     tmp_path, failure
@@ -394,7 +402,7 @@ def test_multihost_preparation_failure_preserves_settings_and_registration(
             pytest.skip("requires unprivileged POSIX file permissions")
         _write_bootstrap_uv(uv, mode="fresh")
         loader.chmod(0o400)
-        expected = "EACCES"
+        expected = "Permission denied"
     elif failure == "opencode-entry":
         _write_bootstrap_uv(uv, mode="fresh")
         (package / "plugin/opencode/dist/server.mjs").unlink()
@@ -405,6 +413,23 @@ def test_multihost_preparation_failure_preserves_settings_and_registration(
             '{"name":"claude-smart"}'
         )
         expected = "missing version"
+    outside = tmp_path / "unrelated-file"
+    if failure in {"redirected-scope", "redirected-backup"}:
+        _write_bootstrap_uv(uv, mode="fresh")
+        try:
+            if failure == "redirected-scope":
+                scoped = tmp_path / ".opencode"
+                moved = tmp_path / "unrelated-scope"
+                scoped.rename(moved)
+                scoped.symlink_to(moved, target_is_directory=True)
+            else:
+                config = tmp_path / "opencode.jsonc"
+                config.write_text('{ "plugin": ["claude-smart"], /* keep */ }\n')
+                outside.write_text("outside sentinel")
+                (tmp_path / "opencode.jsonc.bak").symlink_to(outside)
+        except OSError:
+            pytest.skip("filesystem does not support this test's symlink")
+        expected = "Could not snapshot the OpenCode scope"
     result = subprocess.run(
         [
             node_bin(),
@@ -429,6 +454,10 @@ def test_multihost_preparation_failure_preserves_settings_and_registration(
     assert result.returncode != 0
     assert expected in result.stderr, result.stderr
     assert settings.read_bytes() == original
+    if failure == "redirected-backup":
+        assert outside.read_text() == "outside sentinel"
+        assert config.read_text() == '{ "plugin": ["claude-smart"], /* keep */ }\n'
+
     assert loader.read_text() == original_loader
     assert (tmp_path / ".reflexio/plugin-root").resolve() == old_root.resolve()
     assert not list((tmp_path / ".claude-smart/guided-runtimes").glob("runtime-*"))
@@ -595,7 +624,6 @@ def test_guided_opencode_keeps_settings_when_loader_appears(tmp_path, stage):
         "publish",
         "partial-create",
         "partial-refresh",
-        "close",
     ],
 )
 def test_guided_opencode_loader_stage_and_settings_order(tmp_path, failure):
@@ -613,66 +641,49 @@ def test_guided_opencode_loader_stage_and_settings_order(tmp_path, failure):
         )
     previous_loader = loader.read_bytes() if loader.exists() else None
     _write_bootstrap_uv(uv, mode="fresh")
-    preload = tmp_path / "loader-denied.cjs"
-    preload.write_text(
-        """
-const fs = require("node:fs");
-const { basename } = require("node:path");
-const failure = """
-        + json.dumps(failure)
-        + """;
-const open = fs.openSync;
-let loaderFd;
-let injected = false;
-fs.openSync = (path, flags, ...args) => {
-  if (typeof path === "string" &&
-      ((failure === "create" && basename(path).startsWith(".claude-smart-loader-")) ||
-       (failure === "refresh" && basename(path) === "claude-smart.js" &&
-        (flags === "r+" || (typeof flags === "number" && flags & fs.constants.O_RDWR)))))
-    throw Object.assign(new Error("fixture denied loader setup"), { code: "EACCES" });
-  if (failure === "publish" && process.send && flags === "wx" &&
-      typeof path === "string" && basename(path) === "claude-smart.js")
-    throw Object.assign(new Error("fixture denied loader publication"), { code: "EACCES" });
-  const fd = open(path, flags, ...args);
-  if (typeof path === "string" && basename(path) === "claude-smart.js" &&
-      (flags === "wx" || (typeof flags === "number" && flags & fs.constants.O_RDWR)))
-    loaderFd = fd;
-  return fd;
-};
-if (failure === "close") {
-  const close = fs.closeSync;
-  fs.closeSync = fd => {
-    close(fd);
-    if (fd === loaderFd) {
-      loaderFd = undefined;
-      throw new Error("fixture could not close the published loader");
-    }
-  };
-}
-if (failure.startsWith("partial-")) {
-  const truncate = fs.ftruncateSync;
-  fs.ftruncateSync = (fd, length) => {
-    if (fd === loaderFd && !injected) {
-      injected = true;
-      throw new Error("fixture interrupted loader write");
-    }
-    return truncate(fd, length);
-  };
-  const close = fs.closeSync;
-  fs.closeSync = fd => {
-    close(fd);
-    if (fd === loaderFd) loaderFd = undefined;
-  };
-  const remove = fs.rmSync;
-  fs.rmSync = (path, ...args) => {
-    if (loaderFd !== undefined && basename(path) === "claude-smart.js")
-      throw new Error("fixture requires the loader handle to close before deletion");
-    return remove(path, ...args);
-  };
-}
+    original_config = '{ "plugin": ["claude-smart"], /* keep */ }\n'
+    config = tmp_path / "opencode.jsonc"
+    if failure.startswith("partial-"):
+        config.write_text(original_config)
+    scope_owner = package / "plugin/src/claude_smart/opencode_scope.py"
+    launch = 'if __name__ == "__main__":'
+    fault = f"""
+failure = {failure!r}
+original_open = open_scoped_file
+original_write = _write_bytes
+loader_handle = None
+injected = False
+
+def fault_open(path, lifetime, **options):
+    action = sys.argv[1]
+    writable = options.get("writable", False)
+    if action == "check" and (
+        (failure == "create" and path.name.startswith(".claude-smart-loader-"))
+        or (failure == "refresh" and writable and path.name == "claude-smart.js")
+    ):
+        raise PermissionError("fixture denied loader setup")
+    if action == "publish" and failure == "publish" and path.name == "claude-smart.js":
+        raise PermissionError("fixture denied loader publication")
+    opened = original_open(path, lifetime, **options)
+    if action == "publish" and writable and path.name == "claude-smart.js":
+        global loader_handle
+        loader_handle = opened[0]
+    return opened
+
+def fault_write(file, data):
+    global injected
+    if failure.startswith("partial-") and file is loader_handle and not injected:
+        injected = True
+        original_write(file, data[:10])
+        raise OSError("fixture interrupted loader write")
+    original_write(file, data)
+
+open_scoped_file = fault_open
+_write_bytes = fault_write
 """
+    scope_owner.write_text(
+        scope_owner.read_text().replace(launch, fault + "\n" + launch)
     )
-    env["NODE_OPTIONS"] = f'--require "{preload}"'
 
     result = _run_guided_node_update(tmp_path, package, env, "opencode")
 
@@ -680,8 +691,11 @@ if (failure.startsWith("partial-")) {
     assert (root / "identity").read_text() == "old"
     assert list(directory.glob(".claude-smart-loader-*.tmp")) == []
     assert (loader.read_bytes() if loader.exists() else None) == previous_loader
+    if failure.startswith("partial-"):
+        assert config.read_text() == original_config
+        assert not config.with_suffix(".jsonc.bak").exists()
     log = next((tmp_path / ".claude-smart/install-logs").glob("update-opencode-*.log"))
-    if failure in {"publish", "partial-create", "partial-refresh", "close"}:
+    if failure in {"publish", "partial-create", "partial-refresh"}:
         assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
         assert (
             "Account settings were saved. Retry setup to finish registration."
@@ -691,7 +705,6 @@ if (failure.startsWith("partial-")) {
             "publish": "fixture denied loader publication",
             "partial-create": "fixture interrupted loader write",
             "partial-refresh": "fixture interrupted loader write",
-            "close": "fixture could not close the published loader",
         }[failure]
         assert expected in log.read_text()
     else:
@@ -751,13 +764,18 @@ def test_guided_codex_keeps_settings_when_hook_manifest_is_invalid(
     assert reason in log.read_text()
 
 
-@pytest.mark.parametrize("stage_change", ["edit", "replace"])
-def test_guided_opencode_publishes_generated_bytes_after_staging(
-    tmp_path, stage_change
+@pytest.mark.parametrize("change", ["appeared", "redirected-ancestor"])
+def test_guided_opencode_recovers_if_scope_changes_after_settings_save(
+    tmp_path, change
 ):
     package, root, uv, env = _fixture(tmp_path, "opencode", running="none")
     _write_bootstrap_uv(uv, mode="fresh")
-    preload = tmp_path / "changed-stage.cjs"
+    project_loader = tmp_path / ".opencode/plugins/claude-smart.js"
+    outside = tmp_path / "unrelated"
+    (outside / "plugins").mkdir(parents=True)
+    outside_loader = outside / "plugins/claude-smart.js"
+    outside_loader.write_text("outside sentinel")
+    preload = tmp_path / "change-scope.cjs"
     preload.write_text(
         """
 const fs = require("node:fs");
@@ -766,16 +784,13 @@ if (process.send) {
   const send = process.send;
   process.send = (message, ...args) => {
     if (message === "settings-published") {
-      const directory = join(process.env.HOME, ".opencode/plugins");
-      const stage = fs.readdirSync(directory).find(name => name.startsWith(".claude-smart-loader-"));
-      if (!stage) throw new Error("fixture could not locate the stage");
-      const path = join(directory, stage);
-      if (process.env.FIXTURE_STAGE_CHANGE === "replace") {
-        const replacement = join(directory, ".fixture-replacement");
-        fs.writeFileSync(replacement, "foreign bytes");
-        fs.renameSync(replacement, path);
-      } else fs.writeFileSync(path, "foreign bytes");
-      fs.writeFileSync(join(process.env.HOME, "stage-altered"), "");
+      const project = join(process.env.HOME, ".opencode");
+      if (process.env.FIXTURE_SCOPE_CHANGE === "appeared") {
+        fs.writeFileSync(join(project, "plugins", "claude-smart.js"), "foreign loader", { flag: "wx" });
+      } else {
+        fs.renameSync(project, join(process.env.HOME, "previous-scope"));
+        fs.symlinkSync(join(process.env.HOME, "unrelated"), project, "junction");
+      }
     }
     return send.call(process, message, ...args);
   };
@@ -783,22 +798,19 @@ if (process.send) {
 """
     )
     env["NODE_OPTIONS"] = f'--require "{preload}"'
-    env["FIXTURE_STAGE_CHANGE"] = stage_change
-
+    env["FIXTURE_SCOPE_CHANGE"] = change
     result = _run_guided_node_update(tmp_path, package, env, "opencode")
-
-    assert result.returncode == 0, (result.stdout, result.stderr)
-    assert (tmp_path / "stage-altered").exists()
-    directory = tmp_path / ".opencode/plugins"
-    loader = (directory / "claude-smart.js").read_text()
-    assert loader.endswith(
-        f'export {{ default }} from "{(root / "opencode/dist/server.mjs").as_uri()}";\n'
+    assert result.returncode != 0
+    assert (
+        "Account settings were saved. Retry setup to finish registration."
+        in result.stderr
     )
-    staged = list(directory.glob(".claude-smart-loader-*.tmp"))
-    if stage_change == "replace":
-        assert [path.read_bytes() for path in staged] == [b"foreign bytes"]
+    assert (root / "identity").read_text() == "old"
+    assert outside_loader.read_text() == "outside sentinel"
+    if change == "appeared":
+        assert project_loader.read_text() == "foreign loader"
     else:
-        assert not staged
+        assert not (tmp_path / "previous-scope/plugins/claude-smart.js").exists()
 
 
 @pytest.mark.parametrize("marker_change", ["owned", "unrelated", "replaced"])

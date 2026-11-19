@@ -22,7 +22,6 @@ const {
   chmodSync,
   closeSync,
   fstatSync,
-  ftruncateSync,
   openSync,
   readSync,
   constants,
@@ -44,7 +43,6 @@ const {
   symlinkSync,
   utimesSync,
   writeFileSync,
-  writeSync,
 } = require("fs");
 const http = require("http");
 const https = require("https");
@@ -571,239 +569,65 @@ function isGeneratedOpenCodeV2Loader(text) {
   return /^export \{ default \} from "file:\/\/.+";$/.test(lines[2]);
 }
 
-// null only when nothing is at the path: a directory or unreadable file throws,
-// so callers treat it as occupied. Invalid UTF-8 is also a conflict.
-function snapshotOpenCodeV2Loader(target) {
-  let file;
-  try {
-    const named = lstatSync(target, { bigint: true });
-    if (!named.isFile() || named.nlink !== 1n) throw new Error("not a regular, unlinked file");
-    file = openSync(target, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
-    const info = fstatSync(file, { bigint: true });
-    if (!info.isFile() || info.nlink !== 1n || !sameFileIdentity(info, named))
-      throw new Error("loader identity changed");
-    if (info.size > 8192n) throw new Error("OpenCode loader is too large");
-    const bytes = Buffer.alloc(Number(info.size) + 1);
-    const count = readSync(file, bytes, 0, bytes.length, 0);
-    if (BigInt(count) !== info.size) throw new Error("loader contents changed");
-    return {
-      contents: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, count)),
-      identity: `${info.dev}:${info.ino}`,
-    };
-  } catch (err) {
-    if (err && err.code === "ENOENT" && !pathEntryExists(target))
-      return { contents: null, identity: null };
-    throw err;
-  } finally {
-    if (file !== undefined) closeSync(file);
-  }
-}
-
-// Why a foreign file or directory blocks the loader path, or null when it is
-// free; checked before any config change.
-function inspectOpenCodeV2Loader(path) {
-  try {
-    const { contents, identity } = snapshotOpenCodeV2Loader(path);
-    const reason = contents !== null && !isGeneratedOpenCodeV2Loader(contents)
-      ? "It is not a claude-smart loader"
-      : null;
-    return { contents, identity, reason };
-  } catch (err) {
-    if (err?.code === "ERR_ENCODING_INVALID_ENCODED_DATA")
-      return { reason: "It is not a claude-smart loader" };
-    return { reason: `It cannot be read as a file (${(err && (err.code || err.message)) || err})` };
-  }
-}
-
 function openCodeV2LoaderConflicts(args = [], cwd = process.cwd()) {
-  return inspectOpenCodeV2Loader(opencodeV2PluginFile(args, cwd)).reason;
-}
-
-function sameFileIdentity(left, right) {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
-function removeOwnedLoaderFile(path, identity) {
-  try {
-    if (sameFileIdentity(identity, lstatSync(path, { bigint: true }))) rmSync(path);
-  } catch (error) {
-    if (error?.code !== "ENOENT")
-      process.stderr.write(`warning: could not clean OpenCode loader file at ${path}.\n`);
-  }
-}
-
-function writeLoaderContents(file, contents) {
-  let offset = 0;
-  while (offset < contents.length) {
-    const count = writeSync(file, contents, offset, contents.length - offset, offset);
-    if (!count) throw new Error("Could not finish writing the OpenCode loader");
-    offset += count;
-  }
-  ftruncateSync(file, contents.length);
-}
-
-function prepareOpenCodeV2Plugin({ path, contents, identity }, packageRoot) {
-  const body = Buffer.from(opencodeV2PluginBody(packageRoot));
-  const prior = contents === null ? null : Buffer.from(contents);
-  let staged;
-  let writableLoader;
-  const close = () => {
-    if (writableLoader !== undefined) {
-      closeSync(writableLoader);
-      writableLoader = undefined;
-    }
-    if (staged) {
-      removeOwnedLoaderFile(staged.path, staged.identity);
-      staged = undefined;
-    }
-  };
-  const isUnchanged = () => {
-    try {
-      if (writableLoader === undefined) {
-        const current = snapshotOpenCodeV2Loader(path);
-        return current.identity === identity && current.contents === contents;
-      }
-      const info = fstatSync(writableLoader, { bigint: true });
-      if (identity !== `${info.dev}:${info.ino}` || info.nlink !== 1n) return false;
-      const bytes = Buffer.alloc(prior.length + 1);
-      const count = readSync(writableLoader, bytes, 0, bytes.length, 0);
-      if (!bytes.subarray(0, count).equals(prior)) return false;
-      return sameFileIdentity(
-        info,
-        lstatSync(path, { bigint: true }),
-      );
-    } catch {
-      return false;
-    }
-  };
-  try {
-    if (contents === null) {
-      mkdirSync(dirname(path), { recursive: true });
-      const candidate = uniquePackagePath(path, ".claude-smart-loader") + ".tmp";
-      const file = openSync(candidate, "wx");
-      try {
-        staged = { path: candidate, identity: fstatSync(file, { bigint: true }) };
-        writeFileSync(file, body);
-      } finally {
-        closeSync(file);
-      }
-    } else if (!prior.equals(body)) {
-      // Refresh the existing generated file in place, including when
-      // the installer cannot replace its directory entry.
-      writableLoader = openSync(path, constants.O_RDWR | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
-      if (!fstatSync(writableLoader).isFile() || !isUnchanged()) {
-        close();
-        return null;
-      }
-    }
-    return {
-      close,
-      publish(beforePublish = () => {}) {
-        if (!isUnchanged()) return { path, status: "conflict" };
-        beforePublish();
-        if (!isUnchanged()) return { path, status: "conflict" };
-        if (staged) {
-          let file;
-          try {
-            file = openSync(path, "wx");
-          } catch (error) {
-            if (error?.code === "EEXIST") return { path, status: "conflict" };
-            throw error;
-          }
-          let identity;
-          let written = false;
-          try {
-            identity = fstatSync(file, { bigint: true });
-            // The stage proved that this directory accepts a file. Publish
-            // the generated bytes held in memory, without trusting that path.
-            writeLoaderContents(file, body);
-            written = true;
-          } finally {
-            try {
-              closeSync(file);
-            } catch (error) {
-              written = false;
-              throw error;
-            } finally {
-              if (!written && identity) removeOwnedLoaderFile(path, identity);
-            }
-          }
-        } else if (writableLoader !== undefined) {
-          try {
-            writeLoaderContents(writableLoader, body);
-          } catch (error) {
-            // Restore the exact bytes on the held inode. A concurrent
-            // replacement at the pathname is independent of this descriptor.
-            try {
-              writeLoaderContents(writableLoader, prior);
-            } catch {
-              throw new Error(`Could not restore the OpenCode loader at ${path}. Move it aside and retry setup.`, { cause: error });
-            }
-            throw error;
-          }
-        } else {
-          return { path, status: "unchanged" };
-        }
-        return { path, status: "wrote" };
-      },
-    };
-  } catch (error) {
-    close();
-    throw error;
-  }
-}
-
-function writeOpenCodeV2Plugin(
-  args = [],
-  packageRoot = OPENCODE_LOCAL_PACKAGE_DIR,
-  cwd = process.cwd(),
-  beforePublish = () => {},
-) {
   const path = opencodeV2PluginFile(args, cwd);
-  const { contents, identity, reason } = inspectOpenCodeV2Loader(path);
-  if (reason !== null) return { path, status: "conflict" };
-  const prepared = prepareOpenCodeV2Plugin({ path, contents, identity }, packageRoot);
-  if (!prepared) return { path, status: "conflict" };
   try {
-    return prepared.publish(beforePublish);
-  } finally {
-    prepared.close();
+    const [loader] = snapshotOpenCodeScope([path]);
+    return loader.contents !== null && !isGeneratedOpenCodeV2Loader(loader.contents)
+      ? "It is not a claude-smart loader" : null;
+  } catch (error) {
+    if (/utf-8.*codec/i.test(error.message)) return "It is not a claude-smart loader";
+    return `It cannot be read as a file (${error.message})`;
+  }
+}
+
+function writeOpenCodeV2Plugin(args = [], packageRoot = OPENCODE_LOCAL_PACKAGE_DIR,
+  cwd = process.cwd(), beforePublish = () => {}) {
+  const path = opencodeV2PluginFile(args, cwd);
+  try {
+    const [loader] = snapshotOpenCodeScope([path]);
+    if (loader.contents !== null && !isGeneratedOpenCodeV2Loader(loader.contents))
+      return { path, status: "conflict" };
+    const replacement = opencodeV2PluginBody(packageRoot);
+    const edits = [{ path, ...loader, replacement }];
+    const python = requireOpenCodeScopeInterpreter();
+    runScopedOpenCode(null, "check", edits, python);
+    beforePublish();
+    runScopedOpenCode(null, "publish", edits, python);
+    return { path, status: replacement === loader.contents ? "unchanged" : "wrote" };
+  } catch {
+    return { path, status: "conflict" };
   }
 }
 
 function removeOpenCodeV2Plugin(args = [], cwd = process.cwd()) {
-  const target = opencodeV2PluginFile(args, cwd);
-  let text = "";
+  const path = opencodeV2PluginFile(args, cwd);
   try {
-    text = readLocalOpenCodeFile(target, 8192);
+    const [loader] = snapshotOpenCodeScope([path]);
+    if (!isGeneratedOpenCodeV2Loader(loader.contents)) return false;
+    runScopedOpenCode(null, "publish", [{ path, ...loader, replacement: null }], requireOpenCodeScopeInterpreter());
+    return true;
   } catch {
     return false;
   }
-  if (!isGeneratedOpenCodeV2Loader(text)) return false;
-  rmSync(target);
-  return true;
 }
 
 function scopeHasClaudeSmart(args = [], cwd = process.cwd()) {
   try {
-    if (isGeneratedOpenCodeV2Loader(readLocalOpenCodeFile(opencodeV2PluginFile(args, cwd), 8192)))
-      return true;
-  } catch {
-    // A missing or unreadable loader is not a registration.
-  }
-  return opencodeScopeConfigPaths(args, cwd).some(configListsClaudeSmart);
-}
-
-function configListsClaudeSmart(configPath) {
-  try {
-    const contents = readLocalOpenCodeFile(configPath, 1024 * 1024);
-    if (!contents) return false;
-    const data = JSON.parse(stripJsonc(contents));
-    return ["plugin", "plugins"].some(
-      (key) =>
-        Array.isArray(data[key]) &&
-        data[key].some((entry) => isOpenCodeClaudeSmartSpec(opencodePluginSpec(entry))),
-    );
+    const [loader, ...configs] = snapshotOpenCodeScope([
+      opencodeV2PluginFile(args, cwd), ...opencodeScopeConfigPaths(args, cwd),
+    ]);
+    if (isGeneratedOpenCodeV2Loader(loader.contents)) return true;
+    return configs.some(({ contents }) => {
+      if (!contents) return false;
+      try {
+        const data = JSON.parse(stripJsonc(contents));
+        return ["plugin", "plugins"].some((key) => Array.isArray(data[key]) &&
+          data[key].some((entry) => isOpenCodeClaudeSmartSpec(opencodePluginSpec(entry))));
+      } catch {
+        return false;
+      }
+    });
   } catch {
     return false;
   }
@@ -821,13 +645,69 @@ function isOpenCodeClaudeSmartSpec(spec) {
   return packagePath !== null && resolve(packagePath) === resolve(OPENCODE_LOCAL_PACKAGE_DIR);
 }
 
-function readOpenCodeConfigSource(configPath) {
-  try {
-    return readFileSync(configPath, "utf8");
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
+function openCodeScopeInterpreter() {
+  for (const pluginRoot of [activePluginRoot(), join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin")]) {
+    if (!pluginRoot) continue;
+    const python = pluginPythonPath(pluginRoot);
+    if (isExecutableFile(python)) return python;
   }
+  return resolveCommand(isWindows() ? ["python.exe", "python3.exe"] : ["python3", "python"]);
+}
+
+function requireOpenCodeScopeInterpreter() {
+  const python = openCodeScopeInterpreter();
+  if (!python) throw new Error("A prepared runtime or Python is required for the OpenCode scope");
+  return python;
+}
+
+function snapshotOpenCodeScope(paths) {
+  return runScopedOpenCode(null, "snapshot", paths, requireOpenCodeScopeInterpreter());
+}
+
+function runScopedOpenCode(pluginRoot, action, request, python) {
+  const ownerRoot = pluginRoot || join(PACKAGE_ROOT, "plugin");
+  const owner = join(ownerRoot, "src", "claude_smart", "opencode_scope.py");
+  if (!existsSync(owner)) throw new Error("could not prepare claude-smart OpenCode package: missing scope owner");
+  const args = ["-I", owner, action];
+  const result = spawnSync(
+    python || pluginPythonPath(pluginRoot), args,
+    {
+      cwd: pluginRoot || PACKAGE_ROOT,
+      env: runtimeEnv(),
+      input: Buffer.from(JSON.stringify(request), "utf8"),
+      encoding: "utf8",
+      timeout: 20000,
+      maxBuffer: 32 * 1024 * 1024,
+      windowsHide: true,
+    },
+  );
+  if (result.status !== 0)
+    throw new Error(`Could not ${action} the OpenCode scope: ${result.stderr?.trim() || result.error?.message || "owner failed"}`);
+  return JSON.parse(result.stdout);
+}
+
+function readScopedOpenCodeInstallation(args, pluginRoot, python, removing = false) {
+  const path = opencodeV2PluginFile(args);
+  const configs = opencodeScopeConfigPaths(args);
+  const [loader, ...sources] = runScopedOpenCode(pluginRoot, "snapshot", [path, ...configs], python);
+  if (!removing && loader.contents !== null && !isGeneratedOpenCodeV2Loader(loader.contents))
+    throw new Error(`It is not a claude-smart loader at ${path}; move it aside and retry.`);
+  return { path, configs, loader, sources };
+}
+
+function planScopedOpenCode(args, packageRoot, python) {
+  const removing = packageRoot === null;
+  const pluginRoot = removing ? null : join(packageRoot, "plugin");
+  const { path, configs, loader, sources } = readScopedOpenCodeInstallation(args, pluginRoot, python, removing);
+  const { edits, results } = prepareOpenCodeConfigEdits(
+    configs, sources,
+    (paths) => runScopedOpenCode(pluginRoot, "snapshot", paths, python),
+    { install: false },
+  );
+  if (!removing || isGeneratedOpenCodeV2Loader(loader.contents))
+    edits.push({ path, ...loader, replacement: removing ? null : opencodeV2PluginBody(packageRoot) });
+  runScopedOpenCode(pluginRoot, "check", edits, python);
+  return { loader: { path, ...loader }, edits, results };
 }
 
 function parseOpenCodePluginConfig(configPath, source) {
@@ -861,25 +741,38 @@ function planOpenCodePluginConfig(configPath, source, { install, pluginSpec = nu
   };
 }
 
-function publishOpenCodeConfigPlan({ configPath, contents, backup }) {
-  const backupPath = backup === null ? null : `${configPath}.bak`;
-  if (backupPath) writeFileSync(backupPath, backup);
-  mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, contents);
-  return { changed: true, configPath, backupPath };
+function prepareOpenCodeConfigEdits(configs, sources, snapshot, options) {
+  const edits = [];
+  const results = [];
+  for (const [index, configPath] of configs.entries()) {
+    const source = sources[index];
+    const plan = planOpenCodePluginConfig(configPath, source.contents, options);
+    if (!plan) continue;
+    const backupPath = plan.backup === null ? null : `${configPath}.bak`;
+    if (backupPath) {
+      const [backup] = snapshot([backupPath]);
+      edits.push({ path: backupPath, ...backup, replacement: plan.backup });
+    }
+    edits.push({ path: configPath, ...source, replacement: plan.contents });
+    results.push({ changed: true, configPath, backupPath });
+  }
+  return { edits, results };
+}
+
+function editOpenCodeConfigs(configs, options) {
+  const { edits, results } = prepareOpenCodeConfigEdits(
+    configs, snapshotOpenCodeScope(configs), snapshotOpenCodeScope, options,
+  );
+  runScopedOpenCode(null, "publish", edits, requireOpenCodeScopeInterpreter());
+  return results;
 }
 
 function patchOpenCodePluginConfig(configPath, options) {
-  const plan = planOpenCodePluginConfig(configPath, readOpenCodeConfigSource(configPath), options);
-  return plan ? publishOpenCodeConfigPlan(plan) : { changed: false, configPath };
+  return editOpenCodeConfigs([configPath], options)[0] || { changed: false, configPath };
 }
 
-// Validate and plan every config the scope loads before publishing any changes.
 function removeOpenCodeLegacyEntries(args = [], cwd = process.cwd()) {
-  return opencodeScopeConfigPaths(args, cwd)
-    .map((path) => planOpenCodePluginConfig(path, readOpenCodeConfigSource(path), { install: false }))
-    .filter(Boolean)
-    .map(publishOpenCodeConfigPlan);
+  return editOpenCodeConfigs(opencodeScopeConfigPaths(args, cwd), { install: false });
 }
 
 function hasExtractionProvider() {
@@ -2443,7 +2336,8 @@ function reportRuntimePhase(label, settings) {
   if (settings && process.connected) process.send({ phase: label }, () => {});
 }
 
-async function runGuidedHost(command, host, options, label, settings, generation) {
+async function runGuidedHost(command, host, options, label, settings, preparedRuntime) {
+  const generation = preparedRuntime?.id;
   mkdirSync(join(CLAUDE_SMART_STATE_DIR, "install-logs"), { recursive: true });
   const log = join(
     CLAUDE_SMART_STATE_DIR,
@@ -2486,7 +2380,9 @@ async function runGuidedHost(command, host, options, label, settings, generation
           if (settings && message === "settings-published") acceptSettings();
           else if (typeof message?.phase === "string") process.stdout.write(`  ${message.phase}\n`);
         });
-        const payload = generation ? { generation } : { request: settings.request, cliPath: settings.cliPath };
+        const payload = generation
+          ? { generation, openCodePlan: host === HOST_OPENCODE ? preparedRuntime.openCode : undefined }
+          : { request: settings.request, cliPath: settings.cliPath };
         child.send(payload, (error) => {
           if (error && child.connected) child.disconnect();
         });
@@ -2725,7 +2621,6 @@ async function resumeGuidedShutdown() {
 async function prepareGuidedRuntime(config, options, settings) {
   assertSupportedRuntimePlatform();
   const openCodeArgs = options.global ? ["--global"] : [];
-  if (config.hosts.includes(HOST_OPENCODE)) assertOpenCodeInstallConfiguration(openCodeArgs);
   if (config.hosts.includes(HOST_CODEX)) validateCodexPackage();
 
   mkdirSync(GUIDED_RUNTIME_DIR, { recursive: true, mode: 0o700 });
@@ -2767,25 +2662,16 @@ async function prepareGuidedRuntime(config, options, settings) {
         writeFileSync(join(adapter, GUIDED_RUNTIME_BINDING), id);
       }));
     }
-    const loader = config.hosts.includes(HOST_OPENCODE)
-      ? assertOpenCodeInstallConfiguration(openCodeArgs)
-      : undefined;
-    if (loader) {
+    let openCode;
+    if (config.hosts.includes(HOST_OPENCODE)) {
       assertOpenCodeRuntimeEntry(pluginRoot);
-      const prepared = prepareOpenCodeV2Plugin(loader, directory);
-      if (!prepared) throw new Error("OpenCode loader changed during preparation");
-      try {
-        writeFileSync(join(directory, "opencode-loader-input.json"),
-          JSON.stringify(loader), { flag: "wx", mode: 0o600 });
-      } finally {
-        prepared.close();
-      }
+      openCode = planScopedOpenCode(openCodeArgs, directory);
     }
     const previous = observePreviousServices();
-    await publishFromPreparedRuntime(pluginRoot, settings, loader, { guideWorker: false });
+    await publishFromPreparedRuntime(pluginRoot, settings, openCode?.loader, { guideWorker: false });
     published = true;
     acceptGuideSettings(settings);
-    return { id, previous };
+    return { id, previous, openCode };
   } finally {
     process.removeListener("exit", discard);
     discard();
@@ -2854,7 +2740,7 @@ async function runGuidedCommand(command, args) {
           holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
           await resumeGuidedShutdown();
         }
-        return runGuidedHost(action, host, options, label, deferredSettings, preparedRuntime?.id);
+        return runGuidedHost(action, host, options, label, deferredSettings, preparedRuntime);
       },
       finish: async (action, config, results) => {
         if (action !== "uninstall" && !results.some((result) => result.code === 0)) return;
@@ -4518,7 +4404,7 @@ async function runInstall(args, options = {}) {
     return;
   }
   if (host === HOST_OPENCODE) {
-    await runInstallOpenCode(args, settings, runtime);
+    await runInstallOpenCode(args, settings, runtime, message?.openCodePlan);
     return;
   }
 
@@ -4818,19 +4704,11 @@ async function runInstallCodex(settings, runtime) {
 }
 
 function assertOpenCodeInstallConfiguration(args) {
-  const path = opencodeV2PluginFile(args);
-  const { contents, identity, reason: conflictReason } = inspectOpenCodeV2Loader(path);
-  if (conflictReason !== null) {
-    throw new Error(
-      `left an existing OpenCode plugin in place at ${path}. ` +
-        `${conflictReason}; move it aside and reinstall to write ` +
-        "the loader. claude-smart OpenCode support is not installed.",
-    );
-  }
-  for (const file of opencodeScopeConfigPaths(args)) {
-    parseOpenCodePluginConfig(file, readOpenCodeConfigSource(file));
-  }
-  return { path, contents, identity };
+  const python = openCodeScopeInterpreter();
+  if (!python) return; // A fresh bootstrap supplies the interpreter for the scoped plan.
+  const { configs, sources } = readScopedOpenCodeInstallation(args, null, python);
+  for (const [index, file] of configs.entries())
+    parseOpenCodePluginConfig(file, sources[index].contents);
 }
 
 function readInstallFailureFingerprint() {
@@ -4869,7 +4747,7 @@ function clearRecoveredOpenCodeFailure(pluginRoot, previous) {
   }
 }
 
-async function runInstallOpenCode(args, settings, runtime) {
+async function runInstallOpenCode(args, settings, runtime, scopedPlan) {
   let setup = settings ? null : readInstallPolicy();
   const prerequisiteError = opencodePrerequisiteError();
   if (prerequisiteError) {
@@ -4887,7 +4765,7 @@ async function runInstallOpenCode(args, settings, runtime) {
     process.exit(1);
   }
 
-  assertOpenCodeInstallConfiguration(args);
+  if (!runtime) assertOpenCodeInstallConfiguration(args);
   const installedRoot = join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin");
   const previousRoot = existsSync(installedRoot) ? installedRoot : null;
   if (!runtime) await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
@@ -4902,42 +4780,18 @@ async function runInstallOpenCode(args, settings, runtime) {
   }
   const pluginRoot = join(packageRoot, "plugin");
   if (!runtime) await bootstrapPluginRuntime(pluginRoot, { readOnly, settings });
-  const loader = assertOpenCodeInstallConfiguration(args);
-  const conflict = () => new Error(
-    `OpenCode loader changed during install at ${loader.path}; reinstall after resolving the conflict.`,
-  );
-  if (runtime) {
-    const expected = JSON.parse(readFileSync(join(packageRoot, "opencode-loader-input.json"), "utf8"));
-    if (expected.path !== loader.path || expected.contents !== loader.contents ||
-        expected.identity !== loader.identity) throw conflict();
+  const plan = runtime ? scopedPlan : planScopedOpenCode(args, packageRoot);
+  if (plan?.loader?.path !== opencodeV2PluginFile(args)) throw new Error("OpenCode scope changed");
+  if (settings) {
+    await publishFromPreparedRuntime(pluginRoot, settings, plan.loader);
+    setup = readInstallPolicy();
   }
-  const prepared = prepareOpenCodeV2Plugin(loader, packageRoot);
-  if (!prepared) throw conflict();
-  // The signal handler exits after waiting for the settings owner. Release
-  // this stage on that path as well as on ordinary failure and success.
-  process.once("exit", prepared.close);
-  let results;
-  let v2PluginFile;
-  try {
-    if (settings) {
-      await publishFromPreparedRuntime(pluginRoot, settings, loader);
-      setup = readInstallPolicy();
-    }
-    assertOpenCodeInstallConfiguration(args);
-    if (!runtime) ensurePluginRoot(pluginRoot);
-    // Keep the legacy migration order. The loader and old config entries
-    // must not both be published for the same OpenCode scope.
-    v2PluginFile = prepared.publish(() => {
-      results = removeOpenCodeLegacyEntries(args);
-    });
-    if (v2PluginFile.status === "conflict") throw conflict();
-    publishOpenCodeRegistration(loader.path, runtime);
-    // The loader now references this package. Keep it if later cleanup fails.
-    commitLocalPluginPackages([packageRoot]);
-  } finally {
-    process.removeListener("exit", prepared.close);
-    prepared.close();
-  }
+  if (!runtime) ensurePluginRoot(pluginRoot);
+  runScopedOpenCode(pluginRoot, "publish", plan.edits);
+  // Keep the prepared runtime once a loader can refer to it.
+  commitLocalPluginPackages([packageRoot]);
+  publishOpenCodeRegistration(plan.loader.path, runtime);
+  const results = plan.results;
   if (readOnly) {
     process.stdout.write(
       "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
@@ -4954,7 +4808,7 @@ async function runInstallOpenCode(args, settings, runtime) {
           `Removed the legacy claude-smart plugin entry from ${result.configPath}; the loader replaces it.`,
       ),
       `Prepared claude-smart OpenCode package at ${packageRoot}.`,
-      `Wrote the OpenCode loader at ${v2PluginFile.path}; OpenCode 1.x and V2 both load the plugin from there.`,
+      `Wrote the OpenCode loader at ${plan.loader.path}; OpenCode 1.x and V2 both load the plugin from there.`,
       "claude-smart OpenCode support is installed.",
       "Restart OpenCode in your project so it loads the plugin.",
       "",
@@ -5001,21 +4855,13 @@ function reportOpenCodeConfigBackups(results) {
 }
 
 async function runUninstallOpenCode(args) {
+  const python = requireOpenCodeScopeInterpreter();
+  const plan = planScopedOpenCode(args, null, python);
+  runScopedOpenCode(null, "publish", plan.edits, python);
   stopClaudeSmartServices(join(PACKAGE_ROOT, "plugin"));
   stopClaudeSmartServices(join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin"));
-  let results;
-  try {
-    results = removeOpenCodeLegacyEntries(args);
-  } catch (err) {
-    process.stderr.write(
-      `error: could not update OpenCode config: ${err && err.message ? err.message : err}\n`,
-    );
-    process.exit(1);
-  }
+  const results = plan.results;
   reportOpenCodeConfigBackups(results);
-  // The selected scope only: a `--global` install is a separate installation and
-  // its loader must survive a project-scoped uninstall.
-  removeOpenCodeV2Plugin(args);
   // Both scopes share one package copy and every loader re-exports its
   // server.mjs, so keep it while any other scope still references it: the global
   // scope for a project uninstall, and the current project for a --global one.
@@ -5108,27 +4954,6 @@ function writeDisabledCodexHookWarnings(configPath = CODEX_CONFIG_PATH) {
   );
 }
 
-function readLocalOpenCodeFile(path, maxBytes) {
-  const directory = dirname(path);
-  if (!lstatSync(dirname(directory)).isDirectory() || !lstatSync(directory).isDirectory())
-    return null;
-  const expected = lstatSync(path);
-  if (!expected.isFile()) return null;
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
-  try {
-    const actual = fstatSync(fd);
-    if (!actual.isFile() || expected.dev !== actual.dev || expected.ino !== actual.ino)
-      return null;
-    if (actual.size > maxBytes) return null;
-    const buffer = Buffer.alloc(actual.size + 1);
-    const length = readSync(fd, buffer, 0, buffer.length);
-    if (length === buffer.length || length !== actual.size) return null;
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, length));
-  } finally {
-    closeSync(fd);
-  }
-}
-
 function localOpenCodeFilePath(spec) {
   try {
     const url = new URL(spec);
@@ -5144,9 +4969,9 @@ function installedOpenCodeRuntime(args) {
     const path = opencodeV2PluginFile(args);
     const runtime = openCodeGuidedRuntime(openCodeRegistrationPath(path));
     if (!runtime) return null;
-    const loader = readLocalOpenCodeFile(path, 8192);
-    if (!loader || !isGeneratedOpenCodeV2Loader(loader)) return null;
-    const spec = loader.split("\n")[2].slice("export { default } from ".length, -1);
+    const [loader] = snapshotOpenCodeScope([path]);
+    if (!isGeneratedOpenCodeV2Loader(loader.contents)) return null;
+    const spec = loader.contents.split("\n")[2].slice("export { default } from ".length, -1);
     return localOpenCodeFilePath(JSON.parse(spec)) === join(runtime.pluginRoot, "opencode", "dist", "server.mjs")
       ? runtime.pluginRoot : null;
   } catch {
