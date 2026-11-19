@@ -279,6 +279,14 @@ existing `reflexioai` entry at the packaged copy, which carries the vendor bundl
 `reflexioai` marketplace, and deletes the copy; learned data under `~/.reflexio/`
 and `~/.claude-smart/` is preserved.
 
+A standalone session keeps a valid manually selected compatibility root and
+repairs missing links or stale managed-cache targets. To switch to a different
+development checkout intentionally, run
+`bash /path/to/claude-smart/plugin/scripts/ensure-plugin-root.sh /path/to/claude-smart/plugin --force`.
+Remove the old `CLAUDE_SMART_PLUGIN_ROOT_FOLLOW_SESSION` assignment from your
+environment or dotenv file. Guided setups select their runtime through the
+existing installer.
+
 Broken `~/.reflexio/plugin-root` repair also reads Claude's bounded
 `plugin list --json` inventory, using `readFromFolder` when declared and otherwise
 `installPath`, before the existing stable/Codex fallbacks. Malformed, foreign,
