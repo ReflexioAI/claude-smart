@@ -92,7 +92,18 @@ with tempfile.TemporaryDirectory(prefix="rx-open-scope-") as tmp:
         stage = scope / "candidate.tmp"
         with stage.open("x", encoding="utf-8") as sibling:
             sibling.write("staged update")
-        stage.replace(leaf)
+        try:
+            stage.replace(leaf)
+        except PermissionError as error:
+            assert error.winerror == 32, repr(error)
+            replace_denied = True
+        else:
+            raise AssertionError("the held scope unexpectedly allowed replacement")
+        with leaf.open("r+", encoding="utf-8") as current:
+            assert current.read() == "original"
+            current.seek(0)
+            current.write("staged update")
+            current.truncate()
         assert leaf.read_text(encoding="utf-8") == "staged update"
     finally:
         close(pinned_scope)
@@ -116,6 +127,7 @@ with tempfile.TemporaryDirectory(prefix="rx-open-scope-") as tmp:
         json.dumps(
             {
                 "ancestor_renames_refused": blocked,
+                "sibling_replace_denied": replace_denied,
                 "existing_regular_loader_refresh_with_held_ancestors": True,
                 "junction_open_returned_reparse_metadata": True,
                 "outside_target_unchanged": True,
