@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from tests.test_install_scripts import (
+    _copy_codex_install_sources,
     REPO_ROOT,
     _fake_claude_code_package,
     _write_bootstrap_uv,
@@ -27,20 +28,7 @@ def _fixture(
     tmp_path: Path, host: str, *, running: str = "both", installed: bool = True
 ):
     package = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
-    # The production copier and hook patcher consume genuine package manifests.
-    for name in (
-        ".agents/plugins/marketplace.json",
-        "plugin/.codex-plugin/plugin.json",
-        "plugin/hooks/codex-hooks.json",
-        "plugin/scripts/opencode-claude-compat",
-        "plugin/scripts/opencode-claude-compat.cmd",
-        "plugin/scripts/opencode-claude-compat.js",
-        "plugin/scripts/codex-hook.js",
-        "plugin/scripts/_codex_env.sh",
-    ):
-        target = package / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(REPO_ROOT / name, target)
+    _copy_codex_install_sources(package)
     (package / "plugin/identity").write_text("new")
     record = """import json, os, signal, sys, time
 from pathlib import Path

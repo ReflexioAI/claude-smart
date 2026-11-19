@@ -2162,13 +2162,33 @@ def test_install_refreshes_owned_backend_without_rewriting_learning_host(
     assert log == ["stop", "start"]
 
 
-def _seed_node_for_codex_process_test(home: Path, node: str) -> None:
-    # These tests exercise the native CLI after preparation. Keep the pinned
-    # launcher's real Node and avoid downloading a distribution to reach it.
+def _copy_codex_install_sources(package: Path) -> None:
+    # The production copier and hook patcher consume genuine package manifests.
+    for name in (
+        ".agents/plugins/marketplace.json",
+        "plugin/.codex-plugin/plugin.json",
+        "plugin/hooks/codex-hooks.json",
+        "plugin/scripts/opencode-claude-compat",
+        "plugin/scripts/opencode-claude-compat.cmd",
+        "plugin/scripts/opencode-claude-compat.js",
+        "plugin/scripts/codex-hook.js",
+        "plugin/scripts/_codex_env.sh",
+    ):
+        target = package / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / name, target)
+
+
+def _prepare_codex_process_test(home: Path, node: str, fake_bin: Path) -> Path:
+    # Keep the real process-tree path independent of runtime downloads.
     private = home / ".claude-smart/node/current/bin"
     private.mkdir(parents=True)
     _write_executable(private / "node", f'#!/bin/sh\nexec {shlex.quote(node)} "$@"\n')
     _write_executable(private / "npm", "#!/bin/sh\nexit 0\n")
+    _write_bootstrap_uv(fake_bin / "uv", mode="fresh")
+    package = _fake_claude_code_package(home, "#!/bin/sh\nexit 0\n")
+    _copy_codex_install_sources(package)
+    return package / "bin" / "claude-smart.js"
 
 
 def test_interrupt_during_a_codex_cli_step_stops_its_descendants(
@@ -2196,7 +2216,7 @@ def test_interrupt_during_a_codex_cli_step_stops_its_descendants(
     )
     runtime_env = tmp_path / ".claude-smart" / ".env"
     runtime_env.parent.mkdir()
-    _seed_node_for_codex_process_test(tmp_path, node)
+    installer = _prepare_codex_process_test(tmp_path, node, fake_bin)
     runtime_env.write_text(
         'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\nCLAUDE_SMART_HOST=opencode\n'
     )
@@ -2208,7 +2228,7 @@ def test_interrupt_during_a_codex_cli_step_stops_its_descendants(
     alive = False
     try:
         result = subprocess.run(
-            [node, str(NODE_INSTALLER), "install", "--host", "codex"],
+            [node, str(installer), "install", "--host", "codex"],
             env=env,
             text=True,
             capture_output=True,
@@ -2236,13 +2256,14 @@ def test_codex_cli_timeout_stops_the_whole_process_group(tmp_path: Path) -> None
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for Node installer test")
-    _seed_node_for_codex_process_test(tmp_path, node)
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
+    installer = _prepare_codex_process_test(tmp_path, node, fake_bin)
     _write_executable(
         fake_bin / "codex",
         "#!/bin/sh\n"
         'case "$*" in *"marketplace add"*) ;; *) exit 0 ;; esac\n'
+        '[ ! -e "$HOME/codex-descendant.pid" ] || exit 19\n'
         'sh -c \'trap "" TERM; echo $$ > "$HOME/codex-descendant.pid"; while :; do sleep 0.1; done\' &\n'
         "wait\n",
     )
@@ -2255,7 +2276,7 @@ def test_codex_cli_timeout_stops_the_whole_process_group(tmp_path: Path) -> None
     alive = False
     try:
         result = subprocess.run(
-            [node, str(NODE_INSTALLER), "install", "--host", "codex"],
+            [node, str(installer), "install", "--host", "codex"],
             env=env,
             text=True,
             capture_output=True,
