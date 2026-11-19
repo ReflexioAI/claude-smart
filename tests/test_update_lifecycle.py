@@ -1539,3 +1539,103 @@ def test_codex_marketplace_never_replaces_legacy_claude_runtime(tmp_path, phase)
         assert not root.exists()
     else:
         assert not starts
+
+
+@pytest.mark.parametrize(
+    ("host", "failure"),
+    [
+        ("codex", "trust"),
+        pytest.param(
+            "opencode",
+            "interrupt",
+            marks=pytest.mark.skipif(os.name == "nt", reason="uses POSIX SIGKILL"),
+        ),
+    ],
+)
+def test_single_host_retry_recovers_abandoned_multihost_selection(
+    tmp_path, host, failure
+):
+    predecessor_host = "opencode" if host == "codex" else "codex"
+    package, predecessor, uv, env = _fixture(tmp_path, predecessor_host)
+    _write_bootstrap_uv(uv, mode="fresh")
+    env.pop("CLAUDE_SMART_INSTALL_CHILD")
+    env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
+
+    state = tmp_path / ".claude-smart/guided-runtimes"
+    state.mkdir()
+    receipt = state / "pending-shutdown.json"
+    baseline = f"running on http://localhost:{env['FIXTURE_PORT']}"
+    receipt.write_text(
+        json.dumps(
+            {
+                "id": "runtime-AbCd12",
+                "root": str(predecessor),
+                "status": {"dashboard": baseline, "backend": baseline},
+            }
+        )
+    )
+    if failure == "trust":
+        codex = tmp_path / "fake-bin/codex"
+        codex.write_text(
+            codex.read_text().replace(
+                "#!/usr/bin/env node",
+                f'#!{node_bin()}\nif (process.argv[2] === "app-server") process.exit(17);',
+                1,
+            )
+        )
+    else:
+        preload = tmp_path / "interrupt-standalone-selection.cjs"
+        preload.write_text("""
+const fs = require("node:fs"), path = require("node:path");
+const rename = fs.renameSync;
+fs.renameSync = (source, target) => {
+  const result = rename(source, target);
+  if (process.send && target === path.join(process.env.HOME, ".reflexio/plugin-root")) {
+    process.kill(process.ppid, "SIGKILL");
+    process.kill(process.pid, "SIGKILL");
+  }
+  return result;
+};
+""")
+        env["NODE_OPTIONS"] = f'--require "{preload}"'
+    installer = [node_bin(), str(package / "bin/claude-smart.js")]
+    result = subprocess.run(
+        [
+            *installer,
+            "update",
+            "--host",
+            host,
+            "--backend",
+            "local",
+            "--provider",
+            "codex",
+            "--yes",
+        ],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    selector = tmp_path / ".reflexio/plugin-root"
+    assert selector.resolve() != predecessor
+    if failure == "trust":
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert not receipt.exists()
+        logs = list((tmp_path / ".claude-smart/install-logs").glob("update-codex-*"))
+        assert "review and trust" in logs[0].read_text()
+    else:
+        assert result.returncode == -signal.SIGKILL
+        assert json.loads(receipt.read_text())["host"] == "opencode"
+        os.utime(state / ".install.lock", (1, 1))
+        env.pop("NODE_OPTIONS")
+    removed = subprocess.run(
+        [*installer, "uninstall", "--host", host],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    assert removed.returncode == 0, removed.stdout + removed.stderr
+    assert not receipt.exists()

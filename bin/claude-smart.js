@@ -2644,7 +2644,7 @@ function observePreviousServices() {
   return { root, status };
 }
 
-function recordGuidedShutdown(id, previous) {
+function recordGuidedShutdown(selection, previous) {
   if (!previous.root) return;
   const status = {};
   for (const [kind, value] of Object.entries(previous.status)) {
@@ -2653,7 +2653,7 @@ function recordGuidedShutdown(id, previous) {
   }
   const draft = uniquePackagePath(GUIDED_PENDING_SHUTDOWN, ".shutdown");
   try {
-    writeFileSync(draft, JSON.stringify({ id, root: previous.root, status }), {
+    writeFileSync(draft, JSON.stringify({ ...selection, root: previous.root, status }), {
       flag: "wx", mode: 0o600,
     });
     renameSync(draft, GUIDED_PENDING_SHUTDOWN);
@@ -2662,24 +2662,52 @@ function recordGuidedShutdown(id, previous) {
   }
 }
 
-async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
-  let pending;
+function readGuidedShutdown() {
   try {
     if (!lstatSync(GUIDED_PENDING_SHUTDOWN).isFile())
       throw new Error("The pending shared service shutdown record is not a regular file");
-    pending = JSON.parse(readFileSync(GUIDED_PENDING_SHUTDOWN, "utf8"));
+    return JSON.parse(readFileSync(GUIDED_PENDING_SHUTDOWN, "utf8"));
   } catch (error) {
     if (error?.code === "ENOENT") return;
     throw error;
   }
-  if (typeof pending.id !== "string" || !/^runtime-[A-Za-z0-9]{6}$/.test(pending.id))
-    throw new Error("The pending shared service shutdown record is invalid");
-  const target = join(realpathSync(GUIDED_RUNTIME_DIR), pending.id, "plugin");
+}
+
+function standaloneRuntimeRoot(host) {
+  if (host === HOST_CODEX) return CODEX_RUNTIME_PLUGIN_ROOT;
+  if (host === HOST_OPENCODE) return join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin");
+  if (host === HOST_CLAUDE_CODE) return join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin");
+  return null;
+}
+
+function selectStandaloneRuntime(host, pluginRoot) {
+  const previous = readGuidedShutdown();
+  if (previous && activePluginRoot() === previous.root && !sameRealPath(previous.root, pluginRoot)) {
+    if (!sameRealPath(standaloneRuntimeRoot(host), pluginRoot))
+      throw new Error("The standalone runtime does not match the prepared host");
+    recordGuidedShutdown({ host }, previous);
+    forcePluginRoot(pluginRoot);
+  } else if (host === HOST_CLAUDE_CODE) {
+    forcePluginRoot(pluginRoot);
+  } else {
+    ensurePluginRoot(pluginRoot);
+  }
+}
+
+async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
+  const pending = readGuidedShutdown();
+  if (!pending) return;
+  const target = pending.host
+    ? standaloneRuntimeRoot(pending.host)
+    : typeof pending.id === "string" && /^runtime-[A-Za-z0-9]{6}$/.test(pending.id)
+      ? join(realpathSync(GUIDED_RUNTIME_DIR), pending.id, "plugin")
+      : null;
+  if (!target) throw new Error("The pending shared service shutdown record is invalid");
   const current = activePluginRoot();
   if (typeof pending.root !== "string" || !isAbsolute(pending.root) ||
       (!pending.status || typeof pending.status !== "object"))
     throw new Error("The pending shared service shutdown record is invalid");
-  if (current === target) {
+  if (current === target || (current && sameRealPath(current, target))) {
     if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
       throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
     await stopServicesForInstall(pending.root, null, pending.status);
@@ -2747,7 +2775,7 @@ async function prepareGuidedRuntime(config, options, settings, baseline) {
       openCode = planScopedOpenCode(openCodeArgs, directory);
     }
     const previous = baseline || observePreviousServices();
-    recordGuidedShutdown(id, previous);
+    recordGuidedShutdown({ id }, previous);
     await publishFromPreparedRuntime(pluginRoot, settings, openCode?.loader, { guideWorker: false });
     published = true;
     acceptGuideSettings(settings);
@@ -2824,7 +2852,10 @@ async function runGuidedCommand(command, args) {
         return runGuidedHost(action, host, options, label, deferredSettings, preparedRuntime);
       },
       finish: async (action, config, results) => {
-        if (action !== "uninstall" && !results.some((result) => result.code === 0)) return;
+        if (action !== "uninstall" && !results.some((result) => result.code === 0)) {
+          if (carriedBaseline && !preparedRuntime) await resumeGuidedShutdown();
+          return;
+        }
         let root = preparedRuntime ? readGuidedRuntime(preparedRuntime.id).pluginRoot : activePluginRoot();
         if (!root || !existsSync(join(root, "scripts", "backend-service.sh")))
           return;
@@ -2871,8 +2902,11 @@ async function runGuidedCommand(command, args) {
           commitInstallState();
           await resumeGuidedShutdown();
         } else if (carriedBaseline) {
-          await stopServicesForInstall(carriedBaseline.root, null, carriedBaseline.status);
-          rmSync(GUIDED_PENDING_SHUTDOWN, { force: true });
+          const remaining = await resumeGuidedShutdown();
+          if (remaining) {
+            await stopServicesForInstall(remaining.root, null, remaining.status);
+            rmSync(GUIDED_PENDING_SHUTDOWN, { force: true });
+          }
         }
         let setup;
         try {
@@ -4542,7 +4576,7 @@ async function runInstall(args, options = {}) {
           "Installed read-only hook manifest; publish interactions hooks are disabled.\n",
         );
       }
-      forcePluginRoot(pluginRoot);
+      selectStandaloneRuntime(HOST_CLAUDE_CODE, pluginRoot);
     }
     process.stdout.write(`Prepared claude-smart runtime at ${pluginRoot}.\n`);
     markLocalPluginPackagePrepared(CLAUDE_CODE_LOCAL_PACKAGE_DIR);
@@ -4725,13 +4759,13 @@ async function runInstallCodex(settings, runtime) {
   let trustError = null;
   try {
     if (!runtime) {
-      ensurePluginRoot(pluginRoot);
       writeFileSync(
         join(codexMarketplacePluginRoot(marketplaceRoot), "hooks", "codex-hooks.json"),
         renderedHooks,
       );
     }
     cacheDir = installCodexPluginCache(codexMarketplacePluginRoot(marketplaceRoot));
+    if (!runtime) selectStandaloneRuntime(HOST_CODEX, pluginRoot);
     process.stdout.write(`Installed Codex plugin cache at ${cacheDir}.\n`);
     if (readOnly) {
       process.stdout.write(
@@ -4869,7 +4903,7 @@ async function runInstallOpenCode(args, settings, runtime, scopedPlan) {
     await publishFromPreparedRuntime(pluginRoot, settings, plan.loader);
     setup = readInstallPolicy();
   }
-  if (!runtime) ensurePluginRoot(pluginRoot);
+  if (!runtime) selectStandaloneRuntime(HOST_OPENCODE, pluginRoot);
   stageOpenCodeRegistration(plan.loader.path, runtime);
   runScopedOpenCode(pluginRoot, "publish", plan.edits);
   // Keep the prepared runtime once a loader can refer to it.
