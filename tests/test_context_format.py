@@ -289,6 +289,7 @@ def test_render_inline_with_registry_marker_only_is_enabled_alias(
 
 
 def test_render_inline_with_registry_includes_dashboard_urls(monkeypatch) -> None:
+    monkeypatch.setenv("DASHBOARD_PORT", "4321")
     monkeypatch.setenv("CLAUDE_SMART_DASHBOARD_URL", "http://127.0.0.1:3333")
     md, registry = context_format.render_inline_with_registry(
         project_id="demo",
@@ -310,6 +311,20 @@ def test_render_inline_with_registry_includes_dashboard_urls(monkeypatch) -> Non
         == "http://127.0.0.1:3333/preferences/project/pref%2Fone"
     )
     assert by_id["p1-pref"]["rule_url"] == "http://127.0.0.1:3333/rules/p1-pref"
+
+
+def test_local_citations_use_the_dashboard_listener_port(monkeypatch) -> None:
+    monkeypatch.setenv("DASHBOARD_PORT", "4310")
+    md, registry = context_format.render_inline_with_registry(
+        project_id="demo",
+        user_playbooks=[{"content": "safe git flow", "user_playbook_id": 17}],
+        agent_playbooks=[],
+        profiles=[],
+    )
+    assert "open: http://localhost:4310/rules/s1-17" in md
+    assert "http://localhost:4310/rules/s1-123" in md
+    assert "http://localhost:3001" not in md
+    assert registry[0]["dashboard_url"] == "http://localhost:4310/skills/project/17"
 
 
 def test_render_inline_with_registry_uses_remote_reflexio_item_pages(

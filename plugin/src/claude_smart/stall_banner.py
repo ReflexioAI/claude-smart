@@ -9,9 +9,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-StallReason = Literal["billing_error", "auth_error"]
+from claude_smart.dashboard_links import dashboard_base_url
 
-_DASHBOARD = "localhost:3001"
+StallReason = Literal["billing_error", "auth_error"]
 
 
 def render_banner(*, reason: str | None, reset_estimate: datetime | None) -> str:
@@ -32,17 +32,17 @@ def render_banner(*, reason: str | None, reset_estimate: datetime | None) -> str
             if reset_estimate is None:
                 return (
                     f"claude-smart: learning paused — Agent SDK credit "
-                    f"exhausted. Details: {_DASHBOARD}"
+                    f"exhausted. Details: {dashboard_base_url()}"
                 )
             return (
                 f"claude-smart: learning paused — Agent SDK credit "
                 f"exhausted (resets ~{_format_reset(reset_estimate)}). "
-                f"Details: {_DASHBOARD}"
+                f"Details: {dashboard_base_url()}"
             )
         case "auth_error":
             return (
                 f"claude-smart: learning paused — please run /login. "
-                f"Details: {_DASHBOARD}"
+                f"Details: {dashboard_base_url()}"
             )
         case _:
             return ""

@@ -9,9 +9,8 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 from claude_smart import cs_cite, env_config
+from claude_smart.dashboard_links import dashboard_base_url
 
-_DASHBOARD_URL_ENV = "CLAUDE_SMART_DASHBOARD_URL"
-_DEFAULT_DASHBOARD_URL = "http://localhost:3001"
 _REFLEXIO_URL_ENV = "REFLEXIO_URL"
 _LOCAL_REFLEXIO_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}  # noqa: S104 -- Host allowlist; no socket is bound.
 
@@ -429,29 +428,30 @@ def _compact_citation_instruction(marker_parts: list[str] | None = None) -> str:
     gate = cs_cite.WHEN_TO_CITE_COMPACT
     if marker_parts:
         example = cs_cite.build_marker(marker_parts[0])
-        return _remoteize_citation_instruction(
+        return _resolve_citation_example_urls(
             f"{gate} If you do, use this final marker format with markdown "
             f"links: `{example}`. Include only memories that materially changed "
             "the response. "
             "Separate multiple linked memories with the visible ` | ` separator."
         )
-    return _remoteize_citation_instruction(
+    return _resolve_citation_example_urls(
         f"{gate} If you do, end with one final marker like "
         f"`{cs_cite.MARKDOWN_EXAMPLE_ONE}` using the shown rule URL."
     )
 
 
 def _citation_instruction(mode: str) -> str:
-    return _remoteize_citation_instruction(cs_cite.citation_instruction(mode))
+    return _resolve_citation_example_urls(cs_cite.citation_instruction(mode))
 
 
-def _remoteize_citation_instruction(text: str) -> str:
-    playbooks_url = _remote_reflexio_page_url("playbook")
-    profiles_url = _remote_reflexio_page_url("profile")
-    if not text or not playbooks_url or not profiles_url:
+def _resolve_citation_example_urls(text: str) -> str:
+    if not text:
         return text
-    return text.replace("http://localhost:3001/rules/s1-123", playbooks_url).replace(
-        "http://localhost:3001/rules/p1-pref", profiles_url
+    dashboard = dashboard_base_url()
+    playbook = _remote_reflexio_page_url("playbook") or f"{dashboard}/rules/s1-123"
+    profile = _remote_reflexio_page_url("profile") or f"{dashboard}/rules/p1-pref"
+    return text.replace("http://localhost:3001/rules/s1-123", playbook).replace(
+        "http://localhost:3001/rules/p1-pref", profile
     )
 
 
@@ -565,7 +565,7 @@ def _dashboard_url(kind: str, real_id: Any, source_kind: str | None = None) -> s
     if real_id is None:
         return ""
     encoded_id = quote(str(real_id), safe="")
-    base = os.environ.get(_DASHBOARD_URL_ENV, _DEFAULT_DASHBOARD_URL).rstrip("/")
+    base = dashboard_base_url()
     if kind == "profile":
         return f"{base}/preferences/project/{encoded_id}"
     if kind == "playbook":
@@ -583,7 +583,7 @@ def _rule_url(
     if not item_id:
         return ""
     encoded_id = quote(item_id, safe="")
-    base = os.environ.get(_DASHBOARD_URL_ENV, _DEFAULT_DASHBOARD_URL).rstrip("/")
+    base = dashboard_base_url()
     return f"{base}/rules/{encoded_id}"
 
 
