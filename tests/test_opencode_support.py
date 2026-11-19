@@ -351,7 +351,22 @@ def test_opencode_server_resolves_windows_bash_before_spawning() -> None:
     assert 'spawn(RESOLVED_BASH || "bash"' in server
 
 
-def test_opencode_cli_bridge_translates_claude_contract(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("requested_model", "saved_model", "retired_model", "expected_model"),
+    [
+        ("claude-sonnet-4-6", None, None, None),
+        ("provider/explicit", None, "", "provider/explicit"),
+        ("provider/explicit", "provider/saved", None, "provider/saved"),
+        ("provider/explicit", None, "provider/retired", None),
+    ],
+)
+def test_opencode_cli_bridge_translates_claude_contract(
+    tmp_path: Path,
+    requested_model: str,
+    saved_model: str | None,
+    retired_model: str | None,
+    expected_model: str | None,
+) -> None:
     if shutil_which_node() is None:
         pytest.skip("node is not installed")
     bridge = REPO_ROOT / "plugin" / "scripts" / "opencode-claude-compat.js"
@@ -394,6 +409,14 @@ process.stdout.write(JSON.stringify({{
         "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
     }
     env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
+    for key, value in (
+        ("CLAUDE_SMART_LEARNING_MODEL", saved_model),
+        ("CLAUDE_SMART_OPENCODE_MODEL", retired_model),
+    ):
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
 
     result = subprocess.run(
         [
@@ -407,7 +430,7 @@ process.stdout.write(JSON.stringify({{
             "--append-system-prompt",
             "system text",
             "--model",
-            "claude-sonnet-4-6",
+            requested_model,
         ],
         input="user prompt",
         text=True,
@@ -415,6 +438,13 @@ process.stdout.write(JSON.stringify({{
         env=env,
         check=False,
     )
+
+    if retired_model:
+        assert result.returncode != 0
+        assert "CLAUDE_SMART_OPENCODE_MODEL has been retired" in result.stderr
+        assert retired_model not in result.stderr
+        assert not call_log.exists()
+        return
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {
@@ -440,7 +470,10 @@ process.stdout.write(JSON.stringify({{
     assert subprocess_pwd.resolve() == Path(call["cwd"]).resolve()
     assert call["dotConfigExists"] is True
     assert call["rootConfigExists"] is False
-    assert "--model" not in call["args"]
+    if expected_model is None:
+        assert "--model" not in call["args"]
+    else:
+        assert call["args"][call["args"].index("--model") + 1] == expected_model
     assert "system text\n\n## Task\nuser prompt" not in call["args"]
     assert call["stdin"] == "system text\n\n## Task\nuser prompt"
 

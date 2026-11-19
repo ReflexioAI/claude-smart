@@ -314,7 +314,20 @@ as an integration or learning provider. A nonempty caller path remains an
 execution override. An unavailable explicitly configured executable requires
 repair rather than silently choosing a different executable from PATH.
 
-**Model selection.** OpenCode support uses OpenCode's plugin loader to inject relevant learned context into the system prompt of the first model request after each prompt. Learning extraction runs `opencode run` with `OPENCODE_PURE=1` from an isolated temp project. On OpenCode 1.x that skips external plugins; V2 has no pure mode, so there the extraction run loads the user's global plugins. Extraction uses OpenCode's default model unless you set `CLAUDE_SMART_OPENCODE_MODEL=provider/model`. Set that env var if your normal project config pins a different provider or model.
+**Model selection.** OpenCode support uses OpenCode's plugin loader to inject relevant learned context into the system prompt of the first model request after each prompt. Learning extraction runs `opencode run` with `OPENCODE_PURE=1` from an isolated temp project. On OpenCode 1.x that skips external plugins; V2 has no pure mode, so there the extraction run loads the user's global plugins. For a new OpenCode learning setup,
+`claude-smart install --provider opencode --model provider/model` saves the
+model used for local learning and the optimizer. With no model selected,
+OpenCode resolves its own default. A direct bridge invocation can pass
+`--model provider/model`.
+
+When upgrading an installation that used `CLAUDE_SMART_OPENCODE_MODEL`, record
+the effective model. Move an effective legacy override to
+`CLAUDE_SMART_LEARNING_MODEL` in `~/.claude-smart/.env` for the existing
+OpenCode learning route, or pass the model directly to a standalone bridge.
+Keep any saved learning model that already overrode the legacy value. Clear
+the old assignment in the saved environment and shell, then restart the
+local backend if it is running. Keep the existing provider, executable
+override, and local CLI opt-in when making this change.
 
 **V2 plugin reload mid-turn.** OpenCode closes the old plugin instance, awaiting its cleanup and then closing its event streams, before it loads the new instance, and it holds plugin readiness until the swap is done. The old event stream therefore cannot run until the turn ends. Instead, cleanup in `plugin/opencode/v2.ts` hands each open turn, with the V1 hooks that captured it, to the next `setup()` for the same directory. That instance publishes the turn once, at its `session.execution.*` event. Events published during the swap reach no instance. If the terminal event is lost that way, the turn is published when the session's next prompt arrives. A turn that no new instance takes over is not published.
 

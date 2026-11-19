@@ -24,6 +24,11 @@ function main(argv) {
   let workDir = null;
   try {
     const { outputFormat, systemPrompt, model } = parseSupportedArgs(argv);
+    if (process.env.CLAUDE_SMART_OPENCODE_MODEL?.trim()) {
+      throw new Error(
+        "CLAUDE_SMART_OPENCODE_MODEL has been retired. Use CLAUDE_SMART_LEARNING_MODEL for the saved OpenCode route, or pass --model when invoking this bridge directly. Clear the old setting.",
+      );
+    }
     const prompt = fs.readFileSync(0, "utf8");
     workDir = prepareWorkDir();
     const content = runOpenCode({
@@ -182,7 +187,7 @@ function runOpenCode({ prompt, model, workDir }) {
 }
 
 function opencodeModel(modelFromArgs) {
-  const explicit = (process.env.CLAUDE_SMART_LEARNING_MODEL || process.env.CLAUDE_SMART_OPENCODE_MODEL || "").trim();
+  const explicit = (process.env.CLAUDE_SMART_LEARNING_MODEL || "").trim();
   if (explicit) return explicit;
   const candidate = (modelFromArgs || "").trim();
   return candidate.includes("/") ? candidate : "";
