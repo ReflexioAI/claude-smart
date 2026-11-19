@@ -2800,6 +2800,8 @@ async function prepareGuidedRuntime(config, options, settings, baseline) {
   try {
     cpSync(PACKAGE_ROOT, directory, { recursive: true, filter: shouldCopyPath });
     verifyLocalPluginPackage(directory, "guided runtime");
+    if (!existsSync(join(pluginRoot, "scripts", "guided-command.sh")))
+      throw new Error("The guided runtime command launcher is missing");
     const tools = await bootstrapPluginRuntime(pluginRoot, { settings });
     // Only the guide may replace the dependencies of a prepared generation.
     writeFileSync(join(pluginRoot, "guide-prepared-runtime"), id, { flag: "wx", mode: 0o600 });

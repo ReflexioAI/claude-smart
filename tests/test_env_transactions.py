@@ -1283,10 +1283,10 @@ def test_scoped_creation_refuses_unavailable_quarantine_before_creating_leaf(
 
     from claude_smart import opencode_scope
 
-    def refuse_quarantine(_parent):
+    def refuse_quarantine(_ancestors, _lifetime):
         raise ValueError("scope and account directories on the same volume")
 
-    monkeypatch.setattr(opencode_scope, "_posix_quarantine_state", refuse_quarantine)
+    monkeypatch.setattr(opencode_scope, "_posix_quarantine_base", refuse_quarantine)
     loader = tmp_path.resolve() / "plugins" / "claude-smart.js"
     with ExitStack() as lifetime, pytest.raises(ValueError, match="same volume"):
         opencode_scope.open_scoped_file(
@@ -1294,3 +1294,47 @@ def test_scoped_creation_refuses_unavailable_quarantine_before_creating_leaf(
         )
     assert not loader.exists()
     assert not list(loader.parent.iterdir())
+
+
+def test_scoped_loader_install_and_remove_on_separate_local_volume(
+    tmp_path, monkeypatch
+):
+    import tempfile
+    from pathlib import Path
+
+    from claude_smart import opencode_scope
+
+    tmpfs = Path("/dev/shm")
+    if (
+        os.name == "nt"
+        or not tmpfs.is_dir()
+        or not os.access(tmpfs, os.W_OK)
+        or tmpfs.stat().st_dev == tmp_path.stat().st_dev
+    ):
+        pytest.skip("requires a writable tmpfs separate from the account filesystem")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with tempfile.TemporaryDirectory(
+        prefix="claude-smart-scope-", dir=tmpfs
+    ) as project:
+        loader = Path(project) / "loader.js"
+        edit = {
+            "path": str(loader),
+            "contents": None,
+            "identity": None,
+            "replacement": "probe",
+        }
+        opencode_scope._publish([edit], check=True)
+        assert not loader.exists()
+        opencode_scope._publish([edit], check=False)
+        assert loader.read_text() == "probe"
+        opencode_scope._publish(
+            [
+                {
+                    "path": str(loader),
+                    **opencode_scope._snapshot(loader),
+                    "replacement": None,
+                }
+            ],
+            check=False,
+        )
+        assert not list(loader.parent.iterdir())

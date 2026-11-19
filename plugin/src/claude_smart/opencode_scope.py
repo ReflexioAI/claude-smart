@@ -13,7 +13,6 @@ from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 from secrets import token_hex
-from tempfile import mkdtemp
 from typing import BinaryIO, TypedDict
 
 
@@ -41,6 +40,7 @@ def open_scoped_file(
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     parent = os.open(parts[0], directory_flags)
     lifetime.callback(os.close, parent)
+    ancestors = [(Path(parts[0]), parent)]
     for component in parts[1:-1]:
         try:
             child = os.open(component, directory_flags, dir_fd=parent)
@@ -54,18 +54,23 @@ def open_scoped_file(
             child = os.open(component, directory_flags, dir_fd=parent)
         lifetime.callback(os.close, child)
         parent = child
+        ancestors.append((ancestors[-1][0] / component, parent))
+    remove = rollback_creation if create else remove_existing
+    quarantine_base = (
+        _posix_quarantine_base(ancestors, lifetime) if remove is not None else None
+    )
     flags = (os.O_RDWR if writable else os.O_RDONLY) | os.O_NOFOLLOW | os.O_NONBLOCK
     if create:
-        _posix_quarantine_state(parent)
         flags |= os.O_CREAT | os.O_EXCL
     fd = os.open(parts[-1], flags, 0o600, dir_fd=parent)
     source, identity = _open_regular_file(fd, lifetime, writable)
-    remove = rollback_creation if create else remove_existing
-    if remove is not None:
+    if remove is not None and quarantine_base is not None:
         name = parts[-1]
 
         def remove_created() -> None:
-            _remove_posix_entry(parent, name, identity, discard_missing=create)
+            _remove_posix_entry(
+                parent, name, identity, quarantine_base, discard_missing=create
+            )
 
         remove.append(remove_created)
     return source, identity
@@ -97,36 +102,62 @@ def _restore_posix_entry(quarantine: int, parent: int, name: str) -> None:
         raise OSError(code, os.strerror(code))
 
 
-def _posix_quarantine_state(parent: int) -> Path:
+def _posix_quarantine_base(
+    ancestors: list[tuple[Path, int]], lifetime: ExitStack
+) -> tuple[Path, int]:
+    """Hold a private quarantine location on the target's own filesystem."""
+    uid = os.geteuid()
+    target_device = os.fstat(ancestors[-1][1]).st_dev
     state = Path.home() / ".claude-smart"
     state.mkdir(mode=0o700, exist_ok=True)
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    directory = os.open(state, flags)
-    try:
-        if os.fstat(directory).st_dev != os.fstat(parent).st_dev:
-            raise ValueError(
-                "OpenCode scope removal requires the scope and account directories on the same volume"
-            )
-    finally:
-        os.close(directory)
-    return state
+    account = os.open(state, flags)
+    info = os.fstat(account)
+    if info.st_dev == target_device and info.st_uid == uid and not info.st_mode & 0o022:
+        lifetime.callback(os.close, account)
+        return state, account
+    os.close(account)
+
+    # Directory descriptors pin the observed chain. An unrelated writer must
+    # not be able to rename or populate the directory used for quarantine.
+    previous = None
+    for path, directory in ancestors:
+        info = os.fstat(directory)
+        if previous is not None and previous.st_uid not in (0, uid):
+            break
+        if previous is not None and previous.st_mode & 0o022:
+            sticky_owned = previous.st_mode & stat.S_ISVTX and info.st_uid in (0, uid)
+            if not sticky_owned:
+                break
+        if (
+            info.st_dev == target_device
+            and info.st_uid == uid
+            and not info.st_mode & 0o022
+        ):
+            return path, directory
+        previous = info
+    raise ValueError(
+        "OpenCode scope and quarantine need a protected directory on the same volume"
+    )
 
 
 def _remove_posix_entry(
-    parent: int, name: str, identity: str, *, discard_missing: bool
+    parent: int,
+    name: str,
+    identity: str,
+    base: tuple[Path, int],
+    *,
+    discard_missing: bool,
 ) -> None:
-    # Keep temporary state outside the project so a writer to the project
-    # directory cannot replace or populate the quarantine.
-    state = _posix_quarantine_state(parent)
-    private = Path(mkdtemp(prefix=".scope-removal-", dir=state))
+    base_path, base_fd = base
+    private = f".scope-removal-{token_hex(12)}"
+    os.mkdir(private, mode=0o700, dir_fd=base_fd)
     retained = False
     try:
-        quarantine = os.open(private, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        quarantine = os.open(
+            private, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=base_fd
+        )
         try:
-            if os.fstat(quarantine).st_dev != os.fstat(parent).st_dev:
-                raise ValueError(
-                    "OpenCode scope removal requires the scope and account directories on the same volume"
-                )
             try:
                 os.rename(name, "entry", src_dir_fd=parent, dst_dir_fd=quarantine)
             except FileNotFoundError:
@@ -139,8 +170,9 @@ def _remove_posix_entry(
                 try:
                     _restore_posix_entry(quarantine, parent, name)
                 except OSError as error:
+                    retained_path = base_path / private / "entry"
                     raise ValueError(
-                        f"OpenCode file changed before removal; its replacement is preserved at {private / 'entry'}"
+                        f"OpenCode file changed before removal; its replacement is preserved at {retained_path}"
                     ) from error
                 retained = False
                 raise ValueError(
@@ -152,7 +184,7 @@ def _remove_posix_entry(
             os.close(quarantine)
     finally:
         if not retained:
-            private.rmdir()
+            os.rmdir(private, dir_fd=base_fd)
 
 
 def _open_regular_file(
