@@ -185,6 +185,9 @@ def test_dashboard_proxy_prefers_the_saved_file_over_its_launch_env(
 
 @pytest.mark.parametrize("model", ["provider/model#high", "#high"])
 def test_dashboard_saves_opencode_variant_reference(tmp_path: Path, model: str) -> None:
+    env_file = tmp_path / ".claude-smart" / ".env"
+    env_file.parent.mkdir()
+    env_file.write_text("CLAUDE_SMART_LEARNING_PROVIDER=opencode\n")
     out = _run_config_module(
         tmp_path,
         f"await m.writeConfig({{CLAUDE_SMART_LEARNING_MODEL: {json.dumps(model)}}}); "
@@ -192,6 +195,22 @@ def test_dashboard_saves_opencode_variant_reference(tmp_path: Path, model: str) 
         {},
     )
     assert json.loads(out)["CLAUDE_SMART_LEARNING_MODEL"] == model
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude-code"])
+def test_dashboard_refuses_variant_reference_for_other_providers(tmp_path, provider):
+    env_file = tmp_path / ".claude-smart" / ".env"
+    env_file.parent.mkdir()
+    saved = f"CLAUDE_SMART_LEARNING_PROVIDER={provider}\n"
+    env_file.write_text(saved)
+    out = _run_config_module(
+        tmp_path,
+        'try { await m.writeConfig({CLAUDE_SMART_LEARNING_MODEL: "#high"}); } '
+        "catch (error) { process.stdout.write(error.message); }",
+        {"CLAUDE_SMART_LEARNING_PROVIDER": "opencode"},
+    )
+    assert "valid model reference" in out
+    assert env_file.read_text() == saved
 
 
 def test_dashboard_save_does_not_turn_off_absent_local_providers(

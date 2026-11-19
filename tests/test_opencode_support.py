@@ -809,6 +809,62 @@ def test_public_confirmation_preserves_or_discovers_opencode_path(
     assert not (tmp_path / ".reflexio/.env").exists()
 
 
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("retired-file", "CLAUDE_SMART_OPENCODE_VARIANT has been retired"),
+        ("retired-process", "CLAUDE_SMART_OPENCODE_VARIANT has been retired"),
+        ("standalone-only", "does not advertise --variant"),
+        ("variant-supported", ""),
+    ],
+)
+def test_public_setup_checks_opencode_variant_before_publication(
+    tmp_path: Path, case: str, expected: str
+) -> None:
+    if os.name == "nt":
+        pytest.skip("uses a POSIX executable fixture")
+    from tests.test_install_scripts import _run_public_setup
+
+    executable = _fake_opencode_path(tmp_path)
+    declarations = "--variant string" if case == "variant-supported" else "--standalone"
+    executable.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = run ] && [ "$2" = --help ]; then\n'
+        f"  printf '%s\\n' '{declarations}' >&2\n"
+        "fi\n"
+    )
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    saved = 'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\n'
+    if case == "retired-file":
+        saved += "CLAUDE_SMART_OPENCODE_VARIANT=high\n"
+    selected.write_text(saved)
+    env = {"CLAUDE_SMART_OPENCODE_PATH": str(executable)}
+    if case == "retired-process":
+        env["CLAUDE_SMART_OPENCODE_VARIANT"] = "high"
+    result = _run_public_setup(
+        tmp_path,
+        "--backend",
+        "local",
+        "--provider",
+        "opencode",
+        "--model",
+        "#high",
+        env_extra=env,
+    )
+    if expected:
+        assert result.returncode != 0
+        assert expected in result.stderr
+        assert selected.read_text() == saved
+        assert "Installing Claude Code integration" not in result.stdout
+    else:
+        assert result.returncode == 0, result.stderr
+        assert (
+            dotenv_values(selected, interpolate=False)["CLAUDE_SMART_LEARNING_MODEL"]
+            == "#high"
+        )
+
+
 def _fake_opencode_path(tmp_path: Path) -> Path:
     fake_opencode = tmp_path / "opencode"
     fake_opencode.write_text("#!/bin/sh\nexit 0\n")

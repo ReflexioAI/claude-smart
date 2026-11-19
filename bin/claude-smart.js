@@ -2050,6 +2050,7 @@ function savedInstallConfiguration(captured) {
     apiKey,
     provider: env.get(LEARNING_PROVIDER_ENV) || env.get(CLAUDE_SMART_HOST_ENV),
     model: env.get("CLAUDE_SMART_LEARNING_MODEL") || "",
+    retiredOpenCodeVariant: Boolean(env.get("CLAUDE_SMART_OPENCODE_VARIANT")?.trim()),
     managedUrl: env.get("CLAUDE_SMART_MANAGED_URL") || "",
     managedApiKey: env.get("CLAUDE_SMART_MANAGED_API_KEY") || "",
     localUrl: env.get("CLAUDE_SMART_LOCAL_URL") || "",
@@ -2505,24 +2506,49 @@ function learningProviderVersion(config) {
         : config.provider === HOST_CLAUDE_CODE
           ? "claude"
           : null;
+  const result = probeLearningCli(command, ["--version"], 4096);
+  if (!result) return undefined;
+  const version = (result.stdout || "").trim();
+  return /^[A-Za-z0-9][A-Za-z0-9 ._()+:/-]{0,159}$/.test(version) ? version : undefined;
+}
+
+function probeLearningCli(command, args, maxBuffer) {
   if (!command) return undefined;
   const shell =
     isWindows() && (command === "claude" || command === "codex" || /\.(?:cmd|bat)$/i.test(command));
-  // Node joins shell arguments without quoting batch-file paths. Optional
-  // metadata probes must not interpret shell metacharacters in a custom path.
+  // Node joins batch-file arguments through the shell. Reject paths that
+  // cannot be quoted literally, and pass only fixed probe arguments.
   if (shell && /[%!^&|<>"\r\n]/.test(command)) return undefined;
-  const probeCommand = shell ? `"${command}"` : command;
-  const result = spawnSync(probeCommand, ["--version"], {
+  const result = spawnSync(shell ? `"${command}"` : command, args, {
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
+    stdio: ["ignore", "pipe", "pipe"],
     timeout: 3000,
-    maxBuffer: 4096,
+    maxBuffer,
     windowsHide: true,
     shell,
   });
-  if (result.status !== 0 || result.error || result.signal) return undefined;
-  const version = (result.stdout || "").trim();
-  return /^[A-Za-z0-9][A-Za-z0-9 ._()+:/-]{0,159}$/.test(version) ? version : undefined;
+  return result.status === 0 && !result.error && !result.signal ? result : undefined;
+}
+
+function validateGuidedOpenCodeLearning(config, saved) {
+  if (config.backend !== "local" || config.provider !== HOST_OPENCODE ||
+      !/^(?:1|true|yes|on)$/i.test(config.useLocalCli || "") ||
+      (config.url && !isBundledBackendUrl(config.url))) return;
+  if (saved.retiredOpenCodeVariant || process.env.CLAUDE_SMART_OPENCODE_VARIANT?.trim()) {
+    throw new Error(
+      "CLAUDE_SMART_OPENCODE_VARIANT has been retired. Move the variant to " +
+      "CLAUDE_SMART_LEARNING_MODEL=provider/model#variant and remove the old assignment before updating.",
+    );
+  }
+  if (!config.model?.startsWith("#")) return;
+  const probe = config.cliPath ? undefined
+    : probeLearningCli(resolveOpenCodePath(), ["run", "--help"], 64 * 1024);
+  const help = probe ? `${probe.stdout}\n${probe.stderr}` : "";
+  if (!/^\s*(?:-[A-Za-z0-9],\s*)?--variant(?=[,\s=]|$)/m.test(help)) {
+    throw new Error(
+      "The selected OpenCode CLI does not advertise --variant. Specify provider/model#variant instead of #variant.",
+    );
+  }
 }
 
 function readGuidedRuntime(id) {
@@ -2941,6 +2967,7 @@ async function runGuidedCommand(command, args) {
       inventory: installInventory,
       saved: () => saved,
       save: async (config, options) => {
+        validateGuidedOpenCodeLearning(config, saved);
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
         const { baseline } = await resumeGuidedShutdown();
         const settings = planInstallSettings(config, captured);

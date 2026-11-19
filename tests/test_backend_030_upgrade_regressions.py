@@ -498,6 +498,37 @@ def test_backend_runner_pins_a_fresh_install(tmp_path: Path) -> None:
             ).fetchone() == (ORG,)
 
 
+@requires_binding_vendor
+@pytest.mark.parametrize("source", ["inherited", "saved"])
+def test_inference_owner_uses_same_retired_org_policy_as_backend(tmp_path, source):
+    dotenv = tmp_path / ".env"
+    value = "REFLEXIO_EMBEDDING_PROVIDER=local_service\n"
+    selector = "REFLEXIO_DEFAULT_ORG_ID"
+    if source == "saved":
+        value += f"{selector}=foreign-org\n"
+    dotenv.write_text(value)
+    env = _env(tmp_path)
+    env[selector] = "foreign-org"
+    env["REFLEXIO_ENV_FILE"] = str(dotenv)
+    env.pop("PYTHON_DOTENV_DISABLED", None)
+    result = subprocess.run(
+        [sys.executable, "-P", str(RUNNER.with_name("backend-inference-owner.py"))],
+        env=env,
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    if source == "saved":
+        assert result.returncode != 0
+        assert selector in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "colocated"
+    assert dotenv.read_text() == value
+
+
 @requires_vendor
 @pytest.mark.parametrize("stale", [False, True])
 @pytest.mark.parametrize("storage", ["fresh", "custom", "non_sqlite"])

@@ -136,16 +136,7 @@ export function deriveFromBackendPort(url: string): string {
 export async function writeConfig(
   update: Partial<ClaudeSmartConfig>,
 ): Promise<void> {
-  const model = update.CLAUDE_SMART_LEARNING_MODEL;
-  if (
-    model &&
-    (typeof model !== "string" ||
-      model.length > 200 ||
-      !/^(?:[A-Za-z0-9][A-Za-z0-9._:/-]*)?(?:#[A-Za-z0-9][A-Za-z0-9._-]*)?$/.test(model))
-  )
-    throw new Error("Learning model must be a valid model reference");
   const file = envPath();
-  await fs.mkdir(path.dirname(file), { recursive: true });
 
   const safeUpdate = Object.fromEntries(
     Object.entries(update).filter(([k]) => KNOWN.has(k)),
@@ -168,6 +159,24 @@ export async function writeConfig(
     const pair = parseLine(line);
     if (pair) current.set(pair.key, pair.value);
   }
+  const model = update.CLAUDE_SMART_LEARNING_MODEL;
+  const provider =
+    (current.get("CLAUDE_SMART_LEARNING_PROVIDER") ??
+      process.env.CLAUDE_SMART_LEARNING_PROVIDER) ||
+    process.env.CLAUDE_SMART_HOST ||
+    current.get("CLAUDE_SMART_HOST") ||
+    "claude-code";
+  const modelPattern =
+    provider === "opencode"
+      ? /^(?:[A-Za-z0-9][A-Za-z0-9._:/-]*)?(?:#[A-Za-z0-9][A-Za-z0-9._-]*)?$/
+      : /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+  if (
+    model &&
+    (typeof model !== "string" || model.length > 200 || !modelPattern.test(model))
+  )
+    throw new Error("Learning model must be a valid model reference");
+  await fs.mkdir(path.dirname(file), { recursive: true });
+
   const currentUrl = current.get("REFLEXIO_URL") || defaultReflexioUrl();
   const requestedUrl = String(safeUpdate.REFLEXIO_URL || currentUrl);
   const origin = (value: string) => {

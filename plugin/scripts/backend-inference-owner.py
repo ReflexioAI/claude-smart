@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from contextlib import redirect_stdout
 from importlib import import_module
+from importlib.util import find_spec
 import os
 from pathlib import Path
 import sys
@@ -41,6 +42,14 @@ def inference_is_colocated() -> bool:
             )
 
             block_implicit_dotenv_walkup()
+            if find_spec("reflexio.removed_env") is not None:
+                from reflexio.removed_env import REMOVED_ENV_ALIASES
+
+                # Match the backend launcher. A removed inherited selector
+                # must not affect topology; the SDK still checks dotenv keys.
+                selector = "REFLEXIO_DEFAULT_ORG_ID"
+                if selector in REMOVED_ENV_ALIASES:
+                    os.environ.pop(selector, None)
         finally:
             if previous is None:
                 os.environ.pop("PYTHON_DOTENV_DISABLED", None)
