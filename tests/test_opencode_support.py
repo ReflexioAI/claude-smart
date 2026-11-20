@@ -554,6 +554,8 @@ process.stdout.write(JSON.stringify({{
         (r"C:\tools\opencode.cmd ", r"C:\tools\opencode.cmd", True),
         (r" tools\opencode.exe", r"C:\bridge-cwd\ tools\opencode.exe", False),
         ("opencode.cmd", "opencode.cmd", True),
+        (r".\opencode.cmd", r"C:\bridge-cwd\opencode.cmd", True),
+        ("./opencode.exe", r"C:\bridge-cwd\opencode.exe", False),
         ("C:opencode.cmd", r"C:\bridge-cwd\opencode.cmd", True),
     ],
 )

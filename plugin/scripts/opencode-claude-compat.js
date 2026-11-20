@@ -125,7 +125,7 @@ function configuredExecutable(value) {
   const windows = process.platform === "win32";
   // Bare Windows names keep the normal executable search. Explicit paths
   // must name the same file after the child moves to its isolated directory.
-  if (windows && path.win32.dirname(value) === "." && path.win32.dirname(trimmed) === ".") return trimmed;
+  if (windows && !/^[A-Za-z]:|[\\/]/.test(trimmed)) return trimmed;
   if (!windows && value === trimmed) return trimmed;
   const batchPath = value.trimEnd();
   const exactPath = windows && /\.(?:cmd|bat)$/i.test(batchPath) ? batchPath : value;
