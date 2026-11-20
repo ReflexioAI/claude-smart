@@ -153,14 +153,19 @@ function executableFile(candidate) {
 function resolveWindowsOpenCodePath(value, searchPath = process.env.PATH || "") {
   const resolvePath = process.platform === "win32" ? path.win32.resolve : path.resolve;
   const name = value.trim();
-  const candidate = /\.(?:cmd|bat)$/i.test(value.trimEnd()) ? value.trimEnd() : value;
-  if (executableFile(candidate)) return resolvePath(candidate);
-  if (candidate !== name && executableFile(name)) return resolvePath(name);
   const names = path.extname(name) ? [name] : [
     `${name}.exe`, `${name}.cmd`, `${name}.bat`, name,
   ];
-  const onPath = /^[A-Za-z]:|[\\/]/.test(name) ? null : commandPath(names, searchPath, ";");
-  const match = onPath || names.find(executableFile);
+  // Bare commands use PATH before any working-directory fallback. Explicit
+  // relative paths continue to bind the selected file before the child changes cwd.
+  if (!/^[A-Za-z]:|[\\/]/.test(name)) {
+    const onPath = commandPath(names, searchPath, ";");
+    if (onPath) return resolvePath(onPath);
+  }
+  const candidate = /\.(?:cmd|bat)$/i.test(value.trimEnd()) ? value.trimEnd() : value;
+  if (executableFile(candidate)) return resolvePath(candidate);
+  if (candidate !== name && executableFile(name)) return resolvePath(name);
+  const match = names.find(executableFile);
   return match ? resolvePath(match) : null;
 }
 

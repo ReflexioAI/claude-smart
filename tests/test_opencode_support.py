@@ -553,6 +553,8 @@ process.stdout.write(JSON.stringify({{
     [
         (r"C:\tools\opencode.cmd ", r"C:\tools\opencode.cmd", True),
         (r" tools\opencode.exe", r"C:\bridge-cwd\ tools\opencode.exe", False),
+        ("opencode", r"C:\selected-bin\opencode.exe", False),
+        (r".\opencode", r"C:\bridge-cwd\opencode", False),
         ("opencode.cmd", r"C:\bridge-cwd\opencode.cmd", True),
         (r".\opencode.cmd", r"C:\bridge-cwd\opencode.cmd", True),
         ("./opencode.exe", r"C:\bridge-cwd\opencode.exe", False),
@@ -574,7 +576,8 @@ process.cwd = () => "C:\\bridge-cwd";
 require("node:os").tmpdir = () => process.env.TEST_DIRECTORY;
 const fs = require("node:fs");
 const isFixture = (file) => file === process.env.CLAUDE_SMART_OPENCODE_PATH
-  || file === process.env.TEST_EXPECTED_PATH;
+  || file === process.env.TEST_EXPECTED_PATH
+  || file === require("node:path").join(process.env.TEST_SEARCH_ROOT, "opencode.exe");
 const exists = fs.existsSync;
 const stat = fs.statSync;
 const access = fs.accessSync;
@@ -600,6 +603,8 @@ require("node:child_process").spawnSync = (command, args, options) => {
         env={
             **os.environ,
             "TEST_DIRECTORY": str(tmp_path),
+            "TEST_SEARCH_ROOT": r"C:\selected-bin",
+            "PATH": r"C:\selected-bin",
             "CLAUDE_SMART_OPENCODE_PATH": selected_path,
             "TEST_EXPECTED_PATH": expected_path,
             "TEST_SHELL": "1" if use_shell else "0",
