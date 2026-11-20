@@ -103,7 +103,11 @@ def load_reflexio_env(path: Path | None = None) -> None:
         if parsed is None:
             continue
         key, value = parsed
-        os.environ.setdefault(key, value)
+        # Shell hooks and status select the first nonempty saved session directory.
+        if key == "CLAUDE_SMART_STATE_DIR" and not os.environ.get(key):
+            os.environ[key] = value
+        else:
+            os.environ.setdefault(key, value)
 
 
 class SettingsBusyError(RuntimeError):

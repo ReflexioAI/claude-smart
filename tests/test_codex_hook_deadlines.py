@@ -198,7 +198,6 @@ class ReflexioClient:
         "REFLEXIO_URL": "http://127.0.0.1:1",
         "REFLEXIO_API_KEY": "diagnostic-only",
         "DIAGNOSTIC_GATE": str(gate),
-        "CLAUDE_SMART_HOOK_LOG": str(tmp_path / "hook.log"),
     }
     try:
         result = subprocess.run(

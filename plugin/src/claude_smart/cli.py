@@ -34,6 +34,7 @@ from claude_smart import (
     context_format,
     cs_cite,
     env_config,
+    hook_log,
     ids,
     publish,
     state,
@@ -370,7 +371,7 @@ def cmd_learn(args: argparse.Namespace) -> int:
             "Its `publish_dead_letter` record in the session buffer keeps the "
             "request ID, range and reason. The local interactions remain there; "
             "retrying will not resend that range. "
-            "See `publish-parked` in ~/.claude-smart/hook.log.\n"
+            f"See `publish-parked` in {hook_log.log_path()}.\n"
         )
         return 1
     sys.stdout.write(_REFLEXIO_UNREACHABLE_MSG)

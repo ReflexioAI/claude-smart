@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import stat
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -19,7 +21,6 @@ def hook_log_path(tmp_path, monkeypatch) -> Path:
     """Redirect ``hook_log`` writes to a per-test tmp path."""
     log_path = tmp_path / "hook.log"
     monkeypatch.setattr(hook_log, "_LOG_PATH", log_path)
-    monkeypatch.delenv("CLAUDE_SMART_HOOK_LOG", raising=False)
     return log_path
 
 
@@ -96,36 +97,60 @@ def test_log_event_tolerates_readonly_log_dir(tmp_path, monkeypatch) -> None:
     locked.chmod(0o500)
     try:
         monkeypatch.setattr(hook_log, "_LOG_PATH", locked / "sub" / "hook.log")
-        monkeypatch.delenv("CLAUDE_SMART_HOOK_LOG", raising=False)
         # Must not raise.
         hook_log.log_event(event="stop", host="claude-code")
     finally:
         locked.chmod(0o700)
 
 
-def test_log_path_honors_env_override(tmp_path, monkeypatch) -> None:
-    target = tmp_path / "override.log"
-    monkeypatch.setenv("CLAUDE_SMART_HOOK_LOG", str(target))
-    hook_log.log_event(event="stop", host="claude-code")
-    assert target.is_file()
-    assert _read_lines(target)[0]["event"] == "stop"
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
+@pytest.mark.parametrize("filename", ["hook.log", "hook.log.lock", "hook.log.rot"])
+def test_hook_does_not_block_on_session_diagnostic_fifo(tmp_path, filename) -> None:
+    state_dir = tmp_path / "sessions"
+    state_dir.mkdir()
+    os.mkfifo(state_dir / filename)
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "plugin" / "src"),
+        "CLAUDE_SMART_STATE_DIR": str(state_dir),
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from claude_smart import hook, hook_log; hook_log._MAX_LOG_BYTES = 1; "
+            "raise SystemExit(hook.main(['opencode', 'test-observation']))",
+        ],
+        cwd=tmp_path,
+        env=env,
+        input=json.dumps({"session_id": "test", "cwd": str(tmp_path)}),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["continue"] is True
+    if filename.endswith(".lock"):
+        assert not (state_dir / "hook.log").exists()
+    if filename.endswith(".rot"):
+        assert _read_lines(state_dir / "hook.log")[0]["session_id"] == "test"
+        assert not list(state_dir.glob(".hook-log-*"))
 
 
-@pytest.mark.parametrize("raw", ["1", "true", "TRUE", " yes ", "On", "  "])
-def test_log_path_treats_boolean_env_as_default(
-    hook_log_path, monkeypatch, raw: str
+def test_log_path_follows_the_session_directory(
+    hook_log_path, tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("CLAUDE_SMART_HOOK_LOG", raw)
+    state_dir = tmp_path / "sessions"
+    previous_log = tmp_path / "previous-hook.log"
+    previous_log.write_text("old log stays in place")
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("CLAUDE_SMART_HOOK_LOG", str(previous_log))
     hook_log.log_event(event="stop", host="claude-code")
-    assert _read_lines(hook_log_path)[0]["event"] == "stop"
-
-
-def test_log_path_trims_env_override_path(tmp_path, monkeypatch) -> None:
-    target = tmp_path / "override.log"
-    monkeypatch.setenv("CLAUDE_SMART_HOOK_LOG", f"  {target}  ")
-    hook_log.log_event(event="stop", host="claude-code")
-    assert target.is_file()
-    assert _read_lines(target)[0]["event"] == "stop"
+    assert _read_lines(state_dir / "hook.log")[0]["event"] == "stop"
+    assert not hook_log_path.exists()
+    assert previous_log.read_text() == "old log stays in place"
 
 
 # -----------------------------------------------------------------------------
@@ -378,6 +403,43 @@ def test_log_rotates_when_over_max_bytes(hook_log_path, monkeypatch) -> None:
     assert "sess-0059" in session_ids
     # And the very oldest must be gone.
     assert "sess-0000" not in session_ids
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_rotating_log_retains_existing_access(hook_log_path, monkeypatch) -> None:
+    hook_log.log_event(event="stop", host="claude-code", session_id="first")
+    hook_log_path.chmod(0o640)
+    monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 1)
+    hook_log.log_event(event="stop", host="claude-code", session_id="second")
+    assert [row["session_id"] for row in _read_lines(hook_log_path)] == ["second"]
+    assert stat.S_IMODE(hook_log_path.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("operation", ["fchown", "fchmod"])
+def test_rotation_stays_bounded_when_access_cannot_be_copied(
+    hook_log_path, monkeypatch, operation
+) -> None:
+    hook_log.log_event(event="stop", host="claude-code", session_id="first")
+    hook_log_path.chmod(0o640)
+
+    def denied(*_args):
+        raise PermissionError("cannot copy access")
+
+    if operation == "fchown":
+        fstat = os.fstat
+
+        def different_group(fd):
+            info = list(fstat(fd))
+            info[stat.ST_GID] += 1
+            return os.stat_result(info)
+
+        monkeypatch.setattr(os, "fstat", different_group)
+    monkeypatch.setattr(os, operation, denied)
+    monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 1)
+    hook_log.log_event(event="stop", host="claude-code", session_id="second")
+    assert [row["session_id"] for row in _read_lines(hook_log_path)] == ["second"]
+    assert stat.S_IMODE(hook_log_path.stat().st_mode) == 0o600
 
 
 def test_log_does_not_rotate_when_under_max_bytes(hook_log_path, monkeypatch) -> None:
@@ -656,16 +718,15 @@ def test_test_runs_never_write_the_account_hook_log(tmp_path, monkeypatch) -> No
     account_log = tmp_path / "account-home" / ".claude-smart" / "hook.log"
     monkeypatch.setattr(hook_log, "_account_log_path", lambda: account_log)
     monkeypatch.setattr(hook_log, "_LOG_PATH", account_log)
-    monkeypatch.delenv("CLAUDE_SMART_HOOK_LOG", raising=False)
     assert os.environ.get("PYTEST_CURRENT_TEST")
 
     hook_log.log_event(event="publish-result", host="codex", session_id="session")
-    monkeypatch.setenv("CLAUDE_SMART_HOOK_LOG", str(account_log))
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(account_log.parent))
     hook_log.log_event(event="publish-result", host="codex", session_id="session")
     assert not account_log.exists()
 
-    # A redirected log (tmp HOME, explicit override) still records normally.
-    redirected = tmp_path / "redirected.log"
-    monkeypatch.setenv("CLAUDE_SMART_HOOK_LOG", str(redirected))
+    # An isolated session directory still records normally.
+    redirected = tmp_path / "sessions"
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(redirected))
     hook_log.log_event(event="stop", host="codex", session_id="session")
-    assert _read_lines(redirected)[0]["event"] == "stop"
+    assert _read_lines(redirected / "hook.log")[0]["event"] == "stop"

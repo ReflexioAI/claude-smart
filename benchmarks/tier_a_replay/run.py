@@ -17,7 +17,6 @@ import re
 import shutil
 import sqlite3
 import subprocess
-import sys
 import textwrap
 import time
 import uuid
@@ -628,11 +627,13 @@ def run_hook_preflight(case: Case, run_dir: Path) -> dict[str, Any]:
     expected = expected_real_ids(case)
     retrieved = real_ids(records)
     overlap = sorted(set(expected) & set(retrieved))
+    hook_log = state_dir / "hook.log"
     return {
         "returncode": proc.returncode,
         "stdout_path": str(preflight_dir / "stdout.json"),
         "stderr_path": str(preflight_dir / "stderr.txt"),
         "context_path": str(preflight_dir / "additional_context.md"),
+        "hook_log_path": str(hook_log) if hook_log.is_file() else None,
         "retrieved_learning_context": context,
         "injected_records_path": str(preflight_dir / "injected_records.json"),
         "retrieved_learning_records": records,

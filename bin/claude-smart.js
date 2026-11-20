@@ -47,7 +47,7 @@ const {
 const http = require("http");
 const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
-const { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } = require("path");
+const { basename, dirname, extname, isAbsolute, join, parse: parsePath, relative, resolve, sep } = require("path");
 const { fileURLToPath, pathToFileURL } = require("url");
 const guide = require("./install-guide");
 
@@ -335,9 +335,7 @@ const CALLER_FIRST_ENV_KEYS = new Set([
   "CLAUDE_SMART_STATE_DIR",
 ]);
 
-function readEnvSnapshot(path) {
-  const exists = existsSync(path);
-  const bytes = exists ? readFileSync(path) : Buffer.alloc(0);
+function parseEnvSnapshot(bytes, exists) {
   const values = new Map();
   const rows = new Map();
   const lines = new TextDecoder("utf-8", { fatal: true })
@@ -354,6 +352,11 @@ function readEnvSnapshot(path) {
     }
   }
   return { exists, bytes, values, rows, lines };
+}
+
+function readEnvSnapshot(path) {
+  const exists = existsSync(path);
+  return parseEnvSnapshot(exists ? readFileSync(path) : Buffer.alloc(0), exists);
 }
 
 function readEnvFile(path) {
@@ -5462,6 +5465,29 @@ function openCodeInstalledVersion(args) {
   }
 }
 
+function statusSessionDirectory() {
+  let directory = process.env.CLAUDE_SMART_STATE_DIR;
+  if (!directory) {
+    try {
+      const fd = openSync(CLAUDE_SMART_ENV_PATH, constants.O_RDONLY | constants.O_NONBLOCK);
+      try {
+        if (fstatSync(fd).isFile()) {
+          const { values } = parseEnvSnapshot(readFileSync(fd), true);
+          directory = values.get("CLAUDE_SMART_STATE_DIR");
+        }
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      // Missing or unreadable settings should not hide account observations.
+    }
+  }
+  // Hooks can run from a different cwd. Only an absolute path selects a shared log.
+  if (!directory || !isAbsolute(directory)) return CLAUDE_SMART_STATE_DIR;
+  if (sep === "\\" && ["\\", "/"].includes(parsePath(directory).root)) return CLAUDE_SMART_STATE_DIR;
+  return directory;
+}
+
 function runStatus(args) {
   const host = parseHost(args);
   let installed = null;
@@ -5529,13 +5555,12 @@ function runStatus(args) {
 
   // Match only this host and account. The shared log is bounded by hook_log;
   // read its last 5 MiB even if an older writer left a larger file behind.
-  const logOverride = (process.env.CLAUDE_SMART_HOOK_LOG || "").trim();
-  const logPath =
-    logOverride && !["1", "true", "yes", "on"].includes(logOverride.toLowerCase())
-      ? logOverride
-      : join(CLAUDE_SMART_STATE_DIR, "hook.log");
   const sessions = new Map();
   try {
+    const logDirectory = statusSessionDirectory();
+    // Preserve filesystem traversal of '..' after symlinks.
+    const needsSeparator = !logDirectory.endsWith(sep);
+    const logPath = `${logDirectory}${needsSeparator ? sep : ""}hook.log`;
     const fd = openSync(logPath, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
       const stat = fstatSync(fd);

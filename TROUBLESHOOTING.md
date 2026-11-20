@@ -94,7 +94,7 @@ rm -rf ~/.reflexio/data/           # reflexio SQLite store
 
 ### Diagnose automatic publishing failures
 
-`~/.claude-smart/hook.log` includes `publish-result` records with the plugin version,
+The account log at `~/.claude-smart/hook.log` (or `hook.log` in an absolute session directory) includes `publish-result` records with the plugin version,
 backend scheme/hostname/port, publish count, exception class, and HTTP status when
 available. Failed records also carry the `request_id`, the server's `error_reason` (such as
 `request_id_conflict`) and its `server_message`,

@@ -7,7 +7,7 @@ This module reads the hook JSON from stdin, routes to the matching handler,
 and makes sure no unhandled exception ever propagates.
 
 Every fire attempts one best-effort structured JSON line in
-``~/.claude-smart/hook.log`` via ``hook_log.log_event`` — covers the
+the selected diagnostic log via ``hook_log.log_event`` — covers the
 event name, session id, internal-invocation skip, handler outcome
 (``ok`` / ``raised:<Exc>`` / ``unknown_event``), and for Stop/SessionEnd
 the publish status + count. The log is the forensic trail for chasing

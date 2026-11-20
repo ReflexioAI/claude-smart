@@ -7,8 +7,8 @@ captures but typically does not surface. The dispatcher already wraps
 handlers in a broad ``except`` (so a hook crash never breaks the user's
 session) — without a forensic trail the silent-fail mode is invisible.
 
-This module attempts one JSON line per hook fire to
-``~/.claude-smart/hook.log`` from ``hook.main`` after the handler returns.
+This module attempts one JSON line per hook fire after the handler returns.
+The log belongs to the selected session directory or the default account.
 The Stop and SessionEnd handlers additionally piggyback their publish
 outcome into the record so the chain hook→adapter→backend is fully
 observable from a single file.
@@ -22,15 +22,18 @@ or read-only ``$HOME`` must never abort an in-progress hook.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import logging
 import os
+import stat
+import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import IO, Any
 
-from claude_smart import runtime
+from claude_smart import runtime, state
 
 # ``fcntl`` is POSIX-only. On Windows we skip the cross-process lock and
 # accept the unlikely rotation race (claude-smart is primarily a POSIX
@@ -158,7 +161,9 @@ def log_event(
         if not acquired:
             return
         try:
-            with path.open("a", encoding="utf-8") as fh:
+            with open(
+                path, "a", encoding="utf-8", opener=_open_nonblocking_regular
+            ) as fh:
                 fh.write(line)
         except OSError as exc:
             _LOGGER.debug("hook_log: write to %s failed: %s", path, exc)
@@ -170,28 +175,25 @@ def log_event(
         _maybe_rotate(path)
 
 
+def _open_nonblocking_regular(path: str, flags: int) -> int:
+    fd = os.open(path, flags | getattr(os, "O_NONBLOCK", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "Diagnostic path must be a regular file", path)
+    except OSError:
+        os.close(fd)
+        raise
+    return fd
+
+
 def log_path() -> Path:
-    """Return the active log path, honouring ``CLAUDE_SMART_HOOK_LOG``.
-
-    Resolution order:
-
-    1. ``CLAUDE_SMART_HOOK_LOG`` env var — boolean-like values enable the
-       default log, while path-like values redirect it.
-    2. ``_LOG_PATH`` module attribute — what monkeypatched tests override.
-    3. ``~/.claude-smart/hook.log`` — the default.
-
-    Returns:
-        Path: The absolute path to write to.
-    """
-    override = os.environ.get("CLAUDE_SMART_HOOK_LOG")
-    if override:
-        override = override.strip()
-        if not override:
-            return _LOG_PATH
-        if override.lower() in {"1", "true", "yes", "on"}:
-            return _LOG_PATH
-        return Path(override)
-    return _LOG_PATH
+    """Use the shared absolute session directory or the default account log."""
+    directory = state.configured_state_dir()
+    return (
+        directory / "hook.log"
+        if directory is not None and directory.is_absolute()
+        else _LOG_PATH
+    )
 
 
 def _account_log_path() -> Path:
@@ -248,7 +250,7 @@ def _rotation_lock(path: Path) -> Iterator[bool]:
     lock_path = path.with_name(path.name + ".lock")
     fh: IO[bytes] | None = None
     try:
-        fh = lock_path.open("ab")
+        fh = open(lock_path, "ab", opener=_open_nonblocking_regular)
     except OSError as exc:
         _LOGGER.debug("hook_log: lock open %s failed: %s", lock_path, exc)
         yield False
@@ -300,12 +302,12 @@ def _maybe_rotate(path: Path) -> None:
         None
     """
     try:
-        size = path.stat().st_size
+        current_stat = path.stat()
     except OSError as exc:
         _LOGGER.debug("hook_log: stat for rotation failed: %s", exc)
         return
 
-    if size < _MAX_LOG_BYTES:
+    if current_stat.st_size < _MAX_LOG_BYTES:
         return
 
     try:
@@ -329,12 +331,25 @@ def _maybe_rotate(path: Path) -> None:
     # avoids the truncation window where a concurrent reader would see
     # an empty file, and matches the contract that ``hook.log`` always
     # contains complete JSONL framing.
-    tmp_path = path.with_name(path.name + ".rot")
+    tmp_path: Path | None = None
     try:
-        tmp_path.write_bytes(tail)
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=".hook-log-", delete=False
+        ) as staged:
+            tmp_path = Path(staged.name)
+            staged.write(tail)
+            if os.name != "nt":
+                mode = stat.S_IMODE(current_stat.st_mode)
+                # Keep the replacement private if the original group or mode
+                # cannot be restored. Rotation must still cap the log.
+                with contextlib.suppress(OSError):
+                    fd = staged.fileno()
+                    if mode & 0o070 and os.fstat(fd).st_gid != current_stat.st_gid:
+                        os.fchown(fd, -1, current_stat.st_gid)
+                    os.fchmod(fd, mode)
         tmp_path.replace(path)
     except OSError as exc:
         _LOGGER.debug("hook_log: rotation rename failed: %s", exc)
-        # Best-effort cleanup of the temp file; ignore failures.
-        with contextlib.suppress(OSError):
-            tmp_path.unlink(missing_ok=True)
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink(missing_ok=True)

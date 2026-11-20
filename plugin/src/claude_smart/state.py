@@ -113,10 +113,15 @@ def _truncate_tool_data_field(value: Any) -> Any:
     return value
 
 
-def state_dir() -> Path:
-    """Root directory for session JSONL files. Honours ``CLAUDE_SMART_STATE_DIR``."""
+def configured_state_dir() -> Path | None:
+    """Return the explicitly selected session directory, if any."""
     override = os.environ.get(_ENV_STATE_DIR)
-    return Path(override) if override else _DEFAULT_STATE_DIR
+    return Path(override) if override else None
+
+
+def state_dir() -> Path:
+    """Root directory for session JSONL files."""
+    return configured_state_dir() or _DEFAULT_STATE_DIR
 
 
 def session_path(session_id: str) -> Path:
