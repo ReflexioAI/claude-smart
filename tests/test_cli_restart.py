@@ -325,6 +325,7 @@ def test_restart_uses_npm_ci_when_lockfile_exists(fake_services) -> None:
         ("opencode", "opencode.exe", False),
         ("opencode", "opencode.cmd", False),
         ("opencode.exe", "opencode.exe", True),
+        ("./opencode", "opencode.exe", True),
     ],
 )
 def test_windows_installer_resolves_configured_opencode_name(
@@ -363,7 +364,9 @@ def test_windows_installer_resolves_configured_opencode_name(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires the native Windows shell")
-@pytest.mark.parametrize("configured", [r"tools\opencode.cmd", "opencode"])
+@pytest.mark.parametrize(
+    "configured", [r"tools\opencode.cmd", r"tools\opencode", "opencode"]
+)
 def test_windows_opencode_batch_launcher_quotes_resolved_path(
     tmp_path, monkeypatch, configured
 ):

@@ -2580,6 +2580,10 @@ function probeLearningCli(command, args, maxBuffer, { cwd, env, captureStderr = 
   return result.status === 0 && !result.error && !result.signal ? result : undefined;
 }
 
+function isOpenCodeBridgeLauncher(launcher) {
+  return /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(launcher || ""));
+}
+
 function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   if (config.backend !== "local" || config.provider !== HOST_OPENCODE ||
       !/^(?:1|true|yes|on)$/i.test(config.useLocalCli?.trim() || "") ||
@@ -2590,9 +2594,14 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
       "CLAUDE_SMART_LEARNING_MODEL=provider/model#variant and remove the old assignment before updating.",
     );
   }
-  if (!config.model?.includes("#")) return;
-  const hasExplicitModel = !config.model.startsWith("#");
   const resolveForLaunch = (lookup) => lookup() ?? withWorkerPath(lookup);
+  if (!config.model?.includes("#")) {
+    if (isWindows() && (!config.cliPath || isOpenCodeBridgeLauncher(config.cliPath))) {
+      config.validatedOpenCodePath = resolveForLaunch(resolveOpenCodePath);
+    }
+    return;
+  }
+  const hasExplicitModel = !config.model.startsWith("#");
   const selected = config.cliPath;
   let launcher;
   if (selected) {
@@ -2610,7 +2619,7 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
     }
     launcher = isWindows() ? resolve(match) : match;
   }
-  const bridge = /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(launcher || ""));
+  const bridge = isOpenCodeBridgeLauncher(launcher);
   if (launcher && isWindows() && !bridge && !/\.exe$/i.test(launcher)) {
     throw new Error("Select a native OpenCode .exe or the supported compatibility bridge on Windows.");
   }
