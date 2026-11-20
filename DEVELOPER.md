@@ -88,6 +88,12 @@ save `CLAUDE_SMART_LEARNING_MODEL=sonnet` before restarting. The bundled
 launcher also checks for that pin in the inherited native model selector. A
 blank model otherwise delegates to Claude Code's configured default.
 
+For OpenCode, use `provider/model#variant` in `CLAUDE_SMART_LEARNING_MODEL`
+to select both, or `#variant` to keep OpenCode's default model. Move any
+nonblank `CLAUDE_SMART_OPENCODE_VARIANT` into that model reference and remove
+the old setting before restarting.
+
+
 ## Embeddings
 
 claude-smart uses one shared local inference daemon by default. Reflexio's launcher owns a local child when `REFLEXIO_EMBEDDING_SERVICE_URL` is unset; an explicit URL attaches to a separately owned process, including when that URL is loopback. Model selection and process ownership are separate: reranking can also use the shared daemon.
@@ -140,7 +146,10 @@ Stop old writers before upgrading: this check is not a reservation or a
 cross-port writer detector. A failed preparation or identity pin now aborts
 startup, preventing an unpinned resolver from choosing an empty derived file
 beside existing history. Fix the saved policy/permissions and retry rather than
-continuing into another database.
+continuing into another database. With an SDK that has retired
+`REFLEXIO_DEFAULT_ORG_ID`, the Claude Smart launcher drops an inherited
+assignment and uses the SDK's saved local binding for `claude-smart`. Remove
+any hand-written assignment from the dotenv file before upgrading.
 
 Untagged SQLite still selects SQLite. If startup reports historical aliases such
 as `storage_type`, use its existing

@@ -47,7 +47,7 @@ const {
 const http = require("http");
 const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
-const { basename, dirname, isAbsolute, join, relative, resolve, sep } = require("path");
+const { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } = require("path");
 const { fileURLToPath, pathToFileURL } = require("url");
 const guide = require("./install-guide");
 
@@ -298,6 +298,9 @@ function parseEnvLine(line) {
   const key = trimmed.slice(0, eq).trim();
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null;
   let value = trimmed.slice(eq + 1).trim();
+  // Match the SDK's dotenv treatment of a commented empty retired setting.
+  if (key === "CLAUDE_SMART_OPENCODE_VARIANT" &&
+      /^(?:"\s*"|'\s*')\s*(?:#.*)?$/.test(value)) value = "";
   if (
     value.length >= 2 &&
     ((value[0] === '"' && value[value.length - 1] === '"') ||
@@ -826,9 +829,27 @@ function hasOpenCodeCli() {
 }
 
 function resolveOpenCodePath() {
-  const opencodePath = (process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "").trim();
+  const explicitPath = process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "";
+  // Windows normalizes trailing spaces on ordinary batch paths. Keep other
+  // spellings if they identify an executable, including leading spaces.
+  const batchPath = explicitPath.trimEnd();
+  const exactPath = isWindows() && /\.(?:cmd|bat)$/i.test(batchPath) ? batchPath : explicitPath;
+  const opencodePath = isExecutableFile(exactPath) ? exactPath : explicitPath.trim();
   if (opencodePath) return isExecutableFile(opencodePath) ? opencodePath : null;
-  return resolveCommand(isWindows() ? ["opencode.cmd", "opencode.exe", "opencode"] : ["opencode"]);
+  if (isWindows()) return resolveCommand(["opencode.cmd", "opencode.exe", "opencode"]);
+  return resolvePosixOpenCodeCommand("opencode");
+}
+
+function resolvePosixOpenCodeCommand(name) {
+  // The path spelling reaches exec intact. Resolving '..' lexically would
+  // change the target when a parent component is a symlink.
+  for (const directory of (process.env.PATH ?? "/bin:/usr/bin").split(":")) {
+    const candidate = isAbsolute(directory)
+      ? `${directory}/${name}`
+      : `${process.cwd()}/${directory || "."}/${name}`;
+    if (isExecutableFile(candidate)) return candidate;
+  }
+  return null;
 }
 
 const WINDOWS_SYSTEM_BASH_SUFFIXES = [
@@ -2066,6 +2087,7 @@ function savedInstallConfiguration(captured) {
     apiKey,
     provider: env.get(LEARNING_PROVIDER_ENV) || env.get(CLAUDE_SMART_HOST_ENV),
     model: env.get("CLAUDE_SMART_LEARNING_MODEL") || "",
+    retiredOpenCodeVariant: Boolean(env.get("CLAUDE_SMART_OPENCODE_VARIANT")?.trim()),
     managedUrl: env.get("CLAUDE_SMART_MANAGED_URL") || "",
     managedApiKey: env.get("CLAUDE_SMART_MANAGED_API_KEY") || "",
     localUrl: env.get("CLAUDE_SMART_LOCAL_URL") || "",
@@ -2095,7 +2117,12 @@ function planInstallSettings(config, captured) {
   const previousProvider =
     previous.get(LEARNING_PROVIDER_ENV) || previous.get(CLAUDE_SMART_HOST_ENV);
   if (previousProvider) values[LEARNING_PROVIDER_ENV] = previousProvider;
-  if (
+  // A qualified process override is already inherited by startup. Persist it
+  // only when the account has no executable of its own.
+  if (config.validatedOpenCodePath &&
+      !previous.get(CLAUDE_SMART_OPENCODE_PATH_ENV)?.trim()) {
+    values[CLAUDE_SMART_OPENCODE_PATH_ENV] = config.validatedOpenCodePath;
+  } else if (
     (config.hosts.includes(HOST_OPENCODE) ||
       config.provider === HOST_OPENCODE ||
       previousProvider === HOST_OPENCODE) &&
@@ -2521,24 +2548,76 @@ function learningProviderVersion(config) {
         : config.provider === HOST_CLAUDE_CODE
           ? "claude"
           : null;
+  const result = probeLearningCli(command, ["--version"], 4096);
+  if (!result) return undefined;
+  const version = (result.stdout || "").trim();
+  return /^[A-Za-z0-9][A-Za-z0-9 ._()+:/-]{0,159}$/.test(version) ? version : undefined;
+}
+
+function probeLearningCli(command, args, maxBuffer) {
   if (!command) return undefined;
   const shell =
     isWindows() && (command === "claude" || command === "codex" || /\.(?:cmd|bat)$/i.test(command));
-  // Node joins shell arguments without quoting batch-file paths. Optional
-  // metadata probes must not interpret shell metacharacters in a custom path.
+  // Node joins batch-file arguments through the shell. Reject paths that
+  // cannot be quoted literally, and pass only fixed probe arguments.
   if (shell && /[%!^&|<>"\r\n]/.test(command)) return undefined;
-  const probeCommand = shell ? `"${command}"` : command;
-  const result = spawnSync(probeCommand, ["--version"], {
+  const result = spawnSync(shell ? `"${command}"` : command, args, {
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
+    stdio: ["ignore", "pipe", "pipe"],
     timeout: 3000,
-    maxBuffer: 4096,
+    maxBuffer,
     windowsHide: true,
     shell,
   });
-  if (result.status !== 0 || result.error || result.signal) return undefined;
-  const version = (result.stdout || "").trim();
-  return /^[A-Za-z0-9][A-Za-z0-9 ._()+:/-]{0,159}$/.test(version) ? version : undefined;
+  return result.status === 0 && !result.error && !result.signal ? result : undefined;
+}
+
+function validateGuidedOpenCodeLearning(config, saved) {
+  if (config.backend !== "local" || config.provider !== HOST_OPENCODE ||
+      !/^(?:1|true|yes|on)$/i.test(config.useLocalCli || "") ||
+      (config.url && !isBundledBackendUrl(config.url))) return;
+  if (saved.retiredOpenCodeVariant || process.env.CLAUDE_SMART_OPENCODE_VARIANT?.trim()) {
+    throw new Error(
+      "CLAUDE_SMART_OPENCODE_VARIANT has been retired. Move the variant to " +
+      "CLAUDE_SMART_LEARNING_MODEL=provider/model#variant and remove the old assignment before updating.",
+    );
+  }
+  if (!config.model?.startsWith("#")) return;
+  const selected = config.cliPath;
+  let launcher;
+  if (selected) {
+    const absolute = isAbsolute(selected);
+    if (!absolute && basename(selected) !== selected) {
+      throw new Error("Use an absolute CLAUDE_SMART_CLI_PATH to select an OpenCode variant.");
+    }
+    const names = isWindows() && !extname(selected)
+      ? [`${selected}.exe`, `${selected}.cmd`, `${selected}.bat`, selected]
+      : [selected];
+    const match = absolute ? names.find(isExecutableFile)
+      : isWindows() ? resolveCommand(names) : resolvePosixOpenCodeCommand(selected);
+    if (!match) {
+      throw new Error("The configured CLAUDE_SMART_CLI_PATH cannot be executed. Repair that path before updating.");
+    }
+    launcher = isWindows() ? resolve(match) : match;
+  }
+  const bridge = /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(launcher || ""));
+  if (launcher && isWindows() && !bridge && !/\.exe$/i.test(launcher)) {
+    throw new Error("Select a native OpenCode .exe or the supported compatibility bridge on Windows.");
+  }
+  let command = launcher && !bridge ? launcher : resolveOpenCodePath();
+  if (command && !isAbsolute(command)) {
+    throw new Error("Use an absolute CLAUDE_SMART_OPENCODE_PATH to select an OpenCode variant.");
+  }
+  if (command && isWindows()) command = resolve(command);
+  const probe = probeLearningCli(command, ["run", "--help"], 64 * 1024);
+  const help = probe ? `${probe.stdout}\n${probe.stderr}` : "";
+  if (!/^\s*(?:-[A-Za-z0-9],\s*)?--variant(?=[,\s=]|$)/m.test(help)) {
+    throw new Error(
+      "The selected OpenCode CLI does not advertise --variant. Specify provider/model#variant instead of #variant.",
+    );
+  }
+  if (launcher) config.cliPath = launcher;
+  if (!launcher || bridge) config.validatedOpenCodePath = command;
 }
 
 function readGuidedRuntime(id) {
@@ -2969,6 +3048,7 @@ async function runGuidedCommand(command, args) {
       inventory: (options) => withWorkerPath(() => installInventory(options)),
       saved: () => saved,
       save: async (config, options) => {
+        validateGuidedOpenCodeLearning(config, saved);
         const multipleHosts = config.hosts.length > 1;
         if (config.hosts.includes(HOST_CODEX)) {
           withWorkerPath(() => {
@@ -3316,7 +3396,9 @@ async function startAndReportServices(
   }
   process.stdout.write("Starting local dashboard (first build may take 1–2 minutes)…\n");
   if (restart) await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "stop");
-  await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "start");
+  await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "start", {
+    CLAUDE_SMART_HOST: learningHost,
+  });
   const port = (process.env.DASHBOARD_PORT || "").trim() || "3001";
   const url = `http://localhost:${port}/`;
   // Same marker dashboard-service.sh trusts: a foreign app on the port answers

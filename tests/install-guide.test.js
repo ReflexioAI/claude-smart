@@ -375,6 +375,23 @@ test("learning defaults are Sonnet for Claude Code and provider defaults otherwi
   }
 });
 
+test("OpenCode setup saves explicit and default-model variant references", async () => {
+  const agents = inventory.map((agent) => ({ ...agent, available: true }));
+  const options = (provider, model) => parseOptions([
+    "--host", "codex", "--backend", "local", "--provider", provider, "--model", model,
+  ]);
+  for (const model of ["provider/model#high", "#high"]) {
+    const config = await configure(options("opencode", model), agents, {}, neverAsk, false);
+    assert.equal(config.model, model);
+  }
+  for (const [provider, model] of [["opencode", "#"], ["codex", "#high"]]) {
+    await assert.rejects(
+      configure(options(provider, model), agents, {}, neverAsk, false),
+      /valid model reference/,
+    );
+  }
+});
+
 test("provider version probes are bounded and reject failed or unsafe output", () => {
   const script = `
     const cp = require('node:child_process');

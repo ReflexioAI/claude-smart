@@ -13,6 +13,7 @@ from pathlib import Path
 # The one file every claude-smart release up to 0.2.x stored memory in.
 LEGACY_DB_FILENAME = "reflexio.db"
 ORG_ID = "claude-smart"
+LEGACY_ORG_ENV = "REFLEXIO_DEFAULT_ORG_ID"
 LEGACY_MODEL_ENV = "CLAUDE_SMART_CLI_MODEL"
 LEGACY_MODEL_GUIDANCE = (
     "CLAUDE_SMART_CLI_MODEL has been retired. Move the effective model to "
@@ -24,7 +25,7 @@ class LearningSelectionError(ValueError):
     """Safe model-selection error to report before replacing a backend."""
 
 
-def _has_retired_model_setting() -> bool:
+def _check_retired_learning_settings(*, opencode_enabled: bool) -> None:
     from dotenv import dotenv_values
 
     env_file = os.environ.get("REFLEXIO_ENV_FILE", "")
@@ -33,18 +34,27 @@ def _has_retired_model_setting() -> bool:
         if env_file and Path(env_file).is_file()
         else {}
     )
-    return bool(
-        os.environ.get(LEGACY_MODEL_ENV, "").strip()
-        or (saved.get(LEGACY_MODEL_ENV) or "").strip()
-    )
+    retired = {LEGACY_MODEL_ENV: LEGACY_MODEL_GUIDANCE}
+    if opencode_enabled:
+        retired["CLAUDE_SMART_OPENCODE_VARIANT"] = (
+            "CLAUDE_SMART_OPENCODE_VARIANT has been retired. Use provider/model#variant "
+            "or #variant in CLAUDE_SMART_LEARNING_MODEL, then remove the old setting."
+        )
+    for name, guidance in retired.items():
+        if os.environ.get(name, "").strip() or (saved.get(name) or "").strip():
+            raise LearningSelectionError(guidance)
 
 
 def prepare_native_sdk_environment() -> None:
     """Project the plugin's saved learning intent into the selected SDK ABI."""
-    if _has_retired_model_setting():
-        raise LearningSelectionError(LEGACY_MODEL_GUIDANCE)
+    from reflexio.env_utils import env_truthy
 
+    host = os.environ.get("CLAUDE_SMART_HOST", "").strip() or "claude-code"
     enabled_name = "CLAUDE_SMART_USE_LOCAL_CLI"
+    intent = os.environ.get(enabled_name, "")
+    _check_retired_learning_settings(
+        opencode_enabled=host == "opencode" and env_truthy(intent),
+    )
     model = os.environ.get("CLAUDE_SMART_LEARNING_MODEL", "").strip()
     package = find_spec("reflexio")
     locations = package.submodule_search_locations if package else None
@@ -56,13 +66,9 @@ def prepare_native_sdk_environment() -> None:
         os.environ[LEGACY_MODEL_ENV] = model
         return
 
-    from reflexio.env_utils import env_truthy
-
     target_name = "REFLEXIO_NATIVE_CLI_MODEL"
-    intent = os.environ.get(enabled_name, "")
     selected = os.environ.get(target_name, "")
     if env_truthy(intent):
-        host = os.environ.get("CLAUDE_SMART_HOST", "").strip() or "claude-code"
         if host not in {"claude-code", "codex", "opencode"}:
             raise LearningSelectionError(
                 "Claude Smart learning provider is unsupported"
@@ -168,6 +174,15 @@ def pin_legacy_sqlite_db_path(
         from reflexio.cli.env_loader import block_implicit_dotenv_walkup
 
         block_implicit_dotenv_walkup()
+        retired_org_selector = False
+        if find_spec("reflexio.removed_env") is not None:
+            from reflexio.removed_env import REMOVED_ENV_ALIASES
+
+            retired_org_selector = LEGACY_ORG_ENV in REMOVED_ENV_ALIASES
+        if retired_org_selector:
+            # This launcher has always owned Claude Smart's fixed organization.
+            # A stale inherited selector cannot override the saved SDK binding.
+            os.environ.pop(LEGACY_ORG_ENV, None)
         from reflexio.cli.run_services import DEFAULT_OSS_PORTS, get_env_port
         from reflexio.cli.utils import ensure_requested_ports_available
         from reflexio.config_file import FILE_FORMAT_VERSION, LocalConfigFile
@@ -191,11 +206,13 @@ def pin_legacy_sqlite_db_path(
                 local_instance, "prepare_local_sqlite_instance", None
             )
         org_id = ORG_ID
-        if prepare_instance is None or os.environ.get("REFLEXIO_DEFAULT_ORG_ID"):
+        if not retired_org_selector and (
+            prepare_instance is None or os.environ.get(LEGACY_ORG_ENV)
+        ):
             # Old bundles require the selector, and older dotenv templates
             # can supply the standalone default. The former launcher always
             # replaced that value for Claude Smart.
-            os.environ["REFLEXIO_DEFAULT_ORG_ID"] = org_id
+            os.environ[LEGACY_ORG_ENV] = org_id
 
         port = (
             backend_port

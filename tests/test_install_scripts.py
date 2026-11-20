@@ -3452,8 +3452,9 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
         in node_installer
     )
     assert (
-        'await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "start")'
-        in node_installer
+        'await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "start", {\n'
+        "    CLAUDE_SMART_HOST: learningHost,\n"
+        "  });" in node_installer
     )
     assert "const PLUGIN_SERVICE_TIMEOUT_MS = 45_000" in node_installer
     assert "timeout: PLUGIN_SERVICE_TIMEOUT_MS" in node_installer

@@ -8,7 +8,11 @@ covering the non-obvious ones so refactors can't silently regress them.
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import shutil
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -311,3 +315,38 @@ def test_restart_uses_npm_ci_when_lockfile_exists(fake_services) -> None:
         "--no-fund",
     ]
     assert build_calls[1] == ["/usr/bin/npm", "run", "build"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires the native Windows shell")
+def test_windows_opencode_batch_launcher_quotes_resolved_path(tmp_path, monkeypatch):
+    node = shutil.which("node")
+    assert node is not None
+    bridge = (
+        Path(__file__).resolve().parents[1] / "plugin/scripts/opencode-claude-compat.js"
+    )
+    working_dir = tmp_path / "runtime with spaces"
+    executable = working_dir / "tools/opencode.cmd"
+    executable.parent.mkdir(parents=True)
+    executable.write_text(
+        '@echo {"type":"text","part":{"type":"text","text":"batch launched"}}\n'
+    )
+    monkeypatch.setenv("CLAUDE_SMART_OPENCODE_PATH", r"tools\opencode.cmd")
+    for name in (
+        "CLAUDE_SMART_OPENCODE_MODEL",
+        "CLAUDE_SMART_OPENCODE_VARIANT",
+        "CLAUDE_SMART_LEARNING_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    result = subprocess.run(
+        [node, str(bridge), "-p"],
+        input="fixture prompt",
+        text=True,
+        capture_output=True,
+        cwd=working_dir,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"result": "batch launched"}

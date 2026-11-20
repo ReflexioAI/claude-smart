@@ -147,7 +147,12 @@ def test_undrained_selected_database_refuses_before_incompatible_config_publicat
 
 def _env(home: Path) -> dict[str, str]:
     env = os.environ.copy()
-    for key in ("REFLEXIO_URL", "REFLEXIO_ENV_FILE", "REFLEXIO_LOG_DIR"):
+    for key in (
+        "REFLEXIO_URL",
+        "REFLEXIO_ENV_FILE",
+        "REFLEXIO_LOG_DIR",
+        "REFLEXIO_DEFAULT_ORG_ID",
+    ):
         env.pop(key, None)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -158,11 +163,12 @@ def _env(home: Path) -> dict[str, str]:
             "BACKEND_PORT": str(port),
             "LITELLM_LOCAL_MODEL_COST_MAP": "true",
             "LOCAL_STORAGE_PATH": str(home / "data"),
-            "REFLEXIO_DEFAULT_ORG_ID": ORG,
             "OPENAI_API_KEY": "sk-placeholder-test",
             "PYTHONPATH": str(VENDOR),
         }
     )
+    if not _supports_binding(VENDOR):
+        env["REFLEXIO_DEFAULT_ORG_ID"] = ORG
     return env
 
 
@@ -187,7 +193,7 @@ def _run_selected_command(home: Path, args: list[str], metadata: tuple[str, ...]
         "raise SystemExit(runner['main']())\n"
     )
     env = _env(home)
-    env.pop("REFLEXIO_DEFAULT_ORG_ID")
+    env.pop("REFLEXIO_DEFAULT_ORG_ID", None)
     return subprocess.run(
         [sys.executable, "-P", "-c", script, str(RUNNER), *metadata, "--", *args],
         env=env,
@@ -220,6 +226,37 @@ def test_backend_refuses_retired_model_before_sdk_dispatch(
 
     assert "private-retired-model" not in str(exc_info.value)
     assert dotenv.read_bytes() == original
+
+
+@pytest.mark.parametrize("source", ["process", "dotenv"])
+def test_preflight_refuses_retired_opencode_variant_without_rewriting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    path = tmp_path / ".env"
+    old_name = "CLAUDE_SMART_OPENCODE_VARIANT"
+    original = f"{old_name}=private-variant\n" if source == "dotenv" else ""
+    path.write_text(original)
+    monkeypatch.setenv("REFLEXIO_ENV_FILE", str(path))
+    monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
+    monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", "#high")
+    monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
+    monkeypatch.delenv(old_name, raising=False)
+    if source == "process":
+        monkeypatch.setenv(old_name, "private-variant")
+    prepare = runpy.run_path(str(RUNNER))["prepare_native_sdk_environment"]
+
+    with pytest.raises(ValueError, match=f"{old_name} has been retired") as failure:
+        prepare()
+
+    assert "#variant in CLAUDE_SMART_LEARNING_MODEL" in str(failure.value)
+    assert "private-variant" not in str(failure.value)
+    assert path.read_text() == original
+
+    monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "0")
+    monkeypatch.delenv("REFLEXIO_NATIVE_CLI_MODEL", raising=False)
+    prepare()
+    assert path.read_text() == original
 
 
 @requires_vendor
@@ -461,6 +498,37 @@ def test_backend_runner_pins_a_fresh_install(tmp_path: Path) -> None:
             ).fetchone() == (ORG,)
 
 
+@requires_binding_vendor
+@pytest.mark.parametrize("source", ["inherited", "saved"])
+def test_inference_owner_uses_same_retired_org_policy_as_backend(tmp_path, source):
+    dotenv = tmp_path / ".env"
+    value = "REFLEXIO_EMBEDDING_PROVIDER=local_service\n"
+    selector = "REFLEXIO_DEFAULT_ORG_ID"
+    if source == "saved":
+        value += f"{selector}=foreign-org\n"
+    dotenv.write_text(value)
+    env = _env(tmp_path)
+    env[selector] = "foreign-org"
+    env["REFLEXIO_ENV_FILE"] = str(dotenv)
+    env.pop("PYTHON_DOTENV_DISABLED", None)
+    result = subprocess.run(
+        [sys.executable, "-P", str(RUNNER.with_name("backend-inference-owner.py"))],
+        env=env,
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    if source == "saved":
+        assert result.returncode != 0
+        assert selector in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "colocated"
+    assert dotenv.read_text() == value
+
+
 @requires_vendor
 @pytest.mark.parametrize("stale", [False, True])
 @pytest.mark.parametrize("storage", ["fresh", "custom", "non_sqlite"])
@@ -470,7 +538,7 @@ def test_backend_runner_uses_sdk_binding_capability_without_exporting_selector(
     storage: str,
 ) -> None:
     env = _env(tmp_path)
-    env.pop("REFLEXIO_DEFAULT_ORG_ID")
+    env.pop("REFLEXIO_DEFAULT_ORG_ID", None)
     env["PYTHON_DOTENV_DISABLED"] = "1"
     if stale:
         env["REFLEXIO_DEFAULT_ORG_ID"] = "self-host-org"
@@ -508,7 +576,15 @@ if importlib.util.find_spec("reflexio.local_instance") is None:
 else:
     from reflexio import local_instance
 calls = []
-selector = "claude-smart" if "REFLEXIO_DEFAULT_ORG_ID" in os.environ else None
+retired_selector = False
+if importlib.util.find_spec("reflexio.removed_env") is not None:
+    from reflexio.removed_env import REMOVED_ENV_ALIASES
+    retired_selector = "REFLEXIO_DEFAULT_ORG_ID" in REMOVED_ENV_ALIASES
+selector = (
+    "claude-smart"
+    if not retired_selector and "REFLEXIO_DEFAULT_ORG_ID" in os.environ
+    else None
+)
 
 def prepare(org, path):
     assert os.environ.get("REFLEXIO_DEFAULT_ORG_ID") == selector
