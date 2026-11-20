@@ -153,14 +153,21 @@ function executableFile(candidate) {
 function resolveWindowsOpenCodePath(value, searchPath = process.env.PATH || "") {
   const resolvePath = process.platform === "win32" ? path.win32.resolve : path.resolve;
   const name = value.trim();
-  const candidate = /\.(?:cmd|bat)$/i.test(value.trimEnd()) ? value.trimEnd() : value;
-  if (executableFile(candidate)) return resolvePath(candidate);
-  if (candidate !== name && executableFile(name)) return resolvePath(name);
-  const names = path.extname(name) ? [name] : [
+  const extension = path.extname(name);
+  const names = extension ? [name] : [
     `${name}.exe`, `${name}.cmd`, `${name}.bat`, name,
   ];
-  const onPath = /^[A-Za-z]:|[\\/]/.test(name) ? null : commandPath(names, searchPath, ";");
-  const match = onPath || names.find(executableFile);
+  const pathQualified = /^[A-Za-z]:|[\\/]/.test(name);
+  const candidate = /\.(?:cmd|bat)$/i.test(value.trimEnd()) ? value.trimEnd() : value;
+  const searchFirst = !pathQualified && !extension && candidate === name;
+  // Explicit files retain their existing lookup, even if PATH has a slow entry.
+  // A bare extensionless command checks PATH before the setup directory.
+  if (!searchFirst && executableFile(candidate)) return resolvePath(candidate);
+  if (candidate !== name && executableFile(name)) return resolvePath(name);
+  const onPath = pathQualified ? null : commandPath(names, searchPath, ";");
+  if (onPath) return resolvePath(onPath);
+  if (searchFirst && executableFile(candidate)) return resolvePath(candidate);
+  const match = names.find(executableFile);
   return match ? resolvePath(match) : null;
 }
 

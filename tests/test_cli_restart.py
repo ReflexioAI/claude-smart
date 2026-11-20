@@ -345,8 +345,10 @@ def test_windows_installer_resolves_configured_opencode_name(
     executable = tmp_path / executable_name if direct else fallback
     executable.touch(mode=0o755)
     if configured == "opencode":
-        # An extensionless command uses PATH even if the cwd holds an .exe.
+        # Neither local spelling wins over PATH for an extensionless command.
         (tmp_path / "opencode.exe").touch(mode=0o755)
+        if not direct:
+            (tmp_path / "opencode").touch(mode=0o755)
     result = subprocess.run(
         [
             node,
