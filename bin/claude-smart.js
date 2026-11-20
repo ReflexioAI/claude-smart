@@ -248,8 +248,8 @@ function hasCli(name) {
   }
 }
 
-function codexHookProcessCleanupError() {
-  const release = learningProviderVersion({ provider: HOST_CODEX });
+function codexHookProcessCleanupError(env = process.env) {
+  const release = learningProviderVersion({ provider: HOST_CODEX }, env);
   const version = release?.match(/^codex-cli (\d+)\.(\d+)\.\d+(?:\+\S+)?$/);
   if (!version || (Number(version[1]) === 0 && Number(version[2]) < 148)) {
     return "Codex CLI 0.148 or newer is required for service hook process cleanup. Update Codex, then retry setup.";
@@ -2503,7 +2503,7 @@ async function runGuidedHost(command, host, options, label, settings, preparedRu
   }
 }
 
-function learningProviderVersion(config) {
+function learningProviderVersion(config, env = process.env) {
   // Custom executables need not implement --version. Do not run arbitrary probes.
   if (config.cliPath) return undefined;
   const command =
@@ -2524,6 +2524,7 @@ function learningProviderVersion(config) {
   const result = spawnSync(probeCommand, ["--version"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
+    env,
     timeout: 3000,
     maxBuffer: 4096,
     windowsHide: true,
@@ -2945,16 +2946,16 @@ async function runGuidedCommand(command, args) {
   );
   let deferredSettings;
   let preparedRuntime;
+  let codexPreflightFailure;
   await guide
     .runGuide(command, args, {
       inventory: installInventory,
       saved: () => saved,
       save: async (config, options) => {
-        const codexError = config.hosts.includes(HOST_CODEX) && codexHookProcessCleanupError();
-        if (codexError) {
-          if (config.hosts.length === 1) throw new Error(codexError);
-          // Only eligible hosts contribute to the prepared runtime. The Codex
-          // worker still reports its own error in the per-host summary.
+        const multipleHosts = config.hosts.length > 1;
+        codexPreflightFailure = config.hosts.includes(HOST_CODEX) && codexHookProcessCleanupError(runtimeEnv());
+        if (codexPreflightFailure) {
+          if (!multipleHosts) throw new Error(codexPreflightFailure);
           config = { ...config, hosts: config.hosts.filter((host) => host !== HOST_CODEX) };
         }
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
@@ -2962,7 +2963,7 @@ async function runGuidedCommand(command, args) {
         const settings = planInstallSettings(config, captured);
         // Recovery keeps the previous generation intact until registration is
         // complete, even when the user retries with just one host.
-        if (config.hosts.length > 1 || baseline || pathEntryExists(GUIDED_SELECTED_RUNTIME)) {
+        if (multipleHosts || baseline || pathEntryExists(GUIDED_SELECTED_RUNTIME)) {
           preparedRuntime = await prepareGuidedRuntime(config, options, settings, baseline);
           return;
         }
@@ -2999,6 +3000,8 @@ async function runGuidedCommand(command, args) {
           holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
           await resumeGuidedShutdown({ retainBaseline: false });
         }
+        if (host === HOST_CODEX && codexPreflightFailure)
+          return { code: 1, reason: codexPreflightFailure };
         return runGuidedHost(action, host, options, label, deferredSettings, preparedRuntime);
       },
       finish: async (action, config, results) => {

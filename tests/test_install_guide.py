@@ -381,6 +381,9 @@ def test_guided_coordinator_rejects_incomplete_package_before_registration(
 def test_guided_install_reports_old_codex_and_installs_other_hosts(tmp_path: Path):
     installer, env = fake_guide(tmp_path)
     env["CODEX_FIXTURE_VERSION"] = "0.147.0"
+    hooks = installer.parents[1] / "plugin/hooks"
+    hooks.mkdir(exist_ok=True)
+    shutil.copyfile(REPO_ROOT / "plugin/hooks/hooks.json", hooks / "hooks.json")
 
     result = subprocess.run(
         [
@@ -402,10 +405,12 @@ def test_guided_install_reports_old_codex_and_installs_other_hosts(tmp_path: Pat
     )
 
     assert result.returncode == 1, result.stderr
-    assert "Claude Code: installed" in result.stdout
+    assert "Claude Code: installed" in result.stdout, result.stderr
     assert "Codex: failed" in result.stdout
-    codex_log, = (tmp_path / ".claude-smart/install-logs").glob("install-codex-*.log")
-    assert "Codex CLI 0.148 or newer is required" in codex_log.read_text()
+    assert "Codex CLI 0.148 or newer is required" in result.stdout
+    state = tmp_path / ".claude-smart"
+    assert not list((state / "install-logs").glob("install-codex-*.log"))
+    assert (state / "guided-runtimes/selected").exists()
     assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
 
 
