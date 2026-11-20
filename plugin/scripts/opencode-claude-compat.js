@@ -159,9 +159,10 @@ function resolveWindowsOpenCodePath(value) {
   const names = path.extname(name) ? [name] : [
     `${name}.exe`, `${name}.cmd`, `${name}.bat`, name,
   ];
-  const local = names.find(executableFile);
-  if (local) return resolvePath(local);
-  if (/^[A-Za-z]:|[\\/]/.test(name)) return null;
+  if (/^[A-Za-z]:|[\\/]/.test(name)) {
+    const local = names.find(executableFile);
+    return local ? resolvePath(local) : null;
+  }
   const match = commandPath(names, ";");
   return match ? resolvePath(match) : null;
 }

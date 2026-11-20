@@ -320,6 +320,7 @@ def test_restart_uses_npm_ci_when_lockfile_exists(fake_services) -> None:
 @pytest.mark.parametrize(
     ("configured", "executable_name", "direct"),
     [
+        ("", "opencode.exe", False),
         ("opencode.exe", "opencode.exe", False),
         ("opencode.cmd", "opencode.cmd", False),
         ("opencode", "opencode.exe", False),
@@ -340,6 +341,9 @@ def test_windows_installer_resolves_configured_opencode_name(
     fallback.touch(mode=0o755)
     executable = tmp_path / executable_name if direct else fallback
     executable.touch(mode=0o755)
+    if configured == "opencode":
+        # An extensionless command uses PATH even if the cwd holds an .exe.
+        (tmp_path / "opencode.exe").touch(mode=0o755)
     result = subprocess.run(
         [
             node,
@@ -352,7 +356,7 @@ def test_windows_installer_resolves_configured_opencode_name(
             **os.environ,
             "CLAUDE_SMART_TEST_PLATFORM": "win32",
             "CLAUDE_SMART_OPENCODE_PATH": configured,
-            "PATH": str(search_dir),
+            "PATH": search_dir.name,
         },
         text=True,
         capture_output=True,

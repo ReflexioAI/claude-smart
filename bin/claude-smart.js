@@ -834,7 +834,10 @@ function hasOpenCodeCli() {
 function resolveOpenCodePath() {
   const explicitPath = process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "";
   if (isWindows()) {
-    if (!explicitPath.trim()) return resolveCommand(["opencode.cmd", "opencode.exe", "opencode"]);
+    if (!explicitPath.trim()) {
+      const match = resolveCommand(["opencode.cmd", "opencode.exe", "opencode"]);
+      return match ? resolve(match) : null;
+    }
     const { resolveWindowsOpenCodePath } = require("../plugin/scripts/opencode-claude-compat.js");
     return resolveWindowsOpenCodePath(explicitPath);
   }
