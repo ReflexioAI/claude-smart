@@ -833,6 +833,12 @@ function hasOpenCodeCli() {
 
 function resolveOpenCodePath() {
   const explicitPath = process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "";
+  const filename = explicitPath.trim();
+  if (isWindows() && filename && !/^[A-Za-z]:|[\\/]/.test(filename)) {
+    const names = extname(filename) ? [filename] : [`${filename}.exe`, filename];
+    const match = resolveCommand(names);
+    return match ? resolve(match) : null;
+  }
   // Windows normalizes trailing spaces on ordinary batch paths. Keep other
   // spellings if they identify an executable, including leading spaces.
   const batchPath = explicitPath.trimEnd();
