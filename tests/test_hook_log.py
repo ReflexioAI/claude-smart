@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import threading
@@ -402,6 +403,16 @@ def test_log_rotates_when_over_max_bytes(hook_log_path, monkeypatch) -> None:
     assert "sess-0059" in session_ids
     # And the very oldest must be gone.
     assert "sess-0000" not in session_ids
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_rotating_log_retains_existing_access(hook_log_path, monkeypatch) -> None:
+    hook_log.log_event(event="stop", host="claude-code", session_id="first")
+    hook_log_path.chmod(0o640)
+    monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 1)
+    hook_log.log_event(event="stop", host="claude-code", session_id="second")
+    assert [row["session_id"] for row in _read_lines(hook_log_path)] == ["second"]
+    assert stat.S_IMODE(hook_log_path.stat().st_mode) == 0o640
 
 
 def test_log_does_not_rotate_when_under_max_bytes(hook_log_path, monkeypatch) -> None:

@@ -302,12 +302,12 @@ def _maybe_rotate(path: Path) -> None:
         None
     """
     try:
-        size = path.stat().st_size
+        current_stat = path.stat()
     except OSError as exc:
         _LOGGER.debug("hook_log: stat for rotation failed: %s", exc)
         return
 
-    if size < _MAX_LOG_BYTES:
+    if current_stat.st_size < _MAX_LOG_BYTES:
         return
 
     try:
@@ -338,6 +338,8 @@ def _maybe_rotate(path: Path) -> None:
         ) as staged:
             tmp_path = Path(staged.name)
             staged.write(tail)
+        if os.name != "nt":
+            tmp_path.chmod(stat.S_IMODE(current_stat.st_mode))
         tmp_path.replace(path)
     except OSError as exc:
         _LOGGER.debug("hook_log: rotation rename failed: %s", exc)
