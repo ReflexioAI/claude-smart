@@ -140,29 +140,40 @@ function declaredRunOptions(helpText) {
   );
 }
 
-function configuredExecutable(value) {
-  const trimmed = value.trim();
-  const windows = process.platform === "win32";
-  // Bare Windows names keep the normal executable search. Explicit paths
-  // must name the same file after the child moves to its isolated directory.
-  if (windows && !/^[A-Za-z]:|[\\/]/.test(trimmed)) return trimmed;
-  if (!windows && value === trimmed) return trimmed;
-  const batchPath = value.trimEnd();
-  const exactPath = windows && /\.(?:cmd|bat)$/i.test(batchPath) ? batchPath : value;
+function executableFile(candidate) {
   try {
-    if (fs.statSync(exactPath).isFile()) {
-      fs.accessSync(exactPath, fs.constants.X_OK);
-      return windows ? path.win32.resolve(exactPath) : exactPath;
-    }
+    if (!fs.statSync(candidate).isFile()) return false;
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return true;
   } catch {
-    // Try the unpadded spelling below.
+    return false;
   }
-  return windows ? path.win32.resolve(trimmed) : trimmed;
+}
+
+function resolveWindowsOpenCodePath(value) {
+  const resolvePath = process.platform === "win32" ? path.win32.resolve : path.resolve;
+  const name = value.trim();
+  const candidate = /\.(?:cmd|bat)$/i.test(value.trimEnd()) ? value.trimEnd() : value;
+  if (executableFile(candidate)) return resolvePath(candidate);
+  if (candidate !== name && executableFile(name)) return resolvePath(name);
+  if (/^[A-Za-z]:|[\\/]/.test(name)) return null;
+  const names = path.extname(name) ? [name] : [
+    `${name}.exe`, `${name}.cmd`, `${name}.bat`, name,
+  ];
+  const match = commandPath(names, ";");
+  return match ? resolvePath(match) : null;
+}
+
+function configuredExecutable(value) {
+  if (process.platform === "win32") return resolveWindowsOpenCodePath(value);
+  return executableFile(value) ? value : value.trim();
 }
 
 function runOpenCode({ prompt, model, workDir }) {
-  const opencodePath = configuredExecutable(process.env.CLAUDE_SMART_OPENCODE_PATH || "") ||
-    commandPath(opencodeNames());
+  const configured = process.env.CLAUDE_SMART_OPENCODE_PATH || "";
+  const opencodePath = configured.trim()
+    ? configuredExecutable(configured)
+    : commandPath(opencodeNames());
   if (!opencodePath) {
     throw new Error("opencode CLI not found on PATH");
   }
@@ -350,12 +361,12 @@ function opencodeNames() {
   return process.platform === "win32" ? ["opencode.cmd", "opencode.exe", "opencode"] : ["opencode"];
 }
 
-function commandPath(names) {
-  const pathParts = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+function commandPath(names, delimiter = path.delimiter) {
+  const pathParts = (process.env.PATH || "").split(delimiter).filter(Boolean);
   for (const dir of pathParts) {
     for (const name of names) {
       const candidate = path.join(dir, name);
-      if (fs.existsSync(candidate)) return candidate;
+      if (executableFile(candidate)) return candidate;
     }
   }
   return null;
@@ -366,5 +377,5 @@ function combinedPrompt({ prompt, systemPrompt }) {
   return `${systemPrompt}\n\n## Task\n${prompt}`;
 }
 
-module.exports = { prepareWorkDir, dispatchEnvironment, declaredRunOptions };
+module.exports = { prepareWorkDir, dispatchEnvironment, declaredRunOptions, resolveWindowsOpenCodePath };
 if (require.main === module) process.exitCode = main(process.argv.slice(2));

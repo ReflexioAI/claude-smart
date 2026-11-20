@@ -833,19 +833,13 @@ function hasOpenCodeCli() {
 
 function resolveOpenCodePath() {
   const explicitPath = process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "";
-  const filename = explicitPath.trim();
-  if (isWindows() && filename && !/^[A-Za-z]:|[\\/]/.test(filename)) {
-    const names = extname(filename) ? [filename] : [`${filename}.exe`, filename];
-    const match = resolveCommand(names);
-    return match ? resolve(match) : null;
+  if (isWindows()) {
+    if (!explicitPath.trim()) return resolveCommand(["opencode.cmd", "opencode.exe", "opencode"]);
+    const { resolveWindowsOpenCodePath } = require("../plugin/scripts/opencode-claude-compat.js");
+    return resolveWindowsOpenCodePath(explicitPath);
   }
-  // Windows normalizes trailing spaces on ordinary batch paths. Keep other
-  // spellings if they identify an executable, including leading spaces.
-  const batchPath = explicitPath.trimEnd();
-  const exactPath = isWindows() && /\.(?:cmd|bat)$/i.test(batchPath) ? batchPath : explicitPath;
-  const opencodePath = isExecutableFile(exactPath) ? exactPath : explicitPath.trim();
+  const opencodePath = isExecutableFile(explicitPath) ? explicitPath : explicitPath.trim();
   if (opencodePath) return isExecutableFile(opencodePath) ? opencodePath : null;
-  if (isWindows()) return resolveCommand(["opencode.cmd", "opencode.exe", "opencode"]);
   return resolvePosixOpenCodeCommand("opencode");
 }
 
@@ -2126,10 +2120,13 @@ function planInstallSettings(config, captured) {
   const previousProvider =
     previous.get(LEARNING_PROVIDER_ENV) || previous.get(CLAUDE_SMART_HOST_ENV);
   if (previousProvider) values[LEARNING_PROVIDER_ENV] = previousProvider;
-  // A qualified process override is already inherited by startup. Persist it
-  // only when the account has no executable of its own.
-  if (config.validatedOpenCodePath &&
-      !previous.get(CLAUDE_SMART_OPENCODE_PATH_ENV)?.trim()) {
+  // Keep an independent account override. Bind a validated relative Windows
+  // selection to the file we checked so the relocated runtime uses it.
+  const savedOpenCodePath = previous.get(CLAUDE_SMART_OPENCODE_PATH_ENV);
+  const bindRelativeWindowsPath = isWindows() && savedOpenCodePath?.trim() &&
+    savedOpenCodePath === process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] &&
+    !isAbsolute(savedOpenCodePath.trim());
+  if (config.validatedOpenCodePath && (!savedOpenCodePath?.trim() || bindRelativeWindowsPath)) {
     values[CLAUDE_SMART_OPENCODE_PATH_ENV] = config.validatedOpenCodePath;
   } else if (
     (config.hosts.includes(HOST_OPENCODE) ||
