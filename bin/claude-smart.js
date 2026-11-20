@@ -249,6 +249,9 @@ function hasCli(name) {
 }
 
 function codexHookProcessCleanupError() {
+  if (process.env.CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS?.trim()) {
+    return "Remove CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS and set timeout (seconds) on the Codex service hook before updating.";
+  }
   const release = learningProviderVersion({ provider: HOST_CODEX });
   const version = release?.match(/^codex-cli (\d+)\.(\d+)\.\d+(?:\+\S+)?$/);
   if (!version || (Number(version[1]) === 0 && Number(version[2]) < 148)) {
@@ -2584,7 +2587,8 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
       "CLAUDE_SMART_LEARNING_MODEL=provider/model#variant and remove the old assignment before updating.",
     );
   }
-  if (!config.model?.startsWith("#")) return;
+  if (!config.model?.includes("#")) return;
+  const hasExplicitModel = !config.model.startsWith("#");
   const resolveForLaunch = (lookup) => lookup() ?? withWorkerPath(lookup);
   const selected = config.cliPath;
   let launcher;
@@ -2626,10 +2630,10 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
     rmSync(cwd, { recursive: true, force: true });
   }
   const runOptions = declaredRunOptions(probe ? `${probe.stdout}\n${probe.stderr}` : "");
-  if (!runOptions.has("--variant")) {
-    throw new Error(
-      "The selected OpenCode CLI does not advertise --variant. Specify provider/model#variant instead of #variant.",
-    );
+  if (!runOptions.has("--variant") && !(hasExplicitModel && runOptions.has("--standalone"))) {
+    throw new Error(hasExplicitModel
+      ? "The selected OpenCode CLI does not advertise --standalone or --variant."
+      : "The selected OpenCode CLI does not advertise --variant. Specify provider/model#variant instead of #variant.");
   }
   // The pinned SDK's native OpenCode transport needs these options at dispatch.
   // The compatibility bridge has a separate command contract.

@@ -1507,14 +1507,29 @@ def test_no_previous_runtime_never_uses_unprepared_source_for_service_recovery(
     assert not root.exists()
 
 
-def test_old_codex_fails_before_service_effects(tmp_path):
+@pytest.mark.parametrize(
+    ("settings", "error"),
+    [
+        ({"CODEX_FIXTURE_VERSION": "0.147.0"}, "Codex CLI 0.148 or newer is required"),
+        (
+            {"CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS": "240000"},
+            "Remove CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS",
+        ),
+    ],
+)
+@pytest.mark.parametrize("guided", [False, True])
+def test_codex_preflight_failure_preserves_installed_runtime(
+    tmp_path, settings, error, guided
+):
     package, root, _, env = _fixture(tmp_path, "codex")
-    env["CODEX_FIXTURE_VERSION"] = "0.147.0"
+    env.update(settings)
+    if guided:
+        env.pop("CLAUDE_SMART_INSTALL_CHILD")
 
     result = _run(tmp_path, package, "codex", env)
 
     assert result.returncode != 0
-    assert "Codex CLI 0.148 or newer is required" in result.stderr
+    assert error in result.stderr
     assert not _calls(tmp_path)
     assert (root / "identity").read_text() == "old"
 

@@ -257,6 +257,10 @@ export async function writeConfig(
     "CLAUDE_SMART_LOCAL_URL",
     "CLAUDE_SMART_LOCAL_API_KEY",
   ]);
+  if ("CLAUDE_SMART_LEARNING_MODEL" in updates) {
+    dependencies.add("CLAUDE_SMART_LEARNING_PROVIDER");
+    dependencies.add("CLAUDE_SMART_HOST");
+  }
   const expected: Record<string, string[]> = Object.fromEntries(
     [...dependencies].map((key) => [key, []]),
   );
