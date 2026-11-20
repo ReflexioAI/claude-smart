@@ -222,7 +222,12 @@ def fake_guide(
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     _write_executable(fake_bin / "claude", _fake_claude_install_script())
-    _write_executable(fake_bin / "codex", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        fake_bin / "codex",
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codex-cli ${CODEX_FIXTURE_VERSION:-0.148.0}"; fi\n'
+        "exit 0\n",
+    )
     _write_bootstrap_uv(fake_bin / "uv", mode="fresh")
     env = guide_env(tmp_path)
     # Managed configuration discovery is read-only, but installer tests must
@@ -371,6 +376,37 @@ def test_guided_coordinator_rejects_incomplete_package_before_registration(
     assert not (state / ".env").exists()
     assert not (state / "install-logs").exists()
     assert not (state / "claude-code" / "claude-smart" / "plugin").exists()
+
+
+def test_guided_install_reports_old_codex_and_installs_other_hosts(tmp_path: Path):
+    installer, env = fake_guide(tmp_path)
+    env["CODEX_FIXTURE_VERSION"] = "0.147.0"
+
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            "install",
+            "--host",
+            "claude-code,codex",
+            "--backend",
+            "local",
+            "--provider",
+            "codex",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert "Claude Code: installed" in result.stdout
+    assert "Codex: failed" in result.stdout
+    codex_log, = (tmp_path / ".claude-smart/install-logs").glob("install-codex-*.log")
+    assert "Codex CLI 0.148 or newer is required" in codex_log.read_text()
+    assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
 
 
 def test_guided_install_progress_is_visible_while_worker_is_waiting(

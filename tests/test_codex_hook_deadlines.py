@@ -255,7 +255,9 @@ def test_retired_service_timeout_cannot_launch_a_service(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"continue": True}
+    response = json.loads(result.stdout)
+    assert response["continue"] is True
+    assert "Remove CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS" in response["systemMessage"]
     assert not Path(env["DIAGNOSTIC_ARGS"]).exists()
     assert "Remove CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS" in (
         home / ".claude-smart/backend.log"

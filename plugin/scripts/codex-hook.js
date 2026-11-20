@@ -343,8 +343,9 @@ function runServiceScript(root, scriptName, action, logName) {
     return 0;
   }
   if (process.env.CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS?.trim()) {
-    appendLog(logName, "[claude-smart] Remove CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS and set timeout (seconds) on the Codex service hook.");
-    emitOk();
+    const systemMessage = "[claude-smart] Remove CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS and set timeout (seconds) on the Codex service hook.";
+    appendLog(logName, systemMessage);
+    process.stdout.write(`${JSON.stringify({ continue: true, systemMessage })}\n`);
     return 0;
   }
   // Codex owns the hook deadline and terminates the foreground process tree.

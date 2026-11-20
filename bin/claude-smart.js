@@ -248,12 +248,13 @@ function hasCli(name) {
   }
 }
 
-function requireCodexHookProcessCleanup() {
+function codexHookProcessCleanupError() {
   const release = learningProviderVersion({ provider: HOST_CODEX });
   const version = release?.match(/^codex-cli (\d+)\.(\d+)\.\d+(?:\+\S+)?$/);
   if (!version || (Number(version[1]) === 0 && Number(version[2]) < 148)) {
-    throw new Error("Codex CLI 0.148 or newer is required for service hook process cleanup. Update Codex, then retry setup.");
+    return "Codex CLI 0.148 or newer is required for service hook process cleanup. Update Codex, then retry setup.";
   }
+  return null;
 }
 
 function runCodex(args) {
@@ -2949,7 +2950,13 @@ async function runGuidedCommand(command, args) {
       inventory: installInventory,
       saved: () => saved,
       save: async (config, options) => {
-        if (config.hosts.includes(HOST_CODEX)) requireCodexHookProcessCleanup();
+        const codexError = config.hosts.includes(HOST_CODEX) && codexHookProcessCleanupError();
+        if (codexError) {
+          if (config.hosts.length === 1) throw new Error(codexError);
+          // Only eligible hosts contribute to the prepared runtime. The Codex
+          // worker still reports its own error in the per-host summary.
+          config = { ...config, hosts: config.hosts.filter((host) => host !== HOST_CODEX) };
+        }
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
         const { baseline } = await resumeGuidedShutdown();
         const settings = planInstallSettings(config, captured);
@@ -4866,10 +4873,9 @@ async function runInstallCodex(settings, runtime) {
     process.exit(1);
   }
   assertSupportedRuntimePlatform();
-  if (!runtime) {
-    requireCodexHookProcessCleanup();
-    snapshotInstallState({ preserveFailureMarker: Boolean(settings) });
-  }
+  const codexError = codexHookProcessCleanupError();
+  if (codexError) throw new Error(codexError);
+  if (!runtime) snapshotInstallState({ preserveFailureMarker: Boolean(settings) });
   let setup = settings ? null : readInstallPolicy();
   const pluginRoot = runtime?.pluginRoot ?? CODEX_RUNTIME_PLUGIN_ROOT;
 
