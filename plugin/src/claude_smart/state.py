@@ -40,7 +40,7 @@ from filelock import FileLock
 
 _LOGGER = logging.getLogger(__name__)
 
-STATE_DIR_ENV = "CLAUDE_SMART_STATE_DIR"
+_ENV_STATE_DIR = "CLAUDE_SMART_STATE_DIR"
 _DEFAULT_STATE_DIR = Path.home() / ".claude-smart" / "sessions"
 
 _TOOL_DATA_FIELD_MAX_LEN = 256
@@ -115,7 +115,7 @@ def _truncate_tool_data_field(value: Any) -> Any:
 
 def configured_state_dir() -> Path | None:
     """Return the explicitly selected session directory, if any."""
-    override = os.environ.get(STATE_DIR_ENV)
+    override = os.environ.get(_ENV_STATE_DIR)
     return Path(override) if override else None
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -99,6 +100,34 @@ def test_log_event_tolerates_readonly_log_dir(tmp_path, monkeypatch) -> None:
         hook_log.log_event(event="stop", host="claude-code")
     finally:
         locked.chmod(0o700)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
+@pytest.mark.parametrize("filename", ["hook.log", "hook.log.lock"])
+def test_hook_does_not_block_on_session_diagnostic_fifo(tmp_path, filename) -> None:
+    state_dir = tmp_path / "sessions"
+    state_dir.mkdir()
+    os.mkfifo(state_dir / filename)
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "plugin" / "src"),
+        "CLAUDE_SMART_STATE_DIR": str(state_dir),
+    }
+    result = subprocess.run(
+        [sys.executable, "-m", "claude_smart.hook", "opencode", "test-observation"],
+        cwd=tmp_path,
+        env=env,
+        input=json.dumps({"session_id": "test", "cwd": str(tmp_path)}),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["continue"] is True
+    if filename.endswith(".lock"):
+        assert not (state_dir / "hook.log").exists()
 
 
 def test_log_path_follows_the_session_directory(

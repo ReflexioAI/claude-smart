@@ -24,8 +24,6 @@ from pathlib import Path
 
 from filelock import Timeout, UnixFileLock, WindowsFileLock
 
-from claude_smart.state import STATE_DIR_ENV
-
 CLAUDE_SMART_ENV_PATH = Path.home() / ".claude-smart" / ".env"
 LEGACY_REFLEXIO_ENV_PATH = Path.home() / ".reflexio" / ".env"
 INSTALL_COMPLETION_COMMENT = "# claude-smart: legacy-env checked"
@@ -106,7 +104,7 @@ def load_reflexio_env(path: Path | None = None) -> None:
             continue
         key, value = parsed
         # Shell hooks and status select the first nonempty saved session directory.
-        if key == STATE_DIR_ENV and not os.environ.get(key):
+        if key == "CLAUDE_SMART_STATE_DIR" and not os.environ.get(key):
             os.environ[key] = value
         else:
             os.environ.setdefault(key, value)

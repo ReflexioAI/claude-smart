@@ -9128,7 +9128,7 @@ def test_shell_recovery_and_tracking_use_codex_account(
     assert "cache-tracking" in result.stderr
 
 
-@pytest.mark.parametrize("selection", ["default", "saved", "process", "symlink"])
+@pytest.mark.parametrize("selection", ["default", "saved", "process", "symlink", "relative"])
 def test_hook_and_status_use_the_same_session_log(
     tmp_path: Path, selection: str
 ) -> None:
@@ -9157,14 +9157,18 @@ def test_hook_and_status_use_the_same_session_log(
     env["CLAUDE_SMART_HOOK_LOG"] = str(previous)
     env["CLAUDE_SMART_STATE_DIR"] = str(process) if selection == "process" else ""
     if selection != "default":
+        saved_value = "relative-sessions" if selection == "relative" else saved
         (account / ".env").write_text(
-            f'CLAUDE_SMART_STATE_DIR=""\nCLAUDE_SMART_STATE_DIR="{saved}"\n'
+            f'CLAUDE_SMART_STATE_DIR=""\nCLAUDE_SMART_STATE_DIR="{saved_value}"\n'
             f'CLAUDE_SMART_STATE_DIR="{tmp_path / "unused"}"\n',
             encoding="utf-8",
         )
-    expected = {"default": account, "process": process}.get(selection, saved)
+    expected = {"default": account, "relative": account, "process": process}.get(selection, saved)
+    hook_cwd = tmp_path / "hook-cwd"
+    hook_cwd.mkdir()
     hook = subprocess.run(
         [sys.executable, "-m", "claude_smart.hook", "opencode", "test-observation"],
+        cwd=hook_cwd,
         env=env,
         input=json.dumps({"session_id": "current-observation", "cwd": str(tmp_path)}),
         check=False,
@@ -9177,11 +9181,13 @@ def test_hook_and_status_use_the_same_session_log(
     assert json.loads(log.read_text())["session_id"] == "current-observation"
     assert previous.read_text() == "previous log"
     assert not (tmp_path / "hook.log").exists()
+    assert not (hook_cwd / "relative-sessions" / "hook.log").exists()
     for other in {account, saved, process} - {expected}:
         assert not (other / "hook.log").exists()
 
     status = subprocess.run(
         [node, str(NODE_INSTALLER), "status", "--host", "opencode"],
+        cwd=tmp_path,
         env=env,
         check=False,
         capture_output=True,

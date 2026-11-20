@@ -22,9 +22,11 @@ or read-only ``$HOME`` must never abort an in-progress hook.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import logging
 import os
+import stat
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -158,7 +160,9 @@ def log_event(
         if not acquired:
             return
         try:
-            with path.open("a", encoding="utf-8") as fh:
+            with open(
+                path, "a", encoding="utf-8", opener=_open_nonblocking_regular
+            ) as fh:
                 fh.write(line)
         except OSError as exc:
             _LOGGER.debug("hook_log: write to %s failed: %s", path, exc)
@@ -170,10 +174,25 @@ def log_event(
         _maybe_rotate(path)
 
 
+def _open_nonblocking_regular(path: str, flags: int) -> int:
+    fd = os.open(path, flags | getattr(os, "O_NONBLOCK", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "Diagnostic path must be a regular file", path)
+    except OSError:
+        os.close(fd)
+        raise
+    return fd
+
+
 def log_path() -> Path:
-    """Use the selected session directory or the default account log."""
+    """Use the shared absolute session directory or the default account log."""
     directory = state.configured_state_dir()
-    return directory / "hook.log" if directory is not None else _LOG_PATH
+    return (
+        directory / "hook.log"
+        if directory is not None and directory.is_absolute()
+        else _LOG_PATH
+    )
 
 
 def _account_log_path() -> Path:
@@ -230,7 +249,7 @@ def _rotation_lock(path: Path) -> Iterator[bool]:
     lock_path = path.with_name(path.name + ".lock")
     fh: IO[bytes] | None = None
     try:
-        fh = lock_path.open("ab")
+        fh = open(lock_path, "ab", opener=_open_nonblocking_regular)
     except OSError as exc:
         _LOGGER.debug("hook_log: lock open %s failed: %s", lock_path, exc)
         yield False

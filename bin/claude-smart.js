@@ -47,7 +47,7 @@ const {
 const http = require("http");
 const https = require("https");
 const { arch, homedir, platform, release, tmpdir } = require("os");
-const { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } = require("path");
+const { basename, dirname, extname, isAbsolute, join, parse: parsePath, relative, resolve, sep } = require("path");
 const { fileURLToPath, pathToFileURL } = require("url");
 const guide = require("./install-guide");
 
@@ -5466,22 +5466,26 @@ function openCodeInstalledVersion(args) {
 }
 
 function statusSessionDirectory() {
-  const configured = process.env.CLAUDE_SMART_STATE_DIR;
-  if (configured) return configured;
-  try {
-    const fd = openSync(CLAUDE_SMART_ENV_PATH, constants.O_RDONLY | constants.O_NONBLOCK);
+  let directory = process.env.CLAUDE_SMART_STATE_DIR;
+  if (!directory) {
     try {
-      if (fstatSync(fd).isFile()) {
-        const { values } = parseEnvSnapshot(readFileSync(fd), true);
-        return values.get("CLAUDE_SMART_STATE_DIR") || CLAUDE_SMART_STATE_DIR;
+      const fd = openSync(CLAUDE_SMART_ENV_PATH, constants.O_RDONLY | constants.O_NONBLOCK);
+      try {
+        if (fstatSync(fd).isFile()) {
+          const { values } = parseEnvSnapshot(readFileSync(fd), true);
+          directory = values.get("CLAUDE_SMART_STATE_DIR");
+        }
+      } finally {
+        closeSync(fd);
       }
-    } finally {
-      closeSync(fd);
+    } catch {
+      // Missing or unreadable settings should not hide account observations.
     }
-  } catch {
-    // Missing or unreadable settings should not hide account observations.
   }
-  return CLAUDE_SMART_STATE_DIR;
+  // Hooks can run from a different cwd. Only an absolute path selects a shared log.
+  if (!directory || !isAbsolute(directory)) return CLAUDE_SMART_STATE_DIR;
+  if (sep === "\\" && ["\\", "/"].includes(parsePath(directory).root)) return CLAUDE_SMART_STATE_DIR;
+  return directory;
 }
 
 function runStatus(args) {
@@ -5554,9 +5558,8 @@ function runStatus(args) {
   const sessions = new Map();
   try {
     const logDirectory = statusSessionDirectory();
-    // Preserve '..' after symlinks and Windows drive-relative paths.
-    const needsSeparator = !logDirectory.endsWith(sep) &&
-      !(sep === "\\" && /^[A-Za-z]:$/.test(logDirectory));
+    // Preserve filesystem traversal of '..' after symlinks.
+    const needsSeparator = !logDirectory.endsWith(sep);
     const logPath = `${logDirectory}${needsSeparator ? sep : ""}hook.log`;
     const fd = openSync(logPath, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
