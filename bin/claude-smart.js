@@ -2613,7 +2613,7 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   }
   if (command && isWindows()) command = resolve(command);
   const { prepareWorkDir, dispatchEnvironment, declaredRunOptions } =
-    require("../plugin/scripts/opencode-claude-compat");
+    require("../plugin/scripts/opencode-claude-compat.js");
   const cwd = prepareWorkDir();
   let probe;
   try {

@@ -334,6 +334,7 @@ def _fake_claude_install_script() -> str:
     return (
         "#!/bin/sh\n"
         'printf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\n'
+        'if [ "$*" = "plugin list --json" ]; then printf "%s\\n" "[]"; exit 0; fi\n'
         'if [ "$1 $2" = "plugin update" ] && [ -n "${FAKE_CLAUDE_UPDATE_EXIT:-}" ]; then\n'
         '  exit "$FAKE_CLAUDE_UPDATE_EXIT"\n'
         "fi\n"
@@ -1364,7 +1365,8 @@ def _fake_claude_code_package(tmp_path: Path, smart_install: str) -> Path:
     # Shared Node preparation invokes the real import-light repair owner.
     _copy_prepared_policy_owner(package_root / "plugin")
     shutil.copy2(REPO_ROOT / "plugin/scripts/guided-command.sh", scripts)
-    shutil.copy2(REPO_ROOT / "plugin/scripts/opencode-claude-compat.js", scripts)
+    for name in ("opencode-claude-compat", "opencode-claude-compat.js"):
+        shutil.copy2(REPO_ROOT / "plugin/scripts" / name, scripts)
     _write_executable(scripts / "smart-install.sh", smart_install)
     _write_executable(
         scripts / "backend-service.sh",
@@ -6792,6 +6794,10 @@ def _write_fake_claude_installer(path: Path) -> None:
         """#!/bin/sh
 set -eu
 printf 'claude %s\\n' "$*" >> "$HOME/claude.log"
+if [ "$*" = "plugin list --json" ]; then
+  printf '%s\\n' '[]'
+  exit 0
+fi
 cmd="${1-} ${2-} ${3-}"
 
 if [ "$cmd" = "plugin marketplace add" ]; then

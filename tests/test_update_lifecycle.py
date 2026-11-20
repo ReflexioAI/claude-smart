@@ -1637,10 +1637,13 @@ def test_single_host_retry_recovers_abandoned_multihost_selection(
     )
     if failure == "trust":
         codex = tmp_path / "fake-bin/codex"
+        source = codex.read_text()
+        dispatch = "const args = process.argv.slice(2);"
+        assert source.count(dispatch) == 1
         codex.write_text(
-            codex.read_text().replace(
-                "#!/usr/bin/env node",
-                f'#!{node_bin()}\nif (process.argv[2] === "app-server") process.exit(17);',
+            source.replace(
+                dispatch,
+                dispatch + '\nif (args[0] === "app-server") process.exit(17);',
                 1,
             )
         )
