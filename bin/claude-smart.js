@@ -5529,13 +5529,13 @@ function runStatus(args) {
 
   // Match only this host and account. The shared log is bounded by hook_log;
   // read its last 5 MiB even if an older writer left a larger file behind.
-  const logOverride = (process.env.CLAUDE_SMART_HOOK_LOG || "").trim();
-  const logPath =
-    logOverride && !["1", "true", "yes", "on"].includes(logOverride.toLowerCase())
-      ? logOverride
-      : join(CLAUDE_SMART_STATE_DIR, "hook.log");
   const sessions = new Map();
   try {
+    const logDirectory =
+      process.env.CLAUDE_SMART_STATE_DIR ||
+      readEnvFile(CLAUDE_SMART_ENV_PATH).get("CLAUDE_SMART_STATE_DIR") ||
+      CLAUDE_SMART_STATE_DIR;
+    const logPath = join(logDirectory, "hook.log");
     const fd = openSync(logPath, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
       const stat = fstatSync(fd);

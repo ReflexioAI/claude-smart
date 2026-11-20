@@ -64,13 +64,18 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | `CLAUDE_SMART_DASHBOARD_URL` | Local URL using `DASHBOARD_PORT` (3001 by default) | Base URL for local citation links and learning-stall notices. Set it for a public dashboard origin such as a reverse proxy. Model-facing citation links use short `/rules/{citationId}` resolver URLs; canonical direct links remain `/skills/project/{id}`, `/skills/shared/{id}`, and `/preferences/project/{id}`. `/preferences/{id}` remains a compatibility alias. |
 | `CLAUDE_SMART_CLI_PATH` | `claude` on Claude Code; native `codex` on Codex | Override the executable Reflexio calls for local generation. |
 | `CLAUDE_SMART_MAX_INJECTED_ITEMS` | `6` | Total results one UserPromptSubmit or PreToolUse search may return across its three collections. Enforced as a per-collection `top_k` of `cap // 3` (at least 1), so nothing the server marks as served is dropped. `0` removes the cap (`top_k` 5); empty or invalid values use the default. Hook env. |
-| `CLAUDE_SMART_STATE_DIR` | `~/.claude-smart/sessions/` | Where the per-session JSONL buffer lives. |
+| `CLAUDE_SMART_STATE_DIR` | `~/.claude-smart/sessions/` | Where the per-session JSONL buffer lives. Set an absolute directory to keep hooks and `status` on the same session files and `hook.log`. Without an override, diagnostics remain at `~/.claude-smart/hook.log`. |
 | `CLAUDE_SMART_NODE_LTS_MAJOR` | `26` | Major version used when the installer downloads private Node.js/npm into `~/.claude-smart/node/current`. |
 | `CLAUDE_SMART_NODE_BASE_URL` | `https://nodejs.org/dist/latest-v${CLAUDE_SMART_NODE_LTS_MAJOR}.x` | Override the Node.js download base URL for tests, mirrors, or recovery. |
 | `CLAUDE_SMART_BACKEND_AUTOSTART` | `1` | Set to `0` to stop the SessionStart hook from spawning the reflexio backend on `localhost:8071`. |
 | `CLAUDE_SMART_DASHBOARD_AUTOSTART` | `1` | Set to `0` to stop the SessionStart hook from spawning the Next.js dashboard on `localhost:3001`. |
 | `CLAUDE_SMART_BACKEND_STOP_ON_END` | `0` | Set to `1` to tear down the backend at `SessionEnd` instead of leaving it long-lived. |
 | `REFLEXIO_URL` | `http://localhost:8071/` | Point the plugin at a non-local reflexio backend. |
+
+Hook diagnostics follow the selected session directory. If you previously set
+`CLAUDE_SMART_HOOK_LOG`, remove that assignment and point any log consumer at
+the selected directory's `hook.log` (or `~/.claude-smart/hook.log` for a default
+installation). Existing logs and session buffers stay at their previous paths.
 
 The bundled backend launcher passes the saved provider and model to the SDK as
 one native model reference. It preserves the CLI opt-out and the saved file
@@ -950,7 +955,7 @@ npx claude-smart status
 npx claude-smart status --host codex
 ```
 
-Status reads the host plugin inventory and recent hook observations. Each hook records the version and root of the runtime actually executing it. Codex observations are scoped to `CODEX_HOME`; older records without account attribution are skipped. These are historical observations, not proof that a session is still running or has activated an update. Missing inventory or history is reported as unknown. `CLAUDE_SMART_HOOK_LOG` redirects both logging and status to the same file.
+Status reads the host plugin inventory and recent hook observations. Each hook records the version and root of the runtime actually executing it. Codex observations are scoped to `CODEX_HOME`; older records without account attribution are skipped. These are historical observations, not proof that a session is still running or has activated an update. Missing inventory or history is reported as unknown. The hook writer and status both use the selected session directory’s `hook.log`, or the account’s default log when no session directory is selected.
 
 Claude Code can register different plugin versions in user and project scopes. Status lists every matching registration with its scope, project path when provided, and enabled state. It does not infer which registration an existing session has loaded.
 

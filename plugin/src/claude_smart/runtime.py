@@ -50,11 +50,16 @@ def plugin_metadata() -> dict[str, str]:
     metadata = dict(_PLUGIN_IDENTITY)
     if host() == HOST_CODEX:
         try:
-            metadata["codex_home"] = str(
-                Path(
-                    os.environ.get("CODEX_HOME", "").strip() or Path.home() / ".codex"
-                ).resolve()
+            account_home = Path(
+                os.environ.get("CODEX_HOME", "").strip() or Path.home() / ".codex"
             )
+            try:
+                account_home = account_home.resolve(strict=True)
+            except FileNotFoundError:
+                # A not-yet-created account is valid. Strict resolution above
+                # still rejects a symlink loop on supported Python versions.
+                account_home = account_home.resolve()
+            metadata["codex_home"] = str(account_home)
         except (OSError, RuntimeError):
             # An unreadable account path must not abort best-effort hook logging.
             # Omit attribution so status cannot associate it with another account.

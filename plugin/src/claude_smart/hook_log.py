@@ -7,8 +7,8 @@ captures but typically does not surface. The dispatcher already wraps
 handlers in a broad ``except`` (so a hook crash never breaks the user's
 session) — without a forensic trail the silent-fail mode is invisible.
 
-This module attempts one JSON line per hook fire to
-``~/.claude-smart/hook.log`` from ``hook.main`` after the handler returns.
+This module attempts one JSON line per hook fire after the handler returns.
+The log belongs to the selected session directory or the default account.
 The Stop and SessionEnd handlers additionally piggyback their publish
 outcome into the record so the chain hook→adapter→backend is fully
 observable from a single file.
@@ -30,7 +30,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import IO, Any
 
-from claude_smart import runtime
+from claude_smart import runtime, state
 
 # ``fcntl`` is POSIX-only. On Windows we skip the cross-process lock and
 # accept the unlikely rotation race (claude-smart is primarily a POSIX
@@ -171,27 +171,9 @@ def log_event(
 
 
 def log_path() -> Path:
-    """Return the active log path, honouring ``CLAUDE_SMART_HOOK_LOG``.
-
-    Resolution order:
-
-    1. ``CLAUDE_SMART_HOOK_LOG`` env var — boolean-like values enable the
-       default log, while path-like values redirect it.
-    2. ``_LOG_PATH`` module attribute — what monkeypatched tests override.
-    3. ``~/.claude-smart/hook.log`` — the default.
-
-    Returns:
-        Path: The absolute path to write to.
-    """
-    override = os.environ.get("CLAUDE_SMART_HOOK_LOG")
-    if override:
-        override = override.strip()
-        if not override:
-            return _LOG_PATH
-        if override.lower() in {"1", "true", "yes", "on"}:
-            return _LOG_PATH
-        return Path(override)
-    return _LOG_PATH
+    """Use the selected session directory or the default account log."""
+    directory = state.configured_state_dir()
+    return directory / "hook.log" if directory is not None else _LOG_PATH
 
 
 def _account_log_path() -> Path:

@@ -27,7 +27,6 @@ def cursor_hook_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect hook telemetry away from the user's real state."""
     path = tmp_path / "hook.log"
     monkeypatch.setattr(hook_log, "_LOG_PATH", path)
-    monkeypatch.delenv("CLAUDE_SMART_HOOK_LOG", raising=False)
     return path
 
 

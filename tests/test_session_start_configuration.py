@@ -73,7 +73,6 @@ def test_session_start_preserves_server_policy(tmp_path, legacy_value, optimizer
         "CLAUDE_SMART_INTERNAL",
         "CLAUDE_CODE_ENTRYPOINT",
         "CLAUDE_SMART_READ_ONLY",
-        "CLAUDE_SMART_HOOK_LOG",
     ):
         env.pop(name, None)
     env.update(
@@ -118,9 +117,7 @@ def test_session_start_preserves_server_policy(tmp_path, legacy_value, optimizer
         # The dispatcher's fail-open output alone cannot establish success.
         records = [
             json.loads(line)
-            for line in (tmp_path / ".claude-smart" / "hook.log")
-            .read_text()
-            .splitlines()
+            for line in (tmp_path / "state" / "hook.log").read_text().splitlines()
         ]
         assert len(records) == 2
         assert all(record["handler_status"] == "ok" for record in records)

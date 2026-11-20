@@ -6993,7 +6993,6 @@ def _assert_installed_host_learning_e2e(
             "HOME": str(home),
             "PYTHONPATH": os.pathsep.join(pythonpath_entries),
             "CLAUDE_SMART_STATE_DIR": str(home / ".claude-smart" / f"{host}-sessions"),
-            "CLAUDE_SMART_HOOK_LOG": str(home / ".claude-smart" / f"{host}-hook.log"),
             "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
             "CLAUDE_SMART_DASHBOARD_AUTOSTART": "0",
         }
@@ -7240,7 +7239,9 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
 
     observations = [
         json.loads(line)
-        for line in (home / ".claude-smart" / "codex-hook.log").read_text().splitlines()
+        for line in (home / ".claude-smart" / "codex-sessions" / "hook.log")
+        .read_text()
+        .splitlines()
     ]
     assert any(
         row.get("codex_home") == str(codex_home.resolve())
@@ -8832,7 +8833,7 @@ def test_status_distinguishes_install_from_account_scoped_observations(
         cli, "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(inventory) + "\nJSON\n"
     )
     account = tmp_path / "account home"
-    log = tmp_path / "custom-hook.log"
+    log = tmp_path / "hook.log"
     base = {"host": host, "event": "stop", "ts": 123, "codex_home": str(account)}
     records = [
         {**base, "session_id": "existing-session", "plugin_version": "8.0.0"},
@@ -8861,7 +8862,7 @@ def test_status_distinguishes_install_from_account_scoped_observations(
         records.append({"host": host, "session_id": "legacy-unattributed"})
     log.write_text("\n".join(json.dumps(row) for row in records) + "\npartial-json")
     env = _isolated_env(tmp_path)
-    env.update(CODEX_HOME=str(account), CLAUDE_SMART_HOOK_LOG=str(log))
+    env.update(CODEX_HOME=str(account), CLAUDE_SMART_STATE_DIR=str(tmp_path))
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     result = subprocess.run(
         [node, str(NODE_INSTALLER), "status", "--host", host],
@@ -9127,6 +9128,58 @@ def test_shell_recovery_and_tracking_use_codex_account(
     assert "cache-tracking" in result.stderr
 
 
+@pytest.mark.parametrize("selection", ["default", "saved", "process"])
+def test_hook_and_status_use_the_same_session_log(
+    tmp_path: Path, selection: str
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required")
+    account = tmp_path / ".claude-smart"
+    account.mkdir()
+    saved = tmp_path / "saved sessions"
+    process = tmp_path / "process sessions"
+    previous = tmp_path / "previous-hook.log"
+    previous.write_text("previous log")
+    env = _isolated_env(tmp_path)
+    env["PYTHONPATH"] = str(REPO_ROOT / "plugin" / "src")
+    env["CLAUDE_SMART_HOOK_LOG"] = str(previous)
+    env["CLAUDE_SMART_STATE_DIR"] = str(process) if selection == "process" else ""
+    if selection != "default":
+        (account / ".env").write_text(
+            f'CLAUDE_SMART_STATE_DIR=""\nCLAUDE_SMART_STATE_DIR="{saved}"\n'
+            f'CLAUDE_SMART_STATE_DIR="{tmp_path / "unused"}"\n',
+            encoding="utf-8",
+        )
+    expected = {"default": account, "saved": saved, "process": process}[selection]
+    hook = subprocess.run(
+        [sys.executable, "-m", "claude_smart.hook", "opencode", "test-observation"],
+        env=env,
+        input=json.dumps({"session_id": "current-observation", "cwd": str(tmp_path)}),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert hook.returncode == 0, hook.stderr
+    log = expected / "hook.log"
+    assert json.loads(log.read_text())["session_id"] == "current-observation"
+    assert previous.read_text() == "previous log"
+    for other in {account, saved, process} - {expected}:
+        assert not (other / "hook.log").exists()
+
+    status = subprocess.run(
+        [node, str(NODE_INSTALLER), "status", "--host", "opencode"],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert status.returncode == 0, status.stderr
+    assert "current-observation:" in status.stdout
+
+
 @pytest.mark.skipif(os.name == "nt", reason="FIFO logs are POSIX-only")
 def test_status_ignores_fifo_log_without_blocking(tmp_path: Path) -> None:
     node = shutil.which("node")
@@ -9135,10 +9188,10 @@ def test_status_ignores_fifo_log_without_blocking(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     _write_executable(fake_bin / "claude", "#!/bin/sh\nprintf '[]\\n'\n")
-    log = tmp_path / "hook.fifo"
+    log = tmp_path / "hook.log"
     os.mkfifo(log)
     env = _isolated_env(tmp_path)
-    env["CLAUDE_SMART_HOOK_LOG"] = str(log)
+    env["CLAUDE_SMART_STATE_DIR"] = str(tmp_path)
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     result = subprocess.run(
         [node, str(NODE_INSTALLER), "status"],
