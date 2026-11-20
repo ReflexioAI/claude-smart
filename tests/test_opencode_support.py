@@ -821,6 +821,7 @@ def test_public_confirmation_preserves_or_discovers_opencode_path(
         ("named-executable", ""),
         ("empty-path-entry", ""),
         ("blank-opencode-path", ""),
+        ("session-opencode-override", ""),
         ("symlink-parent", ""),
         ("known-bridge", ""),
         ("missing-bridge", "cannot be executed"),
@@ -852,6 +853,9 @@ def test_public_setup_checks_opencode_variant_before_publication(
         saved += 'CLAUDE_SMART_OPENCODE_VARIANT="" # use provider default\n'
     if case == "blank-opencode-path":
         saved += 'CLAUDE_SMART_OPENCODE_PATH=""\n'
+    saved_executable = tmp_path / "account-opencode"
+    if case == "session-opencode-override":
+        saved += f"CLAUDE_SMART_OPENCODE_PATH={saved_executable}\n"
     custom = case in {
         "custom-executable",
         "named-executable",
@@ -930,6 +934,8 @@ def test_public_setup_checks_opencode_variant_before_publication(
             assert values["CLAUDE_SMART_CLI_PATH"] == str(cli)
         if case == "blank-opencode-path":
             assert Path(values["CLAUDE_SMART_OPENCODE_PATH"]) == executable
+        if case == "session-opencode-override":
+            assert Path(values["CLAUDE_SMART_OPENCODE_PATH"]) == saved_executable
 
 
 def _fake_opencode_path(tmp_path: Path) -> Path:

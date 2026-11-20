@@ -2096,8 +2096,10 @@ function planInstallSettings(config, captured) {
   const previousProvider =
     previous.get(LEARNING_PROVIDER_ENV) || previous.get(CLAUDE_SMART_HOST_ENV);
   if (previousProvider) values[LEARNING_PROVIDER_ENV] = previousProvider;
+  // A qualified process override is already inherited by startup. Persist it
+  // only when the account has no executable of its own.
   if (config.validatedOpenCodePath &&
-      config.validatedOpenCodePath !== previous.get(CLAUDE_SMART_OPENCODE_PATH_ENV)) {
+      !previous.get(CLAUDE_SMART_OPENCODE_PATH_ENV)?.trim()) {
     values[CLAUDE_SMART_OPENCODE_PATH_ENV] = config.validatedOpenCodePath;
   } else if (
     (config.hosts.includes(HOST_OPENCODE) ||
