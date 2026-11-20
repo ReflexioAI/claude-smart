@@ -2612,29 +2612,20 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
     throw new Error("Use an absolute CLAUDE_SMART_OPENCODE_PATH to select an OpenCode variant.");
   }
   if (command && isWindows()) command = resolve(command);
-  const cwd = mkdtempSync(join(realpathSync(tmpdir()), "claude-smart-opencode-help-"));
+  const { prepareWorkDir, dispatchEnvironment, declaredRunOptions } =
+    require("../plugin/scripts/opencode-claude-compat");
+  const cwd = prepareWorkDir();
   let probe;
   try {
     probe = withWorkerPath(() => probeLearningCli(command, ["run", "--help"], 64 * 1024, {
       cwd,
       captureStderr: true,
-      env: {
-        ...process.env,
-        PWD: cwd,
-        OPENCODE_PURE: "1",
-        CLAUDE_SMART_HOST: "opencode",
-        CLAUDE_SMART_INTERNAL: "1",
-        CLAUDE_CODE_ENTRYPOINT: "optimizer",
-      },
+      env: dispatchEnvironment(cwd),
     }));
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
-  const help = probe ? `${probe.stdout}\n${probe.stderr}` : "";
-  const runOptions = new Set(
-    Array.from(help.matchAll(/^\s*(?:-[A-Za-z0-9],\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=[,\s=]|$)/gm),
-      ([, option]) => option),
-  );
+  const runOptions = declaredRunOptions(probe ? `${probe.stdout}\n${probe.stderr}` : "");
   if (!runOptions.has("--variant")) {
     throw new Error(
       "The selected OpenCode CLI does not advertise --variant. Specify provider/model#variant instead of #variant.",

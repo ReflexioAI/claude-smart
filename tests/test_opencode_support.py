@@ -938,7 +938,8 @@ def test_public_setup_checks_opencode_variant_before_publication(
         (tmp_path / "caller-only").touch()
         dispatch_guard = (
             '  if [ "$OPENCODE_PURE" != 1 ] || [ "$PWD" != "$(pwd -P)" ] || '
-            "[ -e caller-only ]; then\n"
+            "[ -e caller-only ] || "
+            " ! grep -q 'claude-smart-extractor' .opencode/opencode.json; then\n"
             "    printf '%s\\n' '--variant string' >&2\n"
             "    exit 0\n"
             "  fi\n"
