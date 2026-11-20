@@ -2574,7 +2574,7 @@ function probeLearningCli(command, args, maxBuffer, captureStderr = false) {
 
 function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   if (config.backend !== "local" || config.provider !== HOST_OPENCODE ||
-      !/^(?:1|true|yes|on)$/i.test(config.useLocalCli || "") ||
+      !/^(?:1|true|yes|on)$/i.test(config.useLocalCli?.trim() || "") ||
       (config.url && !isBundledBackendUrl(config.url))) return;
   if (saved.retiredOpenCodeVariant || process.env.CLAUDE_SMART_OPENCODE_VARIANT?.trim()) {
     throw new Error(
@@ -2612,10 +2612,21 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   if (command && isWindows()) command = resolve(command);
   const probe = withWorkerPath(() => probeLearningCli(command, ["run", "--help"], 64 * 1024, true));
   const help = probe ? `${probe.stdout}\n${probe.stderr}` : "";
-  if (!/^\s*(?:-[A-Za-z0-9],\s*)?--variant(?=[,\s=]|$)/m.test(help)) {
+  const runOptions = new Set(
+    Array.from(help.matchAll(/^\s*(?:-[A-Za-z0-9],\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=[,\s=]|$)/gm),
+      ([, option]) => option),
+  );
+  if (!runOptions.has("--variant")) {
     throw new Error(
       "The selected OpenCode CLI does not advertise --variant. Specify provider/model#variant instead of #variant.",
     );
+  }
+  // The pinned SDK's native OpenCode transport needs these options at dispatch.
+  // The compatibility bridge has a separate command contract.
+  if (launcher && !bridge &&
+      (!["--model", "--agent", "--format", "--title"].every((option) => runOptions.has(option)) ||
+       !(runOptions.has("--standalone") || runOptions.has("--attach")))) {
+    throw new Error("The selected executable does not support the native OpenCode run options.");
   }
   if (launcher) config.cliPath = launcher;
   if (!launcher || bridge) config.validatedOpenCodePath = command;
