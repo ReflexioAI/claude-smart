@@ -552,7 +552,7 @@ process.stdout.write(JSON.stringify({{
     ("selected_path", "expected_path", "use_shell"),
     [
         (r"C:\tools\opencode.cmd ", r"C:\tools\opencode.cmd", True),
-        (r" tools\opencode.exe", r" tools\opencode.exe", False),
+        (r" tools\opencode.exe", r"C:\bridge-cwd\ tools\opencode.exe", False),
     ],
 )
 def test_opencode_cli_bridge_preserves_windows_launch_path(
@@ -564,8 +564,9 @@ def test_opencode_cli_bridge_preserves_windows_launch_path(
     bridge = REPO_ROOT / "plugin/scripts/opencode-claude-compat.js"
     shim = tmp_path / "fake-windows.cjs"
     shim.write_text(
-        """
+        r"""
 Object.defineProperty(process, "platform", { value: "win32" });
+process.cwd = () => "C:\\bridge-cwd";
 require("node:os").tmpdir = () => process.env.TEST_DIRECTORY;
 const fs = require("node:fs");
 const isFixture = (file) => file === process.env.CLAUDE_SMART_OPENCODE_PATH
