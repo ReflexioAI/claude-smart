@@ -78,7 +78,11 @@ if action == "status":
         )
     fake = tmp_path / "fake-bin"
     fake.mkdir()
-    _write_fake_codex(fake / "codex")
+    codex = fake / "codex"
+    _write_fake_codex(codex)
+    # The version probe uses the install worker's PATH, which includes the
+    # private Node stub below. Run the CLI fixture with the real interpreter.
+    codex.write_text(codex.read_text().replace("#!/usr/bin/env node", f"#!{node_bin()}", 1))
     _write_executable(fake / "opencode", "#!/bin/sh\necho 1.17.0\n")
     private = tmp_path / ".claude-smart/node/current/bin"
     private.mkdir(parents=True)

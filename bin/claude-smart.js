@@ -2946,18 +2946,25 @@ async function runGuidedCommand(command, args) {
   let deferredSettings;
   let preparedRuntime;
   let codexPreflightFailure;
+  // Use worker PATH for host discovery without affecting caller-first learning settings.
+  const withWorkerPath = (inspect) => {
+    const callerPath = process.env.PATH;
+    process.env.PATH = runtimeEnv().PATH;
+    try {
+      return inspect();
+    } finally {
+      if (callerPath === undefined) delete process.env.PATH;
+      else process.env.PATH = callerPath;
+    }
+  };
   await guide
     .runGuide(command, args, {
-      inventory: installInventory,
+      inventory: (options) => withWorkerPath(() => installInventory(options)),
       saved: () => saved,
       save: async (config, options) => {
         const multipleHosts = config.hosts.length > 1;
         if (config.hosts.includes(HOST_CODEX)) {
-          // Only availability checks use the worker lookup order. The
-          // caller's PATH still owns executable choices saved for learning.
-          const callerPath = process.env.PATH;
-          process.env.PATH = runtimeEnv().PATH;
-          try {
+          withWorkerPath(() => {
             codexPreflightFailure = codexHookProcessCleanupError();
             if (codexPreflightFailure) {
               if (!multipleHosts) throw new Error(codexPreflightFailure);
@@ -2967,10 +2974,7 @@ async function runGuidedCommand(command, args) {
               if (!claudeAvailable && (!config.hosts.includes(HOST_OPENCODE) || openCodeError))
                 throw new Error([codexPreflightFailure, openCodeError || "Claude Code is not available on PATH."].join(" ").trim());
             }
-          } finally {
-            if (callerPath === undefined) delete process.env.PATH;
-            else process.env.PATH = callerPath;
-          }
+          });
         }
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
         const { baseline } = await resumeGuidedShutdown();
@@ -3030,7 +3034,7 @@ async function runGuidedCommand(command, args) {
         if (action === "uninstall") {
           const codexSurvivors = registeredCodexPluginRoots();
           if (isGuidedPluginRoot(root)) {
-            const survivors = installedPluginRoots(codexSurvivors);
+            const survivors = withWorkerPath(() => installedPluginRoots(codexSurvivors));
             if (!survivors.includes(root)) {
               const { status } = observePreviousServices();
               await stopServicesForInstall(root, null, status);
@@ -3042,8 +3046,10 @@ async function runGuidedCommand(command, args) {
               }
             }
           }
-          const current = installInventory();
-          const global = installInventory({ global: true });
+          const [current, global] = withWorkerPath(() => [
+            installInventory(),
+            installInventory({ global: true }),
+          ]);
           if (![...current, ...global].some((agent) => agent.installed) &&
               codexSurvivors.length === 0 && openCodeGuidedPluginRoots().length === 0) {
             stopClaudeSmartServices(root);
