@@ -2096,7 +2096,10 @@ function planInstallSettings(config, captured) {
   const previousProvider =
     previous.get(LEARNING_PROVIDER_ENV) || previous.get(CLAUDE_SMART_HOST_ENV);
   if (previousProvider) values[LEARNING_PROVIDER_ENV] = previousProvider;
-  if (
+  if (config.validatedOpenCodePath &&
+      config.validatedOpenCodePath !== previous.get(CLAUDE_SMART_OPENCODE_PATH_ENV)) {
+    values[CLAUDE_SMART_OPENCODE_PATH_ENV] = config.validatedOpenCodePath;
+  } else if (
     (config.hosts.includes(HOST_OPENCODE) ||
       config.provider === HOST_OPENCODE ||
       previousProvider === HOST_OPENCODE) &&
@@ -2572,16 +2575,17 @@ function validateGuidedOpenCodeLearning(config, saved) {
     if (!match) {
       throw new Error("The configured CLAUDE_SMART_CLI_PATH cannot be executed. Repair that path before updating.");
     }
-    launcher = isAbsolute(match) ? match : resolve(match);
+    launcher = isWindows() ? resolve(match) : match;
   }
   const bridge = /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(launcher || ""));
   if (launcher && isWindows() && !bridge && !/\.exe$/i.test(launcher)) {
     throw new Error("Select a native OpenCode .exe or the supported compatibility bridge on Windows.");
   }
-  const command = launcher && !bridge ? launcher : resolveOpenCodePath();
+  let command = launcher && !bridge ? launcher : resolveOpenCodePath();
   if (command && !isAbsolute(command)) {
     throw new Error("Use an absolute CLAUDE_SMART_OPENCODE_PATH to select an OpenCode variant.");
   }
+  if (command && isWindows()) command = resolve(command);
   const probe = probeLearningCli(command, ["run", "--help"], 64 * 1024);
   const help = probe ? `${probe.stdout}\n${probe.stderr}` : "";
   if (!/^\s*(?:-[A-Za-z0-9],\s*)?--variant(?=[,\s=]|$)/m.test(help)) {
@@ -2590,6 +2594,7 @@ function validateGuidedOpenCodeLearning(config, saved) {
     );
   }
   if (launcher) config.cliPath = launcher;
+  if (!launcher || bridge) config.validatedOpenCodePath = command;
 }
 
 function readGuidedRuntime(id) {

@@ -820,6 +820,7 @@ def test_public_confirmation_preserves_or_discovers_opencode_path(
         ("custom-executable", ""),
         ("named-executable", ""),
         ("empty-path-entry", ""),
+        ("blank-opencode-path", ""),
         ("symlink-parent", ""),
         ("known-bridge", ""),
         ("missing-bridge", "cannot be executed"),
@@ -849,6 +850,8 @@ def test_public_setup_checks_opencode_variant_before_publication(
         saved += "CLAUDE_SMART_OPENCODE_VARIANT=high\n"
     if case == "commented-empty":
         saved += 'CLAUDE_SMART_OPENCODE_VARIANT="" # use provider default\n'
+    if case == "blank-opencode-path":
+        saved += 'CLAUDE_SMART_OPENCODE_PATH=""\n'
     custom = case in {
         "custom-executable",
         "named-executable",
@@ -892,13 +895,15 @@ def test_public_setup_checks_opencode_variant_before_publication(
         env["PATH"] = os.pathsep.join(
             [str(tmp_path / "fake-bin"), str(tmp_path), os.environ["PATH"]]
         )
-    if case == "empty-path-entry":
+    if case in {"empty-path-entry", "blank-opencode-path"}:
         decoy = tmp_path / "decoy"
         decoy.mkdir()
         _fake_opencode_path(decoy)
         env["PATH"] = os.pathsep.join(
             ["", str(decoy), str(tmp_path / "fake-bin"), os.environ["PATH"]]
         )
+        if case == "blank-opencode-path":
+            del env["CLAUDE_SMART_OPENCODE_PATH"]
     # The explicit provider choice resets a custom executable by design.
     provider_args = [] if custom else ["--provider", "opencode"]
     result = _run_public_setup(
@@ -923,6 +928,8 @@ def test_public_setup_checks_opencode_variant_before_publication(
             assert Path(values["CLAUDE_SMART_CLI_PATH"]) == executable
         if case == "symlink-parent":
             assert values["CLAUDE_SMART_CLI_PATH"] == str(cli)
+        if case == "blank-opencode-path":
+            assert Path(values["CLAUDE_SMART_OPENCODE_PATH"]) == executable
 
 
 def _fake_opencode_path(tmp_path: Path) -> Path:
