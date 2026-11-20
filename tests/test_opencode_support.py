@@ -578,7 +578,9 @@ fs.existsSync = (file) => isFixture(file) || exists(file);
 fs.statSync = (file, ...args) => isFixture(file) ? { isFile: () => true } : stat(file, ...args);
 fs.accessSync = (file, ...args) => { if (!isFixture(file)) access(file, ...args); };
 require("node:child_process").spawnSync = (command, args, options) => {
-  if (command !== process.env.TEST_EXPECTED_PATH || options.shell !== (process.env.TEST_SHELL === "1")) {
+  const shell = process.env.TEST_SHELL === "1";
+  const expected = shell ? `"${process.env.TEST_EXPECTED_PATH}"` : process.env.TEST_EXPECTED_PATH;
+  if (command !== expected || options.shell !== shell) {
     throw new Error("Incorrect Windows launcher path or shell mode");
   }
   return {

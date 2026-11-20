@@ -125,7 +125,6 @@ function configuredExecutable(value) {
   const windows = process.platform === "win32";
   // Bare Windows names keep the normal executable search. Explicit paths
   // must name the same file after the child moves to its isolated directory.
-  if (windows && !/[\\/]/.test(value)) return trimmed;
   if (!windows && value === trimmed) return trimmed;
   const batchPath = value.trimEnd();
   const exactPath = windows && /\.(?:cmd|bat)$/i.test(batchPath) ? batchPath : value;
@@ -137,7 +136,7 @@ function configuredExecutable(value) {
   } catch {
     // Try the unpadded spelling below.
   }
-  return windows ? path.win32.resolve(trimmed) : trimmed;
+  return windows && /[\\/]/.test(trimmed) ? path.win32.resolve(trimmed) : trimmed;
 }
 
 function runOpenCode({ prompt, model, workDir }) {
@@ -160,12 +159,16 @@ function runOpenCode({ prompt, model, workDir }) {
     "--agent",
     AGENT_NAME,
   ];
+  const batch = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(opencodePath);
+  if (batch && /[%!^&|<>"\r\n]/.test(opencodePath))
+    throw new Error("The OpenCode batch launcher path contains unsupported shell characters");
+  const executable = batch ? `"${opencodePath}"` : opencodePath;
   const budget = timeoutMs();
   const deadline = performance.now() + budget;
   const launch = (argv, input) => {
     const remaining = Math.floor(deadline - performance.now());
     if (remaining < 1) throw new Error("opencode CLI timed out");
-    return spawnSync(opencodePath, argv, {
+    return spawnSync(executable, argv, {
       input,
       cwd: workDir,
       encoding: "utf8",
@@ -180,7 +183,7 @@ function runOpenCode({ prompt, model, workDir }) {
       },
       timeout: remaining,
       windowsHide: true,
-      shell: process.platform === "win32" && /\.(?:cmd|bat)$/i.test(opencodePath),
+      shell: batch,
     });
   };
   const reference = opencodeModel(model);
