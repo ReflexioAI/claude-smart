@@ -448,7 +448,10 @@ process.stdout.write(JSON.stringify({{
         **os.environ,
         "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
     }
-    env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
+    if modern:
+        env["CLAUDE_SMART_OPENCODE_PATH"] = f" {fake_opencode} "
+    else:
+        env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
     for key, value in (
         ("CLAUDE_SMART_LEARNING_MODEL", saved_model),
         (

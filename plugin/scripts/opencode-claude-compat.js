@@ -121,7 +121,7 @@ function prepareWorkDir() {
 }
 
 function runOpenCode({ prompt, model, workDir }) {
-  const opencodePath = process.env.CLAUDE_SMART_OPENCODE_PATH || commandPath(opencodeNames());
+  const opencodePath = process.env.CLAUDE_SMART_OPENCODE_PATH?.trim() || commandPath(opencodeNames());
   if (!opencodePath) {
     throw new Error("opencode CLI not found on PATH");
   }
