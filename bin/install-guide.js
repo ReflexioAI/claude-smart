@@ -519,7 +519,7 @@ async function runGuide(command, args, api) {
   );
   for (const result of results) {
     process.stdout.write(
-      `  ${LABELS[result.host]}: ${result.code === 0 ? (command === "uninstall" ? "removed" : "installed") : "failed"} · ${result.code === 0 ? ACTIVATION[result.host] : `see ${result.log}`}\n`,
+      `  ${LABELS[result.host]}: ${result.code === 0 ? (command === "uninstall" ? "removed" : "installed") : "failed"} · ${result.code === 0 ? ACTIVATION[result.host] : result.reason || `see ${result.log}`}\n`,
     );
   }
   if (command === "uninstall")

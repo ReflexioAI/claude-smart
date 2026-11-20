@@ -10,10 +10,6 @@ const HOME = os.homedir();
 const CODEX_HOME = path.resolve((process.env.CODEX_HOME || "").trim() || path.join(HOME, ".codex"));
 const STATE_DIR = path.join(HOME, ".claude-smart");
 const REFLEXIO_DIR = path.join(HOME, ".reflexio");
-const SERVICE_SCRIPT_TIMEOUT_MS = parsePositiveInteger(
-  process.env.CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS,
-  45_000,
-);
 const DEFAULT_BACKEND_PORT = parsePort(process.env.BACKEND_PORT, 8071);
 const DEFAULT_EMBEDDING_PORT = parsePort(process.env.EMBEDDING_PORT, 8072);
 const LOG_MAX_BYTES = 10000000;
@@ -21,11 +17,6 @@ const LOG_MAX_BYTES = 10000000;
 function parsePort(value, fallback) {
   const port = Number(value);
   return Number.isInteger(port) && port > 0 && port <= 65535 ? port : fallback;
-}
-
-function parsePositiveInteger(value, fallback) {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function emitOk() {
@@ -351,6 +342,13 @@ function runServiceScript(root, scriptName, action, logName) {
     emitOk();
     return 0;
   }
+  if (process.env.CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS?.trim()) {
+    const systemMessage = "[claude-smart] Remove CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS and set timeout (seconds) on the Codex service hook.";
+    appendLog(logName, systemMessage);
+    process.stdout.write(`${JSON.stringify({ continue: true, systemMessage })}\n`);
+    return 0;
+  }
+  // Codex owns the hook deadline and terminates the foreground process tree.
   const result = spawnSync(bash, [script, action], {
     cwd: root,
     env: {
@@ -364,7 +362,6 @@ function runServiceScript(root, scriptName, action, logName) {
       REFLEXIO_URL: readBackendUrl(),
     },
     stdio: ["ignore", "pipe", "pipe"],
-    timeout: SERVICE_SCRIPT_TIMEOUT_MS,
     windowsHide: true,
   });
   const stderr = String(result.stderr || "").trim();

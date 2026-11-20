@@ -896,10 +896,16 @@ def test_public_confirmation_preserves_or_discovers_opencode_path(
     [
         ("retired-file", "CLAUDE_SMART_OPENCODE_VARIANT has been retired"),
         ("retired-process", "CLAUDE_SMART_OPENCODE_VARIANT has been retired"),
+        ("retired-whitespace", "CLAUDE_SMART_OPENCODE_VARIANT has been retired"),
         ("standalone-only", "does not advertise --variant"),
         ("variant-supported", ""),
+        ("worker-default", ""),
+        ("worker-named", ""),
         ("commented-empty", ""),
         ("custom-executable", ""),
+        ("native-attach", ""),
+        ("native-unusable", "does not support the native OpenCode run options"),
+        ("native-no-mode", "does not support the native OpenCode run options"),
         ("named-executable", ""),
         ("empty-path-entry", ""),
         ("blank-opencode-path", ""),
@@ -919,18 +925,39 @@ def test_public_setup_checks_opencode_variant_before_publication(
     from tests.test_install_scripts import _run_public_setup
 
     executable = _fake_opencode_path(tmp_path)
-    declarations = "--standalone" if case == "standalone-only" else "--variant string"
+    common = ("--variant", "--model", "--agent", "--format", "--title")
+    options = {
+        "standalone-only": ("--standalone",),
+        "native-attach": (*common, "--attach"),
+        "native-unusable": ("--variant", "--standalone"),
+        "native-no-mode": common,
+    }.get(case, (*common, "--standalone"))
+    declarations = " ".join(shlex.quote(f"{option} string") for option in options)
+    dispatch_guard = ""
+    if case == "native-attach":
+        (tmp_path / "caller-only").touch()
+        dispatch_guard = (
+            '  if [ "$OPENCODE_PURE" != 1 ] || [ "$PWD" != "$(pwd -P)" ] || '
+            "[ -e caller-only ] || "
+            " ! grep -q 'claude-smart-extractor' .opencode/opencode.json; then\n"
+            "    printf '%s\\n' '--variant string' >&2\n"
+            "    exit 0\n"
+            "  fi\n"
+        )
     executable.write_text(
         "#!/bin/sh\n"
         'if [ "$1" = run ] && [ "$2" = --help ]; then\n'
-        f"  printf '%s\\n' '{declarations}' >&2\n"
+        f"{dispatch_guard}"
+        f"  printf '%s\\n' {declarations} >&2\n"
         "fi\n"
     )
     selected = tmp_path / ".claude-smart/.env"
     selected.parent.mkdir()
     saved = 'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\n'
-    if case == "retired-file":
+    if case in {"retired-file", "retired-whitespace"}:
         saved += "CLAUDE_SMART_OPENCODE_VARIANT=high\n"
+    if case == "retired-whitespace":
+        saved += 'CLAUDE_SMART_LEARNING_PROVIDER=opencode\nCLAUDE_SMART_USE_LOCAL_CLI=" true "\n'
     if case == "commented-empty":
         saved += 'CLAUDE_SMART_OPENCODE_VARIANT="" # use provider default\n'
     if case == "blank-opencode-path":
@@ -940,7 +967,11 @@ def test_public_setup_checks_opencode_variant_before_publication(
         saved += f"CLAUDE_SMART_OPENCODE_PATH={saved_executable}\n"
     custom = case in {
         "custom-executable",
+        "native-attach",
+        "native-unusable",
+        "native-no-mode",
         "named-executable",
+        "worker-named",
         "empty-path-entry",
         "symlink-parent",
         "known-bridge",
@@ -948,9 +979,14 @@ def test_public_setup_checks_opencode_variant_before_publication(
         "relative-cli",
     }
     if custom:
-        if case == "custom-executable":
+        if case in {
+            "custom-executable",
+            "native-attach",
+            "native-unusable",
+            "native-no-mode",
+        }:
             cli = executable
-        elif case in {"named-executable", "empty-path-entry"}:
+        elif case in {"named-executable", "worker-named", "empty-path-entry"}:
             cli = Path("opencode")
         elif case == "symlink-parent":
             target = tmp_path / "nested" / "target"
@@ -990,8 +1026,24 @@ def test_public_setup_checks_opencode_variant_before_publication(
         )
         if case == "blank-opencode-path":
             del env["CLAUDE_SMART_OPENCODE_PATH"]
+    if case in {"worker-default", "worker-named"}:
+        worker_bin = tmp_path / ".local/bin"
+        worker_bin.mkdir(parents=True)
+        executable.rename(worker_bin / "opencode-test-help")
+        executable = worker_bin / "opencode"
+        executable.write_text('#!/bin/sh\nexec opencode-test-help "$@"\n')
+        executable.chmod(0o755)
+        env["CLAUDE_SMART_OPENCODE_PATH"] = ""
+        caller_path = [
+            directory
+            for directory in os.environ["PATH"].split(os.pathsep)
+            if directory and shutil.which("opencode", path=directory) is None
+        ]
+        env["PATH"] = os.pathsep.join([str(tmp_path / "fake-bin"), *caller_path])
     # The explicit provider choice resets a custom executable by design.
-    provider_args = [] if custom else ["--provider", "opencode"]
+    provider_args = (
+        [] if custom or case == "retired-whitespace" else ["--provider", "opencode"]
+    )
     result = _run_public_setup(
         tmp_path,
         "--backend",
@@ -1010,11 +1062,11 @@ def test_public_setup_checks_opencode_variant_before_publication(
         assert result.returncode == 0, result.stderr
         values = dotenv_values(selected, interpolate=False)
         assert values["CLAUDE_SMART_LEARNING_MODEL"] == "#high"
-        if case in {"named-executable", "empty-path-entry"}:
+        if case in {"named-executable", "worker-named", "empty-path-entry"}:
             assert Path(values["CLAUDE_SMART_CLI_PATH"]) == executable
         if case == "symlink-parent":
             assert values["CLAUDE_SMART_CLI_PATH"] == str(cli)
-        if case == "blank-opencode-path":
+        if case in {"blank-opencode-path", "worker-default"}:
             assert Path(values["CLAUDE_SMART_OPENCODE_PATH"]) == executable
         if case == "session-opencode-override":
             assert Path(values["CLAUDE_SMART_OPENCODE_PATH"]) == saved_executable

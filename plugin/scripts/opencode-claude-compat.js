@@ -100,7 +100,7 @@ function requireValue(argv, idx, name) {
 }
 
 function prepareWorkDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-smart-opencode-"));
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "claude-smart-opencode-"));
   const config = {
     agent: {
       [AGENT_NAME]: {
@@ -118,6 +118,26 @@ function prepareWorkDir() {
   fs.mkdirSync(opencodeDir, { recursive: true });
   fs.writeFileSync(path.join(opencodeDir, "opencode.json"), `${JSON.stringify(config, null, 2)}\n`);
   return dir;
+}
+
+function dispatchEnvironment(workDir) {
+  return {
+    ...process.env,
+    OPENCODE_PURE: "1",
+    // OpenCode can resolve its project from PWD instead of the spawn cwd.
+    PWD: workDir,
+    CLAUDE_SMART_HOST: "opencode",
+    CLAUDE_SMART_INTERNAL: "1",
+    CLAUDE_CODE_ENTRYPOINT: "optimizer",
+  };
+}
+
+function declaredRunOptions(helpText) {
+  return new Set(
+    Array.from(helpText.matchAll(
+      /^\s*(?:-[A-Za-z0-9],\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=[,\s=]|$)/gm,
+    ), ([, option]) => option),
+  );
 }
 
 function configuredExecutable(value) {
@@ -173,15 +193,7 @@ function runOpenCode({ prompt, model, workDir }) {
       input,
       cwd: workDir,
       encoding: "utf8",
-      env: {
-        ...process.env,
-        OPENCODE_PURE: "1",
-        // OpenCode can resolve its project from PWD instead of the spawn cwd.
-        PWD: workDir,
-        CLAUDE_SMART_HOST: "opencode",
-        CLAUDE_SMART_INTERNAL: "1",
-        CLAUDE_CODE_ENTRYPOINT: "optimizer",
-      },
+      env: dispatchEnvironment(workDir),
       timeout: remaining,
       windowsHide: true,
       shell: batch,
@@ -201,11 +213,7 @@ function runOpenCode({ prompt, model, workDir }) {
     if (help.error || help.status !== 0) {
       throw new Error("OpenCode model variant capability discovery failed");
     }
-    const declared = new Set(
-      [...(help.stdout + "\n" + help.stderr).matchAll(
-        /^\s*(?:-[A-Za-z0-9],\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=[,\s=]|$)/gm,
-      )].map(([, option]) => option),
-    );
+    const declared = declaredRunOptions(`${help.stdout}\n${help.stderr}`);
     if (selected && declared.has("--standalone")) {
       args.push("--model", reference);
     } else if (declared.has("--variant")) {
@@ -358,4 +366,5 @@ function combinedPrompt({ prompt, systemPrompt }) {
   return `${systemPrompt}\n\n## Task\n${prompt}`;
 }
 
-process.exitCode = main(process.argv.slice(2));
+module.exports = { prepareWorkDir, dispatchEnvironment, declaredRunOptions };
+if (require.main === module) process.exitCode = main(process.argv.slice(2));

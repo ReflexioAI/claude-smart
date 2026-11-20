@@ -222,7 +222,12 @@ def fake_guide(
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     _write_executable(fake_bin / "claude", _fake_claude_install_script())
-    _write_executable(fake_bin / "codex", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        fake_bin / "codex",
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codex-cli ${CODEX_FIXTURE_VERSION:-0.148.0}"; fi\n'
+        "exit 0\n",
+    )
     _write_bootstrap_uv(fake_bin / "uv", mode="fresh")
     env = guide_env(tmp_path)
     # Managed configuration discovery is read-only, but installer tests must
@@ -371,6 +376,101 @@ def test_guided_coordinator_rejects_incomplete_package_before_registration(
     assert not (state / ".env").exists()
     assert not (state / "install-logs").exists()
     assert not (state / "claude-code" / "claude-smart" / "plugin").exists()
+
+
+def test_codex_version_probe_ignores_unrelated_stderr(tmp_path: Path) -> None:
+    installer, env = fake_guide(tmp_path)
+    _write_executable(
+        tmp_path / "fake-bin/codex",
+        "#!/bin/sh\nprintf '%5000s\\n' 'startup diagnostics' >&2\n"
+        "echo 'codex-cli 0.148.0'\n",
+    )
+    result = subprocess.run(
+        [
+            node_bin(),
+            "-e",
+            "console.log(require(process.argv[1]).learningProviderVersion({provider: 'codex'}))",
+            str(installer),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "codex-cli 0.148.0"
+
+
+def test_guided_install_reports_old_codex_and_installs_other_hosts(tmp_path: Path):
+    installer, env = fake_guide(tmp_path)
+    env["CODEX_FIXTURE_VERSION"] = "0.147.0"
+    cli_dir = tmp_path / ".local/bin"
+    cli_dir.mkdir(parents=True)
+    (tmp_path / "fake-bin/claude").rename(cli_dir / "claude")
+    hooks = installer.parents[1] / "plugin/hooks"
+    hooks.mkdir(exist_ok=True)
+    shutil.copyfile(REPO_ROOT / "plugin/hooks/hooks.json", hooks / "hooks.json")
+
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            "install",
+            "--host",
+            "claude-code,codex",
+            "--backend",
+            "local",
+            "--provider",
+            "codex",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert "Claude Code: installed" in result.stdout, result.stderr
+    assert "Codex: failed" in result.stdout
+    assert "Codex CLI 0.148 or newer is required" in result.stdout
+    state = tmp_path / ".claude-smart"
+    assert not list((state / "install-logs").glob("install-codex-*.log"))
+    assert (state / "guided-runtimes/selected").exists()
+    assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
+
+
+def test_guided_install_with_old_codex_and_missing_opencode_keeps_settings(
+    tmp_path: Path,
+):
+    installer, env = fake_guide(tmp_path)
+    env["CODEX_FIXTURE_VERSION"] = "0.147.0"
+    env["CLAUDE_SMART_OPENCODE_PATH"] = str(tmp_path / "missing" / "opencode")
+
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            "install",
+            "--host",
+            "codex,opencode",
+            "--backend",
+            "local",
+            "--provider",
+            "codex",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert "OpenCode CLI not found" in result.stderr
+    assert "Codex CLI 0.148 or newer is required" in result.stderr
+    assert not (tmp_path / ".claude-smart/.env").exists()
 
 
 def test_guided_install_progress_is_visible_while_worker_is_waiting(

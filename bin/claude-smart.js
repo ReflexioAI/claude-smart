@@ -248,6 +248,15 @@ function hasCli(name) {
   }
 }
 
+function codexHookProcessCleanupError() {
+  const release = learningProviderVersion({ provider: HOST_CODEX });
+  const version = release?.match(/^codex-cli (\d+)\.(\d+)\.\d+(?:\+\S+)?$/);
+  if (!version || (Number(version[1]) === 0 && Number(version[2]) < 148)) {
+    return "Codex CLI 0.148 or newer is required for service hook process cleanup. Update Codex, then retry setup.";
+  }
+  return null;
+}
+
 function runCodex(args) {
   return new Promise((resolve) => {
     // Grouped while an install can still roll back (see runChecked).
@@ -969,12 +978,15 @@ function activePluginRoot() {
 
 // Installed runtime roots other integrations may still use, newest host
 // first. Codex keeps one cache dir per version.
-function installedPluginRoots(codexSurvivors = registeredCodexPluginRoots()) {
+function installedPluginRoots(
+  codexSurvivors = registeredCodexPluginRoots(),
+  claudePlugins = claudeInstallations(),
+) {
   // The host owns its effective load source. A local marketplace can report
   // readFromFolder alongside an older installPath; prefer its declared source.
   // Discovery is read-only and does not establish ownership for deletion.
   const roots = [];
-  for (const plugin of claudeInstallations()) {
+  for (const plugin of claudePlugins) {
     if (
       plugin.errors !== undefined &&
       (!Array.isArray(plugin.errors) || plugin.errors.length)
@@ -2007,7 +2019,7 @@ function installInventory(options = {}) {
       available: hasClaudeCli(),
       installed:
         existsSync(join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin")) ||
-        claudeInstallations().length > 0,
+        (options.claudePlugins ?? claudeInstallations()).length > 0,
     },
     { host: HOST_CODEX, available: hasCli("codex"), installed: Boolean(findCodexPluginRoot()) },
     { host: HOST_OPENCODE, available: hasOpenCodeCli(), installed: openCodeInstalled },
@@ -2015,10 +2027,14 @@ function installInventory(options = {}) {
 }
 
 function claudeInstallations() {
+  return readClaudeInstallations() ?? [];
+}
+
+function readClaudeInstallations() {
   const executable = resolveCommand(
     isWindows() ? ["claude.exe", "claude.cmd", "claude.bat"] : ["claude"],
   );
-  if (!executable) return [];
+  if (!executable) return undefined;
   const shell = isWindows() && /\.(?:cmd|bat)$/i.test(executable);
   const result = spawnSync(shell ? `"${executable}"` : executable, ["plugin", "list", "--json"], {
     encoding: "utf8",
@@ -2027,15 +2043,15 @@ function claudeInstallations() {
     windowsHide: true,
     shell,
   });
-  if (result.error || result.status !== 0) return [];
+  if (result.error || result.status !== 0) return null;
   try {
     const data = JSON.parse(result.stdout);
     return Array.isArray(data)
       ? data.filter((plugin) => plugin && typeof plugin === "object" &&
           !Array.isArray(plugin) && (plugin.id || plugin.pluginId) === PLUGIN_SPEC)
-      : [];
+      : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -2538,7 +2554,7 @@ function learningProviderVersion(config) {
   return /^[A-Za-z0-9][A-Za-z0-9 ._()+:/-]{0,159}$/.test(version) ? version : undefined;
 }
 
-function probeLearningCli(command, args, maxBuffer) {
+function probeLearningCli(command, args, maxBuffer, { cwd, env, captureStderr = false } = {}) {
   if (!command) return undefined;
   const shell =
     isWindows() && (command === "claude" || command === "codex" || /\.(?:cmd|bat)$/i.test(command));
@@ -2547,7 +2563,9 @@ function probeLearningCli(command, args, maxBuffer) {
   if (shell && /[%!^&|<>"\r\n]/.test(command)) return undefined;
   const result = spawnSync(shell ? `"${command}"` : command, args, {
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
+    cwd,
+    env,
+    stdio: ["ignore", "pipe", captureStderr ? "pipe" : "ignore"],
     timeout: 3000,
     maxBuffer,
     windowsHide: true,
@@ -2556,9 +2574,9 @@ function probeLearningCli(command, args, maxBuffer) {
   return result.status === 0 && !result.error && !result.signal ? result : undefined;
 }
 
-function validateGuidedOpenCodeLearning(config, saved) {
+function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   if (config.backend !== "local" || config.provider !== HOST_OPENCODE ||
-      !/^(?:1|true|yes|on)$/i.test(config.useLocalCli || "") ||
+      !/^(?:1|true|yes|on)$/i.test(config.useLocalCli?.trim() || "") ||
       (config.url && !isBundledBackendUrl(config.url))) return;
   if (saved.retiredOpenCodeVariant || process.env.CLAUDE_SMART_OPENCODE_VARIANT?.trim()) {
     throw new Error(
@@ -2567,6 +2585,7 @@ function validateGuidedOpenCodeLearning(config, saved) {
     );
   }
   if (!config.model?.startsWith("#")) return;
+  const resolveForLaunch = (lookup) => lookup() ?? withWorkerPath(lookup);
   const selected = config.cliPath;
   let launcher;
   if (selected) {
@@ -2578,7 +2597,7 @@ function validateGuidedOpenCodeLearning(config, saved) {
       ? [`${selected}.exe`, `${selected}.cmd`, `${selected}.bat`, selected]
       : [selected];
     const match = absolute ? names.find(isExecutableFile)
-      : isWindows() ? resolveCommand(names) : resolvePosixOpenCodeCommand(selected);
+      : resolveForLaunch(() => isWindows() ? resolveCommand(names) : resolvePosixOpenCodeCommand(selected));
     if (!match) {
       throw new Error("The configured CLAUDE_SMART_CLI_PATH cannot be executed. Repair that path before updating.");
     }
@@ -2588,17 +2607,36 @@ function validateGuidedOpenCodeLearning(config, saved) {
   if (launcher && isWindows() && !bridge && !/\.exe$/i.test(launcher)) {
     throw new Error("Select a native OpenCode .exe or the supported compatibility bridge on Windows.");
   }
-  let command = launcher && !bridge ? launcher : resolveOpenCodePath();
+  let command = launcher && !bridge ? launcher : resolveForLaunch(resolveOpenCodePath);
   if (command && !isAbsolute(command)) {
     throw new Error("Use an absolute CLAUDE_SMART_OPENCODE_PATH to select an OpenCode variant.");
   }
   if (command && isWindows()) command = resolve(command);
-  const probe = probeLearningCli(command, ["run", "--help"], 64 * 1024);
-  const help = probe ? `${probe.stdout}\n${probe.stderr}` : "";
-  if (!/^\s*(?:-[A-Za-z0-9],\s*)?--variant(?=[,\s=]|$)/m.test(help)) {
+  const { prepareWorkDir, dispatchEnvironment, declaredRunOptions } =
+    require("../plugin/scripts/opencode-claude-compat.js");
+  const cwd = prepareWorkDir();
+  let probe;
+  try {
+    probe = withWorkerPath(() => probeLearningCli(command, ["run", "--help"], 64 * 1024, {
+      cwd,
+      captureStderr: true,
+      env: dispatchEnvironment(cwd),
+    }));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+  const runOptions = declaredRunOptions(probe ? `${probe.stdout}\n${probe.stderr}` : "");
+  if (!runOptions.has("--variant")) {
     throw new Error(
       "The selected OpenCode CLI does not advertise --variant. Specify provider/model#variant instead of #variant.",
     );
+  }
+  // The pinned SDK's native OpenCode transport needs these options at dispatch.
+  // The compatibility bridge has a separate command contract.
+  if (launcher && !bridge &&
+      (!["--model", "--agent", "--format", "--title"].every((option) => runOptions.has(option)) ||
+       !(runOptions.has("--standalone") || runOptions.has("--attach")))) {
+    throw new Error("The selected executable does not support the native OpenCode run options.");
   }
   if (launcher) config.cliPath = launcher;
   if (!launcher || bridge) config.validatedOpenCodePath = command;
@@ -3015,18 +3053,44 @@ async function runGuidedCommand(command, args) {
   );
   let deferredSettings;
   let preparedRuntime;
+  let codexPreflightFailure;
+  // Use worker PATH for host discovery without affecting caller-first learning settings.
+  const withWorkerPath = (inspect) => {
+    const callerPath = process.env.PATH;
+    process.env.PATH = runtimeEnv().PATH;
+    try {
+      return inspect();
+    } finally {
+      if (callerPath === undefined) delete process.env.PATH;
+      else process.env.PATH = callerPath;
+    }
+  };
   await guide
     .runGuide(command, args, {
-      inventory: installInventory,
+      inventory: (options) => withWorkerPath(() => installInventory(options)),
       saved: () => saved,
       save: async (config, options) => {
-        validateGuidedOpenCodeLearning(config, saved);
+        validateGuidedOpenCodeLearning(config, saved, withWorkerPath);
+        const multipleHosts = config.hosts.length > 1;
+        if (config.hosts.includes(HOST_CODEX)) {
+          withWorkerPath(() => {
+            codexPreflightFailure = codexHookProcessCleanupError();
+            if (codexPreflightFailure) {
+              if (!multipleHosts) throw new Error(codexPreflightFailure);
+              config = { ...config, hosts: config.hosts.filter((host) => host !== HOST_CODEX) };
+              const claudeAvailable = config.hosts.includes(HOST_CLAUDE_CODE) && hasClaudeCli();
+              const openCodeError = config.hosts.includes(HOST_OPENCODE) ? opencodePrerequisiteError() : null;
+              if (!claudeAvailable && (!config.hosts.includes(HOST_OPENCODE) || openCodeError))
+                throw new Error([codexPreflightFailure, openCodeError || "Claude Code is not available on PATH."].join(" ").trim());
+            }
+          });
+        }
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
         const { baseline } = await resumeGuidedShutdown();
         const settings = planInstallSettings(config, captured);
         // Recovery keeps the previous generation intact until registration is
         // complete, even when the user retries with just one host.
-        if (config.hosts.length > 1 || baseline || pathEntryExists(GUIDED_SELECTED_RUNTIME)) {
+        if (multipleHosts || baseline || pathEntryExists(GUIDED_SELECTED_RUNTIME)) {
           preparedRuntime = await prepareGuidedRuntime(config, options, settings, baseline);
           return;
         }
@@ -3063,6 +3127,8 @@ async function runGuidedCommand(command, args) {
           holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
           await resumeGuidedShutdown({ retainBaseline: false });
         }
+        if (host === HOST_CODEX && codexPreflightFailure)
+          return { code: 1, reason: codexPreflightFailure };
         return runGuidedHost(action, host, options, label, deferredSettings, preparedRuntime);
       },
       finish: async (action, config, results) => {
@@ -3076,8 +3142,14 @@ async function runGuidedCommand(command, args) {
           return;
         if (action === "uninstall") {
           const codexSurvivors = registeredCodexPluginRoots();
+          const workerPlugins = withWorkerPath(readClaudeInstallations);
+          const claudePlugins = workerPlugins === null
+            ? (readClaudeInstallations() ?? null)
+            : (workerPlugins ?? []);
+          if (claudePlugins === null)
+            return ["Shared services kept running because Claude Code integrations could not be verified."];
           if (isGuidedPluginRoot(root)) {
-            const survivors = installedPluginRoots(codexSurvivors);
+            const survivors = installedPluginRoots(codexSurvivors, claudePlugins);
             if (!survivors.includes(root)) {
               const { status } = observePreviousServices();
               await stopServicesForInstall(root, null, status);
@@ -3089,8 +3161,10 @@ async function runGuidedCommand(command, args) {
               }
             }
           }
-          const current = installInventory();
-          const global = installInventory({ global: true });
+          const [current, global] = withWorkerPath(() => [
+            installInventory({ claudePlugins }),
+            installInventory({ global: true, claudePlugins }),
+          ]);
           if (![...current, ...global].some((agent) => agent.installed) &&
               codexSurvivors.length === 0 && openCodeGuidedPluginRoots().length === 0) {
             stopClaudeSmartServices(root);
@@ -4939,6 +5013,8 @@ async function runInstallCodex(settings, runtime) {
     process.exit(1);
   }
   assertSupportedRuntimePlatform();
+  const codexError = codexHookProcessCleanupError();
+  if (codexError) throw new Error(codexError);
   if (!runtime) snapshotInstallState({ preserveFailureMarker: Boolean(settings) });
   let setup = settings ? null : readInstallPolicy();
   const pluginRoot = runtime?.pluginRoot ?? CODEX_RUNTIME_PLUGIN_ROOT;

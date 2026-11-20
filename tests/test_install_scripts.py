@@ -334,6 +334,7 @@ def _fake_claude_install_script() -> str:
     return (
         "#!/bin/sh\n"
         'printf \'claude %s\\n\' "$*" >> "$HOME/claude.log"\n'
+        'if [ "$*" = "plugin list --json" ]; then printf "%s\\n" "[]"; exit 0; fi\n'
         'if [ "$1 $2" = "plugin update" ] && [ -n "${FAKE_CLAUDE_UPDATE_EXIT:-}" ]; then\n'
         '  exit "$FAKE_CLAUDE_UPDATE_EXIT"\n'
         "fi\n"
@@ -1364,6 +1365,8 @@ def _fake_claude_code_package(tmp_path: Path, smart_install: str) -> Path:
     # Shared Node preparation invokes the real import-light repair owner.
     _copy_prepared_policy_owner(package_root / "plugin")
     shutil.copy2(REPO_ROOT / "plugin/scripts/guided-command.sh", scripts)
+    for name in ("opencode-claude-compat", "opencode-claude-compat.js"):
+        shutil.copy2(REPO_ROOT / "plugin/scripts" / name, scripts)
     _write_executable(scripts / "smart-install.sh", smart_install)
     _write_executable(
         scripts / "backend-service.sh",
@@ -2209,6 +2212,7 @@ def test_interrupt_during_a_codex_cli_step_stops_its_descendants(
     _write_executable(
         fake_bin / "codex",
         "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codex-cli 0.148.0"; exit 0; fi\n'
         'case "$*" in *"marketplace add"*) ;; *) exit 0 ;; esac\n'
         'sh -c \'trap "" TERM; echo $$ > "$HOME/codex-descendant.pid"; while :; do sleep 0.1; done\' &\n'
         'while [ ! -s "$HOME/codex-descendant.pid" ]; do sleep 0.05; done\n'
@@ -2263,6 +2267,7 @@ def test_codex_cli_timeout_stops_the_whole_process_group(tmp_path: Path) -> None
     _write_executable(
         fake_bin / "codex",
         "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codex-cli 0.148.0"; exit 0; fi\n'
         'case "$*" in *"marketplace add"*) ;; *) exit 0 ;; esac\n'
         '[ ! -e "$HOME/codex-descendant.pid" ] || exit 19\n'
         'sh -c \'trap "" TERM; echo $$ > "$HOME/codex-descendant.pid"; while :; do sleep 0.1; done\' &\n'
@@ -6600,7 +6605,9 @@ def test_codex_runtime_failure_leaves_existing_marketplace_and_features(
     fake_bin.mkdir()
     _write_executable(
         fake_bin / "codex",
-        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/codex.log"\nexit 0\n',
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codex-cli 0.148.0"; exit 0; fi\n'
+        'printf "%s\\n" "$*" >> "$HOME/codex.log"\nexit 0\n',
     )
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     prior_marketplace = codex_home / "claude-smart/marketplace"
@@ -6641,7 +6648,9 @@ def test_codex_interrupt_during_feature_enable_keeps_marketplace_portable(
     fake_bin.mkdir()
     _write_executable(
         fake_bin / "codex",
-        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/codex.log"\n'
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codex-cli 0.148.0"; exit 0; fi\n'
+        'printf "%s\\n" "$*" >> "$HOME/codex.log"\n'
         'if [ "$1" = "features" ]; then kill -TERM "$PPID"; fi\nexit 0\n',
     )
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
@@ -6720,6 +6729,11 @@ const home = process.env.HOME || ".";
 const args = process.argv.slice(2);
 fs.appendFileSync(`${home}/codex.log`, `codex ${args.join(" ")}\\n`);
 
+if (args[0] === "--version") {
+  console.log(`codex-cli ${process.env.CODEX_FIXTURE_VERSION || "0.148.0"}`);
+  process.exit(0);
+}
+
 if (args[0] === "features" && args[1] === "enable") {
   process.exit(1);
 }
@@ -6780,6 +6794,10 @@ def _write_fake_claude_installer(path: Path) -> None:
         """#!/bin/sh
 set -eu
 printf 'claude %s\\n' "$*" >> "$HOME/claude.log"
+if [ "$*" = "plugin list --json" ]; then
+  printf '%s\\n' '[]'
+  exit 0
+fi
 cmd="${1-} ${2-} ${3-}"
 
 if [ "$cmd" = "plugin marketplace add" ]; then

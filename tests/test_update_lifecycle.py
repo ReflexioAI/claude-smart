@@ -78,7 +78,13 @@ if action == "status":
         )
     fake = tmp_path / "fake-bin"
     fake.mkdir()
-    _write_fake_codex(fake / "codex")
+    codex = fake / "codex"
+    _write_fake_codex(codex)
+    # The version probe uses the install worker's PATH, which includes the
+    # private Node stub below. Run the CLI fixture with the real interpreter.
+    codex.write_text(
+        codex.read_text().replace("#!/usr/bin/env node", f"#!{node_bin()}", 1)
+    )
     _write_executable(fake / "opencode", "#!/bin/sh\necho 1.17.0\n")
     private = tmp_path / ".claude-smart/node/current/bin"
     private.mkdir(parents=True)
@@ -1501,6 +1507,18 @@ def test_no_previous_runtime_never_uses_unprepared_source_for_service_recovery(
     assert not root.exists()
 
 
+def test_old_codex_fails_before_service_effects(tmp_path):
+    package, root, _, env = _fixture(tmp_path, "codex")
+    env["CODEX_FIXTURE_VERSION"] = "0.147.0"
+
+    result = _run(tmp_path, package, "codex", env)
+
+    assert result.returncode != 0
+    assert "Codex CLI 0.148 or newer is required" in result.stderr
+    assert not _calls(tmp_path)
+    assert (root / "identity").read_text() == "old"
+
+
 def test_missing_codex_package_file_fails_before_service_effects(tmp_path):
     package, root, _, env = _fixture(tmp_path, "codex")
     (package / "plugin/scripts/codex-hook.js").unlink()
@@ -1619,10 +1637,13 @@ def test_single_host_retry_recovers_abandoned_multihost_selection(
     )
     if failure == "trust":
         codex = tmp_path / "fake-bin/codex"
+        source = codex.read_text()
+        dispatch = "const args = process.argv.slice(2);"
+        assert source.count(dispatch) == 1
         codex.write_text(
-            codex.read_text().replace(
-                "#!/usr/bin/env node",
-                f'#!{node_bin()}\nif (process.argv[2] === "app-server") process.exit(17);',
+            source.replace(
+                dispatch,
+                dispatch + '\nif (args[0] === "app-server") process.exit(17);',
                 1,
             )
         )
@@ -1738,10 +1759,21 @@ fs.renameSync = (source, target) => {
         assert not receipt.exists()
 
 
-@pytest.mark.parametrize("codex_stays_enabled", [True, False])
-@pytest.mark.parametrize("legacy_hook_repointed", [True, False])
-def test_uninstall_checks_surviving_codex_home(
-    tmp_path, codex_stays_enabled, legacy_hook_repointed
+@pytest.mark.parametrize(
+    ("codex_stays_enabled", "legacy_hook_repointed", "claude"),
+    [
+        (True, True, None),
+        (True, False, None),
+        (False, True, None),
+        (False, False, None),
+        (False, False, "worker"),
+        (False, False, "fallback"),
+        (False, False, "unknown"),
+        (False, False, "no-fallback"),
+    ],
+)
+def test_uninstall_checks_surviving_integrations(
+    tmp_path, codex_stays_enabled, legacy_hook_repointed, claude
 ):
     package, _old, uv, env = _fixture(tmp_path, "codex", installed=False)
     _write_bootstrap_uv(uv, mode="fresh")
@@ -1807,11 +1839,47 @@ def test_uninstall_checks_surviving_codex_home(
             config.read_text().replace("enabled = true", "enabled = false")
         )
     env["CODEX_HOME"] = str(tmp_path / "empty-codex-home")
+    registrations = json.dumps(
+        [{"id": "claude-smart@reflexioai", "readFromFolder": str(saved)}]
+    )
+    surviving_inventory = f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(registrations)}\n"
+    failed_inventory = "#!/bin/sh\nexit 1\n"
+    if claude == "worker":
+        _write_executable(
+            tmp_path / ".local/bin/claude",
+            "#!/bin/sh\nexec claude-test-inventory\n",
+        )
+        _write_executable(
+            tmp_path / ".local/bin/claude-test-inventory", surviving_inventory
+        )
+    elif claude is not None:
+        _write_executable(tmp_path / ".local/bin/claude", failed_inventory)
+    caller_inventory = {
+        "fallback": surviving_inventory,
+        "unknown": failed_inventory,
+    }.get(claude, "#!/bin/sh\nprintf '%s\\n' '[]'\n")
+    if claude == "no-fallback":
+        env["PATH"] = os.pathsep.join(
+            directory
+            for directory in env["PATH"].split(os.pathsep)
+            if directory and shutil.which("claude", path=directory) is None
+        )
+        assert shutil.which("claude", path=env["PATH"]) is None
+    else:
+        _write_executable(tmp_path / "fake-bin/claude", caller_inventory)
     removed = subprocess.run(
         [*launcher, "uninstall", "--host", "opencode"], check=False, **run_options
     )
     assert removed.returncode == 0, removed.stdout + removed.stderr
     assert not (tmp_path / ".opencode/plugins/claude-smart.js").exists()
+    if claude is not None:
+        assert selector.resolve() == saved
+        assert record.read_text() == saved.parent.name
+        if claude in {"unknown", "no-fallback"}:
+            assert "Claude Code integrations could not be verified" in removed.stdout
+        else:
+            assert "Refreshing shared services" in removed.stdout
+        return
     if codex_stays_enabled:
         if not legacy_hook_repointed:
             assert selector.resolve() == saved
@@ -1900,7 +1968,9 @@ def test_guided_uninstall_keeps_standalone_codex_home(tmp_path, recorded):
 
 @pytest.mark.skipif(os.name == "nt", reason="uses POSIX SIGKILL")
 @pytest.mark.parametrize("installed", [False, True])
-def test_retry_starts_selected_runtime_before_preparing_replacement(tmp_path, installed):
+def test_retry_starts_selected_runtime_before_preparing_replacement(
+    tmp_path, installed
+):
     package, predecessor, uv, env = _fixture(tmp_path, "codex", installed=installed)
     _write_bootstrap_uv(uv, mode="fresh")
     env.pop("CLAUDE_SMART_INSTALL_CHILD")

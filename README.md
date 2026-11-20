@@ -125,6 +125,13 @@ phase and elapsed progress; detailed logs live in `~/.claude-smart/install-logs/
 If an integration fails, the others still install and the summary reports each result.
 Runtime environments remain separate so an agent's rollback cannot break another.
 
+Codex integration requires Codex CLI 0.148 or newer. Codex uses the
+`timeout` in seconds on each installed `SessionStart` service hook and
+cleans up its foreground processes when the hook expires. If you previously exported
+`CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS`, remove it and restart Codex. Set the
+service hook timeout directly if you need a different deadline. Installation
+regenerates the hook manifest from the package.
+
 ### Explicit installation
 
 For an unattended first install, specify the backend. Multiple agents can be

@@ -237,3 +237,28 @@ class ReflexioClient:
     ]
     assert state.published_record_offset(state.read_all("real-stop")) > 0
     assert not jobs
+
+
+def test_retired_service_timeout_cannot_launch_a_service(tmp_path):
+    launcher, home, env = project(tmp_path, None)
+    script = launcher.with_name("backend-service.sh")
+    script.write_text('printf started > "$DIAGNOSTIC_ARGS"\n')
+    env["CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS"] = "240000"
+
+    result = subprocess.run(
+        [str(NODE), str(launcher), "backend"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    response = json.loads(result.stdout)
+    assert response["continue"] is True
+    assert "Remove CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS" in response["systemMessage"]
+    assert not Path(env["DIAGNOSTIC_ARGS"]).exists()
+    assert "Remove CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS" in (
+        home / ".claude-smart/backend.log"
+    ).read_text()
