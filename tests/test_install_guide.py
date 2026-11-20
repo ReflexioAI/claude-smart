@@ -381,6 +381,9 @@ def test_guided_coordinator_rejects_incomplete_package_before_registration(
 def test_guided_install_reports_old_codex_and_installs_other_hosts(tmp_path: Path):
     installer, env = fake_guide(tmp_path)
     env["CODEX_FIXTURE_VERSION"] = "0.147.0"
+    cli_dir = tmp_path / ".local/bin"
+    cli_dir.mkdir(parents=True)
+    (tmp_path / "fake-bin/claude").rename(cli_dir / "claude")
     hooks = installer.parents[1] / "plugin/hooks"
     hooks.mkdir(exist_ok=True)
     shutil.copyfile(REPO_ROOT / "plugin/hooks/hooks.json", hooks / "hooks.json")

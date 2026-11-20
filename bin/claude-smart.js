@@ -248,8 +248,8 @@ function hasCli(name) {
   }
 }
 
-function codexHookProcessCleanupError(env = process.env) {
-  const release = learningProviderVersion({ provider: HOST_CODEX }, env);
+function codexHookProcessCleanupError() {
+  const release = learningProviderVersion({ provider: HOST_CODEX });
   const version = release?.match(/^codex-cli (\d+)\.(\d+)\.\d+(?:\+\S+)?$/);
   if (!version || (Number(version[1]) === 0 && Number(version[2]) < 148)) {
     return "Codex CLI 0.148 or newer is required for service hook process cleanup. Update Codex, then retry setup.";
@@ -2503,7 +2503,7 @@ async function runGuidedHost(command, host, options, label, settings, preparedRu
   }
 }
 
-function learningProviderVersion(config, env = process.env) {
+function learningProviderVersion(config) {
   // Custom executables need not implement --version. Do not run arbitrary probes.
   if (config.cliPath) return undefined;
   const command =
@@ -2524,7 +2524,6 @@ function learningProviderVersion(config, env = process.env) {
   const result = spawnSync(probeCommand, ["--version"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
-    env,
     timeout: 3000,
     maxBuffer: 4096,
     windowsHide: true,
@@ -2934,6 +2933,8 @@ async function runGuidedCommand(command, args) {
     printHelp();
     return;
   }
+  // Resolve host eligibility with the same PATH handed to install workers.
+  process.env.PATH = runtimeEnv().PATH;
   const captured = command === "uninstall" ? null : captureInstallSnapshot();
   const saved = captured ? savedInstallConfiguration(captured) : {};
   if (command !== "uninstall" && !process.env[CLAUDE_SMART_OPENCODE_PATH_ENV]) {
@@ -2953,7 +2954,7 @@ async function runGuidedCommand(command, args) {
       saved: () => saved,
       save: async (config, options) => {
         const multipleHosts = config.hosts.length > 1;
-        codexPreflightFailure = config.hosts.includes(HOST_CODEX) && codexHookProcessCleanupError(runtimeEnv());
+        codexPreflightFailure = config.hosts.includes(HOST_CODEX) && codexHookProcessCleanupError();
         if (codexPreflightFailure) {
           if (!multipleHosts) throw new Error(codexPreflightFailure);
           config = { ...config, hosts: config.hosts.filter((host) => host !== HOST_CODEX) };
