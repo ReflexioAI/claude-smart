@@ -554,6 +554,7 @@ process.stdout.write(JSON.stringify({{
         (r"C:\tools\opencode.cmd ", r"C:\tools\opencode.cmd", True),
         (r" tools\opencode.exe", r"C:\bridge-cwd\ tools\opencode.exe", False),
         ("opencode", r"C:\selected-bin\opencode.exe", False),
+        (" opencode", r"C:\bridge-cwd\ opencode", False),
         (r".\opencode", r"C:\bridge-cwd\opencode", False),
         ("opencode.cmd", r"C:\bridge-cwd\opencode.cmd", True),
         (r".\opencode.cmd", r"C:\bridge-cwd\opencode.cmd", True),
@@ -582,9 +583,16 @@ const exists = fs.existsSync;
 const stat = fs.statSync;
 const access = fs.accessSync;
 fs.existsSync = (file) => isFixture(file) || exists(file);
-fs.statSync = (file, ...args) => isFixture(file) ? { isFile: () => true } : stat(file, ...args);
+let probedPath = false;
+fs.statSync = (file, ...args) => {
+  if (String(file).startsWith(process.env.TEST_SEARCH_ROOT)) probedPath = true;
+  return isFixture(file) ? { isFile: () => true } : stat(file, ...args);
+};
 fs.accessSync = (file, ...args) => { if (!isFixture(file)) access(file, ...args); };
 require("node:child_process").spawnSync = (command, args, options) => {
+  if (probedPath !== (process.env.CLAUDE_SMART_OPENCODE_PATH === "opencode")) {
+    throw new Error("Only the bare extensionless command should probe PATH in this fixture");
+  }
   const shell = process.env.TEST_SHELL === "1";
   const expected = shell ? `"${process.env.TEST_EXPECTED_PATH}"` : process.env.TEST_EXPECTED_PATH;
   if (command !== expected || options.shell !== shell) {

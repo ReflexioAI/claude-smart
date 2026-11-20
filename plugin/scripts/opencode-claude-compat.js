@@ -157,14 +157,17 @@ function resolveWindowsOpenCodePath(value, searchPath = process.env.PATH || "") 
   const names = extension ? [name] : [
     `${name}.exe`, `${name}.cmd`, `${name}.bat`, name,
   ];
-  const onPath = /^[A-Za-z]:|[\\/]/.test(name) ? null : commandPath(names, searchPath, ";");
-  // An extensionless command uses PATH first. An explicit filename or path
-  // still binds the selected file before the child changes its directory.
-  if (!extension && onPath) return resolvePath(onPath);
+  const pathQualified = /^[A-Za-z]:|[\\/]/.test(name);
   const candidate = /\.(?:cmd|bat)$/i.test(value.trimEnd()) ? value.trimEnd() : value;
-  if (executableFile(candidate)) return resolvePath(candidate);
+  const searchFirst = !pathQualified && !extension && candidate === name;
+  // Explicit files retain their existing lookup, even if PATH has a slow entry.
+  // A bare extensionless command checks PATH before the setup directory.
+  if (!searchFirst && executableFile(candidate)) return resolvePath(candidate);
   if (candidate !== name && executableFile(name)) return resolvePath(name);
-  const match = onPath || names.find(executableFile);
+  const onPath = pathQualified ? null : commandPath(names, searchPath, ";");
+  if (onPath) return resolvePath(onPath);
+  if (searchFirst && executableFile(candidate)) return resolvePath(candidate);
+  const match = names.find(executableFile);
   return match ? resolvePath(match) : null;
 }
 
