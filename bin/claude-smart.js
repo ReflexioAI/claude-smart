@@ -2554,7 +2554,7 @@ function learningProviderVersion(config) {
   return /^[A-Za-z0-9][A-Za-z0-9 ._()+:/-]{0,159}$/.test(version) ? version : undefined;
 }
 
-function probeLearningCli(command, args, maxBuffer) {
+function probeLearningCli(command, args, maxBuffer, captureStderr = false) {
   if (!command) return undefined;
   const shell =
     isWindows() && (command === "claude" || command === "codex" || /\.(?:cmd|bat)$/i.test(command));
@@ -2563,7 +2563,7 @@ function probeLearningCli(command, args, maxBuffer) {
   if (shell && /[%!^&|<>"\r\n]/.test(command)) return undefined;
   const result = spawnSync(shell ? `"${command}"` : command, args, {
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", captureStderr ? "pipe" : "ignore"],
     timeout: 3000,
     maxBuffer,
     windowsHide: true,
@@ -2572,7 +2572,7 @@ function probeLearningCli(command, args, maxBuffer) {
   return result.status === 0 && !result.error && !result.signal ? result : undefined;
 }
 
-function validateGuidedOpenCodeLearning(config, saved) {
+function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   if (config.backend !== "local" || config.provider !== HOST_OPENCODE ||
       !/^(?:1|true|yes|on)$/i.test(config.useLocalCli || "") ||
       (config.url && !isBundledBackendUrl(config.url))) return;
@@ -2583,6 +2583,7 @@ function validateGuidedOpenCodeLearning(config, saved) {
     );
   }
   if (!config.model?.startsWith("#")) return;
+  const resolveForLaunch = (lookup) => lookup() ?? withWorkerPath(lookup);
   const selected = config.cliPath;
   let launcher;
   if (selected) {
@@ -2594,7 +2595,7 @@ function validateGuidedOpenCodeLearning(config, saved) {
       ? [`${selected}.exe`, `${selected}.cmd`, `${selected}.bat`, selected]
       : [selected];
     const match = absolute ? names.find(isExecutableFile)
-      : isWindows() ? resolveCommand(names) : resolvePosixOpenCodeCommand(selected);
+      : resolveForLaunch(() => isWindows() ? resolveCommand(names) : resolvePosixOpenCodeCommand(selected));
     if (!match) {
       throw new Error("The configured CLAUDE_SMART_CLI_PATH cannot be executed. Repair that path before updating.");
     }
@@ -2604,12 +2605,12 @@ function validateGuidedOpenCodeLearning(config, saved) {
   if (launcher && isWindows() && !bridge && !/\.exe$/i.test(launcher)) {
     throw new Error("Select a native OpenCode .exe or the supported compatibility bridge on Windows.");
   }
-  let command = launcher && !bridge ? launcher : resolveOpenCodePath();
+  let command = launcher && !bridge ? launcher : resolveForLaunch(resolveOpenCodePath);
   if (command && !isAbsolute(command)) {
     throw new Error("Use an absolute CLAUDE_SMART_OPENCODE_PATH to select an OpenCode variant.");
   }
   if (command && isWindows()) command = resolve(command);
-  const probe = probeLearningCli(command, ["run", "--help"], 64 * 1024);
+  const probe = withWorkerPath(() => probeLearningCli(command, ["run", "--help"], 64 * 1024, true));
   const help = probe ? `${probe.stdout}\n${probe.stderr}` : "";
   if (!/^\s*(?:-[A-Za-z0-9],\s*)?--variant(?=[,\s=]|$)/m.test(help)) {
     throw new Error(
@@ -3048,7 +3049,7 @@ async function runGuidedCommand(command, args) {
       inventory: (options) => withWorkerPath(() => installInventory(options)),
       saved: () => saved,
       save: async (config, options) => {
-        validateGuidedOpenCodeLearning(config, saved);
+        validateGuidedOpenCodeLearning(config, saved, withWorkerPath);
         const multipleHosts = config.hosts.length > 1;
         if (config.hosts.includes(HOST_CODEX)) {
           withWorkerPath(() => {

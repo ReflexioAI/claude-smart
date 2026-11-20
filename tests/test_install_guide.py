@@ -378,6 +378,30 @@ def test_guided_coordinator_rejects_incomplete_package_before_registration(
     assert not (state / "claude-code" / "claude-smart" / "plugin").exists()
 
 
+def test_codex_version_probe_ignores_unrelated_stderr(tmp_path: Path) -> None:
+    installer, env = fake_guide(tmp_path)
+    _write_executable(
+        tmp_path / "fake-bin/codex",
+        "#!/bin/sh\nprintf '%5000s\\n' 'startup diagnostics' >&2\n"
+        "echo 'codex-cli 0.148.0'\n",
+    )
+    result = subprocess.run(
+        [
+            node_bin(),
+            "-e",
+            "console.log(require(process.argv[1]).learningProviderVersion({provider: 'codex'}))",
+            str(installer),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "codex-cli 0.148.0"
+
+
 def test_guided_install_reports_old_codex_and_installs_other_hosts(tmp_path: Path):
     installer, env = fake_guide(tmp_path)
     env["CODEX_FIXTURE_VERSION"] = "0.147.0"

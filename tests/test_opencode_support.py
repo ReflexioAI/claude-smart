@@ -898,6 +898,8 @@ def test_public_confirmation_preserves_or_discovers_opencode_path(
         ("retired-process", "CLAUDE_SMART_OPENCODE_VARIANT has been retired"),
         ("standalone-only", "does not advertise --variant"),
         ("variant-supported", ""),
+        ("worker-default", ""),
+        ("worker-named", ""),
         ("commented-empty", ""),
         ("custom-executable", ""),
         ("named-executable", ""),
@@ -941,6 +943,7 @@ def test_public_setup_checks_opencode_variant_before_publication(
     custom = case in {
         "custom-executable",
         "named-executable",
+        "worker-named",
         "empty-path-entry",
         "symlink-parent",
         "known-bridge",
@@ -950,7 +953,7 @@ def test_public_setup_checks_opencode_variant_before_publication(
     if custom:
         if case == "custom-executable":
             cli = executable
-        elif case in {"named-executable", "empty-path-entry"}:
+        elif case in {"named-executable", "worker-named", "empty-path-entry"}:
             cli = Path("opencode")
         elif case == "symlink-parent":
             target = tmp_path / "nested" / "target"
@@ -990,6 +993,20 @@ def test_public_setup_checks_opencode_variant_before_publication(
         )
         if case == "blank-opencode-path":
             del env["CLAUDE_SMART_OPENCODE_PATH"]
+    if case in {"worker-default", "worker-named"}:
+        worker_bin = tmp_path / ".local/bin"
+        worker_bin.mkdir(parents=True)
+        executable.rename(worker_bin / "opencode-test-help")
+        executable = worker_bin / "opencode"
+        executable.write_text('#!/bin/sh\nexec opencode-test-help "$@"\n')
+        executable.chmod(0o755)
+        env["CLAUDE_SMART_OPENCODE_PATH"] = ""
+        caller_path = [
+            directory
+            for directory in os.environ["PATH"].split(os.pathsep)
+            if directory and shutil.which("opencode", path=directory) is None
+        ]
+        env["PATH"] = os.pathsep.join([str(tmp_path / "fake-bin"), *caller_path])
     # The explicit provider choice resets a custom executable by design.
     provider_args = [] if custom else ["--provider", "opencode"]
     result = _run_public_setup(
@@ -1010,11 +1027,11 @@ def test_public_setup_checks_opencode_variant_before_publication(
         assert result.returncode == 0, result.stderr
         values = dotenv_values(selected, interpolate=False)
         assert values["CLAUDE_SMART_LEARNING_MODEL"] == "#high"
-        if case in {"named-executable", "empty-path-entry"}:
+        if case in {"named-executable", "worker-named", "empty-path-entry"}:
             assert Path(values["CLAUDE_SMART_CLI_PATH"]) == executable
         if case == "symlink-parent":
             assert values["CLAUDE_SMART_CLI_PATH"] == str(cli)
-        if case == "blank-opencode-path":
+        if case in {"blank-opencode-path", "worker-default"}:
             assert Path(values["CLAUDE_SMART_OPENCODE_PATH"]) == executable
         if case == "session-opencode-override":
             assert Path(values["CLAUDE_SMART_OPENCODE_PATH"]) == saved_executable
