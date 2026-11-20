@@ -87,19 +87,28 @@ def _prepare_publish_batch(
                 return None
             state.append(
                 session_id,
-                {"publish_attempt": {"start": published, "end": publish_end}},
+                {
+                    "publish_attempt": {
+                        "start": published,
+                        "end": publish_end,
+                        "wire_version": 1,
+                    }
+                },
             )
 
         canonical = state.read_all(session_id)
         if state.published_record_offset(canonical) != published:
             continue
-        canonical_end = state.pending_publish_end(canonical, published)
-        if canonical_end is None:
+        attempt = state.pending_publish_attempt(canonical, published)
+        if attempt is None:
             continue
+        canonical_end = attempt["end"]
         if through_record is not None and canonical_end > through_record:
             return None
         _, interactions = state.unpublished_slice(
-            canonical[:canonical_end], published_override=published
+            canonical[:canonical_end],
+            published_override=published,
+            legacy_frozen_loads="wire_version" not in attempt,
         )
         if interactions:
             return published, canonical_end, interactions
