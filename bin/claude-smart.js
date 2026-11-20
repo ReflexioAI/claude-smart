@@ -2933,8 +2933,6 @@ async function runGuidedCommand(command, args) {
     printHelp();
     return;
   }
-  // Resolve host eligibility with the same PATH handed to install workers.
-  process.env.PATH = runtimeEnv().PATH;
   const captured = command === "uninstall" ? null : captureInstallSnapshot();
   const saved = captured ? savedInstallConfiguration(captured) : {};
   if (command !== "uninstall" && !process.env[CLAUDE_SMART_OPENCODE_PATH_ENV]) {
@@ -2954,14 +2952,25 @@ async function runGuidedCommand(command, args) {
       saved: () => saved,
       save: async (config, options) => {
         const multipleHosts = config.hosts.length > 1;
-        codexPreflightFailure = config.hosts.includes(HOST_CODEX) && codexHookProcessCleanupError();
-        if (codexPreflightFailure) {
-          if (!multipleHosts) throw new Error(codexPreflightFailure);
-          config = { ...config, hosts: config.hosts.filter((host) => host !== HOST_CODEX) };
-          const claudeAvailable = config.hosts.includes(HOST_CLAUDE_CODE) && hasClaudeCli();
-          const openCodeError = config.hosts.includes(HOST_OPENCODE) ? opencodePrerequisiteError() : null;
-          if (!claudeAvailable && (!config.hosts.includes(HOST_OPENCODE) || openCodeError))
-            throw new Error([codexPreflightFailure, openCodeError || "Claude Code is not available on PATH."].join(" ").trim());
+        if (config.hosts.includes(HOST_CODEX)) {
+          // Only availability checks use the worker lookup order. The
+          // caller's PATH still owns executable choices saved for learning.
+          const callerPath = process.env.PATH;
+          process.env.PATH = runtimeEnv().PATH;
+          try {
+            codexPreflightFailure = codexHookProcessCleanupError();
+            if (codexPreflightFailure) {
+              if (!multipleHosts) throw new Error(codexPreflightFailure);
+              config = { ...config, hosts: config.hosts.filter((host) => host !== HOST_CODEX) };
+              const claudeAvailable = config.hosts.includes(HOST_CLAUDE_CODE) && hasClaudeCli();
+              const openCodeError = config.hosts.includes(HOST_OPENCODE) ? opencodePrerequisiteError() : null;
+              if (!claudeAvailable && (!config.hosts.includes(HOST_OPENCODE) || openCodeError))
+                throw new Error([codexPreflightFailure, openCodeError || "Claude Code is not available on PATH."].join(" ").trim());
+            }
+          } finally {
+            if (callerPath === undefined) delete process.env.PATH;
+            else process.env.PATH = callerPath;
+          }
         }
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
         const { baseline } = await resumeGuidedShutdown();
