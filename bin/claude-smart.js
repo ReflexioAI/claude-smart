@@ -822,7 +822,20 @@ function hasOpenCodeCli() {
 function resolveOpenCodePath() {
   const opencodePath = (process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "").trim();
   if (opencodePath) return isExecutableFile(opencodePath) ? opencodePath : null;
-  return resolveCommand(isWindows() ? ["opencode.cmd", "opencode.exe", "opencode"] : ["opencode"]);
+  if (isWindows()) return resolveCommand(["opencode.cmd", "opencode.exe", "opencode"]);
+  return resolvePosixOpenCodeCommand("opencode");
+}
+
+function resolvePosixOpenCodeCommand(name) {
+  // The path spelling reaches exec intact. Resolving '..' lexically would
+  // change the target when a parent component is a symlink.
+  for (const directory of (process.env.PATH ?? "/bin:/usr/bin").split(":")) {
+    const candidate = isAbsolute(directory)
+      ? `${directory}/${name}`
+      : `${process.cwd()}/${directory || "."}/${name}`;
+    if (isExecutableFile(candidate)) return candidate;
+  }
+  return null;
 }
 
 const WINDOWS_SYSTEM_BASH_SUFFIXES = [
@@ -2554,11 +2567,12 @@ function validateGuidedOpenCodeLearning(config, saved) {
     const names = isWindows() && !extname(selected)
       ? [`${selected}.exe`, `${selected}.cmd`, `${selected}.bat`, selected]
       : [selected];
-    const match = absolute ? names.find(isExecutableFile) : resolveCommand(names);
+    const match = absolute ? names.find(isExecutableFile)
+      : isWindows() ? resolveCommand(names) : resolvePosixOpenCodeCommand(selected);
     if (!match) {
       throw new Error("The configured CLAUDE_SMART_CLI_PATH cannot be executed. Repair that path before updating.");
     }
-    launcher = resolve(match);
+    launcher = isAbsolute(match) ? match : resolve(match);
   }
   const bridge = /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(launcher || ""));
   if (launcher && isWindows() && !bridge && !/\.exe$/i.test(launcher)) {

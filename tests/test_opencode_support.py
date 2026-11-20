@@ -819,6 +819,8 @@ def test_public_confirmation_preserves_or_discovers_opencode_path(
         ("commented-empty", ""),
         ("custom-executable", ""),
         ("named-executable", ""),
+        ("empty-path-entry", ""),
+        ("symlink-parent", ""),
         ("known-bridge", ""),
         ("missing-bridge", "cannot be executed"),
         ("relative-cli", "absolute CLAUDE_SMART_CLI_PATH"),
@@ -850,6 +852,8 @@ def test_public_setup_checks_opencode_variant_before_publication(
     custom = case in {
         "custom-executable",
         "named-executable",
+        "empty-path-entry",
+        "symlink-parent",
         "known-bridge",
         "missing-bridge",
         "relative-cli",
@@ -857,8 +861,16 @@ def test_public_setup_checks_opencode_variant_before_publication(
     if custom:
         if case == "custom-executable":
             cli = executable
-        elif case == "named-executable":
+        elif case in {"named-executable", "empty-path-entry"}:
             cli = Path("opencode")
+        elif case == "symlink-parent":
+            target = tmp_path / "nested" / "target"
+            target.mkdir(parents=True)
+            link = tmp_path / "linked"
+            link.symlink_to(target)
+            shutil.copy2(executable, target.parent / "opencode")
+            executable.unlink()
+            cli = link / ".." / "opencode"
         elif case == "relative-cli":
             cli = "./opencode"
         else:
@@ -880,6 +892,13 @@ def test_public_setup_checks_opencode_variant_before_publication(
         env["PATH"] = os.pathsep.join(
             [str(tmp_path / "fake-bin"), str(tmp_path), os.environ["PATH"]]
         )
+    if case == "empty-path-entry":
+        decoy = tmp_path / "decoy"
+        decoy.mkdir()
+        _fake_opencode_path(decoy)
+        env["PATH"] = os.pathsep.join(
+            ["", str(decoy), str(tmp_path / "fake-bin"), os.environ["PATH"]]
+        )
     # The explicit provider choice resets a custom executable by design.
     provider_args = [] if custom else ["--provider", "opencode"]
     result = _run_public_setup(
@@ -900,8 +919,10 @@ def test_public_setup_checks_opencode_variant_before_publication(
         assert result.returncode == 0, result.stderr
         values = dotenv_values(selected, interpolate=False)
         assert values["CLAUDE_SMART_LEARNING_MODEL"] == "#high"
-        if case == "named-executable":
-            assert values["CLAUDE_SMART_CLI_PATH"] == str(executable)
+        if case in {"named-executable", "empty-path-entry"}:
+            assert Path(values["CLAUDE_SMART_CLI_PATH"]) == executable
+        if case == "symlink-parent":
+            assert values["CLAUDE_SMART_CLI_PATH"] == str(cli)
 
 
 def _fake_opencode_path(tmp_path: Path) -> Path:
