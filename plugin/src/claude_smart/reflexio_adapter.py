@@ -41,7 +41,7 @@ PUBLISH_RESERVE_SECONDS = PUBLISH_ATTEMPT_SECONDS + 2
 _UNVERIFIABLE_FIELDS = ("citations", "image_encoding")
 # Wire keys of one ``retrieved_learnings`` entry.
 _RETRIEVED_REF_KEYS = frozenset(
-    {"kind", "learning_id", "exposure_receipt", "exposure_receipt_digest"}
+    {"kind", "learning_id", "exposure_receipt", "exposure_receipt_digest", "loaded"}
 )
 _SERVER_MESSAGE_LIMIT = 200
 # Reflexio >= #807 answers a reused request_id naming different content with
@@ -313,9 +313,9 @@ class Adapter:
             if not interaction_list:
                 return PublishResult(True, no_op=True), None
             raw_request = getattr(client, "_make_request", None)
-            if len(interaction_list) > 1000 and (
-                request_id is None or not callable(raw_request)
-            ):
+            if (
+                len(interaction_list) > 1000 or _has_legacy_loads(interaction_list)
+            ) and (request_id is None or not callable(raw_request)):
                 return PublishResult(
                     False, error_type="StablePublishingUnavailable"
                 ), None
@@ -347,10 +347,19 @@ class Adapter:
                         "override_learning_stall": override_learning_stall,
                         "source": _SOURCE,
                     }
-                    if len(interaction_list) > 1000:
+                    legacy_loads = _has_legacy_loads(chunk)
+                    if len(interaction_list) > 1000 or legacy_loads:
                         try:
                             stored = _stored_publish_matches(raw_request, payload)
-                        except Exception:  # noqa: BLE001 — a read outage must not block fresh writes.
+                        except _StoredPublishMismatch:
+                            stored = None
+                        except Exception:  # noqa: BLE001
+                            if legacy_loads:
+                                return PublishResult(
+                                    False,
+                                    chunk_id,
+                                    error_type="LegacyPublishUnverified",
+                                ), raw_response
                             stored = None
                         if stored:
                             recovered = True
@@ -370,17 +379,28 @@ class Adapter:
                         raw_response = raw_request(
                             "POST",
                             "/api/publish_interaction",
-                            json=payload,
+                            json=(
+                                payload
+                                | {
+                                    "interaction_data_list": _without_legacy_loads(
+                                        chunk
+                                    )
+                                }
+                                if legacy_loads
+                                else payload
+                            ),
                             params=None,
                         )
                     except Exception as exc:  # noqa: BLE001
                         response = getattr(exc, "response", None)
                         reason, message = _http_error_details(response)
+                        mismatch = False
                         try:
                             stored = _stored_publish_matches(raw_request, payload)
                         except _StoredPublishMismatch:
                             if reason != _REQUEST_ID_CONFLICT:
                                 raise exc from None
+                            mismatch = True
                             stored = None
                         except Exception:  # noqa: BLE001 — preserve the publish failure.
                             raise exc from None
@@ -390,6 +410,12 @@ class Adapter:
                             confirmed_ids.append(chunk_id)
                             continue
                         if reason == _REQUEST_ID_CONFLICT:
+                            if legacy_loads and not mismatch:
+                                return PublishResult(
+                                    False,
+                                    chunk_id,
+                                    error_type="LegacyPublishUnverified",
+                                ), raw_response
                             # The server compared the full payload and the
                             # read confirms the stored request is not this one.
                             return PublishResult(
@@ -412,9 +438,24 @@ class Adapter:
                             if result.error_reason == _REQUEST_ID_CONFLICT:
                                 return conflict, raw_response
                             return result, raw_response
-                        except Exception:  # noqa: BLE001 — preserve rejection diagnostics.
+                        except Exception:  # noqa: BLE001
+                            if legacy_loads:
+                                return PublishResult(
+                                    False,
+                                    chunk_id,
+                                    error_type="LegacyPublishUnverified",
+                                ), raw_response
                             return result, raw_response
                         if not stored:
+                            if (
+                                legacy_loads
+                                and result.error_reason == _REQUEST_ID_CONFLICT
+                            ):
+                                return PublishResult(
+                                    False,
+                                    chunk_id,
+                                    error_type="LegacyPublishUnverified",
+                                ), raw_response
                             if result.error_reason == _REQUEST_ID_CONFLICT:
                                 return conflict, raw_response
                             return result, raw_response
@@ -754,6 +795,29 @@ def _publish_warnings(response: Any) -> list[str]:
     return [str(item) for item in value]
 
 
+def _has_legacy_loads(interactions: Sequence[dict[str, Any]]) -> bool:
+    return any(
+        "loaded" in ref
+        for turn in interactions
+        for ref in turn.get("retrieved_learnings", [])
+    )
+
+
+def _without_legacy_loads(chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        turn
+        | {
+            "retrieved_learnings": [
+                {key: value for key, value in ref.items() if key != "loaded"}
+                for ref in turn["retrieved_learnings"]
+            ]
+        }
+        if "retrieved_learnings" in turn
+        else turn
+        for turn in chunk
+    ]
+
+
 def _canonical_learning_reference(ref: dict[str, Any]) -> dict[str, Any]:
     """Compare submitted receipts with their server-derived stored digests."""
     canonical = dict(ref)
@@ -842,6 +906,7 @@ def _stored_publish_matches(
     unverified = tuple(
         key for key in _UNVERIFIABLE_FIELDS if any(item.get(key) for item in expected)
     )
+    omitted_legacy_loads = False
     for item in expected:
         unverifiable = (
             bool(
@@ -889,6 +954,7 @@ def _stored_publish_matches(
                     not isinstance(ref, dict)
                     or not {"kind", "learning_id"}.issubset(ref)
                     or set(ref) - _RETRIEVED_REF_KEYS
+                    or ("loaded" in ref and ref["loaded"] is not True)
                     or ref["kind"] not in {"profile", "user_playbook", "agent_playbook"}
                     or not isinstance(ref["learning_id"], str)
                     or not ref["learning_id"]
@@ -900,6 +966,12 @@ def _stored_publish_matches(
             target["retrieved_learnings"] = [
                 _canonical_learning_reference(ref) for ref in refs
             ]
+        if not any("loaded" in ref for ref in observed["retrieved_learnings"]):
+            # Old read endpoints and new writes can both omit this field.
+            for ref in normalized["retrieved_learnings"]:
+                omitted_legacy_loads = (
+                    bool(ref.pop("loaded", False)) or omitted_legacy_loads
+                )
         # Some installed SDKs predate ToolUsed.status even when the backend
         # exposes it. Compare raw View status using the pinned backend's coercion;
         # a legacy View that omits status cannot verify that unsupported field.
@@ -925,6 +997,8 @@ def _stored_publish_matches(
             raise _StoredPublishMismatch(
                 "Stored publish interaction payload does not match"
             )
+    if omitted_legacy_loads:
+        unverified += ("retrieved_learnings.loaded",)
     if unverified:
         _LOGGER.warning(
             "Recovered stored publish %s without verifying %s; the read API "

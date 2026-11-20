@@ -1224,6 +1224,98 @@ def _drain(session_id: str, adapter: Any, **extra: Any) -> tuple[str, int]:
     )
 
 
+@pytest.mark.parametrize(
+    "delivery", ["unsent", "committed", "committed-prefix", "unconfirmed-conflict"]
+)
+def test_unversioned_frozen_loads_recover_without_reintroducing_the_wire_field(
+    session_dir, delivery
+):
+    from claude_smart import runtime
+
+    session_id = "legacy-loaded"
+    _append_user(session_id, 1)
+    _inject_profile(session_id, "profile-id", 2)
+    state.append(
+        session_id,
+        {"loaded_learning_refs": [{"kind": "profile", "learning_id": "profile-id"}]},
+    )
+    _append_assistant(session_id, 3)
+    committed = delivery in {"committed", "committed-prefix"}
+    stored_turns = [
+        {"role": "User", "content": "question"},
+        {
+            "role": "Assistant",
+            "content": "done",
+            "retrieved_learnings": [{"kind": "profile", "learning_id": "profile-id"}],
+        },
+    ]
+    if delivery == "committed-prefix":
+        for index in range(999):
+            content = f"Later interaction {index}"
+            _append_user(session_id, index + 4, content)
+            if index < 998:
+                stored_turns.append({"role": "User", "content": content})
+    end = len(state.read_all(session_id))
+    state.append(session_id, {"publish_attempt": {"start": 0, "end": end}})
+    request_id = publish._publish_request_id(session_id, 0, end)
+
+    class Client:
+        def __init__(self):
+            self.posts = []
+
+        def _make_request(self, _method, path, *, json, params):
+            if path == "/api/get_requests":
+                if not committed or json["request_id"] != request_id:
+                    return {"success": True, "sessions": []}
+                response = _stored_request_response(
+                    {
+                        "request_id": request_id,
+                        "user_id": "project",
+                        "session_id": session_id,
+                        "source": "claude-smart",
+                        "agent_version": runtime.agent_version(),
+                        "evaluation_only": False,
+                        "interaction_data_list": stored_turns,
+                    }
+                )
+                interaction = response["sessions"][0]["requests"][0]["interactions"][1]
+                interaction["retrieved_learnings"][0]["loaded"] = True
+                return response
+            self.posts.append(json)
+            if delivery == "unconfirmed-conflict":
+                return {"success": False, "error_reason": "request_id_conflict"}
+            return {"success": True}
+
+    client = Client()
+    adapter = Adapter(url="https://example.com")
+    adapter._client = client
+    if delivery == "unconfirmed-conflict":
+        assert _drain(session_id, adapter) == ("failed", 2)
+        records = state.read_all(session_id)
+        assert state.published_record_offset(records) == 0
+        assert state.pending_publish_end(records, 0) == end
+        assert not any("publish_rejection" in record for record in records)
+        return
+    assert _drain(session_id, adapter) == (
+        "recovered" if committed else "ok",
+        1001 if delivery == "committed-prefix" else 2,
+    )
+    assert state.published_record_offset(state.read_all(session_id)) == end
+    if delivery == "committed":
+        assert client.posts == []
+    elif delivery == "committed-prefix":
+        [post] = client.posts
+        assert post["request_id"] != request_id
+        assert post["interaction_data_list"] == [
+            {"role": "User", "content": "Later interaction 998"}
+        ]
+    else:
+        [post] = client.posts
+        assert post["request_id"] == request_id
+        [reference] = post["interaction_data_list"][1]["retrieved_learnings"]
+        assert reference == {"kind": "profile", "learning_id": "profile-id"}
+
+
 def test_replay_of_stored_batch_with_citations_recovers(session_dir, tmp_path):
     """Incident 2b8bc393: a stored request with citations wedged the session."""
     _append_cited_turn("cited")

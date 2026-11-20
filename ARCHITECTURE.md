@@ -57,7 +57,11 @@ avoid reading the transcript when the user prompt is already known; the existing
 fallback retains internal-call filtering when it is missing.
 
 Stop atomically records a private intent under `~/.claude-smart/publish-outbox/`.
-The JSONL buffer remains the sole payload and frozen-request owner. Intents bind
+The JSONL buffer remains the sole payload and frozen-request owner. New
+publish attempts mark their wire format. For older frozen ranges, replay
+can compare a stored acknowledgement with the historical load flags
+reconstructed from that exact range. New requests never send those flags.
+Intents bind
 the session/project, backend/account fingerprint, configuration digest and last
 completed assistant record. A single detached worker drains these bounds through
 the existing publisher. Session-level publication locks also serialize manual

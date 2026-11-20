@@ -417,8 +417,10 @@ def published_record_offset(records: list[dict[str, Any]]) -> int:
     )
 
 
-def pending_publish_end(records: list[dict[str, Any]], published: int) -> int | None:
-    """Return the frozen end of the current publish attempt, if any."""
+def pending_publish_attempt(
+    records: list[dict[str, Any]], published: int
+) -> dict[str, Any] | None:
+    """Return the first valid frozen attempt for the current watermark."""
 
     for marker_index, record in enumerate(records[published:], start=published):
         attempt = record.get("publish_attempt")
@@ -435,8 +437,14 @@ def pending_publish_end(records: list[dict[str, Any]], published: int) -> int | 
                 records[:end], published_override=published
             )
             if interactions:
-                return end
+                return attempt
     return None
+
+
+def pending_publish_end(records: list[dict[str, Any]], published: int) -> int | None:
+    """Return the frozen end of the current publish attempt, if any."""
+    attempt = pending_publish_attempt(records, published)
+    return attempt["end"] if attempt is not None else None
 
 
 def _wire_retrieved_ref(value: Any) -> dict[str, str] | None:
@@ -478,6 +486,7 @@ def unpublished_slice(
     records: Iterable[dict[str, Any]],
     *,
     published_override: int | None = None,
+    legacy_frozen_loads: bool = False,
 ) -> tuple[int, list[dict[str, Any]]]:
     """Return the current watermark and wire-ready unpublished interactions.
 
@@ -495,6 +504,20 @@ def unpublished_slice(
         raise ValueError("published_override is outside the supplied record range")
     pending_tools: list[dict[str, Any]] = []
     pending_refs: list[dict[str, str]] = []
+    # These records are used only to compare an unversioned frozen request
+    # with a historical acknowledgement. New writes omit the load flag.
+    boundaries = (
+        {
+            start
+            for start, _, _ in reserved_publish_requests(buffered)
+            if start > published
+        }
+        if legacy_frozen_loads
+        else set()
+    )
+    batch = 0
+    retrieved_in_batch: dict[tuple[str, str], int] = {}
+    pending_loads: set[tuple[str, str]] = set()
     turns: list[dict[str, Any]] = []
     attached_total = skipped = truncated = 0
 
@@ -502,6 +525,8 @@ def unpublished_slice(
         if index < published:
             continue
 
+        if index in boundaries:
+            batch += 1
         refs = record.get("retrieved_learning_refs")
         if "role" not in record and isinstance(refs, list):
             valid_refs = [
@@ -509,6 +534,19 @@ def unpublished_slice(
             ]
             skipped += len(refs) - len(valid_refs)
             pending_refs.extend(valid_refs)
+            if legacy_frozen_loads:
+                retrieved_in_batch.update(
+                    ((ref["kind"], ref["learning_id"]), batch) for ref in valid_refs
+                )
+            continue
+
+        loads = record.get("loaded_learning_refs")
+        if legacy_frozen_loads and "role" not in record and isinstance(loads, list):
+            for entry in loads:
+                if (ref := _wire_retrieved_ref(entry)) is not None:
+                    identity = (ref["kind"], ref["learning_id"])
+                    if retrieved_in_batch.get(identity) == batch:
+                        pending_loads.add(identity)
             continue
 
         role = record.get("role")
@@ -566,7 +604,7 @@ def unpublished_slice(
                 turn["tools_used"] = pending_tools
                 pending_tools = []
 
-            retrieved: list[dict[str, str]] = []
+            retrieved: list[dict[str, Any]] = []
             seen: set[tuple[str, str, str | None]] = set()
             for ref in pending_refs:
                 key = (ref["kind"], ref["learning_id"], ref.get("exposure_receipt"))
@@ -576,9 +614,13 @@ def unpublished_slice(
                 if attached_total >= _RETRIEVED_LEARNINGS_PUBLISH_CAP:
                     truncated += 1
                     continue
-                retrieved.append(ref)
+                retrieved.append(
+                    {**ref, "loaded": True} if key[:2] in pending_loads else ref
+                )
                 attached_total += 1
             pending_refs = []
+            pending_loads.clear()
+            retrieved_in_batch.clear()
             if retrieved:
                 turn["retrieved_learnings"] = retrieved
         turns.append(turn)
