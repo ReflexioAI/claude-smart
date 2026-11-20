@@ -2013,7 +2013,7 @@ function readClaudeInstallations() {
   const executable = resolveCommand(
     isWindows() ? ["claude.exe", "claude.cmd", "claude.bat"] : ["claude"],
   );
-  if (!executable) return [];
+  if (!executable) return undefined;
   const shell = isWindows() && /\.(?:cmd|bat)$/i.test(executable);
   const result = spawnSync(shell ? `"${executable}"` : executable, ["plugin", "list", "--json"], {
     encoding: "utf8",
@@ -3040,8 +3040,10 @@ async function runGuidedCommand(command, args) {
           return;
         if (action === "uninstall") {
           const codexSurvivors = registeredCodexPluginRoots();
-          const claudePlugins = withWorkerPath(readClaudeInstallations) ??
-            readClaudeInstallations();
+          const workerPlugins = withWorkerPath(readClaudeInstallations);
+          const claudePlugins = workerPlugins === null
+            ? (readClaudeInstallations() ?? null)
+            : (workerPlugins ?? []);
           if (claudePlugins === null)
             return ["Shared services kept running because Claude Code integrations could not be verified."];
           if (isGuidedPluginRoot(root)) {

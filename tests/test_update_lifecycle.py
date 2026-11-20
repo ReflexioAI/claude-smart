@@ -1766,6 +1766,7 @@ fs.renameSync = (source, target) => {
         (False, False, "worker"),
         (False, False, "fallback"),
         (False, False, "unknown"),
+        (False, False, "no-fallback"),
     ],
 )
 def test_uninstall_checks_surviving_integrations(
@@ -1854,7 +1855,15 @@ def test_uninstall_checks_surviving_integrations(
         "fallback": surviving_inventory,
         "unknown": failed_inventory,
     }.get(claude, "#!/bin/sh\nprintf '%s\\n' '[]'\n")
-    _write_executable(tmp_path / "fake-bin/claude", caller_inventory)
+    if claude == "no-fallback":
+        env["PATH"] = os.pathsep.join(
+            directory
+            for directory in env["PATH"].split(os.pathsep)
+            if directory and shutil.which("claude", path=directory) is None
+        )
+        assert shutil.which("claude", path=env["PATH"]) is None
+    else:
+        _write_executable(tmp_path / "fake-bin/claude", caller_inventory)
     removed = subprocess.run(
         [*launcher, "uninstall", "--host", "opencode"], check=False, **run_options
     )
@@ -1863,7 +1872,7 @@ def test_uninstall_checks_surviving_integrations(
     if claude is not None:
         assert selector.resolve() == saved
         assert record.read_text() == saved.parent.name
-        if claude == "unknown":
+        if claude in {"unknown", "no-fallback"}:
             assert "Claude Code integrations could not be verified" in removed.stdout
         else:
             assert "Refreshing shared services" in removed.stdout
