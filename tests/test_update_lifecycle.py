@@ -1763,6 +1763,7 @@ fs.renameSync = (source, target) => {
         (True, False, None),
         (False, True, None),
         (False, False, None),
+        (False, False, "worker"),
         (False, False, "fallback"),
         (False, False, "unknown"),
     ],
@@ -1834,17 +1835,26 @@ def test_uninstall_checks_surviving_integrations(
             config.read_text().replace("enabled = true", "enabled = false")
         )
     env["CODEX_HOME"] = str(tmp_path / "empty-codex-home")
-    if claude is not None:
-        _write_executable(tmp_path / ".local/bin/claude", "#!/bin/sh\nexit 1\n")
-        registrations = json.dumps(
-            [{"id": "claude-smart@reflexioai", "readFromFolder": str(saved)}]
+    registrations = json.dumps(
+        [{"id": "claude-smart@reflexioai", "readFromFolder": str(saved)}]
+    )
+    surviving_inventory = f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(registrations)}\n"
+    failed_inventory = "#!/bin/sh\nexit 1\n"
+    if claude == "worker":
+        _write_executable(
+            tmp_path / ".local/bin/claude",
+            "#!/bin/sh\nexec claude-test-inventory\n",
         )
-        caller = (
-            f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(registrations)}\n"
-            if claude == "fallback"
-            else "#!/bin/sh\nexit 1\n"
+        _write_executable(
+            tmp_path / ".local/bin/claude-test-inventory", surviving_inventory
         )
-        _write_executable(tmp_path / "fake-bin/claude", caller)
+    elif claude is not None:
+        _write_executable(tmp_path / ".local/bin/claude", failed_inventory)
+    caller_inventory = {
+        "fallback": surviving_inventory,
+        "unknown": failed_inventory,
+    }.get(claude, "#!/bin/sh\nprintf '%s\\n' '[]'\n")
+    _write_executable(tmp_path / "fake-bin/claude", caller_inventory)
     removed = subprocess.run(
         [*launcher, "uninstall", "--host", "opencode"], check=False, **run_options
     )
