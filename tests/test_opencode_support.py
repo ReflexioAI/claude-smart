@@ -933,9 +933,20 @@ def test_public_setup_checks_opencode_variant_before_publication(
         "native-no-mode": common,
     }.get(case, (*common, "--standalone"))
     declarations = " ".join(shlex.quote(f"{option} string") for option in options)
+    dispatch_guard = ""
+    if case == "native-attach":
+        (tmp_path / "caller-only").touch()
+        dispatch_guard = (
+            '  if [ "$OPENCODE_PURE" != 1 ] || [ "$PWD" != "$(pwd -P)" ] || '
+            "[ -e caller-only ]; then\n"
+            "    printf '%s\\n' '--variant string' >&2\n"
+            "    exit 0\n"
+            "  fi\n"
+        )
     executable.write_text(
         "#!/bin/sh\n"
         'if [ "$1" = run ] && [ "$2" = --help ]; then\n'
+        f"{dispatch_guard}"
         f"  printf '%s\\n' {declarations} >&2\n"
         "fi\n"
     )

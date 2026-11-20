@@ -2554,7 +2554,7 @@ function learningProviderVersion(config) {
   return /^[A-Za-z0-9][A-Za-z0-9 ._()+:/-]{0,159}$/.test(version) ? version : undefined;
 }
 
-function probeLearningCli(command, args, maxBuffer, captureStderr = false) {
+function probeLearningCli(command, args, maxBuffer, { cwd, env, captureStderr = false } = {}) {
   if (!command) return undefined;
   const shell =
     isWindows() && (command === "claude" || command === "codex" || /\.(?:cmd|bat)$/i.test(command));
@@ -2563,6 +2563,8 @@ function probeLearningCli(command, args, maxBuffer, captureStderr = false) {
   if (shell && /[%!^&|<>"\r\n]/.test(command)) return undefined;
   const result = spawnSync(shell ? `"${command}"` : command, args, {
     encoding: "utf8",
+    cwd,
+    env,
     stdio: ["ignore", "pipe", captureStderr ? "pipe" : "ignore"],
     timeout: 3000,
     maxBuffer,
@@ -2610,7 +2612,24 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
     throw new Error("Use an absolute CLAUDE_SMART_OPENCODE_PATH to select an OpenCode variant.");
   }
   if (command && isWindows()) command = resolve(command);
-  const probe = withWorkerPath(() => probeLearningCli(command, ["run", "--help"], 64 * 1024, true));
+  const cwd = mkdtempSync(join(realpathSync(tmpdir()), "claude-smart-opencode-help-"));
+  let probe;
+  try {
+    probe = withWorkerPath(() => probeLearningCli(command, ["run", "--help"], 64 * 1024, {
+      cwd,
+      captureStderr: true,
+      env: {
+        ...process.env,
+        PWD: cwd,
+        OPENCODE_PURE: "1",
+        CLAUDE_SMART_HOST: "opencode",
+        CLAUDE_SMART_INTERNAL: "1",
+        CLAUDE_CODE_ENTRYPOINT: "optimizer",
+      },
+    }));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
   const help = probe ? `${probe.stdout}\n${probe.stderr}` : "";
   const runOptions = new Set(
     Array.from(help.matchAll(/^\s*(?:-[A-Za-z0-9],\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=[,\s=]|$)/gm),
