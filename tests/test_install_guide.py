@@ -414,6 +414,38 @@ def test_guided_install_reports_old_codex_and_installs_other_hosts(tmp_path: Pat
     assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
 
 
+def test_guided_install_with_old_codex_and_missing_opencode_keeps_settings(
+    tmp_path: Path,
+):
+    installer, env = fake_guide(tmp_path)
+    env["CODEX_FIXTURE_VERSION"] = "0.147.0"
+    env["CLAUDE_SMART_OPENCODE_PATH"] = str(tmp_path / "missing" / "opencode")
+
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            "install",
+            "--host",
+            "codex,opencode",
+            "--backend",
+            "local",
+            "--provider",
+            "codex",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert "OpenCode CLI not found" in result.stderr
+    assert "Codex CLI 0.148 or newer is required" in result.stderr
+    assert not (tmp_path / ".claude-smart/.env").exists()
+
+
 def test_guided_install_progress_is_visible_while_worker_is_waiting(
     tmp_path: Path,
 ) -> None:

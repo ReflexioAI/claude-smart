@@ -2957,6 +2957,10 @@ async function runGuidedCommand(command, args) {
         if (codexPreflightFailure) {
           if (!multipleHosts) throw new Error(codexPreflightFailure);
           config = { ...config, hosts: config.hosts.filter((host) => host !== HOST_CODEX) };
+          const claudeAvailable = config.hosts.includes(HOST_CLAUDE_CODE) && hasClaudeCli();
+          const openCodeError = config.hosts.includes(HOST_OPENCODE) ? opencodePrerequisiteError() : null;
+          if (!claudeAvailable && (!config.hosts.includes(HOST_OPENCODE) || openCodeError))
+            throw new Error([codexPreflightFailure, openCodeError || "Claude Code is not available on PATH."].join(" ").trim());
         }
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
         const { baseline } = await resumeGuidedShutdown();
