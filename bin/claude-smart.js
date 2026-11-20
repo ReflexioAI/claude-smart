@@ -249,6 +249,9 @@ function hasCli(name) {
 }
 
 function codexHookProcessCleanupError() {
+  if (process.env.CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS?.trim()) {
+    return "Remove CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS and set timeout (seconds) on the Codex service hook before updating.";
+  }
   const release = learningProviderVersion({ provider: HOST_CODEX });
   const version = release?.match(/^codex-cli (\d+)\.(\d+)\.\d+(?:\+\S+)?$/);
   if (!version || (Number(version[1]) === 0 && Number(version[2]) < 148)) {
@@ -828,15 +831,19 @@ function hasOpenCodeCli() {
   return Boolean(resolveOpenCodePath());
 }
 
-function resolveOpenCodePath() {
+function resolveOpenCodePath(fallbackPath = "") {
   const explicitPath = process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "";
-  // Windows normalizes trailing spaces on ordinary batch paths. Keep other
-  // spellings if they identify an executable, including leading spaces.
-  const batchPath = explicitPath.trimEnd();
-  const exactPath = isWindows() && /\.(?:cmd|bat)$/i.test(batchPath) ? batchPath : explicitPath;
-  const opencodePath = isExecutableFile(exactPath) ? exactPath : explicitPath.trim();
+  if (isWindows()) {
+    if (!explicitPath.trim()) {
+      const match = resolveCommand(["opencode.cmd", "opencode.exe", "opencode"]);
+      return match ? resolve(match) : null;
+    }
+    const { resolveWindowsOpenCodePath } = require("../plugin/scripts/opencode-claude-compat.js");
+    const searchPath = [process.env.PATH, fallbackPath].filter(Boolean).join(";");
+    return resolveWindowsOpenCodePath(explicitPath, searchPath);
+  }
+  const opencodePath = isExecutableFile(explicitPath) ? explicitPath : explicitPath.trim();
   if (opencodePath) return isExecutableFile(opencodePath) ? opencodePath : null;
-  if (isWindows()) return resolveCommand(["opencode.cmd", "opencode.exe", "opencode"]);
   return resolvePosixOpenCodeCommand("opencode");
 }
 
@@ -2117,10 +2124,13 @@ function planInstallSettings(config, captured) {
   const previousProvider =
     previous.get(LEARNING_PROVIDER_ENV) || previous.get(CLAUDE_SMART_HOST_ENV);
   if (previousProvider) values[LEARNING_PROVIDER_ENV] = previousProvider;
-  // A qualified process override is already inherited by startup. Persist it
-  // only when the account has no executable of its own.
-  if (config.validatedOpenCodePath &&
-      !previous.get(CLAUDE_SMART_OPENCODE_PATH_ENV)?.trim()) {
+  // Keep an independent account override. Bind a validated relative Windows
+  // selection to the file we checked so the relocated runtime uses it.
+  const savedOpenCodePath = previous.get(CLAUDE_SMART_OPENCODE_PATH_ENV);
+  const bindRelativeWindowsPath = isWindows() && savedOpenCodePath?.trim() &&
+    savedOpenCodePath === process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] &&
+    !isAbsolute(savedOpenCodePath.trim());
+  if (config.validatedOpenCodePath && (!savedOpenCodePath?.trim() || bindRelativeWindowsPath)) {
     values[CLAUDE_SMART_OPENCODE_PATH_ENV] = config.validatedOpenCodePath;
   } else if (
     (config.hosts.includes(HOST_OPENCODE) ||
@@ -2574,6 +2584,10 @@ function probeLearningCli(command, args, maxBuffer, { cwd, env, captureStderr = 
   return result.status === 0 && !result.error && !result.signal ? result : undefined;
 }
 
+function isOpenCodeBridgeLauncher(launcher) {
+  return /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(launcher || ""));
+}
+
 function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   if (config.backend !== "local" || config.provider !== HOST_OPENCODE ||
       !/^(?:1|true|yes|on)$/i.test(config.useLocalCli?.trim() || "") ||
@@ -2584,8 +2598,17 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
       "CLAUDE_SMART_LEARNING_MODEL=provider/model#variant and remove the old assignment before updating.",
     );
   }
-  if (!config.model?.startsWith("#")) return;
   const resolveForLaunch = (lookup) => lookup() ?? withWorkerPath(lookup);
+  const resolveOpenCodeForLaunch = () => resolveForLaunch(
+    () => resolveOpenCodePath(runtimeEnv().PATH),
+  );
+  if (!config.model?.includes("#")) {
+    if (isWindows() && (!config.cliPath || isOpenCodeBridgeLauncher(config.cliPath))) {
+      config.validatedOpenCodePath = resolveOpenCodeForLaunch();
+    }
+    return;
+  }
+  const hasExplicitModel = !config.model.startsWith("#");
   const selected = config.cliPath;
   let launcher;
   if (selected) {
@@ -2603,11 +2626,11 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
     }
     launcher = isWindows() ? resolve(match) : match;
   }
-  const bridge = /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(launcher || ""));
+  const bridge = isOpenCodeBridgeLauncher(launcher);
   if (launcher && isWindows() && !bridge && !/\.exe$/i.test(launcher)) {
     throw new Error("Select a native OpenCode .exe or the supported compatibility bridge on Windows.");
   }
-  let command = launcher && !bridge ? launcher : resolveForLaunch(resolveOpenCodePath);
+  let command = launcher && !bridge ? launcher : resolveOpenCodeForLaunch();
   if (command && !isAbsolute(command)) {
     throw new Error("Use an absolute CLAUDE_SMART_OPENCODE_PATH to select an OpenCode variant.");
   }
@@ -2626,10 +2649,10 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
     rmSync(cwd, { recursive: true, force: true });
   }
   const runOptions = declaredRunOptions(probe ? `${probe.stdout}\n${probe.stderr}` : "");
-  if (!runOptions.has("--variant")) {
-    throw new Error(
-      "The selected OpenCode CLI does not advertise --variant. Specify provider/model#variant instead of #variant.",
-    );
+  if (!runOptions.has("--variant") && !(hasExplicitModel && runOptions.has("--standalone"))) {
+    throw new Error(hasExplicitModel
+      ? "The selected OpenCode CLI does not advertise --standalone or --variant."
+      : "The selected OpenCode CLI does not advertise --variant. Specify provider/model#variant instead of #variant.");
   }
   // The pinned SDK's native OpenCode transport needs these options at dispatch.
   // The compatibility bridge has a separate command contract.

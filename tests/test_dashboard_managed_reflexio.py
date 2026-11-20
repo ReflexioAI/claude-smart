@@ -218,6 +218,34 @@ def test_dashboard_refuses_variant_reference_for_other_providers(tmp_path, provi
     assert env_file.read_text() == saved
 
 
+@pytest.mark.parametrize(
+    "owner", ["CLAUDE_SMART_LEARNING_PROVIDER", "CLAUDE_SMART_HOST"]
+)
+def test_dashboard_model_save_rechecks_provider_before_publication(tmp_path, owner):
+    env_file = tmp_path / ".claude-smart" / ".env"
+    env_file.parent.mkdir()
+    env_file.write_text(f"{owner}=opencode\n")
+    switched = f"{owner}=codex\n"
+    out = _run_config_module(
+        tmp_path,
+        """
+const fs = (await import("node:fs/promises")).default;
+const mkdir = fs.mkdir;
+fs.mkdir = async (...args) => {
+  await fs.writeFile(ENV_FILE, SWITCHED);
+  return mkdir(...args);
+};
+try { await m.writeConfig({CLAUDE_SMART_LEARNING_MODEL: "#high"}); }
+catch (error) { process.stdout.write(error.message); }
+""".replace("ENV_FILE", json.dumps(str(env_file))).replace(
+            "SWITCHED", json.dumps(switched)
+        ),
+        {"CLAUDE_SMART_LEARNING_PROVIDER": "", "CLAUDE_SMART_HOST": ""},
+    )
+    assert "reload and retry" in out
+    assert env_file.read_text() == switched
+
+
 def test_dashboard_save_does_not_turn_off_absent_local_providers(
     tmp_path: Path,
 ) -> None:

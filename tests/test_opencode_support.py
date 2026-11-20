@@ -553,7 +553,7 @@ process.stdout.write(JSON.stringify({{
     [
         (r"C:\tools\opencode.cmd ", r"C:\tools\opencode.cmd", True),
         (r" tools\opencode.exe", r"C:\bridge-cwd\ tools\opencode.exe", False),
-        ("opencode.cmd", "opencode.cmd", True),
+        ("opencode.cmd", r"C:\bridge-cwd\opencode.cmd", True),
         (r".\opencode.cmd", r"C:\bridge-cwd\opencode.cmd", True),
         ("./opencode.exe", r"C:\bridge-cwd\opencode.exe", False),
         ("C:opencode.cmd", r"C:\bridge-cwd\opencode.cmd", True),
@@ -898,6 +898,10 @@ def test_public_confirmation_preserves_or_discovers_opencode_path(
         ("retired-process", "CLAUDE_SMART_OPENCODE_VARIANT has been retired"),
         ("retired-whitespace", "CLAUDE_SMART_OPENCODE_VARIANT has been retired"),
         ("standalone-only", "does not advertise --variant"),
+        ("explicit-standalone", ""),
+        ("explicit-variant", ""),
+        ("explicit-native", ""),
+        ("explicit-incompatible", "does not advertise --standalone or --variant"),
         ("variant-supported", ""),
         ("worker-default", ""),
         ("worker-named", ""),
@@ -928,6 +932,10 @@ def test_public_setup_checks_opencode_variant_before_publication(
     common = ("--variant", "--model", "--agent", "--format", "--title")
     options = {
         "standalone-only": ("--standalone",),
+        "explicit-standalone": ("--standalone",),
+        "explicit-variant": ("--variant",),
+        "explicit-native": (*common[1:], "--standalone"),
+        "explicit-incompatible": ("--format",),
         "native-attach": (*common, "--attach"),
         "native-unusable": ("--variant", "--standalone"),
         "native-no-mode": common,
@@ -967,6 +975,7 @@ def test_public_setup_checks_opencode_variant_before_publication(
         saved += f"CLAUDE_SMART_OPENCODE_PATH={saved_executable}\n"
     custom = case in {
         "custom-executable",
+        "explicit-native",
         "native-attach",
         "native-unusable",
         "native-no-mode",
@@ -981,6 +990,7 @@ def test_public_setup_checks_opencode_variant_before_publication(
     if custom:
         if case in {
             "custom-executable",
+            "explicit-native",
             "native-attach",
             "native-unusable",
             "native-no-mode",
@@ -1044,13 +1054,14 @@ def test_public_setup_checks_opencode_variant_before_publication(
     provider_args = (
         [] if custom or case == "retired-whitespace" else ["--provider", "opencode"]
     )
+    model = "provider/model#high" if case.startswith("explicit-") else "#high"
     result = _run_public_setup(
         tmp_path,
         "--backend",
         "local",
         *provider_args,
         "--model",
-        "#high",
+        model,
         env_extra=env,
     )
     if expected:
@@ -1061,7 +1072,7 @@ def test_public_setup_checks_opencode_variant_before_publication(
     else:
         assert result.returncode == 0, result.stderr
         values = dotenv_values(selected, interpolate=False)
-        assert values["CLAUDE_SMART_LEARNING_MODEL"] == "#high"
+        assert values["CLAUDE_SMART_LEARNING_MODEL"] == model
         if case in {"named-executable", "worker-named", "empty-path-entry"}:
             assert Path(values["CLAUDE_SMART_CLI_PATH"]) == executable
         if case == "symlink-parent":
