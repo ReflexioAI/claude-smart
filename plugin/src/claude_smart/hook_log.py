@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import stat
+import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -330,12 +331,16 @@ def _maybe_rotate(path: Path) -> None:
     # avoids the truncation window where a concurrent reader would see
     # an empty file, and matches the contract that ``hook.log`` always
     # contains complete JSONL framing.
-    tmp_path = path.with_name(path.name + ".rot")
+    tmp_path: Path | None = None
     try:
-        tmp_path.write_bytes(tail)
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=".hook-log-", delete=False
+        ) as staged:
+            tmp_path = Path(staged.name)
+            staged.write(tail)
         tmp_path.replace(path)
     except OSError as exc:
         _LOGGER.debug("hook_log: rotation rename failed: %s", exc)
-        # Best-effort cleanup of the temp file; ignore failures.
-        with contextlib.suppress(OSError):
-            tmp_path.unlink(missing_ok=True)
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink(missing_ok=True)

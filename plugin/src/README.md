@@ -35,7 +35,7 @@ Description: Python package powering the claude-smart plugin — hook handlers t
 | `context_inject.py`, `context_format.py`, `query_compose.py`, `cs_cite.py` | Build search queries, format learned skills as markdown, inject into context, format citations. |
 | `stall_banner.py` | User-facing message when the Reflexio provider hits an auth/billing stall. |
 | `optimizer_assistant.py` | Claude-code CLI agent that extracts Reflexio optimization hints. |
-| `hook_log.py`, `internal_call.py` | Structured JSON logging to `~/.claude-smart/hook.log`; detect internal/test invocations to skip learning. |
+| `hook_log.py`, `internal_call.py` | Structured JSON logging to the selected absolute session directory’s `hook.log`, or the account log at `~/.claude-smart/hook.log`; detect internal/test invocations to skip learning. |
 
 ## Architecture
 

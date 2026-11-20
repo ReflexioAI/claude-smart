@@ -103,7 +103,7 @@ def test_log_event_tolerates_readonly_log_dir(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
-@pytest.mark.parametrize("filename", ["hook.log", "hook.log.lock"])
+@pytest.mark.parametrize("filename", ["hook.log", "hook.log.lock", "hook.log.rot"])
 def test_hook_does_not_block_on_session_diagnostic_fifo(tmp_path, filename) -> None:
     state_dir = tmp_path / "sessions"
     state_dir.mkdir()
@@ -115,7 +115,12 @@ def test_hook_does_not_block_on_session_diagnostic_fifo(tmp_path, filename) -> N
         "CLAUDE_SMART_STATE_DIR": str(state_dir),
     }
     result = subprocess.run(
-        [sys.executable, "-m", "claude_smart.hook", "opencode", "test-observation"],
+        [
+            sys.executable,
+            "-c",
+            "from claude_smart import hook, hook_log; hook_log._MAX_LOG_BYTES = 1; "
+            "raise SystemExit(hook.main(['opencode', 'test-observation']))",
+        ],
         cwd=tmp_path,
         env=env,
         input=json.dumps({"session_id": "test", "cwd": str(tmp_path)}),
@@ -128,6 +133,9 @@ def test_hook_does_not_block_on_session_diagnostic_fifo(tmp_path, filename) -> N
     assert json.loads(result.stdout)["continue"] is True
     if filename.endswith(".lock"):
         assert not (state_dir / "hook.log").exists()
+    if filename.endswith(".rot"):
+        assert _read_lines(state_dir / "hook.log")[0]["session_id"] == "test"
+        assert not list(state_dir.glob(".hook-log-*"))
 
 
 def test_log_path_follows_the_session_directory(
