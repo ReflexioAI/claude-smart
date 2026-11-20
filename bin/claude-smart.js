@@ -821,7 +821,9 @@ function hasOpenCodeCli() {
 
 function resolveOpenCodePath() {
   const explicitPath = process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "";
-  const opencodePath = existsSync(explicitPath) ? explicitPath : explicitPath.trim();
+  const opencodePath = !isWindows() && isExecutableFile(explicitPath)
+    ? explicitPath
+    : explicitPath.trim();
   if (opencodePath) return isExecutableFile(opencodePath) ? opencodePath : null;
   if (isWindows()) return resolveCommand(["opencode.cmd", "opencode.exe", "opencode"]);
   return resolvePosixOpenCodeCommand("opencode");

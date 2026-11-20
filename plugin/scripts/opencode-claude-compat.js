@@ -120,9 +120,22 @@ function prepareWorkDir() {
   return dir;
 }
 
+function configuredExecutable(value) {
+  const trimmed = value.trim();
+  if (process.platform === "win32" || value === trimmed) return trimmed;
+  try {
+    if (fs.statSync(value).isFile()) {
+      fs.accessSync(value, fs.constants.X_OK);
+      return value;
+    }
+  } catch {
+    // Try the unpadded spelling below.
+  }
+  return trimmed;
+}
+
 function runOpenCode({ prompt, model, workDir }) {
-  const explicitPath = process.env.CLAUDE_SMART_OPENCODE_PATH || "";
-  const opencodePath = (fs.existsSync(explicitPath) ? explicitPath : explicitPath.trim()) ||
+  const opencodePath = configuredExecutable(process.env.CLAUDE_SMART_OPENCODE_PATH || "") ||
     commandPath(opencodeNames());
   if (!opencodePath) {
     throw new Error("opencode CLI not found on PATH");

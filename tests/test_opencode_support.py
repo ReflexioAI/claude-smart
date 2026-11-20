@@ -548,6 +548,48 @@ process.stdout.write(JSON.stringify({{
     assert call["stdin"] == "system text\n\n## Task\nuser prompt"
 
 
+def test_opencode_cli_bridge_trims_windows_batch_override(tmp_path: Path) -> None:
+    node = shutil_which_node()
+    if not node:
+        pytest.skip("node is not installed")
+    bridge = REPO_ROOT / "plugin/scripts/opencode-claude-compat.js"
+    shim = tmp_path / "fake-windows.cjs"
+    shim.write_text(
+        """
+Object.defineProperty(process, "platform", { value: "win32" });
+require("node:os").tmpdir = () => process.env.TEST_DIRECTORY;
+require("node:child_process").spawnSync = (command, args, options) => {
+  if (command !== process.env.CLAUDE_SMART_OPENCODE_PATH.trim() || !options.shell) {
+    throw new Error("Batch launcher did not use the shell with its normalized path");
+  }
+  return {
+    status: 0,
+    stdout: JSON.stringify({ type: "text", part: { type: "text", text: "batch output" } }),
+    stderr: "",
+  };
+};
+"""
+    )
+    result = subprocess.run(
+        [node, "--require", str(shim), str(bridge), "-p"],
+        env={
+            **os.environ,
+            "TEST_DIRECTORY": str(tmp_path),
+            "CLAUDE_SMART_OPENCODE_PATH": r"C:\tools\opencode.cmd ",
+            "CLAUDE_SMART_LEARNING_MODEL": "",
+            "CLAUDE_SMART_OPENCODE_MODEL": "",
+            "CLAUDE_SMART_OPENCODE_VARIANT": "",
+        },
+        input="test prompt",
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"result": "batch output"}
+
+
 def test_opencode_cli_bridge_strips_outer_json_markdown_fence(tmp_path: Path) -> None:
     if shutil_which_node() is None:
         pytest.skip("node is not installed")
