@@ -2209,6 +2209,7 @@ def test_interrupt_during_a_codex_cli_step_stops_its_descendants(
     _write_executable(
         fake_bin / "codex",
         "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codex-cli 0.148.0"; exit 0; fi\n'
         'case "$*" in *"marketplace add"*) ;; *) exit 0 ;; esac\n'
         'sh -c \'trap "" TERM; echo $$ > "$HOME/codex-descendant.pid"; while :; do sleep 0.1; done\' &\n'
         'while [ ! -s "$HOME/codex-descendant.pid" ]; do sleep 0.05; done\n'
@@ -2263,6 +2264,7 @@ def test_codex_cli_timeout_stops_the_whole_process_group(tmp_path: Path) -> None
     _write_executable(
         fake_bin / "codex",
         "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codex-cli 0.148.0"; exit 0; fi\n'
         'case "$*" in *"marketplace add"*) ;; *) exit 0 ;; esac\n'
         '[ ! -e "$HOME/codex-descendant.pid" ] || exit 19\n'
         'sh -c \'trap "" TERM; echo $$ > "$HOME/codex-descendant.pid"; while :; do sleep 0.1; done\' &\n'
@@ -6599,7 +6601,9 @@ def test_codex_runtime_failure_leaves_existing_marketplace_and_features(
     fake_bin.mkdir()
     _write_executable(
         fake_bin / "codex",
-        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/codex.log"\nexit 0\n',
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codex-cli 0.148.0"; exit 0; fi\n'
+        'printf "%s\\n" "$*" >> "$HOME/codex.log"\nexit 0\n',
     )
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     prior_marketplace = codex_home / "claude-smart/marketplace"
@@ -6640,7 +6644,9 @@ def test_codex_interrupt_during_feature_enable_keeps_marketplace_portable(
     fake_bin.mkdir()
     _write_executable(
         fake_bin / "codex",
-        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/codex.log"\n'
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codex-cli 0.148.0"; exit 0; fi\n'
+        'printf "%s\\n" "$*" >> "$HOME/codex.log"\n'
         'if [ "$1" = "features" ]; then kill -TERM "$PPID"; fi\nexit 0\n',
     )
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
@@ -6718,6 +6724,11 @@ const fs = require("fs");
 const home = process.env.HOME || ".";
 const args = process.argv.slice(2);
 fs.appendFileSync(`${home}/codex.log`, `codex ${args.join(" ")}\\n`);
+
+if (args[0] === "--version") {
+  console.log(`codex-cli ${process.env.CODEX_FIXTURE_VERSION || "0.148.0"}`);
+  process.exit(0);
+}
 
 if (args[0] === "features" && args[1] === "enable") {
   process.exit(1);
@@ -7194,14 +7205,8 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
         assert not (root / ".venv").exists()
         assert not (root / "dashboard" / "node_modules").exists()
         assert not any(p.is_symlink() for p in root.rglob("*"))
-    manifest_path = cache_plugin / "hooks" / "codex-hooks.json"
-    manifest = json.loads(manifest_path.read_text())
-    startup_hooks = manifest["hooks"]["SessionStart"][0]["hooks"]
-    ensure_root = startup_hooks[0]["command"]
-    for action, hook in zip(["backend", "dashboard"], startup_hooks[1:3], strict=True):
-        service_argv = shlex.split(hook["command"])
-        assert service_argv[2:5] == [action, "--service-manifest", str(manifest_path)]
-        assert hook["timeout"] > 0
+    manifest = json.loads((cache_plugin / "hooks" / "codex-hooks.json").read_text())
+    ensure_root = manifest["hooks"]["SessionStart"][0]["hooks"][0]["command"]
     assert "--runtime-root" in ensure_root
     # Codex sets these variables to the validated package, not the runtime.
     hook_env = {
@@ -7661,8 +7666,7 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
         f"const source = {json.dumps(str(portable))};"
         "installer.bootstrapPluginRuntime(root)"
         f".then(({{node}}) => fs.writeFileSync({json.dumps(str(adapter))}, "
-        "installer.renderCodexHooksForNode(JSON.parse(fs.readFileSync(source)), root, node, false, "
-        f"{{ serviceManifest: {json.dumps(str(adapter))} }})))"
+        "installer.renderCodexHooksForNode(JSON.parse(fs.readFileSync(source)), root, node, false)))"
         ".then(() => console.log('done'))"
         ".catch((err) => { console.error(err.message); process.exit(1); });"
     )

@@ -248,6 +248,14 @@ function hasCli(name) {
   }
 }
 
+function requireCodexHookProcessCleanup() {
+  const release = learningProviderVersion({ provider: HOST_CODEX });
+  const version = release?.match(/^codex-cli (\d+)\.(\d+)\.\d+(?:\+\S+)?$/);
+  if (!version || (Number(version[1]) === 0 && Number(version[2]) < 148)) {
+    throw new Error("Codex CLI 0.148 or newer is required for service hook process cleanup. Update Codex, then retry setup.");
+  }
+}
+
 function runCodex(args) {
   return new Promise((resolve) => {
     // Grouped while an install can still roll back (see runChecked).
@@ -2941,6 +2949,7 @@ async function runGuidedCommand(command, args) {
       inventory: installInventory,
       saved: () => saved,
       save: async (config, options) => {
+        if (config.hosts.includes(HOST_CODEX)) requireCodexHookProcessCleanup();
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
         const { baseline } = await resumeGuidedShutdown();
         const settings = planInstallSettings(config, captured);
@@ -3706,7 +3715,7 @@ function restorePublishHooksFromSource(pluginRoot) {
   }
 }
 
-function renderCodexHooksForNode(parsed, pluginRoot, nodePath, readOnly, { shared = false, serviceManifest } = {}) {
+function renderCodexHooksForNode(parsed, pluginRoot, nodePath, readOnly, { shared = false } = {}) {
   if (readOnly) removePublishHooks(parsed);
   const runner = join(pluginRoot, "scripts", "codex-hook.js");
   const command = (...args) =>
@@ -3717,8 +3726,8 @@ function renderCodexHooksForNode(parsed, pluginRoot, nodePath, readOnly, { share
     if (typeof original !== "string") return original;
     if (original.includes("smart-install.sh")) return original;
     if (original.includes("ensure-plugin-root.sh")) return command("ensure-root");
-    if (original.includes("backend-service.sh")) return command("backend", "--service-manifest", serviceManifest);
-    if (original.includes("dashboard-service.sh")) return command("dashboard", "--service-manifest", serviceManifest);
+    if (original.includes("backend-service.sh")) return command("backend");
+    if (original.includes("dashboard-service.sh")) return command("dashboard");
     // Match `hook_entry.sh" codex session-start` and similar — between
     // the script name, the host token, and the subcommand there may be
     // closing quotes plus whitespace, so allow both as separators.
@@ -4846,10 +4855,7 @@ function validateGuidedCodexHookManifest(manifest) {
 function renderPreparedCodexHooks(pluginRoot, launcher, readOnly, shared = false) {
   const bundled = join(PACKAGE_ROOT, "plugin", "hooks", "codex-hooks.json");
   const manifest = JSON.parse(readFileSync(bundled, "utf8"));
-  const cache = codexRegistrationCache(join(PACKAGE_ROOT, "plugin"), CODEX_HOME);
-  if (!cache) throw new Error("Invalid Codex plugin version for the hook manifest");
-  const serviceManifest = join(cache, "hooks", "codex-hooks.json");
-  const hooks = renderCodexHooksForNode(manifest, pluginRoot, launcher, readOnly, { shared, serviceManifest });
+  const hooks = renderCodexHooksForNode(manifest, pluginRoot, launcher, readOnly, { shared });
   if (shared) validateGuidedCodexHookManifest(JSON.parse(hooks));
   return hooks;
 }
@@ -4860,7 +4866,10 @@ async function runInstallCodex(settings, runtime) {
     process.exit(1);
   }
   assertSupportedRuntimePlatform();
-  if (!runtime) snapshotInstallState({ preserveFailureMarker: Boolean(settings) });
+  if (!runtime) {
+    requireCodexHookProcessCleanup();
+    snapshotInstallState({ preserveFailureMarker: Boolean(settings) });
+  }
   let setup = settings ? null : readInstallPolicy();
   const pluginRoot = runtime?.pluginRoot ?? CODEX_RUNTIME_PLUGIN_ROOT;
 

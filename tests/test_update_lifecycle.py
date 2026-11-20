@@ -1501,6 +1501,18 @@ def test_no_previous_runtime_never_uses_unprepared_source_for_service_recovery(
     assert not root.exists()
 
 
+def test_old_codex_fails_before_service_effects(tmp_path):
+    package, root, _, env = _fixture(tmp_path, "codex")
+    env["CODEX_FIXTURE_VERSION"] = "0.147.0"
+
+    result = _run(tmp_path, package, "codex", env)
+
+    assert result.returncode != 0
+    assert "Codex CLI 0.148 or newer is required" in result.stderr
+    assert not _calls(tmp_path)
+    assert (root / "identity").read_text() == "old"
+
+
 def test_missing_codex_package_file_fails_before_service_effects(tmp_path):
     package, root, _, env = _fixture(tmp_path, "codex")
     (package / "plugin/scripts/codex-hook.js").unlink()
