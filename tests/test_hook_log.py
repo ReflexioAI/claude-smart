@@ -415,6 +415,33 @@ def test_rotating_log_retains_existing_access(hook_log_path, monkeypatch) -> Non
     assert stat.S_IMODE(hook_log_path.stat().st_mode) == 0o640
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("operation", ["fchown", "fchmod"])
+def test_rotation_stays_bounded_when_access_cannot_be_copied(
+    hook_log_path, monkeypatch, operation
+) -> None:
+    hook_log.log_event(event="stop", host="claude-code", session_id="first")
+    hook_log_path.chmod(0o640)
+
+    def denied(*_args):
+        raise PermissionError("cannot copy access")
+
+    if operation == "fchown":
+        fstat = os.fstat
+
+        def different_group(fd):
+            info = list(fstat(fd))
+            info[stat.ST_GID] += 1
+            return os.stat_result(info)
+
+        monkeypatch.setattr(os, "fstat", different_group)
+    monkeypatch.setattr(os, operation, denied)
+    monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 1)
+    hook_log.log_event(event="stop", host="claude-code", session_id="second")
+    assert [row["session_id"] for row in _read_lines(hook_log_path)] == ["second"]
+    assert stat.S_IMODE(hook_log_path.stat().st_mode) == 0o600
+
+
 def test_log_does_not_rotate_when_under_max_bytes(hook_log_path, monkeypatch) -> None:
     """A single small record never triggers rotation; bytes are byte-stable
     across subsequent reads."""

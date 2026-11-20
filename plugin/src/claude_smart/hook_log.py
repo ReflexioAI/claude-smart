@@ -338,8 +338,15 @@ def _maybe_rotate(path: Path) -> None:
         ) as staged:
             tmp_path = Path(staged.name)
             staged.write(tail)
-        if os.name != "nt":
-            tmp_path.chmod(stat.S_IMODE(current_stat.st_mode))
+            if os.name != "nt":
+                mode = stat.S_IMODE(current_stat.st_mode)
+                # Keep the replacement private if the original group or mode
+                # cannot be restored. Rotation must still cap the log.
+                with contextlib.suppress(OSError):
+                    fd = staged.fileno()
+                    if mode & 0o070 and os.fstat(fd).st_gid != current_stat.st_gid:
+                        os.fchown(fd, -1, current_stat.st_gid)
+                    os.fchmod(fd, mode)
         tmp_path.replace(path)
     except OSError as exc:
         _LOGGER.debug("hook_log: rotation rename failed: %s", exc)
