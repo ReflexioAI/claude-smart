@@ -335,9 +335,7 @@ const CALLER_FIRST_ENV_KEYS = new Set([
   "CLAUDE_SMART_STATE_DIR",
 ]);
 
-function readEnvSnapshot(path) {
-  const exists = existsSync(path);
-  const bytes = exists ? readFileSync(path) : Buffer.alloc(0);
+function parseEnvSnapshot(bytes, exists) {
   const values = new Map();
   const rows = new Map();
   const lines = new TextDecoder("utf-8", { fatal: true })
@@ -354,6 +352,11 @@ function readEnvSnapshot(path) {
     }
   }
   return { exists, bytes, values, rows, lines };
+}
+
+function readEnvSnapshot(path) {
+  const exists = existsSync(path);
+  return parseEnvSnapshot(exists ? readFileSync(path) : Buffer.alloc(0), exists);
 }
 
 function readEnvFile(path) {
@@ -5462,6 +5465,25 @@ function openCodeInstalledVersion(args) {
   }
 }
 
+function statusSessionDirectory() {
+  const configured = process.env.CLAUDE_SMART_STATE_DIR;
+  if (configured) return configured;
+  try {
+    const fd = openSync(CLAUDE_SMART_ENV_PATH, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      if (fstatSync(fd).isFile()) {
+        const { values } = parseEnvSnapshot(readFileSync(fd), true);
+        return values.get("CLAUDE_SMART_STATE_DIR") || CLAUDE_SMART_STATE_DIR;
+      }
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // Missing or unreadable settings should not hide account observations.
+  }
+  return CLAUDE_SMART_STATE_DIR;
+}
+
 function runStatus(args) {
   const host = parseHost(args);
   let installed = null;
@@ -5531,11 +5553,11 @@ function runStatus(args) {
   // read its last 5 MiB even if an older writer left a larger file behind.
   const sessions = new Map();
   try {
-    const logDirectory =
-      process.env.CLAUDE_SMART_STATE_DIR ||
-      readEnvFile(CLAUDE_SMART_ENV_PATH).get("CLAUDE_SMART_STATE_DIR") ||
-      CLAUDE_SMART_STATE_DIR;
-    const logPath = join(logDirectory, "hook.log");
+    const logDirectory = statusSessionDirectory();
+    // Preserve '..' after symlinks and Windows drive-relative paths.
+    const needsSeparator = !logDirectory.endsWith(sep) &&
+      !(sep === "\\" && /^[A-Za-z]:$/.test(logDirectory));
+    const logPath = `${logDirectory}${needsSeparator ? sep : ""}hook.log`;
     const fd = openSync(logPath, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
       const stat = fstatSync(fd);

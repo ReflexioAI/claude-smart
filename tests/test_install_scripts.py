@@ -9128,7 +9128,7 @@ def test_shell_recovery_and_tracking_use_codex_account(
     assert "cache-tracking" in result.stderr
 
 
-@pytest.mark.parametrize("selection", ["default", "saved", "process"])
+@pytest.mark.parametrize("selection", ["default", "saved", "process", "symlink"])
 def test_hook_and_status_use_the_same_session_log(
     tmp_path: Path, selection: str
 ) -> None:
@@ -9139,6 +9139,17 @@ def test_hook_and_status_use_the_same_session_log(
     account.mkdir()
     saved = tmp_path / "saved sessions"
     process = tmp_path / "process sessions"
+    if selection == "symlink":
+        if os.name == "nt":
+            pytest.skip("POSIX symlink traversal semantics")
+        nested = tmp_path / "other" / "nested"
+        nested.mkdir(parents=True)
+        link = tmp_path / "link"
+        try:
+            link.symlink_to(nested, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlink creation unavailable")
+        saved = link / ".."
     previous = tmp_path / "previous-hook.log"
     previous.write_text("previous log")
     env = _isolated_env(tmp_path)
@@ -9151,7 +9162,7 @@ def test_hook_and_status_use_the_same_session_log(
             f'CLAUDE_SMART_STATE_DIR="{tmp_path / "unused"}"\n',
             encoding="utf-8",
         )
-    expected = {"default": account, "saved": saved, "process": process}[selection]
+    expected = {"default": account, "process": process}.get(selection, saved)
     hook = subprocess.run(
         [sys.executable, "-m", "claude_smart.hook", "opencode", "test-observation"],
         env=env,
@@ -9165,6 +9176,7 @@ def test_hook_and_status_use_the_same_session_log(
     log = expected / "hook.log"
     assert json.loads(log.read_text())["session_id"] == "current-observation"
     assert previous.read_text() == "previous log"
+    assert not (tmp_path / "hook.log").exists()
     for other in {account, saved, process} - {expected}:
         assert not (other / "hook.log").exists()
 
@@ -9178,6 +9190,39 @@ def test_hook_and_status_use_the_same_session_log(
     )
     assert status.returncode == 0, status.stderr
     assert "current-observation:" in status.stdout
+
+
+@pytest.mark.parametrize("settings_kind", ["directory", "fifo"])
+def test_status_uses_account_log_when_settings_are_not_regular(
+    tmp_path: Path, settings_kind: str
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required")
+    account = tmp_path / ".claude-smart"
+    account.mkdir()
+    settings = account / ".env"
+    if settings_kind == "directory":
+        settings.mkdir()
+    elif hasattr(os, "mkfifo"):
+        os.mkfifo(settings)
+    else:
+        pytest.skip("FIFO unavailable")
+    (account / "hook.log").write_text(
+        json.dumps({"host": "opencode", "session_id": "account-observation"}) + "\n"
+    )
+    env = _isolated_env(tmp_path)
+    env.pop("CLAUDE_SMART_STATE_DIR", None)
+    result = subprocess.run(
+        [node, str(NODE_INSTALLER), "status", "--host", "opencode"],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "account-observation:" in result.stdout
 
 
 @pytest.mark.skipif(os.name == "nt", reason="FIFO logs are POSIX-only")
