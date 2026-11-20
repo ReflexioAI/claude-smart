@@ -3706,7 +3706,7 @@ function restorePublishHooksFromSource(pluginRoot) {
   }
 }
 
-function renderCodexHooksForNode(parsed, pluginRoot, nodePath, readOnly, { shared = false } = {}) {
+function renderCodexHooksForNode(parsed, pluginRoot, nodePath, readOnly, { shared = false, serviceManifest } = {}) {
   if (readOnly) removePublishHooks(parsed);
   const runner = join(pluginRoot, "scripts", "codex-hook.js");
   const command = (...args) =>
@@ -3717,8 +3717,8 @@ function renderCodexHooksForNode(parsed, pluginRoot, nodePath, readOnly, { share
     if (typeof original !== "string") return original;
     if (original.includes("smart-install.sh")) return original;
     if (original.includes("ensure-plugin-root.sh")) return command("ensure-root");
-    if (original.includes("backend-service.sh")) return command("backend");
-    if (original.includes("dashboard-service.sh")) return command("dashboard");
+    if (original.includes("backend-service.sh")) return command("backend", "--service-manifest", serviceManifest);
+    if (original.includes("dashboard-service.sh")) return command("dashboard", "--service-manifest", serviceManifest);
     // Match `hook_entry.sh" codex session-start` and similar — between
     // the script name, the host token, and the subcommand there may be
     // closing quotes plus whitespace, so allow both as separators.
@@ -4846,7 +4846,10 @@ function validateGuidedCodexHookManifest(manifest) {
 function renderPreparedCodexHooks(pluginRoot, launcher, readOnly, shared = false) {
   const bundled = join(PACKAGE_ROOT, "plugin", "hooks", "codex-hooks.json");
   const manifest = JSON.parse(readFileSync(bundled, "utf8"));
-  const hooks = renderCodexHooksForNode(manifest, pluginRoot, launcher, readOnly, { shared });
+  const cache = codexRegistrationCache(join(PACKAGE_ROOT, "plugin"), CODEX_HOME);
+  if (!cache) throw new Error("Invalid Codex plugin version for the hook manifest");
+  const serviceManifest = join(cache, "hooks", "codex-hooks.json");
+  const hooks = renderCodexHooksForNode(manifest, pluginRoot, launcher, readOnly, { shared, serviceManifest });
   if (shared) validateGuidedCodexHookManifest(JSON.parse(hooks));
   return hooks;
 }

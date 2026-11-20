@@ -237,3 +237,63 @@ class ReflexioClient:
     ]
     assert state.published_record_offset(state.read_all("real-stop")) > 0
     assert not jobs
+
+
+def test_service_deadline_uses_the_registered_service_hook(tmp_path):
+    launcher, home, env = project(tmp_path, None)
+    env.pop("CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS", None)
+    script = launcher.with_name("backend-service.sh")
+    # Keep the subprocess busy without leaving a child process behind.
+    script.write_text(
+        "trap '' TERM\nprintf started > \"$DIAGNOSTIC_ARGS\"\nwhile :; do :; done\n"
+    )
+    manifest = home / "installed service hooks.json"
+    command = [str(NODE), str(launcher), "backend", "--service-manifest", str(manifest)]
+    service = {
+        "type": "command",
+        "command": " ".join(f'"{part}"' for part in command),
+        "timeout": 1,
+    }
+    other_service = {
+        "type": "command",
+        "command": '"codex-hook.js" "dashboard" "--service-manifest"',
+        "timeout": 300,
+    }
+
+    def invoke():
+        result = subprocess.run(
+            command, env=env, capture_output=True, text=True, timeout=5, check=False
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {"continue": True}
+
+    def register():
+        manifest.write_text(
+            json.dumps(
+                {
+                    "hooks": {"SessionStart": [{"hooks": [other_service, service]}]},
+                }
+            )
+        )
+
+    register()
+    invoke()
+    marker = Path(env["DIAGNOSTIC_ARGS"])
+    assert marker.read_text() == "started"
+    log = home / ".claude-smart/backend.log"
+    assert "ETIMEDOUT" in log.read_text()
+    assert "SIGKILL" in log.read_text()
+
+    marker.unlink()
+    service["timeout"] = 0
+    register()
+    invoke()
+    assert not marker.exists()
+    assert "positive timeout in seconds" in log.read_text()
+
+    service["timeout"] = 1
+    register()
+    env["CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS"] = "20"
+    invoke()
+    assert not marker.exists()
+    assert "Remove CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS" in log.read_text()

@@ -10,10 +10,7 @@ const HOME = os.homedir();
 const CODEX_HOME = path.resolve((process.env.CODEX_HOME || "").trim() || path.join(HOME, ".codex"));
 const STATE_DIR = path.join(HOME, ".claude-smart");
 const REFLEXIO_DIR = path.join(HOME, ".reflexio");
-const SERVICE_SCRIPT_TIMEOUT_MS = parsePositiveInteger(
-  process.env.CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS,
-  45_000,
-);
+const LAUNCHER_STARTED = process.hrtime.bigint();
 const DEFAULT_BACKEND_PORT = parsePort(process.env.BACKEND_PORT, 8071);
 const DEFAULT_EMBEDDING_PORT = parsePort(process.env.EMBEDDING_PORT, 8072);
 const LOG_MAX_BYTES = 10000000;
@@ -21,11 +18,6 @@ const LOG_MAX_BYTES = 10000000;
 function parsePort(value, fallback) {
   const port = Number(value);
   return Number.isInteger(port) && port > 0 && port <= 65535 ? port : fallback;
-}
-
-function parsePositiveInteger(value, fallback) {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function emitOk() {
@@ -339,6 +331,26 @@ function startInstallerDetached(root, reason) {
   return true;
 }
 
+function serviceScriptBudget(root, scriptName) {
+  const argument = process.argv.indexOf("--service-manifest");
+  const manifestPath = argument < 0
+    ? path.join(root, "hooks", "codex-hooks.json")
+    : process.argv[argument + 1];
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const commandMarker = argument < 0
+    ? `scripts/${scriptName}" start`
+    : `codex-hook.js" "${process.argv[2]}" "--service-manifest"`;
+  const hooks = (manifest.hooks?.SessionStart || [])
+    .flatMap((group) => group.hooks || [])
+    .filter((hook) => hook.type === "command" && hook.command?.includes(commandMarker));
+  const seconds = hooks[0]?.timeout;
+  if (hooks.length !== 1 || !Number.isSafeInteger(seconds) || seconds <= 0 || seconds * 1000 > 0x7fffffff) {
+    throw new Error("Expected one SessionStart command with a positive timeout in seconds");
+  }
+  // Budget for work already done and leave a small window to report our result to Codex.
+  return seconds * 1000 - Math.ceil(Number(process.hrtime.bigint() - LAUNCHER_STARTED) / 1e6) - 250;
+}
+
 function runServiceScript(root, scriptName, action, logName) {
   trimLog(path.join(STATE_DIR, logName));
   const bash = bashPath();
@@ -348,6 +360,18 @@ function runServiceScript(root, scriptName, action, logName) {
       logName,
       `[claude-smart] codex hook: cannot run ${scriptName}; bash or script missing`,
     );
+    emitOk();
+    return 0;
+  }
+  let timeoutMs;
+  try {
+    if (process.env.CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS?.trim()) {
+      throw new Error("Remove CLAUDE_SMART_SERVICE_SCRIPT_TIMEOUT_MS and set timeout (seconds) on the Codex service hook");
+    }
+    timeoutMs = serviceScriptBudget(root, scriptName);
+    if (timeoutMs <= 0) throw new Error("The Codex service hook deadline has elapsed");
+  } catch (err) {
+    appendLog(logName, `[claude-smart] codex hook: cannot run ${scriptName}: ${err.message}`);
     emitOk();
     return 0;
   }
@@ -364,7 +388,8 @@ function runServiceScript(root, scriptName, action, logName) {
       REFLEXIO_URL: readBackendUrl(),
     },
     stdio: ["ignore", "pipe", "pipe"],
-    timeout: SERVICE_SCRIPT_TIMEOUT_MS,
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
     windowsHide: true,
   });
   const stderr = String(result.stderr || "").trim();

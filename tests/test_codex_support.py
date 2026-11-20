@@ -64,9 +64,6 @@ def test_codex_hook_loads_managed_reflexio_env_and_skips_backend_start() -> None
     assert '"CLAUDE_SMART_READ_ONLY"' in script
     assert "function runServiceScript(root, scriptName, action, logName)" in script
     assert "function parsePort(value, fallback)" in script
-    assert "function parsePositiveInteger(value, fallback)" in script
-    assert "const SERVICE_SCRIPT_TIMEOUT_MS = parsePositiveInteger" in script
-    assert "timeout: SERVICE_SCRIPT_TIMEOUT_MS" in script
     assert (
         'runServiceScript(root, "backend-service.sh", "start", "backend.log")' in script
     )

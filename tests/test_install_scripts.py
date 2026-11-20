@@ -7194,8 +7194,14 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
         assert not (root / ".venv").exists()
         assert not (root / "dashboard" / "node_modules").exists()
         assert not any(p.is_symlink() for p in root.rglob("*"))
-    manifest = json.loads((cache_plugin / "hooks" / "codex-hooks.json").read_text())
-    ensure_root = manifest["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    manifest_path = cache_plugin / "hooks" / "codex-hooks.json"
+    manifest = json.loads(manifest_path.read_text())
+    startup_hooks = manifest["hooks"]["SessionStart"][0]["hooks"]
+    ensure_root = startup_hooks[0]["command"]
+    for action, hook in zip(["backend", "dashboard"], startup_hooks[1:3], strict=True):
+        service_argv = shlex.split(hook["command"])
+        assert service_argv[2:5] == [action, "--service-manifest", str(manifest_path)]
+        assert hook["timeout"] > 0
     assert "--runtime-root" in ensure_root
     # Codex sets these variables to the validated package, not the runtime.
     hook_env = {
@@ -7655,7 +7661,8 @@ def test_node_installer_bootstraps_runtime_with_private_node_and_uv(
         f"const source = {json.dumps(str(portable))};"
         "installer.bootstrapPluginRuntime(root)"
         f".then(({{node}}) => fs.writeFileSync({json.dumps(str(adapter))}, "
-        "installer.renderCodexHooksForNode(JSON.parse(fs.readFileSync(source)), root, node, false)))"
+        "installer.renderCodexHooksForNode(JSON.parse(fs.readFileSync(source)), root, node, false, "
+        f"{{ serviceManifest: {json.dumps(str(adapter))} }})))"
         ".then(() => console.log('done'))"
         ".catch((err) => { console.error(err.message); process.exit(1); });"
     )
