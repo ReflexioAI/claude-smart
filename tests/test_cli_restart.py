@@ -324,6 +324,7 @@ def test_restart_uses_npm_ci_when_lockfile_exists(fake_services) -> None:
         ("opencode.exe", "opencode.exe", False),
         ("opencode.cmd", "opencode.cmd", False),
         ("opencode", "opencode.exe", False),
+        ("opencode", "opencode.exe", True),
         ("opencode", "opencode.cmd", False),
         ("opencode.exe", "opencode.exe", True),
         ("./opencode", "opencode.exe", True),
@@ -338,7 +339,8 @@ def test_windows_installer_resolves_configured_opencode_name(
     search_dir = tmp_path / "tools with spaces"
     search_dir.mkdir()
     fallback = search_dir / executable_name
-    fallback.touch(mode=0o755)
+    if not (direct and configured == "opencode"):
+        fallback.touch(mode=0o755)
     executable = tmp_path / executable_name if direct else fallback
     executable.touch(mode=0o755)
     if configured == "opencode":
