@@ -553,6 +553,7 @@ process.stdout.write(JSON.stringify({{
     [
         (r"C:\tools\opencode.cmd ", r"C:\tools\opencode.cmd", True),
         (r" tools\opencode.exe", r"C:\bridge-cwd\ tools\opencode.exe", False),
+        ("opencode.cmd", "opencode.cmd", True),
     ],
 )
 def test_opencode_cli_bridge_preserves_windows_launch_path(
