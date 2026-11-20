@@ -150,7 +150,7 @@ function executableFile(candidate) {
   }
 }
 
-function resolveWindowsOpenCodePath(value) {
+function resolveWindowsOpenCodePath(value, searchPath = process.env.PATH || "") {
   const resolvePath = process.platform === "win32" ? path.win32.resolve : path.resolve;
   const name = value.trim();
   const candidate = /\.(?:cmd|bat)$/i.test(value.trimEnd()) ? value.trimEnd() : value;
@@ -159,7 +159,7 @@ function resolveWindowsOpenCodePath(value) {
   const names = path.extname(name) ? [name] : [
     `${name}.exe`, `${name}.cmd`, `${name}.bat`, name,
   ];
-  const onPath = /^[A-Za-z]:|[\\/]/.test(name) ? null : commandPath(names, ";");
+  const onPath = /^[A-Za-z]:|[\\/]/.test(name) ? null : commandPath(names, searchPath, ";");
   const match = onPath || names.find(executableFile);
   return match ? resolvePath(match) : null;
 }
@@ -361,8 +361,8 @@ function opencodeNames() {
   return process.platform === "win32" ? ["opencode.cmd", "opencode.exe", "opencode"] : ["opencode"];
 }
 
-function commandPath(names, delimiter = path.delimiter) {
-  const pathParts = (process.env.PATH || "").split(delimiter).filter(Boolean);
+function commandPath(names, searchPath = process.env.PATH || "", delimiter = path.delimiter) {
+  const pathParts = searchPath.split(delimiter).filter(Boolean);
   for (const dir of pathParts) {
     for (const name of names) {
       const candidate = path.join(dir, name);

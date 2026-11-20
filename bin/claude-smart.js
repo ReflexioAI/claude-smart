@@ -831,7 +831,7 @@ function hasOpenCodeCli() {
   return Boolean(resolveOpenCodePath());
 }
 
-function resolveOpenCodePath() {
+function resolveOpenCodePath(fallbackPath = "") {
   const explicitPath = process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "";
   if (isWindows()) {
     if (!explicitPath.trim()) {
@@ -839,7 +839,8 @@ function resolveOpenCodePath() {
       return match ? resolve(match) : null;
     }
     const { resolveWindowsOpenCodePath } = require("../plugin/scripts/opencode-claude-compat.js");
-    return resolveWindowsOpenCodePath(explicitPath);
+    const searchPath = [process.env.PATH, fallbackPath].filter(Boolean).join(";");
+    return resolveWindowsOpenCodePath(explicitPath, searchPath);
   }
   const opencodePath = isExecutableFile(explicitPath) ? explicitPath : explicitPath.trim();
   if (opencodePath) return isExecutableFile(opencodePath) ? opencodePath : null;
@@ -2598,9 +2599,12 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
     );
   }
   const resolveForLaunch = (lookup) => lookup() ?? withWorkerPath(lookup);
+  const resolveOpenCodeForLaunch = () => resolveForLaunch(
+    () => resolveOpenCodePath(runtimeEnv().PATH),
+  );
   if (!config.model?.includes("#")) {
     if (isWindows() && (!config.cliPath || isOpenCodeBridgeLauncher(config.cliPath))) {
-      config.validatedOpenCodePath = resolveForLaunch(resolveOpenCodePath);
+      config.validatedOpenCodePath = resolveOpenCodeForLaunch();
     }
     return;
   }
@@ -2626,7 +2630,7 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   if (launcher && isWindows() && !bridge && !/\.exe$/i.test(launcher)) {
     throw new Error("Select a native OpenCode .exe or the supported compatibility bridge on Windows.");
   }
-  let command = launcher && !bridge ? launcher : resolveForLaunch(resolveOpenCodePath);
+  let command = launcher && !bridge ? launcher : resolveOpenCodeForLaunch();
   if (command && !isAbsolute(command)) {
     throw new Error("Use an absolute CLAUDE_SMART_OPENCODE_PATH to select an OpenCode variant.");
   }

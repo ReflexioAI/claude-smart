@@ -318,20 +318,21 @@ def test_restart_uses_npm_ci_when_lockfile_exists(fake_services) -> None:
 
 
 @pytest.mark.parametrize(
-    ("configured", "executable_name", "direct"),
+    ("configured", "executable_name", "direct", "worker_path"),
     [
-        ("", "opencode.exe", False),
-        ("opencode.exe", "opencode.exe", False),
-        ("opencode.cmd", "opencode.cmd", False),
-        ("opencode", "opencode.exe", False),
-        ("opencode", "opencode.exe", True),
-        ("opencode", "opencode.cmd", False),
-        ("opencode.exe", "opencode.exe", True),
-        ("./opencode", "opencode.exe", True),
+        ("", "opencode.exe", False, False),
+        ("opencode.exe", "opencode.exe", False, False),
+        ("opencode.cmd", "opencode.cmd", False, False),
+        ("opencode", "opencode.exe", False, False),
+        ("opencode", "opencode.exe", True, False),
+        ("opencode", "opencode.cmd", False, False),
+        ("opencode", "opencode.exe", False, True),
+        ("opencode.exe", "opencode.exe", True, False),
+        ("./opencode", "opencode.exe", True, False),
     ],
 )
 def test_windows_installer_resolves_configured_opencode_name(
-    tmp_path, configured, executable_name, direct
+    tmp_path, configured, executable_name, direct, worker_path
 ):
     node = shutil.which("node")
     assert node is not None
@@ -350,15 +351,16 @@ def test_windows_installer_resolves_configured_opencode_name(
         [
             node,
             "-e",
-            "console.log(require(process.argv[1]).resolveOpenCodePath())",
+            "console.log(require(process.argv[1]).resolveOpenCodePath(process.argv[2]))",
             str(installer),
+            search_dir.name if worker_path else "",
         ],
         cwd=tmp_path,
         env={
             **os.environ,
             "CLAUDE_SMART_TEST_PLATFORM": "win32",
             "CLAUDE_SMART_OPENCODE_PATH": configured,
-            "PATH": search_dir.name,
+            "PATH": "" if worker_path else search_dir.name,
         },
         text=True,
         capture_output=True,
