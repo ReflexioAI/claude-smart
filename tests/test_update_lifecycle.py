@@ -82,7 +82,9 @@ if action == "status":
     _write_fake_codex(codex)
     # The version probe uses the install worker's PATH, which includes the
     # private Node stub below. Run the CLI fixture with the real interpreter.
-    codex.write_text(codex.read_text().replace("#!/usr/bin/env node", f"#!{node_bin()}", 1))
+    codex.write_text(
+        codex.read_text().replace("#!/usr/bin/env node", f"#!{node_bin()}", 1)
+    )
     _write_executable(fake / "opencode", "#!/bin/sh\necho 1.17.0\n")
     private = tmp_path / ".claude-smart/node/current/bin"
     private.mkdir(parents=True)
@@ -1754,10 +1756,19 @@ fs.renameSync = (source, target) => {
         assert not receipt.exists()
 
 
-@pytest.mark.parametrize("codex_stays_enabled", [True, False])
-@pytest.mark.parametrize("legacy_hook_repointed", [True, False])
-def test_uninstall_checks_surviving_codex_home(
-    tmp_path, codex_stays_enabled, legacy_hook_repointed
+@pytest.mark.parametrize(
+    ("codex_stays_enabled", "legacy_hook_repointed", "claude"),
+    [
+        (True, True, None),
+        (True, False, None),
+        (False, True, None),
+        (False, False, None),
+        (False, False, "fallback"),
+        (False, False, "unknown"),
+    ],
+)
+def test_uninstall_checks_surviving_integrations(
+    tmp_path, codex_stays_enabled, legacy_hook_repointed, claude
 ):
     package, _old, uv, env = _fixture(tmp_path, "codex", installed=False)
     _write_bootstrap_uv(uv, mode="fresh")
@@ -1823,11 +1834,30 @@ def test_uninstall_checks_surviving_codex_home(
             config.read_text().replace("enabled = true", "enabled = false")
         )
     env["CODEX_HOME"] = str(tmp_path / "empty-codex-home")
+    if claude is not None:
+        _write_executable(tmp_path / ".local/bin/claude", "#!/bin/sh\nexit 1\n")
+        registrations = json.dumps(
+            [{"id": "claude-smart@reflexioai", "readFromFolder": str(saved)}]
+        )
+        caller = (
+            f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(registrations)}\n"
+            if claude == "fallback"
+            else "#!/bin/sh\nexit 1\n"
+        )
+        _write_executable(tmp_path / "fake-bin/claude", caller)
     removed = subprocess.run(
         [*launcher, "uninstall", "--host", "opencode"], check=False, **run_options
     )
     assert removed.returncode == 0, removed.stdout + removed.stderr
     assert not (tmp_path / ".opencode/plugins/claude-smart.js").exists()
+    if claude is not None:
+        assert selector.resolve() == saved
+        assert record.read_text() == saved.parent.name
+        if claude == "unknown":
+            assert "Claude Code integrations could not be verified" in removed.stdout
+        else:
+            assert "Refreshing shared services" in removed.stdout
+        return
     if codex_stays_enabled:
         if not legacy_hook_repointed:
             assert selector.resolve() == saved
@@ -1916,7 +1946,9 @@ def test_guided_uninstall_keeps_standalone_codex_home(tmp_path, recorded):
 
 @pytest.mark.skipif(os.name == "nt", reason="uses POSIX SIGKILL")
 @pytest.mark.parametrize("installed", [False, True])
-def test_retry_starts_selected_runtime_before_preparing_replacement(tmp_path, installed):
+def test_retry_starts_selected_runtime_before_preparing_replacement(
+    tmp_path, installed
+):
     package, predecessor, uv, env = _fixture(tmp_path, "codex", installed=installed)
     _write_bootstrap_uv(uv, mode="fresh")
     env.pop("CLAUDE_SMART_INSTALL_CHILD")

@@ -957,12 +957,15 @@ function activePluginRoot() {
 
 // Installed runtime roots other integrations may still use, newest host
 // first. Codex keeps one cache dir per version.
-function installedPluginRoots(codexSurvivors = registeredCodexPluginRoots()) {
+function installedPluginRoots(
+  codexSurvivors = registeredCodexPluginRoots(),
+  claudePlugins = claudeInstallations(),
+) {
   // The host owns its effective load source. A local marketplace can report
   // readFromFolder alongside an older installPath; prefer its declared source.
   // Discovery is read-only and does not establish ownership for deletion.
   const roots = [];
-  for (const plugin of claudeInstallations()) {
+  for (const plugin of claudePlugins) {
     if (
       plugin.errors !== undefined &&
       (!Array.isArray(plugin.errors) || plugin.errors.length)
@@ -1995,17 +1998,24 @@ function installInventory(options = {}) {
       available: hasClaudeCli(),
       installed:
         existsSync(join(CLAUDE_CODE_LOCAL_PACKAGE_DIR, "plugin")) ||
-        claudeInstallations().length > 0,
+        (options.claudePlugins ?? claudeInstallations()).length > 0,
     },
     { host: HOST_CODEX, available: hasCli("codex"), installed: Boolean(findCodexPluginRoot()) },
     { host: HOST_OPENCODE, available: hasOpenCodeCli(), installed: openCodeInstalled },
   ];
 }
 
-function claudeInstallations() {
-  const executable = resolveCommand(
+function resolveClaudeExecutable() {
+  return resolveCommand(
     isWindows() ? ["claude.exe", "claude.cmd", "claude.bat"] : ["claude"],
   );
+}
+
+function claudeInstallations() {
+  return readClaudeInstallations(resolveClaudeExecutable()) ?? [];
+}
+
+function readClaudeInstallations(executable) {
   if (!executable) return [];
   const shell = isWindows() && /\.(?:cmd|bat)$/i.test(executable);
   const result = spawnSync(shell ? `"${executable}"` : executable, ["plugin", "list", "--json"], {
@@ -2015,15 +2025,15 @@ function claudeInstallations() {
     windowsHide: true,
     shell,
   });
-  if (result.error || result.status !== 0) return [];
+  if (result.error || result.status !== 0) return null;
   try {
     const data = JSON.parse(result.stdout);
     return Array.isArray(data)
       ? data.filter((plugin) => plugin && typeof plugin === "object" &&
           !Array.isArray(plugin) && (plugin.id || plugin.pluginId) === PLUGIN_SPEC)
-      : [];
+      : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -3033,8 +3043,17 @@ async function runGuidedCommand(command, args) {
           return;
         if (action === "uninstall") {
           const codexSurvivors = registeredCodexPluginRoots();
+          const workerClaude = withWorkerPath(resolveClaudeExecutable);
+          const callerClaude = resolveClaudeExecutable();
+          const workerPlugins = readClaudeInstallations(workerClaude);
+          const claudePlugins = workerPlugins ??
+            (callerClaude && callerClaude !== workerClaude
+              ? readClaudeInstallations(callerClaude)
+              : null);
+          if (claudePlugins === null)
+            return ["Shared services kept running because Claude Code integrations could not be verified."];
           if (isGuidedPluginRoot(root)) {
-            const survivors = withWorkerPath(() => installedPluginRoots(codexSurvivors));
+            const survivors = installedPluginRoots(codexSurvivors, claudePlugins);
             if (!survivors.includes(root)) {
               const { status } = observePreviousServices();
               await stopServicesForInstall(root, null, status);
@@ -3047,8 +3066,8 @@ async function runGuidedCommand(command, args) {
             }
           }
           const [current, global] = withWorkerPath(() => [
-            installInventory(),
-            installInventory({ global: true }),
+            installInventory({ claudePlugins }),
+            installInventory({ global: true, claudePlugins }),
           ]);
           if (![...current, ...global].some((agent) => agent.installed) &&
               codexSurvivors.length === 0 && openCodeGuidedPluginRoots().length === 0) {
