@@ -122,11 +122,13 @@ function prepareWorkDir() {
 
 function configuredExecutable(value) {
   const trimmed = value.trim();
-  if (process.platform === "win32" || value === trimmed) return trimmed;
+  if (value === trimmed) return trimmed;
+  const batchPath = value.trimEnd();
+  const exactPath = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(batchPath) ? batchPath : value;
   try {
-    if (fs.statSync(value).isFile()) {
-      fs.accessSync(value, fs.constants.X_OK);
-      return value;
+    if (fs.statSync(exactPath).isFile()) {
+      fs.accessSync(exactPath, fs.constants.X_OK);
+      return exactPath;
     }
   } catch {
     // Try the unpadded spelling below.

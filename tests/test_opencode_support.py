@@ -548,7 +548,16 @@ process.stdout.write(JSON.stringify({{
     assert call["stdin"] == "system text\n\n## Task\nuser prompt"
 
 
-def test_opencode_cli_bridge_trims_windows_batch_override(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("selected_path", "expected_path", "use_shell"),
+    [
+        (r"C:\tools\opencode.cmd ", r"C:\tools\opencode.cmd", True),
+        (r" tools\opencode.exe", r" tools\opencode.exe", False),
+    ],
+)
+def test_opencode_cli_bridge_preserves_windows_launch_path(
+    tmp_path: Path, selected_path: str, expected_path: str, use_shell: bool
+) -> None:
     node = shutil_which_node()
     if not node:
         pytest.skip("node is not installed")
@@ -558,9 +567,18 @@ def test_opencode_cli_bridge_trims_windows_batch_override(tmp_path: Path) -> Non
         """
 Object.defineProperty(process, "platform", { value: "win32" });
 require("node:os").tmpdir = () => process.env.TEST_DIRECTORY;
+const fs = require("node:fs");
+const isFixture = (file) => file === process.env.CLAUDE_SMART_OPENCODE_PATH
+  || file === process.env.TEST_EXPECTED_PATH;
+const exists = fs.existsSync;
+const stat = fs.statSync;
+const access = fs.accessSync;
+fs.existsSync = (file) => isFixture(file) || exists(file);
+fs.statSync = (file, ...args) => isFixture(file) ? { isFile: () => true } : stat(file, ...args);
+fs.accessSync = (file, ...args) => { if (!isFixture(file)) access(file, ...args); };
 require("node:child_process").spawnSync = (command, args, options) => {
-  if (command !== process.env.CLAUDE_SMART_OPENCODE_PATH.trim() || !options.shell) {
-    throw new Error("Batch launcher did not use the shell with its normalized path");
+  if (command !== process.env.TEST_EXPECTED_PATH || options.shell !== (process.env.TEST_SHELL === "1")) {
+    throw new Error("Incorrect Windows launcher path or shell mode");
   }
   return {
     status: 0,
@@ -575,7 +593,9 @@ require("node:child_process").spawnSync = (command, args, options) => {
         env={
             **os.environ,
             "TEST_DIRECTORY": str(tmp_path),
-            "CLAUDE_SMART_OPENCODE_PATH": r"C:\tools\opencode.cmd ",
+            "CLAUDE_SMART_OPENCODE_PATH": selected_path,
+            "TEST_EXPECTED_PATH": expected_path,
+            "TEST_SHELL": "1" if use_shell else "0",
             "CLAUDE_SMART_LEARNING_MODEL": "",
             "CLAUDE_SMART_OPENCODE_MODEL": "",
             "CLAUDE_SMART_OPENCODE_VARIANT": "",

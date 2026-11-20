@@ -821,9 +821,11 @@ function hasOpenCodeCli() {
 
 function resolveOpenCodePath() {
   const explicitPath = process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "";
-  const opencodePath = !isWindows() && isExecutableFile(explicitPath)
-    ? explicitPath
-    : explicitPath.trim();
+  // Windows normalizes trailing spaces on ordinary batch paths. Keep other
+  // spellings if they identify an executable, including leading spaces.
+  const batchPath = explicitPath.trimEnd();
+  const exactPath = isWindows() && /\.(?:cmd|bat)$/i.test(batchPath) ? batchPath : explicitPath;
+  const opencodePath = isExecutableFile(exactPath) ? exactPath : explicitPath.trim();
   if (opencodePath) return isExecutableFile(opencodePath) ? opencodePath : null;
   if (isWindows()) return resolveCommand(["opencode.cmd", "opencode.exe", "opencode"]);
   return resolvePosixOpenCodeCommand("opencode");
