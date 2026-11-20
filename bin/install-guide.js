@@ -313,8 +313,11 @@ async function configure(
       config.useLocalCli !== "0"
     )
       config.model = "sonnet";
-    if (config.model && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(config.model))
-      throw new Error("Learning model must be a valid model ID");
+    const modelPattern = config.provider === "opencode"
+      ? /^(?:[A-Za-z0-9][A-Za-z0-9._:/-]*)?(?:#[A-Za-z0-9][A-Za-z0-9._-]*)?$/
+      : /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+    if (config.model && (config.model.length > 200 || !modelPattern.test(config.model)))
+      throw new Error("Learning model must be a valid model reference");
     if (options.model && config.useLocalCli === "0")
       throw new Error(
         "--model selects a local agent model. Configure cloud-provider models in Reflexio settings instead.",

@@ -29,6 +29,11 @@ function main(argv) {
         "CLAUDE_SMART_OPENCODE_MODEL has been retired. Use CLAUDE_SMART_LEARNING_MODEL for the saved OpenCode route, or pass --model when invoking this bridge directly. Clear the old setting.",
       );
     }
+    if (process.env.CLAUDE_SMART_OPENCODE_VARIANT?.trim()) {
+      throw new Error(
+        "CLAUDE_SMART_OPENCODE_VARIANT has been retired. Use provider/model#variant or #variant in CLAUDE_SMART_LEARNING_MODEL, then remove the old setting.",
+      );
+    }
     const prompt = fs.readFileSync(0, "utf8");
     workDir = prepareWorkDir();
     const content = runOpenCode({
@@ -115,8 +120,29 @@ function prepareWorkDir() {
   return dir;
 }
 
+function configuredExecutable(value) {
+  const trimmed = value.trim();
+  const windows = process.platform === "win32";
+  // Bare Windows names keep the normal executable search. Explicit paths
+  // must name the same file after the child moves to its isolated directory.
+  if (windows && !/^[A-Za-z]:|[\\/]/.test(trimmed)) return trimmed;
+  if (!windows && value === trimmed) return trimmed;
+  const batchPath = value.trimEnd();
+  const exactPath = windows && /\.(?:cmd|bat)$/i.test(batchPath) ? batchPath : value;
+  try {
+    if (fs.statSync(exactPath).isFile()) {
+      fs.accessSync(exactPath, fs.constants.X_OK);
+      return windows ? path.win32.resolve(exactPath) : exactPath;
+    }
+  } catch {
+    // Try the unpadded spelling below.
+  }
+  return windows ? path.win32.resolve(trimmed) : trimmed;
+}
+
 function runOpenCode({ prompt, model, workDir }) {
-  const opencodePath = process.env.CLAUDE_SMART_OPENCODE_PATH || commandPath(opencodeNames());
+  const opencodePath = configuredExecutable(process.env.CLAUDE_SMART_OPENCODE_PATH || "") ||
+    commandPath(opencodeNames());
   if (!opencodePath) {
     throw new Error("opencode CLI not found on PATH");
   }
@@ -134,37 +160,66 @@ function runOpenCode({ prompt, model, workDir }) {
     "--agent",
     AGENT_NAME,
   ];
-  const selectedModel = opencodeModel(model);
-  if (selectedModel) {
-    args.push("--model", selectedModel);
-  }
-  const variant = (process.env.CLAUDE_SMART_OPENCODE_VARIANT || "").trim();
-  if (variant) {
-    args.push("--variant", variant);
+  const batch = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(opencodePath);
+  if (batch && /[%!^&|<>"\r\n]/.test(opencodePath))
+    throw new Error("The OpenCode batch launcher path contains unsupported shell characters");
+  const executable = batch ? `"${opencodePath}"` : opencodePath;
+  const budget = timeoutMs();
+  const deadline = performance.now() + budget;
+  const launch = (argv, input) => {
+    const remaining = Math.floor(deadline - performance.now());
+    if (remaining < 1) throw new Error("opencode CLI timed out");
+    return spawnSync(executable, argv, {
+      input,
+      cwd: workDir,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OPENCODE_PURE: "1",
+        // OpenCode can resolve its project from PWD instead of the spawn cwd.
+        PWD: workDir,
+        CLAUDE_SMART_HOST: "opencode",
+        CLAUDE_SMART_INTERNAL: "1",
+        CLAUDE_CODE_ENTRYPOINT: "optimizer",
+      },
+      timeout: remaining,
+      windowsHide: true,
+      shell: batch,
+    });
+  };
+  const reference = opencodeModel(model);
+  const separator = reference.indexOf("#");
+  if (separator === -1) {
+    if (reference) args.push("--model", reference);
+  } else {
+    const selected = reference.slice(0, separator);
+    const variant = reference.slice(separator + 1);
+    if ((selected && !selected.trim()) || !variant.trim()) {
+      throw new Error("OpenCode model variant reference is invalid");
+    }
+    const help = launch(["run", "--help"], "");
+    if (help.error || help.status !== 0) {
+      throw new Error("OpenCode model variant capability discovery failed");
+    }
+    const declared = new Set(
+      [...(help.stdout + "\n" + help.stderr).matchAll(
+        /^\s*(?:-[A-Za-z0-9],\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=[,\s=]|$)/gm,
+      )].map(([, option]) => option),
+    );
+    if (selected && declared.has("--standalone")) {
+      args.push("--model", reference);
+    } else if (declared.has("--variant")) {
+      if (selected) args.push("--model", selected);
+      args.push("--variant=" + variant);
+    } else {
+      throw new Error("Selected OpenCode CLI does not advertise a compatible variant option");
+    }
   }
 
-  const proc = spawnSync(opencodePath, args, {
-    input: prompt,
-    cwd: workDir,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      OPENCODE_PURE: "1",
-      // opencode resolves the project root from $PWD, not the spawn cwd.
-      // A stale inherited PWD points at the caller's directory, so the temp
-      // `.opencode/opencode.json` defining AGENT_NAME is never read.
-      PWD: workDir,
-      CLAUDE_SMART_HOST: "opencode",
-      CLAUDE_SMART_INTERNAL: "1",
-      CLAUDE_CODE_ENTRYPOINT: "optimizer",
-    },
-    timeout: timeoutMs(),
-    windowsHide: true,
-    shell: process.platform === "win32" && /\.(?:cmd|bat)$/i.test(opencodePath),
-  });
+  const proc = launch(args, prompt);
   if (proc.error) {
     if (proc.error.code === "ETIMEDOUT") {
-      throw new Error(`opencode CLI timed out after ${timeoutMs() / 1000}s`);
+      throw new Error(`opencode CLI timed out after ${budget / 1000}s`);
     }
     throw proc.error;
   }
@@ -190,7 +245,7 @@ function opencodeModel(modelFromArgs) {
   const explicit = (process.env.CLAUDE_SMART_LEARNING_MODEL || "").trim();
   if (explicit) return explicit;
   const candidate = (modelFromArgs || "").trim();
-  return candidate.includes("/") ? candidate : "";
+  return candidate.includes("/") || candidate.startsWith("#") ? candidate : "";
 }
 
 function parseOpenCodeJson(stdout) {
