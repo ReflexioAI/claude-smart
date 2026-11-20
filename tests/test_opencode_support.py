@@ -406,7 +406,15 @@ def test_opencode_cli_bridge_translates_claude_contract(
     if shutil_which_node() is None:
         pytest.skip("node is not installed")
     bridge = REPO_ROOT / "plugin" / "scripts" / "opencode-claude-compat.js"
-    fake_opencode = tmp_path / "opencode"
+    literal_path = modern and saved_model == "#high"
+    if literal_path and os.name == "nt":
+        pytest.skip("POSIX permits a filename with trailing whitespace")
+    if literal_path:
+        fake_opencode = tmp_path / "selected-open-code "
+    elif modern:
+        fake_opencode = tmp_path / "selected-open-code"
+    else:
+        fake_opencode = tmp_path / "opencode"
     call_log = tmp_path / "calls.json"
     fake_opencode.write_text(
         f"""#!/usr/bin/env node
@@ -449,7 +457,9 @@ process.stdout.write(JSON.stringify({{
         "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
     }
     if modern:
-        env["CLAUDE_SMART_OPENCODE_PATH"] = f" {fake_opencode} "
+        env["CLAUDE_SMART_OPENCODE_PATH"] = (
+            str(fake_opencode) if literal_path else f" {fake_opencode} "
+        )
     else:
         env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
     for key, value in (
