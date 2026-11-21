@@ -425,11 +425,18 @@ def test_rotating_log_uses_the_physical_session_directory(tmp_path, monkeypatch)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink traversal")
-def test_rotation_tolerates_a_new_session_symlink_loop(tmp_path, monkeypatch) -> None:
-    physical = tmp_path / "sessions"
-    physical.mkdir()
+@pytest.mark.parametrize("make_loop", [False, True])
+def test_rotation_keeps_the_log_in_the_directory_it_locked(
+    tmp_path, monkeypatch, make_loop
+) -> None:
+    first = tmp_path / "first"
+    other = tmp_path / "other"
+    first.mkdir()
+    other.mkdir()
+    other_log = other / "hook.log"
+    other_log.write_bytes(b'{"session_id":"other"}\n')
     link = tmp_path / "link"
-    link.symlink_to(physical, target_is_directory=True)
+    link.symlink_to(first, target_is_directory=True)
     monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(link))
     hook_log.log_event(event="stop", host="claude-code", session_id="first")
     monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 1)
@@ -437,16 +444,16 @@ def test_rotation_tolerates_a_new_session_symlink_loop(tmp_path, monkeypatch) ->
 
     def read_then_replace_link(path):
         data = read_bytes(path)
-        if path == link / "hook.log":
+        if path in {first / "hook.log", link / "hook.log"}:
             link.unlink()
-            link.symlink_to(link, target_is_directory=True)
+            link.symlink_to(link if make_loop else other, target_is_directory=True)
         return data
 
     monkeypatch.setattr(Path, "read_bytes", read_then_replace_link)
     hook_log.log_event(event="stop", host="claude-code", session_id="second")
 
-    records = _read_lines(physical / "hook.log")
-    assert [row["session_id"] for row in records] == ["first", "second"]
+    assert [row["session_id"] for row in _read_lines(first / "hook.log")] == ["second"]
+    assert other_log.read_text() == '{"session_id":"other"}\n'
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")

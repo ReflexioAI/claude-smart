@@ -9198,6 +9198,38 @@ def test_hook_and_status_use_the_same_session_log(
     assert "current-observation:" in status.stdout
 
 
+    if selection not in {"default", "relative"}:
+        (account / "hook.log").write_text(
+            json.dumps(
+                {
+                    "host": "opencode",
+                    "session_id": "older-account-observation",
+                    "plugin_version": "1.0.0",
+                    "event": "test-observation",
+                    "ts": 1,
+                }
+            ) + "\n",
+            encoding="utf-8",
+        )
+        status = subprocess.run(
+            [node, str(NODE_INSTALLER), "status", "--host", "opencode"],
+            cwd=tmp_path,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert status.returncode == 0, status.stderr
+        session_history, account_history = status.stdout.split(
+            "Account hook observations (all session directories):", 1
+        )
+        assert "current-observation:" in session_history
+        assert "older-account-observation:" not in session_history
+        assert "older-account-observation: 1.0.0" in account_history
+        assert "current-observation:" not in account_history
+
+
 @pytest.mark.parametrize("settings_kind", ["directory", "fifo"])
 def test_status_uses_account_log_when_settings_are_not_regular(
     tmp_path: Path, settings_kind: str

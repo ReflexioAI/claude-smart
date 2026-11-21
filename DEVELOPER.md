@@ -955,7 +955,7 @@ npx claude-smart status
 npx claude-smart status --host codex
 ```
 
-Status reads the host plugin inventory and recent hook observations. Each hook records the version and root of the runtime actually executing it. Codex observations are scoped to `CODEX_HOME`; older records without account attribution are skipped. These are historical observations, not proof that a session is still running or has activated an update. Missing inventory or history is reported as unknown. The hook writer and status both use the selected absolute session directory’s `hook.log`. Relative and default session locations use the account log.
+Status reads the host plugin inventory and recent hook observations. Each hook records the version and root of the runtime actually executing it. Codex observations are scoped to `CODEX_HOME`; older records without account attribution are skipped. These are historical observations, not proof that a session is still running or has activated an update. Missing inventory or history is reported as unknown. The hook writer and status both use the selected absolute session directory’s `hook.log`. Relative and default session locations use the account log. When an absolute session directory is selected, status lists matching account-log observations separately so recent activity from older hooks remains visible.
 
 Claude Code can register different plugin versions in user and project scopes. Status lists every matching registration with its scope, project path when provided, and enabled state. It does not infer which registration an existing session has loaded.
 
