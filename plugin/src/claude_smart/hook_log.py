@@ -333,8 +333,12 @@ def _maybe_rotate(path: Path) -> None:
     # contains complete JSONL framing.
     tmp_path: Path | None = None
     try:
+        # tempfile normalizes ".." lexically. Resolve the parent first so
+        # symlink traversal keeps the staging file beside the active log.
         with tempfile.NamedTemporaryFile(
-            dir=path.parent, prefix=".hook-log-", delete=False
+            dir=os.path.realpath(path.parent, strict=True),
+            prefix=".hook-log-",
+            delete=False,
         ) as staged:
             tmp_path = Path(staged.name)
             staged.write(tail)
