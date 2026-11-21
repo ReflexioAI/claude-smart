@@ -9128,7 +9128,9 @@ def test_shell_recovery_and_tracking_use_codex_account(
     assert "cache-tracking" in result.stderr
 
 
-@pytest.mark.parametrize("selection", ["default", "saved", "process", "symlink", "relative"])
+@pytest.mark.parametrize(
+    "selection", ["default", "saved", "process", "symlink", "relative", "new-parent"]
+)
 def test_hook_and_status_use_the_same_session_log(
     tmp_path: Path, selection: str
 ) -> None:
@@ -9144,12 +9146,14 @@ def test_hook_and_status_use_the_same_session_log(
             pytest.skip("POSIX symlink traversal semantics")
         nested = tmp_path / "other" / "nested"
         nested.mkdir(parents=True)
-        link = tmp_path / "link"
+        link = account / "link"
         try:
             link.symlink_to(nested, target_is_directory=True)
         except OSError:
             pytest.skip("symlink creation unavailable")
         saved = link / ".."
+    if selection == "new-parent":
+        saved = tmp_path / "missing" / ".." / "sessions"
     previous = tmp_path / "previous-hook.log"
     previous.write_text("previous log")
     env = _isolated_env(tmp_path)

@@ -136,14 +136,17 @@ def log_event(
         return
 
     path = log_path()
+    protect_account = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    if protect_account and _is_account_log(path):
+        return
     try:
-        # Bind the lock, append, and rotation to one physical directory.
-        # Resolve the parent even before the first write has created it.
-        path = Path(os.path.realpath(path.parent)) / path.name
-        if os.environ.get("PYTEST_CURRENT_TEST") and _is_account_log(path):
-            # Fake events must never reach the signed-in user's account log.
-            return
+        # Create along the configured path so every component is traversable.
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Bind all write operations to the same physical directory.
+        path = Path(os.path.realpath(path.parent, strict=True)) / path.name
+        if protect_account and _is_account_log(path):
+            # Also check the bound path in case a link moved after creation.
+            return
     except OSError as exc:
         _LOGGER.debug("hook_log: directory for %s unavailable: %s", path, exc)
         return

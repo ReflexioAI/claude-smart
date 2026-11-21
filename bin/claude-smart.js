@@ -5488,6 +5488,15 @@ function statusSessionDirectory() {
   return directory;
 }
 
+function isAccountHookDirectory(logDirectory) {
+  if (logDirectory === CLAUDE_SMART_STATE_DIR) return true;
+  try {
+    return realpathSync.native(logDirectory) === realpathSync.native(CLAUDE_SMART_STATE_DIR);
+  } catch {
+    return false;
+  }
+}
+
 function recentHookObservations(logDirectory, host) {
   // Match only this host and account. The shared log is bounded by hook_log;
   // read its last 5 MiB even if an older writer left a larger file behind.
@@ -5605,7 +5614,7 @@ function runStatus(args) {
   const logDirectory = statusSessionDirectory();
   process.stdout.write("Recent session hook observations (sessions may have ended):\n");
   writeHookObservations(recentHookObservations(logDirectory, host));
-  if (logDirectory !== CLAUDE_SMART_STATE_DIR && !sameRealPath(logDirectory, CLAUDE_SMART_STATE_DIR)) {
+  if (!isAccountHookDirectory(logDirectory)) {
     const accountObservations = recentHookObservations(CLAUDE_SMART_STATE_DIR, host);
     if (accountObservations.size) {
       process.stdout.write("Account hook observations (all session directories):\n");
