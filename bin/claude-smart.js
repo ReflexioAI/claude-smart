@@ -5488,6 +5488,64 @@ function statusSessionDirectory() {
   return directory;
 }
 
+function isAccountHookDirectory(logDirectory) {
+  if (logDirectory === CLAUDE_SMART_STATE_DIR) return true;
+  try {
+    return realpathSync.native(logDirectory) === realpathSync.native(CLAUDE_SMART_STATE_DIR);
+  } catch {
+    return false;
+  }
+}
+
+function recentHookObservations(logDirectory, host) {
+  // Match only this host and account. The shared log is bounded by hook_log;
+  // read its last 5 MiB even if an older writer left a larger file behind.
+  const sessions = new Map();
+  try {
+    // Preserve filesystem traversal of '..' after symlinks.
+    const needsSeparator = !logDirectory.endsWith(sep);
+    const logPath = `${logDirectory}${needsSeparator ? sep : ""}hook.log`;
+    const fd = openSync(logPath, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile()) throw new Error("Hook history is not a regular file");
+      const size = stat.size;
+      const length = Math.min(size, 5 * 1024 * 1024);
+      const buffer = Buffer.alloc(length);
+      const count = readSync(fd, buffer, 0, length, size - length);
+      const lines = buffer.subarray(0, count).toString("utf8").split(/\r?\n/);
+      if (size > length) lines.shift();
+      for (let i = lines.length - 1; i >= 0 && sessions.size < 5; i--) {
+        let entry;
+        try {
+          entry = JSON.parse(lines[i]);
+        } catch {
+          continue;
+        }
+        if (!entry || entry.host !== host || entry.internal_skipped || !entry.session_id) continue;
+        if (host === HOST_CODEX && entry.codex_home !== CODEX_HOME) continue;
+        if (entry.event === "publish-result") continue;
+        if (!sessions.has(entry.session_id)) sessions.set(entry.session_id, entry);
+      }
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // Missing history is normal on first install.
+  }
+  return sessions;
+}
+
+function writeHookObservations(sessions) {
+  if (!sessions.size)
+    process.stdout.write("  None recorded in this log for this host/account. Active version is unknown.\n");
+  for (const [session, entry] of sessions) {
+    process.stdout.write(
+      `  ${session}: ${entry.plugin_version || "unknown"} (${entry.event}, ts=${entry.ts})\n`,
+    );
+  }
+}
+
 function runStatus(args) {
   const host = parseHost(args);
   let installed = null;
@@ -5553,49 +5611,15 @@ function runStatus(args) {
   }
   if (host === HOST_CODEX) writeDisabledCodexHookWarnings();
 
-  // Match only this host and account. The shared log is bounded by hook_log;
-  // read its last 5 MiB even if an older writer left a larger file behind.
-  const sessions = new Map();
-  try {
-    const logDirectory = statusSessionDirectory();
-    // Preserve filesystem traversal of '..' after symlinks.
-    const needsSeparator = !logDirectory.endsWith(sep);
-    const logPath = `${logDirectory}${needsSeparator ? sep : ""}hook.log`;
-    const fd = openSync(logPath, constants.O_RDONLY | constants.O_NONBLOCK);
-    try {
-      const stat = fstatSync(fd);
-      if (!stat.isFile()) throw new Error("Hook history is not a regular file");
-      const size = stat.size;
-      const length = Math.min(size, 5 * 1024 * 1024);
-      const buffer = Buffer.alloc(length);
-      const count = readSync(fd, buffer, 0, length, size - length);
-      const lines = buffer.subarray(0, count).toString("utf8").split(/\r?\n/);
-      if (size > length) lines.shift();
-      for (let i = lines.length - 1; i >= 0 && sessions.size < 5; i--) {
-        let entry;
-        try {
-          entry = JSON.parse(lines[i]);
-        } catch {
-          continue;
-        }
-        if (!entry || entry.host !== host || entry.internal_skipped || !entry.session_id) continue;
-        if (host === HOST_CODEX && entry.codex_home !== CODEX_HOME) continue;
-        if (entry.event === "publish-result") continue;
-        if (!sessions.has(entry.session_id)) sessions.set(entry.session_id, entry);
-      }
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    // Missing history is normal on first install.
-  }
+  const logDirectory = statusSessionDirectory();
   process.stdout.write("Recent session hook observations (sessions may have ended):\n");
-  if (!sessions.size)
-    process.stdout.write("  None recorded for this host/account; active version is unknown.\n");
-  for (const [session, entry] of sessions) {
-    process.stdout.write(
-      `  ${session}: ${entry.plugin_version || "unknown"} (${entry.event}, ts=${entry.ts})\n`,
-    );
+  writeHookObservations(recentHookObservations(logDirectory, host));
+  if (!isAccountHookDirectory(logDirectory)) {
+    const accountObservations = recentHookObservations(CLAUDE_SMART_STATE_DIR, host);
+    if (accountObservations.size) {
+      process.stdout.write("Default account-log hook observations:\n");
+      writeHookObservations(accountObservations);
+    }
   }
   if (host === HOST_CLAUDE_CODE)
     process.stdout.write(

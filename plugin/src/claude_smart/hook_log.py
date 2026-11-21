@@ -136,15 +136,19 @@ def log_event(
         return
 
     path = log_path()
-    if os.environ.get("PYTEST_CURRENT_TEST") and _is_account_log(path):
-        # Test harnesses import this module in-process, including other
-        # repositories' integration suites that publish against a live
-        # server. Their fake events must never reach the user's forensic log.
+    protect_account = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    if protect_account and _is_account_log(path):
         return
     try:
+        # Create along the configured path so every component is traversable.
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Bind all write operations to the same physical directory.
+        path = Path(os.path.realpath(path.parent, strict=True)) / path.name
+        if protect_account and _is_account_log(path):
+            # Also check the bound path in case a link moved after creation.
+            return
     except OSError as exc:
-        _LOGGER.debug("hook_log: mkdir for %s failed: %s", path.parent, exc)
+        _LOGGER.debug("hook_log: directory for %s unavailable: %s", path, exc)
         return
 
     # Hold an exclusive cross-process flock through the entire append +
@@ -333,12 +337,8 @@ def _maybe_rotate(path: Path) -> None:
     # contains complete JSONL framing.
     tmp_path: Path | None = None
     try:
-        # tempfile normalizes ".." lexically. Resolve the parent first so
-        # symlink traversal keeps the staging file beside the active log.
         with tempfile.NamedTemporaryFile(
-            dir=os.path.realpath(path.parent, strict=True),
-            prefix=".hook-log-",
-            delete=False,
+            dir=path.parent, prefix=".hook-log-", delete=False
         ) as staged:
             tmp_path = Path(staged.name)
             staged.write(tail)

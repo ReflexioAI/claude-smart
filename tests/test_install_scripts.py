@@ -8895,7 +8895,7 @@ def test_status_distinguishes_install_from_account_scoped_observations(
     )
     assert result.returncode == 0
     assert "unknown (host inventory unavailable)" in result.stdout
-    assert "active version is unknown" in result.stdout
+    assert "Active version is unknown" in result.stdout
 
 
 _DISABLED_HOOK_CONFIG = """\
@@ -9128,7 +9128,9 @@ def test_shell_recovery_and_tracking_use_codex_account(
     assert "cache-tracking" in result.stderr
 
 
-@pytest.mark.parametrize("selection", ["default", "saved", "process", "symlink", "relative"])
+@pytest.mark.parametrize(
+    "selection", ["default", "saved", "process", "symlink", "relative", "new-parent"]
+)
 def test_hook_and_status_use_the_same_session_log(
     tmp_path: Path, selection: str
 ) -> None:
@@ -9144,12 +9146,14 @@ def test_hook_and_status_use_the_same_session_log(
             pytest.skip("POSIX symlink traversal semantics")
         nested = tmp_path / "other" / "nested"
         nested.mkdir(parents=True)
-        link = tmp_path / "link"
+        link = account / "link"
         try:
             link.symlink_to(nested, target_is_directory=True)
         except OSError:
             pytest.skip("symlink creation unavailable")
         saved = link / ".."
+    if selection == "new-parent":
+        saved = tmp_path / "missing" / ".." / "sessions"
     previous = tmp_path / "previous-hook.log"
     previous.write_text("previous log")
     env = _isolated_env(tmp_path)
@@ -9196,6 +9200,38 @@ def test_hook_and_status_use_the_same_session_log(
     )
     assert status.returncode == 0, status.stderr
     assert "current-observation:" in status.stdout
+
+
+    if selection not in {"default", "relative"}:
+        (account / "hook.log").write_text(
+            json.dumps(
+                {
+                    "host": "opencode",
+                    "session_id": "older-account-observation",
+                    "plugin_version": "1.0.0",
+                    "event": "test-observation",
+                    "ts": 1,
+                }
+            ) + "\n",
+            encoding="utf-8",
+        )
+        status = subprocess.run(
+            [node, str(NODE_INSTALLER), "status", "--host", "opencode"],
+            cwd=tmp_path,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert status.returncode == 0, status.stderr
+        session_history, account_history = status.stdout.split(
+            "Default account-log hook observations:", 1
+        )
+        assert "current-observation:" in session_history
+        assert "older-account-observation:" not in session_history
+        assert "older-account-observation: 1.0.0" in account_history
+        assert "current-observation:" not in account_history
 
 
 @pytest.mark.parametrize("settings_kind", ["directory", "fifo"])
@@ -9254,7 +9290,7 @@ def test_status_ignores_fifo_log_without_blocking(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "Installed version: not installed" in result.stdout
     assert (
-        "None recorded for this host/account; active version is unknown."
+        "None recorded in this log for this host/account. Active version is unknown."
         in result.stdout
     )
 
