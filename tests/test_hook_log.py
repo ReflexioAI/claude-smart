@@ -405,6 +405,25 @@ def test_log_rotates_when_over_max_bytes(hook_log_path, monkeypatch) -> None:
     assert "sess-0000" not in session_ids
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink traversal")
+def test_rotating_log_uses_the_physical_session_directory(tmp_path, monkeypatch) -> None:
+    physical = tmp_path / "physical"
+    nested = physical / "nested"
+    nested.mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(nested, target_is_directory=True)
+    state_dir = link / ".." / "sessions"
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(state_dir))
+    monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 1)
+
+    hook_log.log_event(event="stop", host="claude-code", session_id="first")
+    hook_log.log_event(event="stop", host="claude-code", session_id="second")
+
+    log_path = physical / "sessions" / "hook.log"
+    assert [row["session_id"] for row in _read_lines(log_path)] == ["second"]
+    assert not (tmp_path / "sessions").exists()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_rotating_log_retains_existing_access(hook_log_path, monkeypatch) -> None:
     hook_log.log_event(event="stop", host="claude-code", session_id="first")
