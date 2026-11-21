@@ -5538,7 +5538,7 @@ function recentHookObservations(logDirectory, host) {
 
 function writeHookObservations(sessions) {
   if (!sessions.size)
-    process.stdout.write("  None recorded for this host/account; active version is unknown.\n");
+    process.stdout.write("  None recorded in this log for this host/account. Active version is unknown.\n");
   for (const [session, entry] of sessions) {
     process.stdout.write(
       `  ${session}: ${entry.plugin_version || "unknown"} (${entry.event}, ts=${entry.ts})\n`,
@@ -5617,7 +5617,7 @@ function runStatus(args) {
   if (!isAccountHookDirectory(logDirectory)) {
     const accountObservations = recentHookObservations(CLAUDE_SMART_STATE_DIR, host);
     if (accountObservations.size) {
-      process.stdout.write("Account hook observations (all session directories):\n");
+      process.stdout.write("Default account-log hook observations:\n");
       writeHookObservations(accountObservations);
     }
   }

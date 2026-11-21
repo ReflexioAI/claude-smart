@@ -8895,7 +8895,7 @@ def test_status_distinguishes_install_from_account_scoped_observations(
     )
     assert result.returncode == 0
     assert "unknown (host inventory unavailable)" in result.stdout
-    assert "active version is unknown" in result.stdout
+    assert "Active version is unknown" in result.stdout
 
 
 _DISABLED_HOOK_CONFIG = """\
@@ -9226,7 +9226,7 @@ def test_hook_and_status_use_the_same_session_log(
         )
         assert status.returncode == 0, status.stderr
         session_history, account_history = status.stdout.split(
-            "Account hook observations (all session directories):", 1
+            "Default account-log hook observations:", 1
         )
         assert "current-observation:" in session_history
         assert "older-account-observation:" not in session_history
@@ -9290,7 +9290,7 @@ def test_status_ignores_fifo_log_without_blocking(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "Installed version: not installed" in result.stdout
     assert (
-        "None recorded for this host/account; active version is unknown."
+        "None recorded in this log for this host/account. Active version is unknown."
         in result.stdout
     )
 
