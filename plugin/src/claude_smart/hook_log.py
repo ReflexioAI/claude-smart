@@ -26,12 +26,13 @@ import errno
 import json
 import logging
 import os
+import secrets
 import stat
-import tempfile
 import time
 from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
-from typing import IO, Any
+from typing import Any
 
 from claude_smart import runtime, state
 
@@ -151,36 +152,37 @@ def log_event(
         _LOGGER.debug("hook_log: directory for %s unavailable: %s", path, exc)
         return
 
-    # Hold an exclusive cross-process flock through the entire append +
-    # rotate critical section. The original rationale ("POSIX atomic
-    # append below PIPE_BUF") protects the *append* alone but not the
-    # ``read_bytes → write tmp → rename`` rotation sequence: a concurrent
-    # appender that lands between rotation's read and rename has its
-    # record silently dropped by the rename. The lock closes that gap.
-    #
-    # On Windows ``_fcntl`` is None and writes proceed unlocked — same
-    # behaviour as before. The original PIPE_BUF-based append atomicity
-    # is preserved by ``_TRUNCATE_LIMIT`` keeping each record below 4 KiB.
-    with _rotation_lock(path) as acquired:
+    directory_fd = None
+    try:
+        if os.name != "nt":
+            directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        _append_and_rotate(path, line, directory_fd)
+    except OSError as exc:
+        _LOGGER.debug("hook_log: could not append in %s: %s", path.parent, exc)
+    finally:
+        if directory_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(directory_fd)
+
+
+def _append_and_rotate(path: Path, line: str, directory_fd: int | None) -> None:
+    # On POSIX every operation is relative to this open directory, so a rename
+    # cannot move writes from the locked directory into its replacement.
+    if directory_fd is not None:
+        path = Path(path.name)
+    opener = partial(_open_nonblocking_regular, directory_fd=directory_fd)
+    with _rotation_lock(path, directory_fd) as acquired:
         if not acquired:
             return
-        try:
-            with open(
-                path, "a", encoding="utf-8", opener=_open_nonblocking_regular
-            ) as fh:
-                fh.write(line)
-        except OSError as exc:
-            _LOGGER.debug("hook_log: write to %s failed: %s", path, exc)
-            return
-
-        # Rotate AFTER the append so the just-written record always survives,
-        # even on the call that crosses the cap. A single oversized record
-        # stays intact until a newer record arrives, even above the cap.
-        _maybe_rotate(path)
+        with open(path, "a", encoding="utf-8", opener=opener) as fh:
+            fh.write(line)
+        _maybe_rotate(path, directory_fd)
 
 
-def _open_nonblocking_regular(path: str, flags: int) -> int:
-    fd = os.open(path, flags | getattr(os, "O_NONBLOCK", 0))
+def _open_nonblocking_regular(
+    path: str, flags: int, *, directory_fd: int | None = None
+) -> int:
+    fd = os.open(path, flags | getattr(os, "O_NONBLOCK", 0), dir_fd=directory_fd)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError(errno.EINVAL, "Diagnostic path must be a regular file", path)
@@ -231,7 +233,7 @@ def _truncate(value: Any) -> Any:
 
 
 @contextlib.contextmanager
-def _rotation_lock(path: Path) -> Iterator[bool]:
+def _rotation_lock(path: Path, directory_fd: int | None) -> Iterator[bool]:
     """Hold an exclusive cross-process flock on a sibling ``.lock`` file.
 
     Serialises every ``log_event`` call against itself so the rotation
@@ -252,30 +254,30 @@ def _rotation_lock(path: Path) -> Iterator[bool]:
         yield True
         return
     lock_path = path.with_name(path.name + ".lock")
-    fh: IO[bytes] | None = None
-    try:
-        fh = open(lock_path, "ab", opener=_open_nonblocking_regular)
-    except OSError as exc:
-        _LOGGER.debug("hook_log: lock open %s failed: %s", lock_path, exc)
-        yield False
-        return
-    try:
-        _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-    except OSError as exc:
-        _LOGGER.debug("hook_log: flock acquire failed: %s", exc)
-        fh.close()
-        yield False
-        return
-    try:
-        yield True
-    finally:
-        with contextlib.suppress(OSError):
-            _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
-        with contextlib.suppress(OSError):
-            fh.close()
+    with contextlib.ExitStack() as opened:
+        try:
+            fh = opened.enter_context(
+                open(
+                    lock_path,
+                    "ab",
+                    opener=partial(
+                        _open_nonblocking_regular, directory_fd=directory_fd
+                    ),
+                )
+            )
+            _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        except OSError as exc:
+            _LOGGER.debug("hook_log: could not lock %s: %s", lock_path, exc)
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            with contextlib.suppress(OSError):
+                _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
 
 
-def _maybe_rotate(path: Path) -> None:
+def _maybe_rotate(path: Path, directory_fd: int | None = None) -> None:
     """Cap ``path`` at ``_MAX_LOG_BYTES`` by dropping the oldest half in place.
 
     The fast path is a single ``stat`` syscall — when the file is under
@@ -306,7 +308,7 @@ def _maybe_rotate(path: Path) -> None:
         None
     """
     try:
-        current_stat = path.stat()
+        current_stat = os.stat(path, dir_fd=directory_fd)
     except OSError as exc:
         _LOGGER.debug("hook_log: stat for rotation failed: %s", exc)
         return
@@ -315,7 +317,12 @@ def _maybe_rotate(path: Path) -> None:
         return
 
     try:
-        data = path.read_bytes()
+        with open(
+            path,
+            "rb",
+            opener=partial(_open_nonblocking_regular, directory_fd=directory_fd),
+        ) as fh:
+            data = fh.read()
     except OSError as exc:
         _LOGGER.debug("hook_log: read for rotation failed: %s", exc)
         return
@@ -335,12 +342,17 @@ def _maybe_rotate(path: Path) -> None:
     # avoids the truncation window where a concurrent reader would see
     # an empty file, and matches the contract that ``hook.log`` always
     # contains complete JSONL framing.
-    tmp_path: Path | None = None
+    tmp_path = path.with_name(f".hook-log-{secrets.token_hex(12)}")
+    staged_created = False
     try:
-        with tempfile.NamedTemporaryFile(
-            dir=path.parent, prefix=".hook-log-", delete=False
-        ) as staged:
-            tmp_path = Path(staged.name)
+        fd = os.open(
+            tmp_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+            0o600,
+            dir_fd=directory_fd,
+        )
+        staged_created = True
+        with os.fdopen(fd, "wb") as staged:
             staged.write(tail)
             if os.name != "nt":
                 mode = stat.S_IMODE(current_stat.st_mode)
@@ -351,9 +363,9 @@ def _maybe_rotate(path: Path) -> None:
                     if mode & 0o070 and os.fstat(fd).st_gid != current_stat.st_gid:
                         os.fchown(fd, -1, current_stat.st_gid)
                     os.fchmod(fd, mode)
-        tmp_path.replace(path)
+        os.replace(tmp_path, path, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
     except OSError as exc:
         _LOGGER.debug("hook_log: rotation rename failed: %s", exc)
-        if tmp_path is not None:
+        if staged_created:
             with contextlib.suppress(OSError):
-                tmp_path.unlink(missing_ok=True)
+                os.unlink(tmp_path, dir_fd=directory_fd)
