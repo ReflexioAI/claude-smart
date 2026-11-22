@@ -48,7 +48,6 @@ dependencies = [
 # can also run via `python -m claude_smart.hook`.
 [project.scripts]
 claude-smart-hook = "claude_smart.hook:main"
-claude-smart-optimizer-assistant = "claude_smart.optimizer_assistant:main"
 
 [build-system]
 requires = ["hatchling"]
