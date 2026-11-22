@@ -9168,6 +9168,10 @@ def test_hook_and_status_use_the_same_session_log(
             encoding="utf-8",
         )
     expected = {"default": account, "relative": account, "process": process}.get(selection, saved)
+    if os.name == "nt":
+        expected = account
+        # This subprocess has its own USERPROFILE under tmp_path.
+        env.pop("PYTEST_CURRENT_TEST", None)
     hook_cwd = tmp_path / "hook-cwd"
     hook_cwd.mkdir()
     hook = subprocess.run(
@@ -9202,7 +9206,7 @@ def test_hook_and_status_use_the_same_session_log(
     assert "current-observation:" in status.stdout
 
 
-    if selection not in {"default", "relative"}:
+    if expected != account:
         (account / "hook.log").write_text(
             json.dumps(
                 {
@@ -9267,8 +9271,9 @@ def test_status_uses_account_log_when_settings_are_not_regular(
     assert "account-observation:" in result.stdout
 
 
-@pytest.mark.skipif(os.name == "nt", reason="FIFO logs are POSIX-only")
-def test_status_ignores_fifo_log_without_blocking(tmp_path: Path) -> None:
+@pytest.mark.skipif(os.name == "nt", reason="POSIX session logs")
+@pytest.mark.parametrize("kind", ["fifo", "symlink", "hardlink"])
+def test_status_ignores_nonprivate_log_paths(tmp_path: Path, kind: str) -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required")
@@ -9276,7 +9281,15 @@ def test_status_ignores_fifo_log_without_blocking(tmp_path: Path) -> None:
     fake_bin.mkdir()
     _write_executable(fake_bin / "claude", "#!/bin/sh\nprintf '[]\\n'\n")
     log = tmp_path / "hook.log"
-    os.mkfifo(log)
+    if kind == "fifo":
+        os.mkfifo(log)
+    else:
+        other = tmp_path / "other.log"
+        other.write_text(json.dumps({"host": "claude-code", "session_id": "foreign"}) + "\n")
+        if kind == "symlink":
+            log.symlink_to(other)
+        else:
+            os.link(other, log)
     env = _isolated_env(tmp_path)
     env["CLAUDE_SMART_STATE_DIR"] = str(tmp_path)
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
@@ -9289,6 +9302,7 @@ def test_status_ignores_fifo_log_without_blocking(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "Installed version: not installed" in result.stdout
+    assert "foreign:" not in result.stdout
     assert (
         "None recorded in this log for this host/account. Active version is unknown."
         in result.stdout
