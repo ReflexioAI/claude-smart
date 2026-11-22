@@ -490,6 +490,26 @@ def test_rotation_does_not_overwrite_replacement_session_directory(
     ]
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "getuid")
+    or os.getuid() == 0
+    or not (hasattr(os, "O_SEARCH") or hasattr(os, "O_PATH")),
+    reason="Requires an unprivileged POSIX search-only directory open",
+)
+def test_hook_log_can_rotate_in_a_searchable_directory(tmp_path, monkeypatch) -> None:
+    state_dir = tmp_path / "sessions"
+    state_dir.mkdir(mode=0o700)
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(state_dir))
+    monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 1)
+    state_dir.chmod(0o300)
+    try:
+        hook_log.log_event(event="stop", host="claude-code", session_id="first")
+        hook_log.log_event(event="stop", host="claude-code", session_id="second")
+    finally:
+        state_dir.chmod(0o700)
+    assert [r["session_id"] for r in _read_lines(state_dir / "hook.log")] == ["second"]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_rotating_log_retains_existing_access(hook_log_path, monkeypatch) -> None:
     hook_log.log_event(event="stop", host="claude-code", session_id="first")

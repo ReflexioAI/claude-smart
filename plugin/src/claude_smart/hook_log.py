@@ -155,7 +155,9 @@ def log_event(
     directory_fd = None
     try:
         if os.name != "nt":
-            directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            # A writable session directory may permit search without listing.
+            search_mode = getattr(os, "O_SEARCH", getattr(os, "O_PATH", os.O_RDONLY))
+            directory_fd = os.open(path.parent, search_mode | os.O_DIRECTORY)
         _append_and_rotate(path, line, directory_fd)
     except OSError as exc:
         _LOGGER.debug("hook_log: could not append in %s: %s", path.parent, exc)
