@@ -28,6 +28,7 @@ import logging
 import os
 import secrets
 import stat
+import sys
 import time
 from collections.abc import Iterator
 from functools import partial
@@ -199,8 +200,10 @@ def _open_nonblocking_regular(
         fd = os.open(path, flags, dir_fd=directory_fd)
     try:
         current = os.fstat(fd)
-        if not stat.S_ISREG(current.st_mode):
-            raise OSError(errno.EINVAL, "Diagnostic path must be a regular file", path)
+        if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
+            raise OSError(
+                errno.EINVAL, "Diagnostic path must be a private regular file", path
+            )
         if not no_follow:
             entry = os.lstat(path, dir_fd=directory_fd)
             if not stat.S_ISREG(entry.st_mode) or not os.path.samestat(current, entry):
@@ -214,7 +217,9 @@ def _open_nonblocking_regular(
 
 
 def log_path() -> Path:
-    """Use the shared absolute session directory or the default account log."""
+    """Select the session log where the platform can create private files."""
+    if sys.platform == "win32":
+        return _LOG_PATH
     directory = state.configured_state_dir()
     return (
         directory / "hook.log"

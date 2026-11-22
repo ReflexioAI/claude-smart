@@ -35,6 +35,7 @@ def _read_lines(path: Path) -> list[dict[str, Any]]:
 # -----------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX session log")
 @pytest.mark.parametrize("name", ["hook.log", "hook.log.lock"])
 @pytest.mark.parametrize("supports_no_follow", [True, False])
 def test_hook_log_refuses_symlink_in_session_directory(
@@ -42,8 +43,6 @@ def test_hook_log_refuses_symlink_in_session_directory(
 ):
     if not supports_no_follow:
         monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
-    if name.endswith(".lock") and os.name == "nt":
-        pytest.skip("The Windows hook has no flock file")
     session = tmp_path / "sessions"
     session.mkdir()
     other = tmp_path / "other"
@@ -59,6 +58,26 @@ def test_hook_log_refuses_symlink_in_session_directory(
     assert link.is_symlink()
     if name.endswith(".lock"):
         assert not (session / "hook.log").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX session log")
+def test_hook_log_refuses_multiple_file_links(tmp_path, monkeypatch):
+    session = tmp_path / "sessions"
+    session.mkdir()
+    other = tmp_path / "other"
+    other.write_bytes(b"untouched")
+    os.link(other, session / "hook.log")
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(session))
+    hook_log.log_event(event="stop", host="claude-code", session_id="one")
+    assert other.read_bytes() == b"untouched"
+
+
+def test_windows_uses_account_log_with_external_session_directory(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(tmp_path / "shared"))
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert hook_log.log_path() == hook_log._LOG_PATH
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
@@ -179,6 +198,7 @@ def test_hook_does_not_block_on_session_diagnostic_fifo(tmp_path, filename) -> N
         assert not list(state_dir.glob(".hook-log-*"))
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX session logs")
 def test_log_path_follows_the_session_directory(
     hook_log_path, tmp_path, monkeypatch
 ) -> None:

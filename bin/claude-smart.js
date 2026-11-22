@@ -5466,6 +5466,7 @@ function openCodeInstalledVersion(args) {
 }
 
 function statusSessionDirectory() {
+  if (process.platform === "win32") return CLAUDE_SMART_STATE_DIR;
   let directory = process.env.CLAUDE_SMART_STATE_DIR;
   if (!directory) {
     try {
@@ -5505,11 +5506,13 @@ function recentHookObservations(logDirectory, host) {
     // Preserve filesystem traversal of '..' after symlinks.
     const needsSeparator = !logDirectory.endsWith(sep);
     const logPath = `${logDirectory}${needsSeparator ? sep : ""}hook.log`;
-    const fd = openSync(logPath, constants.O_RDONLY | constants.O_NONBLOCK);
+    const fd = openSync(logPath, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
     try {
-      const stat = fstatSync(fd);
-      if (!stat.isFile()) throw new Error("Hook history is not a regular file");
-      const size = stat.size;
+      const stat = fstatSync(fd, { bigint: true });
+      const entry = lstatSync(logPath, { bigint: true });
+      if (!stat.isFile() || stat.nlink !== 1n || !entry.isFile() ||
+          stat.dev !== entry.dev || stat.ino !== entry.ino) return sessions;
+      const size = Number(stat.size);
       const length = Math.min(size, 5 * 1024 * 1024);
       const buffer = Buffer.alloc(length);
       const count = readSync(fd, buffer, 0, length, size - length);
