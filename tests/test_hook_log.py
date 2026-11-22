@@ -119,8 +119,10 @@ def test_hook_does_not_block_on_session_diagnostic_fifo(tmp_path, filename) -> N
         [
             sys.executable,
             "-c",
-            "from claude_smart import hook, hook_log; hook_log._MAX_LOG_BYTES = 1; "
-            "raise SystemExit(hook.main(['opencode', 'test-observation']))",
+            (
+                "from claude_smart import hook, hook_log; hook_log._MAX_LOG_BYTES = 1; "
+                "raise SystemExit(hook.main(['opencode', 'test-observation']))"
+            ),
         ],
         cwd=tmp_path,
         env=env,
@@ -406,7 +408,9 @@ def test_log_rotates_when_over_max_bytes(hook_log_path, monkeypatch) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink traversal")
-def test_rotating_log_uses_the_physical_session_directory(tmp_path, monkeypatch) -> None:
+def test_rotating_log_uses_the_physical_session_directory(
+    tmp_path, monkeypatch
+) -> None:
     physical = tmp_path / "physical"
     nested = physical / "nested"
     nested.mkdir(parents=True)
@@ -440,20 +444,70 @@ def test_rotation_keeps_the_log_in_the_directory_it_locked(
     monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(link))
     hook_log.log_event(event="stop", host="claude-code", session_id="first")
     monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 1)
-    read_bytes = Path.read_bytes
+    replace = os.replace
 
-    def read_then_replace_link(path):
-        data = read_bytes(path)
-        if path in {first / "hook.log", link / "hook.log"}:
-            link.unlink()
-            link.symlink_to(link if make_loop else other, target_is_directory=True)
-        return data
+    def replace_link_then_rotate(source, target, **kwargs):
+        link.unlink()
+        link.symlink_to(link if make_loop else other, target_is_directory=True)
+        return replace(source, target, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", read_then_replace_link)
+    monkeypatch.setattr(os, "replace", replace_link_then_rotate)
     hook_log.log_event(event="stop", host="claude-code", session_id="second")
 
     assert [row["session_id"] for row in _read_lines(first / "hook.log")] == ["second"]
     assert other_log.read_text() == '{"session_id":"other"}\n'
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory rename")
+def test_rotation_does_not_overwrite_replacement_session_directory(
+    tmp_path, monkeypatch
+) -> None:
+    active = tmp_path / "active"
+    archive = tmp_path / "archive"
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(active))
+    hook_log.log_event(event="stop", host="claude-code", session_id="first")
+    monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 1)
+    replace = os.replace
+    fresh = b'{"session_id":"fresh"}\n'
+    rotated = False
+
+    def archive_then_replace(source, target, **kwargs):
+        nonlocal rotated
+        if Path(target).name == "hook.log" and not rotated:
+            rotated = True
+            active.rename(archive)
+            active.mkdir()
+            (active / "hook.log").write_bytes(fresh)
+        return replace(source, target, **kwargs)
+
+    monkeypatch.setattr(os, "replace", archive_then_replace)
+    hook_log.log_event(event="stop", host="claude-code", session_id="second")
+
+    assert rotated
+    assert (active / "hook.log").read_bytes() == fresh
+    assert [row["session_id"] for row in _read_lines(archive / "hook.log")] == [
+        "second"
+    ]
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "getuid")
+    or os.getuid() == 0
+    or not (hasattr(os, "O_SEARCH") or hasattr(os, "O_PATH")),
+    reason="Requires an unprivileged POSIX search-only directory open",
+)
+def test_hook_log_can_rotate_in_a_searchable_directory(tmp_path, monkeypatch) -> None:
+    state_dir = tmp_path / "sessions"
+    state_dir.mkdir(mode=0o700)
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(state_dir))
+    monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", 1)
+    state_dir.chmod(0o300)
+    try:
+        hook_log.log_event(event="stop", host="claude-code", session_id="first")
+        hook_log.log_event(event="stop", host="claude-code", session_id="second")
+    finally:
+        state_dir.chmod(0o700)
+    assert [r["session_id"] for r in _read_lines(state_dir / "hook.log")] == ["second"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
@@ -589,7 +643,7 @@ def test_contended_log_skips_append_without_blocking_or_racing_rotation(
     # Drop the cap below the primed size so the *next* log_event rotates.
     monkeypatch.setattr(hook_log, "_MAX_LOG_BYTES", primed_size - 1)
 
-    # Pause ONLY the first ``Path.replace`` call on the log file — that's
+    # Pause ONLY the first ``os.replace`` call on the log file — that's
     # the rotator's. The appender is either blocked by the lock (good)
     # or runs concurrently and never reaches ``replace`` itself (we let
     # it finish a single append; rotation can happen freely afterwards).
@@ -597,17 +651,17 @@ def test_contended_log_skips_append_without_blocking_or_racing_rotation(
     replace_may_finish = threading.Event()
     appender_finished = threading.Event()
     call_count = {"n": 0}
-    real_replace = Path.replace
+    real_replace = os.replace
 
-    def paused_replace(self: Path, target: Any) -> Path:
-        if Path(target) == hook_log_path:
+    def paused_replace(source, target, **kwargs) -> None:
+        if Path(target).name == hook_log_path.name:
             call_count["n"] += 1
             if call_count["n"] == 1:
                 replace_called.set()
                 assert replace_may_finish.wait(timeout=5.0)
-        return real_replace(self, target)
+        real_replace(source, target, **kwargs)
 
-    monkeypatch.setattr(Path, "replace", paused_replace)
+    monkeypatch.setattr(os, "replace", paused_replace)
 
     def rotator() -> None:
         hook_log.log_event(
