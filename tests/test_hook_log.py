@@ -35,6 +35,44 @@ def _read_lines(path: Path) -> list[dict[str, Any]]:
 # -----------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("name", ["hook.log", "hook.log.lock"])
+@pytest.mark.parametrize("supports_no_follow", [True, False])
+def test_hook_log_refuses_symlink_in_session_directory(
+    tmp_path, monkeypatch, name, supports_no_follow
+):
+    if not supports_no_follow:
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    if name.endswith(".lock") and os.name == "nt":
+        pytest.skip("The Windows hook has no flock file")
+    session = tmp_path / "sessions"
+    session.mkdir()
+    other = tmp_path / "other"
+    other.write_bytes(b"untouched")
+    link = session / name
+    try:
+        link.symlink_to(other)
+    except OSError:
+        pytest.skip("Symlink creation unavailable")
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(session))
+    hook_log.log_event(event="stop", host="claude-code", session_id="one")
+    assert other.read_bytes() == b"untouched"
+    assert link.is_symlink()
+    if name.endswith(".lock"):
+        assert not (session / "hook.log").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_new_hook_log_and_lock_are_owner_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(tmp_path))
+    previous_umask = os.umask(0o022)
+    try:
+        hook_log.log_event(event="stop", host="claude-code", session_id="one")
+    finally:
+        os.umask(previous_umask)
+    for name in ("hook.log", "hook.log.lock"):
+        assert stat.S_IMODE((tmp_path / name).stat().st_mode) == 0o600
+
+
 def test_log_event_writes_one_jsonl_record(hook_log_path) -> None:
     hook_log.log_event(
         event="stop",
