@@ -888,8 +888,10 @@ def test_test_runs_never_write_the_account_hook_log(tmp_path, monkeypatch) -> No
     hook_log.log_event(event="publish-result", host="codex", session_id="session")
     assert not account_log.exists()
 
-    # An isolated session directory still records normally.
+    # The isolation guard still allows the fixture's redirected log.
     redirected = tmp_path / "sessions"
     monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(redirected))
+    if sys.platform == "win32":
+        monkeypatch.setattr(hook_log, "_LOG_PATH", redirected / "hook.log")
     hook_log.log_event(event="stop", host="codex", session_id="session")
     assert _read_lines(redirected / "hook.log")[0]["event"] == "stop"

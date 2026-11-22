@@ -9170,6 +9170,8 @@ def test_hook_and_status_use_the_same_session_log(
     expected = {"default": account, "relative": account, "process": process}.get(selection, saved)
     if os.name == "nt":
         expected = account
+        # This subprocess has its own USERPROFILE under tmp_path.
+        env.pop("PYTEST_CURRENT_TEST", None)
     hook_cwd = tmp_path / "hook-cwd"
     hook_cwd.mkdir()
     hook = subprocess.run(
