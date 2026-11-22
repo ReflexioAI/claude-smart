@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
-from claude_smart import publish, state
+from claude_smart import env_config, publish, state
 from claude_smart.reflexio_adapter import Adapter, PublishResult
 
 
@@ -80,6 +80,41 @@ def _publish(session_id: str, adapter: _RecordingAdapter) -> tuple[str, int]:
         skip_aggregation=False,
         adapter=cast(Adapter, adapter),
     )
+
+
+def test_publish_uses_saved_directory_before_locking(
+    session_dir, tmp_path, monkeypatch
+) -> None:
+    fallback = tmp_path / "fallback"
+    monkeypatch.setattr(state, "_DEFAULT_STATE_DIR", fallback)
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", "")
+    _append_assistant("s1", 1, "from fallback")
+    saved = tmp_path / "saved"
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", str(saved))
+    _append_assistant("s1", 2, "from saved")
+    monkeypatch.setenv("CLAUDE_SMART_STATE_DIR", "")
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"CLAUDE_SMART_STATE_DIR={saved}\n")
+    monkeypatch.setattr(env_config, "CLAUDE_SMART_ENV_PATH", env_file)
+    fallback_before = (fallback / "s1.jsonl").read_bytes()
+    sent = []
+
+    def record_publish(_adapter, **kwargs):
+        sent.extend(kwargs["interactions"])
+        return PublishResult(True, kwargs["request_id"])
+
+    monkeypatch.setattr(Adapter, "publish", record_publish)
+    assert publish.publish_unpublished(
+        session_id="s1",
+        project_id="project",
+        force_extraction=False,
+        skip_aggregation=False,
+    ) == ("ok", 1)
+    assert [item["content"] for item in sent] == ["from saved"]
+    assert state.published_record_offset(state.read_all("s1")) == 1
+    assert (fallback / "s1.jsonl").read_bytes() == fallback_before
+    assert (saved / "s1.jsonl.publish.lock").is_file()
+    assert not (fallback / "s1.jsonl.publish.lock").exists()
 
 
 def test_publish_attaches_identity_pairs_in_injection_order(session_dir) -> None:

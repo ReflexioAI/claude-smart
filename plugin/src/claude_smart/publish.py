@@ -131,6 +131,9 @@ def publish_unpublished(
     ``deadline`` is a ``time.monotonic()`` instant after which the caller may
     be killed; no batch is sent unless ``PUBLISH_RESERVE_SECONDS`` remain.
     """
+    # Adapter construction loads saved settings. Resolve the session directory
+    # before choosing the lock and reuse the adapter throughout the drain.
+    client = adapter if adapter is not None else Adapter()
     path = state.session_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -141,7 +144,7 @@ def publish_unpublished(
                 force_extraction=force_extraction,
                 skip_aggregation=skip_aggregation,
                 override_learning_stall=override_learning_stall,
-                adapter=adapter,
+                adapter=client,
                 max_batches=max_batches,
                 through_record=through_record,
                 deadline=deadline,
@@ -157,7 +160,7 @@ def _publish_unpublished_locked(
     force_extraction: bool,
     skip_aggregation: bool,
     override_learning_stall: bool,
-    adapter: Adapter | None,
+    adapter: Adapter,
     max_batches: int | None,
     through_record: int | None,
     deadline: float | None,
@@ -182,8 +185,7 @@ def _publish_unpublished_locked(
             path to permit ``user_playbooks`` to roll up into ``agent_playbooks``.
             The server's ``user_playbook_extractor_config.aggregation_config``
             owns aggregation policy; optimizer opt-ins do not enable rollups.
-        adapter (Adapter | None): Injection point for tests; a fresh
-            ``Adapter()`` is constructed when omitted.
+        adapter (Adapter): The adapter selected before acquiring the buffer lock.
 
     Returns:
         tuple[PublishStatus, int]: ``("nothing", 0)`` if the buffer has no
@@ -260,14 +262,13 @@ def _publish_batch(
     force_extraction: bool,
     skip_aggregation: bool,
     override_learning_stall: bool,
-    adapter: Adapter | None,
+    adapter: Adapter,
     batch: tuple[int, int, list[dict[str, Any]]],
     deadline: float | None = None,
 ) -> tuple[PublishStatus, int]:
     """Publish one immutable response range, including legacy retry identities."""
     published_record_offset, publish_end, interactions = batch
 
-    client = adapter if adapter is not None else Adapter()
     request_id = _publish_request_id(session_id, published_record_offset, publish_end)
     for start, reserved_id, _ in state.reserved_publish_requests(
         state.read_all(session_id)
@@ -275,7 +276,7 @@ def _publish_batch(
         if start == published_record_offset:
             request_id = reserved_id
             break
-    result = client.publish(
+    result = adapter.publish(
         session_id=session_id,
         project_id=project_id,
         request_id=request_id,
