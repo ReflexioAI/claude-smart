@@ -184,10 +184,29 @@ def _append_and_rotate(path: Path, line: str, directory_fd: int | None) -> None:
 def _open_nonblocking_regular(
     path: str, flags: int, *, directory_fd: int | None = None
 ) -> int:
-    fd = os.open(path, flags | getattr(os, "O_NONBLOCK", 0), dir_fd=directory_fd)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    if no_follow:
+        fd = os.open(path, flags | no_follow, 0o600, dir_fd=directory_fd)
+    elif flags & os.O_CREAT:
+        # An exclusive create is safe without O_NOFOLLOW. Open an existing
+        # name without creation, then verify the entry before using the fd.
+        try:
+            fd = os.open(path, flags | os.O_EXCL, 0o600, dir_fd=directory_fd)
+        except FileExistsError:
+            fd = os.open(path, flags & ~os.O_CREAT, dir_fd=directory_fd)
+    else:
+        fd = os.open(path, flags, dir_fd=directory_fd)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        current = os.fstat(fd)
+        if not stat.S_ISREG(current.st_mode):
             raise OSError(errno.EINVAL, "Diagnostic path must be a regular file", path)
+        if not no_follow:
+            entry = os.lstat(path, dir_fd=directory_fd)
+            if not stat.S_ISREG(entry.st_mode) or not os.path.samestat(current, entry):
+                raise OSError(
+                    errno.EINVAL, "Diagnostic path changed or is a link", path
+                )
     except OSError:
         os.close(fd)
         raise
