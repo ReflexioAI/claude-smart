@@ -492,18 +492,12 @@ publications). This fallback is a low-urgency policy, not proof a session ended.
 Normal full-window and stride extraction still runs promptly. A negative judge
 result produces no learning and is recorded as examined.
 
-Optimizer policy is also owned by the Reflexio server. SessionStart no longer
-turns optimization on or rewrites its budgets, adoption permissions or assistant
-backend. Existing server settings are preserved; fresh servers keep their own
-(disabled) optimizer default until explicitly configured. The old
-`CLAUDE_SMART_ENABLE_OPTIMIZER` hook flag is no longer read. Removing or setting
-that flag does not disable an optimizer already enabled on the server; change
-`playbook_optimizer_config` on the server to do that.
-
-The separately installed `claude-smart-optimizer-assistant` helper remains
-available for explicitly configured local optimization. See the
-[backend binding notes](./DEVELOPER.md#optimizer-backend-binding) before assigning
-an executable path, especially when the server is remote.
+The GEPA playbook optimizer and its `claude-smart-optimizer-assistant` helper
+are retired. Current playbook improvements use Reflexio's rule-evidence tuner.
+The server upgrade retires saved GEPA settings automatically and retains the
+original configuration for rollback. Plugin updates do not rewrite server policy.
+Upgrade an independently managed server to its GEPA retirement release before
+updating a separate helper installation.
 
 Extraction cadence is owned by the Reflexio server: configure `window_size` and
 `stride_size` there. Starting a client session preserves those settings. The
