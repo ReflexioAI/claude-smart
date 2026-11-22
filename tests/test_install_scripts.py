@@ -2,7 +2,6 @@
 
 # Contract subprocesses run repository scripts or fixture executables in owned homes.
 # This is the same trusted-argv policy as the enterprise deploy-script tests.
-# ruff: noqa: S603, S607
 
 from __future__ import annotations
 
@@ -629,7 +628,8 @@ def test_detached_spawns_with_log_redirection_preserve_output_on_windows() -> No
     ) in dashboard
     assert (
         "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached "
-        '"$NEXT_BIN" start -p "$dashboard_port" -H 127.0.0.1 >>"$LOG_FILE" 2>&1' in dashboard
+        '"$NEXT_BIN" start -p "$dashboard_port" -H 127.0.0.1 >>"$LOG_FILE" 2>&1'
+        in dashboard
     )
     # The backend runner is a long-lived daemon and is squeezed from both
     # sides: it must NOT opt out of the default close, because opting out
@@ -816,7 +816,12 @@ def test_smart_install_repairs_local_env_defaults(tmp_path: Path) -> None:
         CLAUDE_SMART_NODE_BASE_URL=(tmp_path / "offline-only").as_uri(),
     )
     result = subprocess.run(
-        ["/bin/bash", str(script)], env=env, text=True, capture_output=True, timeout=30
+        ["/bin/bash", str(script)],
+        check=False,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
     assert not (tmp_path / ".claude-smart/install-failed").exists()
@@ -861,6 +866,7 @@ def test_smart_install_seeds_local_defaults_whenever_runtime_is_local(
         env.pop(key, None)
     result = subprocess.run(
         ["/bin/bash", "--noprofile", "--norc", str(script)],
+        check=False,
         env=env,
         text=True,
         capture_output=True,
@@ -1221,6 +1227,7 @@ def _run_public_setup(
             "--yes",
             *arguments,
         ],
+        check=False,
         env=env,
         cwd=tmp_path,
         text=True,
@@ -1459,7 +1466,7 @@ def test_node_install_summary_claims_a_backend_only_when_one_runs(
     # Managed mode stops the old backend; local reinstall restarts it so a
     # healthy listener still using an old bind address cannot survive upgrade.
     log = (tmp_path / "backend-service.log").read_text().splitlines()
-    assert log == (["stop"] if managed else ["stop", "start"])
+    assert log == (["stop"] if managed else ["preflight", "stop", "start"])
 
 
 def test_node_install_survives_a_failed_version_record(tmp_path: Path) -> None:
@@ -1579,6 +1586,7 @@ def test_node_install_ignores_foreign_reflexio_env_and_probes_backend(
     )
     assert "CLAUDE_SMART_HOST=" not in runtime_text
     assert (tmp_path / "backend-service.log").read_text().splitlines() == [
+        "preflight",
         "stop",
         "start",
     ]
@@ -2163,7 +2171,7 @@ def test_install_refreshes_owned_backend_without_rewriting_learning_host(
 
     assert result.returncode == 0, result.stderr
     log = (tmp_path / "backend-service.log").read_text().splitlines()
-    assert log == ["stop", "start"]
+    assert log == ["preflight", "stop", "start"]
 
 
 def _copy_codex_install_sources(package: Path) -> None:
@@ -2962,6 +2970,7 @@ def test_codex_uninstall_stops_external_runtime_before_removing_it(
             "--host",
             "codex",
         ],
+        check=False,
         env=env,
         text=True,
         capture_output=True,
@@ -3182,6 +3191,7 @@ def test_public_update_reuses_managed_settings_and_reinstalls(tmp_path: Path) ->
     legacy.write_text(original)
     result = subprocess.run(
         [node_bin(), str(installer), "update", "--host", "claude-code", "--yes"],
+        check=False,
         env=env,
         text=True,
         capture_output=True,
@@ -3471,10 +3481,7 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert (
         "startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup)" in node_installer
     )
-    assert (
-        "startAndReportServices(pluginRoot, HOST_CODEX, setup)"
-        in node_installer
-    )
+    assert "startAndReportServices(pluginRoot, HOST_CODEX, setup)" in node_installer
     assert (
         'runPluginService(pluginRoot, "dashboard-service.sh", "stop")' in node_installer
     )
@@ -4120,7 +4127,7 @@ def test_node_installer_rejects_wrong_sdk_even_when_dependency_check_passes(
     env["PYTHONPATH"] = str(vendor)
     command = [node, "-e", script]
     rejected = subprocess.run(
-        command, env=env, text=True, capture_output=True, timeout=30
+        command, check=False, env=env, text=True, capture_output=True, timeout=30
     )
     assert rejected.returncode == 1
     assert (
@@ -4132,14 +4139,14 @@ def test_node_installer_rejects_wrong_sdk_even_when_dependency_check_passes(
     installed.unlink()
     installed.symlink_to(bundled)
     accepted = subprocess.run(
-        command, env=env, text=True, capture_output=True, timeout=30
+        command, check=False, env=env, text=True, capture_output=True, timeout=30
     )
     assert accepted.returncode == 0, accepted.stderr
 
     # A linked initializer doesn't change Python's submodule search path.
     (installed.parent / "unexpected.py").write_text("unexpected = True\n")
     rejected = subprocess.run(
-        command, env=env, text=True, capture_output=True, timeout=30
+        command, check=False, env=env, text=True, capture_output=True, timeout=30
     )
     assert rejected.returncode == 1
     assert "installed Python source paths differ from the bundle" in rejected.stderr
@@ -4150,7 +4157,7 @@ def test_node_installer_rejects_wrong_sdk_even_when_dependency_check_passes(
     (foreign / "__init__.py").write_text("")
     (installed.parent / "linked").symlink_to(foreign, target_is_directory=True)
     rejected = subprocess.run(
-        command, env=env, text=True, capture_output=True, timeout=30
+        command, check=False, env=env, text=True, capture_output=True, timeout=30
     )
     assert rejected.returncode == 1
     assert "linked subdirectory" in rejected.stderr
@@ -4651,14 +4658,16 @@ def test_smart_install_repairs_reflexio_template_env_drift(tmp_path: Path) -> No
         CLAUDE_SMART_NODE_BASE_URL=(tmp_path / "offline-only").as_uri(),
     )
     command = ["/bin/bash", "--noprofile", "--norc", str(script)]
-    first = subprocess.run(command, env=env, text=True, capture_output=True, timeout=30)
+    first = subprocess.run(
+        command, check=False, env=env, text=True, capture_output=True, timeout=30
+    )
     assert first.returncode == 0, first.stderr
     assert (tmp_path / ".claude-smart/install-complete").exists()
     selected = tmp_path / ".claude-smart/.env"
     original = "# Reflexio template-style env without local defaults\nOPENAI_API_KEY=\nANTHROPIC_API_KEY=\n"
     selected.write_text(original)
     second = subprocess.run(
-        command, env=env, text=True, capture_output=True, timeout=30
+        command, check=False, env=env, text=True, capture_output=True, timeout=30
     )
     assert second.returncode == 0, second.stderr
     text = selected.read_text()
@@ -4785,7 +4794,7 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
 
 
 @pytest.mark.parametrize("same_root", [False, True])
-@pytest.mark.parametrize("bind_host", [None, "", "0.0.0.0"])  # noqa: S104 -- Wildcard configuration input under test.
+@pytest.mark.parametrize("bind_host", [None, "", "0.0.0.0"])
 def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
     tmp_path: Path,
     same_root: bool,
@@ -6620,6 +6629,7 @@ def test_codex_runtime_failure_leaves_existing_marketplace_and_features(
 
     result = subprocess.run(
         [node, str(NODE_INSTALLER), "install", "--host", "codex"],
+        check=False,
         env=env,
         text=True,
         capture_output=True,
@@ -6656,6 +6666,7 @@ def test_codex_interrupt_during_feature_enable_keeps_marketplace_portable(
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     result = subprocess.run(
         [node, str(NODE_INSTALLER), "install", "--host", "codex"],
+        check=False,
         env=env,
         text=True,
         capture_output=True,
@@ -7190,6 +7201,7 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
         (inactive / "acorn").symlink_to("../acorn/bin/acorn")
         result = subprocess.run(
             [str(prefix / "bin" / "claude-smart"), "install", "--host", "codex"],
+            check=False,
             cwd=project,
             env=env,
             text=True,
@@ -7225,7 +7237,7 @@ def test_codex_fresh_tarball_install_prepares_cache_and_trusts_hooks(
     hook_argv = shlex.split(ensure_root)
     hook_argv[0] = node
     hook_result = subprocess.run(
-        hook_argv, env=hook_env, capture_output=True, text=True, timeout=10
+        hook_argv, check=False, env=hook_env, capture_output=True, text=True, timeout=10
     )
     assert hook_result.returncode == 0, hook_result.stderr
     assert (home / ".reflexio" / "plugin-root").resolve() == runtime_plugin.resolve()
@@ -7791,7 +7803,12 @@ def test_node_python_preparation_owns_uv_project_and_environment(
         ".catch((err) => { console.error(err.message); process.exitCode = 1; });"
     )
     result = subprocess.run(
-        [node, "-e", script], env=env, text=True, capture_output=True, timeout=120
+        [node, "-e", script],
+        check=False,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=120,
     )
 
     assert result.returncode == 0, result.stderr
@@ -8866,6 +8883,7 @@ def test_status_distinguishes_install_from_account_scoped_observations(
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     result = subprocess.run(
         [node, str(NODE_INSTALLER), "status", "--host", host],
+        check=False,
         env=env,
         capture_output=True,
         text=True,
@@ -8888,6 +8906,7 @@ def test_status_distinguishes_install_from_account_scoped_observations(
     log.unlink()
     result = subprocess.run(
         [node, str(NODE_INSTALLER), "status", "--host", host],
+        check=False,
         env=env,
         capture_output=True,
         text=True,
@@ -9008,6 +9027,7 @@ def test_runtime_metadata_uses_codex_account_home(tmp_path: Path) -> None:
             "-c",
             "from claude_smart import runtime; runtime.set_host('codex'); print(runtime.plugin_metadata()['codex_home'])",
         ],
+        check=False,
         env=env,
         capture_output=True,
         text=True,
@@ -9167,7 +9187,9 @@ def test_hook_and_status_use_the_same_session_log(
             f'CLAUDE_SMART_STATE_DIR="{tmp_path / "unused"}"\n',
             encoding="utf-8",
         )
-    expected = {"default": account, "relative": account, "process": process}.get(selection, saved)
+    expected = {"default": account, "relative": account, "process": process}.get(
+        selection, saved
+    )
     if os.name == "nt":
         expected = account
         # This subprocess has its own USERPROFILE under tmp_path.
@@ -9205,7 +9227,6 @@ def test_hook_and_status_use_the_same_session_log(
     assert status.returncode == 0, status.stderr
     assert "current-observation:" in status.stdout
 
-
     if expected != account:
         (account / "hook.log").write_text(
             json.dumps(
@@ -9216,7 +9237,8 @@ def test_hook_and_status_use_the_same_session_log(
                     "event": "test-observation",
                     "ts": 1,
                 }
-            ) + "\n",
+            )
+            + "\n",
             encoding="utf-8",
         )
         status = subprocess.run(
@@ -9285,7 +9307,9 @@ def test_status_ignores_nonprivate_log_paths(tmp_path: Path, kind: str) -> None:
         os.mkfifo(log)
     else:
         other = tmp_path / "other.log"
-        other.write_text(json.dumps({"host": "claude-code", "session_id": "foreign"}) + "\n")
+        other.write_text(
+            json.dumps({"host": "claude-code", "session_id": "foreign"}) + "\n"
+        )
         if kind == "symlink":
             log.symlink_to(other)
         else:
@@ -9295,6 +9319,7 @@ def test_status_ignores_nonprivate_log_paths(tmp_path: Path, kind: str) -> None:
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     result = subprocess.run(
         [node, str(NODE_INSTALLER), "status"],
+        check=False,
         env=env,
         capture_output=True,
         text=True,
@@ -9356,6 +9381,7 @@ def test_status_attributes_each_claude_registration_to_its_scope(
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     result = subprocess.run(
         [node, str(NODE_INSTALLER), "status"],
+        check=False,
         cwd=current,
         env=env,
         capture_output=True,
@@ -9552,6 +9578,7 @@ def test_smart_install_busy_settings_is_transient_without_failure_or_success_mar
     ):
         result = subprocess.run(
             ["/bin/bash", str(script)],
+            check=False,
             env=env,
             text=True,
             capture_output=True,
@@ -9575,7 +9602,12 @@ def test_smart_install_invalid_settings_preserves_bytes_and_reports_failure(
     original = b"SECRET=fake-secret\xff\n"
     selected.write_bytes(original)
     result = subprocess.run(
-        ["/bin/bash", str(script)], env=env, text=True, capture_output=True, timeout=30
+        ["/bin/bash", str(script)],
+        check=False,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
     )
     assert selected.read_bytes() == original
     assert (selected.parent / "install-failed").exists()
@@ -9606,7 +9638,12 @@ def test_smart_install_observes_connection_changes_during_preparation(
         + f'fi\nexec {shlex.quote(str(real))} "$@"\n',
     )
     result = subprocess.run(
-        ["/bin/bash", str(script)], env=env, text=True, capture_output=True, timeout=30
+        ["/bin/bash", str(script)],
+        check=False,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
     assert not (selected.parent / "install-failed").exists()
@@ -9624,14 +9661,16 @@ def test_smart_install_fast_success_still_repairs_a_missing_history_cap(
         CLAUDE_SMART_NODE_BASE_URL=(tmp_path / "offline-only").as_uri(),
     )
     command = ["/bin/bash", str(script)]
-    first = subprocess.run(command, env=env, text=True, capture_output=True, timeout=30)
+    first = subprocess.run(
+        command, check=False, env=env, text=True, capture_output=True, timeout=30
+    )
     assert first.returncode == 0, first.stderr
     selected = tmp_path / ".claude-smart/.env"
     text = selected.read_text()
     assert "REFLEXIO_ROW_LIMIT_INTERACTIONS=500\n" in text
     selected.write_text(text.replace("REFLEXIO_ROW_LIMIT_INTERACTIONS=500\n", ""))
     second = subprocess.run(
-        command, env=env, text=True, capture_output=True, timeout=30
+        command, check=False, env=env, text=True, capture_output=True, timeout=30
     )
     assert second.returncode == 0, second.stderr
     assert "REFLEXIO_ROW_LIMIT_INTERACTIONS=500\n" in selected.read_text()

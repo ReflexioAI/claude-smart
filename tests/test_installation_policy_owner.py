@@ -82,9 +82,11 @@ def test_private_worker_refuses_unprepared_policy_before_bootstrap(tmp_path, pol
         selected.write_text(policy)
     env = _isolated_env(tmp_path)
     env["PATH"] = str(fake) + os.pathsep + env["PATH"]
-    result = subprocess.run(  # noqa: S603 -- Node and repository fixture in an owned HOME.
+    # Node and repository fixture in an owned HOME.
+    result = subprocess.run(
         [node_bin(), str(package / "bin/claude-smart.js"), "install"],
         env=env,
+        check=False,
         capture_output=True,
         text=True,
         timeout=10,
@@ -189,7 +191,8 @@ def test_managed_confirmation_preserves_independent_legacy_learning_intent(
         original += f'CLAUDE_SMART_LEARNING_PROVIDER="{stored_provider}"\n'
     selected.write_text(original)
     env["OWNED_MANAGED_KEY"] = "fake-secret"
-    result = subprocess.run(  # noqa: S603 -- Node and repository fixture in an owned HOME.
+    # Node and repository fixture in an owned HOME.
+    result = subprocess.run(
         [
             node_bin(),
             str(installer),
@@ -205,6 +208,7 @@ def test_managed_confirmation_preserves_independent_legacy_learning_intent(
             "--yes",
         ],
         env=env,
+        check=False,
         capture_output=True,
         text=True,
         timeout=30,
@@ -222,3 +226,37 @@ def test_managed_confirmation_preserves_independent_legacy_learning_intent(
     ] == ["CLAUDE_SMART_HOST=codex", "CLAUDE_SMART_HOST=claude-code"]
     assert "fake-secret" not in result.stdout + result.stderr
     assert "CLAUDE_SMART_GUIDED_CONFIG" not in text
+
+
+def test_installer_refused_native_preflight_preserves_existing_services(tmp_path):
+    package = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = (
+        'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\n'
+        'CLAUDE_SMART_READ_ONLY="0"\nCLAUDE_SMART_LEARNING_PROVIDER="codex"\n'
+    )
+    selected.write_text(original)
+    marker = tmp_path / "existing-backend"
+    marker.touch()
+    _write_executable(
+        package / "plugin/scripts/backend-service.sh",
+        "#!/bin/sh\n"
+        'echo "$1:$CLAUDE_SMART_HOST" >> "$HOME/service-sequence"\n'
+        'case "$1" in\n'
+        "  preflight) exit 1 ;;\n"
+        '  stop) rm -f "$HOME/existing-backend" ;;\n'
+        '  start) touch "$HOME/started-backend" ;;\n'
+        "esac\n",
+    )
+    result = _run_fake_claude_code_install(
+        tmp_path, package, {"CLAUDE_SMART_DASHBOARD_AUTOSTART": "0"}
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = (tmp_path / "service-sequence").read_text().splitlines()
+    assert "preflight:codex" in calls
+    assert not [call for call in calls if call.startswith(("stop:", "start:"))]
+    assert marker.exists()
+    assert not (tmp_path / "started-backend").exists()
+    assert "existing services were not changed" in result.stdout
+    assert selected.read_text().startswith(original)

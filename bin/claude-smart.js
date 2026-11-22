@@ -3413,6 +3413,12 @@ async function startAndReportServices(
     // A same-root backend can be healthy but still use the previous payload's
     // bind address or extraction bridge. Preparation succeeded before this
     // point; restart only owned services to apply the installed configuration.
+    if (restart && !(await runServiceWithProgress(pluginRoot, "backend-service.sh", "preflight", {
+      CLAUDE_SMART_HOST: learningHost,
+    }))) {
+      report("Backend preflight refused; existing services were not changed. Repair the saved learning settings or plugin bundle, then retry.\n");
+      return { ready: false, summary };
+    }
     process.stdout.write(`\nStarting local Reflexio at ${localBackendUrl()}…\n`);
     if (restart) await runServiceWithProgress(pluginRoot, "backend-service.sh", "stop");
     await runServiceWithProgress(pluginRoot, "backend-service.sh", "start", {

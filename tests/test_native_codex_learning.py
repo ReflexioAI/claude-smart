@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -19,21 +19,16 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.parametrize("explicit_path", [False, True])
 @pytest.mark.parametrize("learning_model", [None, " selected-native-model "])
 @pytest.mark.parametrize("legacy_path", [False, True])
-@pytest.mark.parametrize("sdk_generation", ["current", "predecessor"])
 def test_saved_codex_learning_reaches_native_bundled_sdk(
     tmp_path: Path,
     coding_host: str,
     explicit_path: bool,
     learning_model: str | None,
     legacy_path: bool,
-    sdk_generation: str,
 ) -> None:
     vendor = ROOT / "plugin/vendor/reflexio"
-    if sdk_generation == "predecessor":
-        vendor = Path(os.environ["CLAUDE_SMART_TEST_PREDECESSOR_SDK"])
     assert (vendor / "reflexio").is_dir(), "Materialize the locked SDK bundle first"
-    native_reference = (vendor / "reflexio/server/llm/_native_model_ref.py").is_file()
-    assert native_reference == (sdk_generation == "current")
+    assert (vendor / "reflexio/server/llm/_native_model_ref.py").is_file()
     record = tmp_path / "calls.jsonl"
     hooks = tmp_path / "python-hooks"
     hooks.mkdir()
@@ -92,21 +87,14 @@ def test_saved_codex_learning_reaches_native_bundled_sdk(
         "import runpy\n"
         f"runpy.run_path({runner!r})['prepare_native_sdk_environment']()\n"
     )
-    if native_reference:
-        program += (
-            "from reflexio.server.llm._native_model_ref import configured_native_model\n"
-            "from reflexio.server.llm.providers import native_cli_provider as provider\n"
-            "assert provider.register_native_provider()\n"
-            "target = configured_native_model()\n"
-            "assert target.host == 'codex'\n"
-            "model = target.reference\n"
-        )
-    else:
-        program += (
-            "from reflexio.server.llm.providers import claude_code_provider as provider\n"
-            "assert provider.register_if_enabled()\n"
-            "model = 'claude-code/opaque-role'\n"
-        )
+    program += (
+        "from reflexio.server.llm._native_model_ref import configured_native_model\n"
+        "from reflexio.server.llm.providers import native_cli_provider as provider\n"
+        "assert provider.register_native_provider()\n"
+        "target = configured_native_model()\n"
+        "assert target.host == 'codex'\n"
+        "model = target.reference\n"
+    )
     program += (
         "import litellm\n"
         "result=litellm.completion(model=model,messages=[{'role':'user','content':'private synthetic prompt'}],timeout=2.5,num_retries=0)\n"
@@ -149,3 +137,88 @@ def test_saved_codex_learning_reaches_native_bundled_sdk(
     assert "private synthetic prompt" not in repr(args)
     assert "opaque-role" not in repr(args)
     assert not Path(args[args.index("--output-last-message") + 1]).exists()
+
+
+@pytest.mark.parametrize(
+    "enabled,selected", [("1", ""), ("0", ""), ("", "local-cli/codex/private-native")]
+)
+def test_predecessor_sdk_never_receives_retired_model_selection(
+    tmp_path: Path, enabled: str, selected: str
+) -> None:
+    """A missing bundled ABI must never revive the retired model selector."""
+    vendor = Path(os.environ["CLAUDE_SMART_TEST_PREDECESSOR_SDK"])
+    assert (vendor / "reflexio").is_dir()
+    assert not (vendor / "reflexio/server/llm/_native_model_ref.py").exists()
+    dotenv = tmp_path / ".env"
+    original = "# saved configuration must remain unchanged\n"
+    dotenv.write_text(original)
+    env = {
+        key: os.environ[key] for key in ("PATH", "TMPDIR", "LANG") if key in os.environ
+    }
+    env.update(
+        HOME=str(tmp_path),
+        PYTHONPATH=str(vendor),
+        PYTHONNOUSERSITE="1",
+        PYTHON_DOTENV_DISABLED="1",
+        REFLEXIO_ENV_FILE=str(dotenv),
+        CLAUDE_SMART_HOST="codex",
+        CLAUDE_SMART_USE_LOCAL_CLI=enabled,
+        CLAUDE_SMART_LEARNING_MODEL="private-selected-model",
+        REFLEXIO_NATIVE_CLI_MODEL=selected,
+    )
+    program = """import os, runpy, sys
+prepare = runpy.run_path(sys.argv[1])["prepare_native_sdk_environment"]
+before = dict(os.environ)
+if os.environ["CLAUDE_SMART_USE_LOCAL_CLI"] == "0":
+    prepare()
+else:
+    try:
+        prepare()
+    except ValueError as exc:
+        assert "bundled SDK" in str(exc)
+        assert "private-selected-model" not in str(exc)
+    else:
+        raise AssertionError("An obsolete SDK must refuse native selection")
+assert dict(os.environ) == before
+assert not os.environ.get("CLAUDE_SMART_CLI_MODEL")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-c",
+            program,
+            str(ROOT / "plugin/scripts/backend-python-runner.py"),
+        ],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert dotenv.read_text() == original
+
+
+@pytest.mark.parametrize("host", ["unsupported-host", "codex/private-provider"])
+def test_native_host_validation_preserves_environment(tmp_path, monkeypatch, host):
+    import runpy
+
+    dotenv = tmp_path / ".env"
+    dotenv.touch()
+    monkeypatch.setenv("REFLEXIO_ENV_FILE", str(dotenv))
+    monkeypatch.setenv("CLAUDE_SMART_HOST", host)
+    monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
+    monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", "private-model")
+    monkeypatch.delenv("REFLEXIO_NATIVE_CLI_MODEL", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
+    prepare = runpy.run_path(str(ROOT / "plugin/scripts/backend-python-runner.py"))[
+        "prepare_native_sdk_environment"
+    ]
+    before = dict(os.environ)
+    with pytest.raises(ValueError, match="unsupported") as failure:
+        prepare()
+    assert "private" not in str(failure.value)
+    assert dict(os.environ) == before
+    assert dotenv.read_bytes() == b""
