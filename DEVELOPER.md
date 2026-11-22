@@ -79,14 +79,18 @@ or relative session location). Existing logs and session buffers stay at their p
 
 The bundled backend launcher passes the saved provider and model to the SDK as
 one native model reference. It preserves the CLI opt-out and the saved file
-when the newer SDK loads settings again in worker processes.
+when the bundled SDK loads settings again in worker processes. Its native-reference
+parser owns supported hosts and opaque model validation; the plugin does not
+maintain a separate host parser or predecessor-SDK native generation path.
 
 To upgrade an installation that still sets `CLAUDE_SMART_CLI_MODEL`, record the
 effective model, move it to `CLAUDE_SMART_LEARNING_MODEL`, and clear the old
 assignment in the saved environment and shell before starting the backend.
 Keep any existing saved model that already overrode the old value. The launcher
-translates the selected model for predecessor SDKs that still use their old
-process field.
+rejects that field and requires the native model interface from its bundled SDK.
+If native generation is selected and that interface is missing, repair or update
+the plugin bundle before restarting;
+preflight refuses before replacing a running backend or publishing model settings.
 
 If a native Claude Code role already pins `local-cli/claude-code/sonnet`,
 save `CLAUDE_SMART_LEARNING_MODEL=sonnet` before restarting. The bundled
