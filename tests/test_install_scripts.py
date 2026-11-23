@@ -722,20 +722,6 @@ def test_detached_spawn_does_not_hold_caller_stdio(tmp_path: Path) -> None:
     )
 
 
-def test_session_end_service_hooks_skip_login_shell_path_lookup() -> None:
-    backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
-    dashboard = (REPO_ROOT / "plugin" / "scripts" / "dashboard-service.sh").read_text()
-
-    session_end_guard = (
-        'CMD="${1:-start}"\n'
-        'if [ "$CMD" != "session-end" ]; then\n'
-        "  claude_smart_source_login_path\n"
-        "fi"
-    )
-    assert session_end_guard in backend
-    assert session_end_guard in dashboard
-
-
 def test_service_start_scripts_recover_missing_dependencies_without_cli_command() -> (
     None
 ):

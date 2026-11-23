@@ -13,19 +13,21 @@
 #                 returns a continue payload regardless.
 #   stop          SIGTERM the recorded process group, escalating to
 #                 SIGKILL after a short grace period.
-#   session-end   no-op by default; only stops the backend if
-#                 CLAUDE_SMART_BACKEND_STOP_ON_END=1 (opt-in — the
-#                 backend is intended to be long-lived across sessions).
 #   status        print "running on http://localhost:PORT" or "not running".
+# Session completion does not own this shared service's lifetime.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
 CMD="${1:-start}"
-if [ "$CMD" != "session-end" ]; then
-  claude_smart_source_login_path
+if [ "$CMD" = "session-end" ]; then
+  # Cached manifests can outlive their hooks update. Do not load configuration,
+  # probe processes or stop shared services on behalf of an ending session.
+  claude_smart_emit_continue
+  exit 0
 fi
+claude_smart_source_login_path
 claude_smart_prepend_astral_bins
 claude_smart_source_reflexio_env
 
@@ -1021,15 +1023,6 @@ case "$CMD" in
     ;;
   stop)
     full_stop
-    emit_ok
-    ;;
-  session-end)
-    # Default: leave the backend running so learning keeps flowing
-    # between sessions. Opt in to teardown with
-    # CLAUDE_SMART_BACKEND_STOP_ON_END=1.
-    if [ "${CLAUDE_SMART_BACKEND_STOP_ON_END:-0}" = "1" ]; then
-      full_stop
-    fi
     emit_ok
     ;;
   status)

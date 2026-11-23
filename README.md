@@ -480,6 +480,11 @@ share a cross-process file lock on Linux, macOS, and native Windows.
 
 ### Short sessions and completion
 
+Backend and dashboard services are shared across coding sessions and hosts.
+Ending a session or disposing an OpenCode integration publishes its remaining
+work without stopping those services. Explicit service stop, restart and
+uninstall continue to own their lifetime.
+
 Automatic session completion keeps Reflexio's usefulness judge enabled. Claude
 Code's SessionEnd publishes an unsaved tail, then sends a completion hint even if
 Stop already saved every message. Acceptance does not mean extraction has finished.
