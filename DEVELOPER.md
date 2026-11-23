@@ -939,8 +939,8 @@ interpreter with the vendor package.
 )
 ```
 
-For SDK changes, also run its relevant tests from that SDK checkout before
-release. The GitHub integration workflow gates the locked dependencies, pytest
+For SDK changes, also run its relevant tests from your SDK development checkout
+that contains those changes, not the temporary checkout removed above, before release. The GitHub integration workflow gates the locked dependencies, pytest
 suite, and cross-platform installation/health checks.
 
 ### Exercising a hook handler directly
