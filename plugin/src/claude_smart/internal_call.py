@@ -3,7 +3,7 @@
 Two distinct sources of unwanted hook fires:
 
 1. **Reflexio's own LLM provider.** The ``claude-code`` LiteLLM provider
-   (see ``reflexio.server.llm.providers.claude_code_provider._run_cli``)
+   (see ``reflexio.server.llm.providers.native_cli_provider``)
    shells out to the ``claude`` CLI to answer extractor prompts. That
    subprocess is a full Claude Code invocation, so it fires *our* hooks
    too — and without a guard, the Stop hook publishes the extractor's
@@ -27,9 +27,6 @@ Detection signals, OR'd:
   - Env var ``CLAUDE_SMART_INTERNAL=1``, set by reflexio's provider
     before spawning ``claude``. Belt-and-suspenders for case (1) in
     case the entrypoint check ever misses a future SDK variant.
-  - ``payload.cwd`` resolves inside the side-by-side reflexio checkout. Catches
-    direct interactive ``claude`` runs from inside reflexio during local
-    debugging that would otherwise pollute the corpus.
   - Known Codex-internal prompt templates (title generation and home-screen
     suggestions). These are model calls made by Codex itself, not user
     coding turns, and must never be reflected into claude-smart memory.
@@ -41,7 +38,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 from typing import Any
 
 from claude_smart import runtime
@@ -64,33 +60,13 @@ _CODEX_SUGGESTIONS_APPS_MARKER = (
     "their connected apps."
 )
 
-# Reflexio usually lives next to claude-smart during local development:
-# <workspace>/claude-smart and <workspace>/reflexio. Anchor relative to this
-# file so the check follows the real checkout if the repo is relocated. In
-# install mode that sibling checkout is absent — the env marker is the primary
-# signal and this path never matches.
-#
-# The path computation is tightly coupled to the current layout: if this
-# module moves, ``_REFLEXIO_DIR`` silently stops matching and only the
-# env signal remains. ``CLAUDE_SMART_REFLEXIO_DIR`` lets callers (and
-# tests) override the path without touching the module.
-_THIS_DIR = Path(__file__).resolve().parent
-_REFLEXIO_DIR = Path(
-    os.environ.get("CLAUDE_SMART_REFLEXIO_DIR") or _THIS_DIR.parents[3] / "reflexio"
-).resolve()
-
 
 def is_internal_invocation(payload: dict[str, Any]) -> bool:
-    """True if this hook fire originated from reflexio's own LLM provider.
+    """Recognize machine-origin calls by provenance, not the user's project.
 
-    Args:
-        payload (dict[str, Any]): Parsed Claude Code hook payload. Only
-            ``cwd`` is inspected.
-
-    Returns:
-        bool: True when the env marker is set or ``cwd`` points inside
-            the Reflexio checkout. False otherwise, including when
-            ``cwd`` is missing or unresolvable.
+    Native SDK calls carry the explicit process marker. Known headless host
+    entrypoints and Codex metadata prompts retain their independent checks.
+    Interactive work stays eligible even inside a Reflexio checkout.
     """
     if runtime.is_internal_invocation_env():
         return True
@@ -99,18 +75,7 @@ def is_internal_invocation(payload: dict[str, Any]) -> bool:
         return True
     if runtime.is_codex() and is_codex_internal_prompt(payload.get("prompt")):
         return True
-    cwd = payload.get("cwd")
-    if not isinstance(cwd, str) or not cwd:
-        return False
-    try:
-        resolved = Path(cwd).resolve()
-    except OSError:
-        return False
-    try:
-        resolved.relative_to(_REFLEXIO_DIR)
-    except ValueError:
-        return False
-    return True
+    return False
 
 
 def is_codex_internal_prompt(prompt: Any) -> bool:

@@ -40,6 +40,19 @@ holding the literal text `../.agents/skills`, `.claude/rules` holding
 `git checkout -- .claude` in an existing checkout. This affects a repo checkout only;
 the published npm package ships neither directory.
 
+## Internal invocation provenance
+
+Native SDK subprocesses carry `CLAUDE_SMART_INTERNAL=1`; known headless Claude
+entrypoints and Codex metadata prompts retain their existing guards. The hook
+skips internal calls before loading handlers, so they cannot publish extractor
+prompts or call the memory API. A working directory does not establish internal
+origin: interactive coding inside Reflexio is eligible under the same learning
+and read-only policy as any other project.
+
+`CLAUDE_SMART_REFLEXIO_DIR` is retired. Its directory exclusion is removed,
+without a fixed replacement path or selector; old assignments have no effect
+and can be removed. No saved configuration is rewritten by hook startup.
+
 ## Environment variables
 
 Citation prompts use Markdown links in all hosts. The transcript reader still

@@ -9,6 +9,8 @@ each detection path has an explicit test.
 from __future__ import annotations
 
 import importlib
+import json
+from unittest.mock import Mock
 
 import pytest
 
@@ -18,8 +20,9 @@ from claude_smart.internal_call import is_internal_invocation
 
 @pytest.fixture(autouse=True)
 def _clear_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip ``CLAUDE_CODE_ENTRYPOINT`` so individual tests opt in explicitly."""
+    """Tests opt into process provenance explicitly, never inherit a caller."""
     monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_INTERNAL", raising=False)
 
 
 def test_returns_true_when_env_marker_set(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -32,57 +35,66 @@ def test_env_marker_wins_over_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
     assert is_internal_invocation({"cwd": "/tmp"}) is True
 
 
-def test_returns_true_when_cwd_inside_reflexio(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    monkeypatch.delenv("CLAUDE_SMART_INTERNAL", raising=False)
-    fake_reflexio = tmp_path / "reflexio"
-    (fake_reflexio / "server").mkdir(parents=True)
-    monkeypatch.setattr(internal_call, "_REFLEXIO_DIR", fake_reflexio)
-    assert is_internal_invocation({"cwd": str(fake_reflexio / "server")}) is True
-
-
-def test_reflexio_dir_env_override_is_resolved(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("CLAUDE_SMART_REFLEXIO_DIR", "reflexio")
+@pytest.mark.parametrize("relative", ["reflexio", "reflexio/server", "project"])
+@pytest.mark.parametrize(
+    "entrypoint", [None, "cli", "claude-desktop", "claude-vscode", "claude-jetbrains"]
+)
+def test_interactive_work_is_not_internal_by_directory(
+    monkeypatch, tmp_path, relative, entrypoint
+):
+    if entrypoint is not None:
+        monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", entrypoint)
+    # An old exported override cannot turn a user's checkout into provenance.
+    monkeypatch.setenv("CLAUDE_SMART_REFLEXIO_DIR", str(tmp_path / "reflexio"))
     try:
         reloaded = importlib.reload(internal_call)
-        assert reloaded._REFLEXIO_DIR == (tmp_path / "reflexio").resolve()  # noqa: SLF001
+        assert (
+            reloaded.is_internal_invocation(
+                {"cwd": str(tmp_path / relative), "prompt": "Human coding request"}
+            )
+            is False
+        )
     finally:
         monkeypatch.delenv("CLAUDE_SMART_REFLEXIO_DIR", raising=False)
         importlib.reload(internal_call)
 
 
-def test_returns_false_for_external_cwd(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    monkeypatch.delenv("CLAUDE_SMART_INTERNAL", raising=False)
-    fake_reflexio = tmp_path / "reflexio"
-    fake_reflexio.mkdir()
-    monkeypatch.setattr(internal_call, "_REFLEXIO_DIR", fake_reflexio)
-    assert is_internal_invocation({"cwd": str(tmp_path)}) is False
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        {"CLAUDE_SMART_INTERNAL": "1"},
+        {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"},
+        {"CLAUDE_CODE_ENTRYPOINT": "optimizer"},
+    ],
+)
+def test_internal_dispatch_never_loads_handlers(
+    monkeypatch, tmp_path, capsys, provenance
+):
+    from claude_smart import hook
 
-
-def test_returns_false_when_cwd_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CLAUDE_SMART_INTERNAL", raising=False)
-    assert is_internal_invocation({}) is False
-
-
-def test_returns_false_when_cwd_empty_string(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("CLAUDE_SMART_INTERNAL", raising=False)
-    assert is_internal_invocation({"cwd": ""}) is False
-
-
-@pytest.mark.parametrize("bad_cwd", [None, 123, ["/tmp"], {"path": "/tmp"}])
-def test_returns_false_when_cwd_wrong_type(
-    monkeypatch: pytest.MonkeyPatch, bad_cwd: object
-) -> None:
-    monkeypatch.delenv("CLAUDE_SMART_INTERNAL", raising=False)
-    assert is_internal_invocation({"cwd": bad_cwd}) is False
+    for key, value in provenance.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(
+        hook,
+        "_read_stdin_json",
+        lambda: {"session_id": "owned-internal", "cwd": str(tmp_path)},
+    )
+    monkeypatch.setattr(hook.env_config, "load_reflexio_env", lambda: None)
+    loader = Mock(
+        side_effect=AssertionError(
+            "Internal invocations must not reach handlers or API clients"
+        )
+    )
+    record = Mock()
+    monkeypatch.setattr(hook, "_load_handlers", loader)
+    monkeypatch.setattr(hook.hook_log, "log_event", record)
+    assert hook.main(["session-start"]) == 0
+    loader.assert_not_called()
+    assert record.call_args.kwargs["internal_skipped"] is True
+    assert json.loads(capsys.readouterr().out) == {
+        "continue": True,
+        "suppressOutput": True,
+    }
 
 
 def test_env_marker_other_values_do_not_trigger(
@@ -110,7 +122,9 @@ def test_returns_false_for_interactive_entrypoint(
     assert is_internal_invocation({}) is False
 
 
-@pytest.mark.parametrize("entrypoint", ["claude-desktop", "claude-vscode", "claude-jetbrains"])
+@pytest.mark.parametrize(
+    "entrypoint", ["claude-desktop", "claude-vscode", "claude-jetbrains"]
+)
 def test_returns_false_for_interactive_entrypoints(
     monkeypatch: pytest.MonkeyPatch, entrypoint: str
 ) -> None:
