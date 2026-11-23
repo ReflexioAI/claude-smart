@@ -987,6 +987,7 @@ def test_public_setup_checks_opencode_variant_before_publication(
         "missing-bridge",
         "relative-cli",
     }
+    cli: str | Path = executable
     if custom:
         if case in {
             "custom-executable",
@@ -2614,8 +2615,8 @@ def test_node_opencode_server_dispatches_lifecycle_tool_idle_and_dispose(
     assert ("hook_entry.sh", ["opencode", "user-prompt"]) in command_pairs
     assert ("hook_entry.sh", ["opencode", "post-tool"]) in command_pairs
     assert ("hook_entry.sh", ["opencode", "stop"]) in command_pairs
-    assert ("dashboard-service.sh", ["session-end"]) in command_pairs
-    assert ("backend-service.sh", ["session-end"]) in command_pairs
+    assert ("dashboard-service.sh", ["session-end"]) not in command_pairs
+    assert ("backend-service.sh", ["session-end"]) not in command_pairs
     for call in parsed["calls"]:
         is_hook = Path(call["script"]).name == "hook_entry.sh"
         assert call["learningHost"] == ("codex" if is_hook else "opencode")
@@ -3423,7 +3424,7 @@ def test_node_opencode_v1_double_server_publishes_once(
         await pluginA.event({{ event: idle }});
         await pluginB.event({{ event: idle }});
         // The superseded instance's dispose must not stop services the
-        // surviving instance still needs; the survivor's dispose runs in full.
+        // surviving instance still needs. Neither instance owns service lifetime.
         await pluginA.dispose();
         await pluginB.dispose();
         process.stdout.write(JSON.stringify({{
@@ -3448,7 +3449,7 @@ def test_node_opencode_v1_double_server_publishes_once(
         "sessionStarts": 1,
         "prompts": 1,
         "stops": 1,
-        "sessionEnds": 2,
+        "sessionEnds": 0,
     }
 
 

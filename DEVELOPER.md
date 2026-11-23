@@ -80,8 +80,21 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | `CLAUDE_SMART_NODE_BASE_URL` | `https://nodejs.org/dist/latest-v${CLAUDE_SMART_NODE_LTS_MAJOR}.x` | Override the Node.js download base URL for tests, mirrors, or recovery. |
 | `CLAUDE_SMART_BACKEND_AUTOSTART` | `1` | Set to `0` to stop the SessionStart hook from spawning the reflexio backend on `localhost:8071`. |
 | `CLAUDE_SMART_DASHBOARD_AUTOSTART` | `1` | Set to `0` to stop the SessionStart hook from spawning the Next.js dashboard on `localhost:3001`. |
-| `CLAUDE_SMART_BACKEND_STOP_ON_END` | `0` | Set to `1` to tear down the backend at `SessionEnd` instead of leaving it long-lived. |
 | `REFLEXIO_URL` | `http://localhost:8071/` | Point the plugin at a non-local reflexio backend. |
+
+Backend and dashboard services are shared across sessions and coding hosts.
+Session completion publishes its tail and releases session state; it does not
+stop shared services or background learning. OpenCode disposal follows the same
+boundary. The former `CLAUDE_SMART_BACKEND_STOP_ON_END` and
+`CLAUDE_SMART_DASHBOARD_STOP_ON_END` settings are retired and ignored. Existing
+assignments can be removed; updates do not rewrite the saved environment.
+
+Use the existing explicit service controls when teardown is intended:
+`bash <active-plugin-root>/scripts/backend-service.sh stop` and
+`bash <active-plugin-root>/scripts/dashboard-service.sh stop`. Installation
+replacement, restart and uninstall retain their existing stop/ownership checks.
+Cached old service `session-end` commands return before loading configuration or
+probing processes; current hook manifests and adapters no longer call them.
 
 On POSIX, hook diagnostics follow the selected absolute session directory. If you previously set
 `CLAUDE_SMART_HOOK_LOG`, remove that assignment and point any log consumer at

@@ -316,16 +316,12 @@ async function server(input) {
         },
         dispose: async (options) => {
             // Flush in-flight sessions even when superseded (a reload hands the slot
-            // over mid-turn), but leave the services to the live instance. `keep`
+            // over mid-turn). Shared services have their own lifetime. `keep`
             // names turns the V2 bridge handed to a reloaded instance, which
             // publishes them at their terminal event through these same hooks.
             const keep = options?.keep;
             await Promise.all([...activeSessions].filter((sessionID) => !keep?.has(sessionID)).map((sessionID) => flushStop(sessionID)));
-            if (!isLive())
-                return;
-            await runService(DASHBOARD_SERVICE, "session-end");
-            await runService(BACKEND_SERVICE, "session-end");
-            // Re-check: a newer instance may have taken the slot mid-dispose.
+            // A newer instance may have taken the slot while sessions were flushed.
             if (isLive())
                 tokens.delete(cwd);
         },
