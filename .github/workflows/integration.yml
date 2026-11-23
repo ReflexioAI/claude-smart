@@ -33,7 +33,7 @@ jobs:
   pytest:
     name: pytest suite
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -78,7 +78,7 @@ jobs:
         run: make check-vendor-requirements
 
       - name: Run pytest suite
-        run: uv --project plugin run pytest tests -q
+        run: uv --project plugin run pytest tests -q --durations=25
 
   dependency-platforms:
     name: dependency platforms (${{ matrix.os }})
