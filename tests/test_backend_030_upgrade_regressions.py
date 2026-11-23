@@ -240,11 +240,13 @@ def test_backend_refuses_retired_model_before_sdk_dispatch(
 
 
 @pytest.mark.parametrize("source", ["process", "dotenv"])
-def test_preflight_refuses_retired_opencode_variant_without_rewriting(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+@pytest.mark.parametrize(
+    "old_name", ["CLAUDE_SMART_OPENCODE_VARIANT", "CLAUDE_SMART_OPENCODE_MODEL"]
+)
+def test_preflight_refuses_retired_opencode_selector_without_rewriting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str, old_name: str
 ) -> None:
     path = tmp_path / ".env"
-    old_name = "CLAUDE_SMART_OPENCODE_VARIANT"
     original = f"{old_name}=private-variant\n" if source == "dotenv" else ""
     path.write_text(original)
     monkeypatch.setenv("REFLEXIO_ENV_FILE", str(path))

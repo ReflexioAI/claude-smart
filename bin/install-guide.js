@@ -250,10 +250,10 @@ async function configure(
         value: agent.host,
         label: `${LABELS[agent.host]} CLI`,
       }));
-      if (hasCurrent)
+      if (hasCurrent && !saved.selectionConflict)
         choices.unshift({ value: "keep", label: "Keep current learning configuration" });
       const selection = await ask("Which agent should power background learning?", choices, {
-        selected: [hasCurrent ? "keep" : hosts[0]],
+        selected: [hasCurrent && !saved.selectionConflict ? "keep" : hosts[0]],
       });
       keepCurrent = selection === "keep";
       // Keeping cloud/custom settings must not infer a provider from the coding integration.

@@ -1368,6 +1368,8 @@ def test_public_setup_preserves_policy_and_connection_choices(tmp_path, scenario
     if scenario == "local-to-managed":
         env["NEW_MANAGED_KEY"] = "new-managed-key"
         arguments = ["--backend", "managed", "--api-key-env", "NEW_MANAGED_KEY"]
+    if scenario != "local-to-managed":
+        arguments += ["--provider", "claude-code"]
     before_legacy = legacy.read_bytes() if legacy.exists() else None
     command = [
         node_bin(),
@@ -1376,8 +1378,6 @@ def test_public_setup_preserves_policy_and_connection_choices(tmp_path, scenario
         "--host",
         "claude-code",
         "--yes",
-        "--provider",
-        "claude-code",
         *arguments,
     ]
     result = subprocess.run(
@@ -1928,3 +1928,93 @@ def test_saved_canonical_reference_is_not_repaired_into_an_unrequested_target(
     assert result.returncode != 0
     assert selected.read_bytes() == original
     assert not (selected.parent / "native-selection-history").exists()
+
+
+@pytest.mark.parametrize(
+    "references",
+    [
+        ["local-cli/codex/first-model", "local-cli/claude-code/sonnet"],
+        ["", "local-cli/codex/second-model"],
+        ["local-cli/codex/first-model", "local-cli/codex/second-model"],
+    ],
+)
+@pytest.mark.parametrize("repair", ["provider", "caller"])
+def test_unattended_keep_refuses_conflicting_native_assignments_then_explicit_choice_repairs(
+    tmp_path, references, repair
+):
+    installer, env = fake_guide(tmp_path)
+    _copy_codex_install_sources(installer.parent.parent)
+    _write_fake_codex(tmp_path / "fake-bin/codex")
+    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = (
+        "REFLEXIO_URL=http://localhost:8071/\nOTHER=keep\n"
+        + "".join(
+            f"REFLEXIO_NATIVE_CLI_MODEL={reference}\n" for reference in references
+        )
+    ).encode()
+    selected.write_bytes(original)
+    command = [
+        node_bin(),
+        str(installer),
+        "setup",
+        "--host",
+        "claude-code",
+        "--backend",
+        "local",
+        "--yes",
+    ]
+    refused = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=30, check=False
+    )
+    assert refused.returncode != 0, refused.stdout + refused.stderr
+    assert "ambiguous" in refused.stderr.lower()
+    assert selected.read_bytes() == original
+    assert not (selected.parent / "native-selection-history").exists()
+    if repair == "provider":
+        command.extend(["--provider", "codex"])
+    else:
+        env["REFLEXIO_NATIVE_CLI_MODEL"] = "local-cli/codex"
+    confirmed = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=30, check=False
+    )
+    assert confirmed.returncode == 0, confirmed.stdout + confirmed.stderr
+    assert dotenv_values(selected)["REFLEXIO_NATIVE_CLI_MODEL"] == "local-cli/codex"
+    assert selected.read_text().count("REFLEXIO_NATIVE_CLI_MODEL=") == 1
+    history = list((selected.parent / "native-selection-history").glob("*.env"))
+    assert len(history) == 1 and history[0].read_bytes() == original
+
+
+def test_unattended_keep_accepts_identical_native_assignments(tmp_path):
+    installer, env = fake_guide(tmp_path)
+    _copy_codex_install_sources(installer.parent.parent)
+    _write_fake_codex(tmp_path / "fake-bin/codex")
+    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    selected.write_text(
+        "REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex/kept-model\nREFLEXIO_NATIVE_CLI_MODEL=local-cli/codex/kept-model\n"
+    )
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            "setup",
+            "--host",
+            "claude-code",
+            "--backend",
+            "local",
+            "--yes",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        dotenv_values(selected)["REFLEXIO_NATIVE_CLI_MODEL"]
+        == "local-cli/codex/kept-model"
+    )

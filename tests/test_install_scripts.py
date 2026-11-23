@@ -1134,9 +1134,16 @@ def test_installer_mode_matches_runtime_resolution(
     path.write_text(file_text)
     saved = dotenv_values(stream=StringIO(file_text))
     args = () if saved.get("REFLEXIO_API_KEY") else ("--backend", "local")
-    result = _run_public_setup(
-        tmp_path, *args, "--provider", "claude-code", env_extra=exported
-    )
+    local_scenarios = {
+        "empty file key beats shell key",
+        "file local url + key",
+        "file remote url + shell-only key",
+        "nothing",
+        "shell key only",
+        "shell local url + key",
+    }
+    provider_args = ("--provider", "claude-code") if scenario in local_scenarios else ()
+    result = _run_public_setup(tmp_path, *args, *provider_args, env_extra=exported)
     if scenario == "quoted whitespace url":
         # Confirmation refuses an invalid managed HTTP endpoint rather than
         # silently reclassifying/rewriting an old selection.

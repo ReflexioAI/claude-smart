@@ -102,14 +102,19 @@ def admit_native_learning_target() -> NativeModelRef | None:
             "The saved Sonnet model pin requires an explicit "
             "local-cli/claude-code/sonnet target."
         )
-    if target.host == "opencode" and (
-        os.environ.get("CLAUDE_SMART_OPENCODE_VARIANT", "").strip()
-        or (sdk_saved.get("CLAUDE_SMART_OPENCODE_VARIANT") or "").strip()
-    ):
-        raise LearningSelectionError(
-            "CLAUDE_SMART_OPENCODE_VARIANT has been retired. "
-            "Save the variant in REFLEXIO_NATIVE_CLI_MODEL."
-        )
+    if target.host == "opencode":
+        for old_name in (
+            "CLAUDE_SMART_OPENCODE_MODEL",
+            "CLAUDE_SMART_OPENCODE_VARIANT",
+        ):
+            if (
+                os.environ.get(old_name, "").strip()
+                or (sdk_saved.get(old_name) or "").strip()
+            ):
+                raise LearningSelectionError(
+                    f"{old_name} has been retired. "
+                    "Save the model/variant in REFLEXIO_NATIVE_CLI_MODEL and remove the old setting."
+                )
     return target
 
 

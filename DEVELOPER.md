@@ -9,7 +9,7 @@ Internal notes for maintainers of `claude-smart`. End-user install instructions 
 | `plugin/` | Claude Code plugin — hooks, slash commands, install script, and the Python package |
 | `plugin/src/claude_smart/` | Python package — hook handler, CLI, reflexio adapter |
 | `plugin/pyproject.toml` | Python manifest for the plugin (deps + console scripts for the plugin venv); npm-only, not published to PyPI |
-| `tests/` | Pytest suite for the Python package (run via `uv run --project plugin pytest tests/ -q` from repo root) |
+| `tests/` | Pytest suite for the Python package (see [Tests](#tests) for bundle preparation and commands) |
 | `bin/claude-smart.js` | Node wrapper so `npx claude-smart install` works |
 | `bin/install-guide.js` | Dependency-free guided install/uninstall UI and configuration selection |
 | `package.json` | npm manifest — ships `bin/`, marketplace metadata, `plugin/`, `README.md`, and `LICENSE` |
@@ -382,7 +382,7 @@ repair rather than silently choosing a different executable from PATH.
 
 **Model selection.** OpenCode support uses OpenCode's plugin loader to inject relevant learned context into the system prompt of the first model request after each prompt. Learning extraction runs `opencode run` with `OPENCODE_PURE=1` from an isolated temp project. On OpenCode 1.x that skips external plugins; V2 has no pure mode, so there the extraction run loads the user's global plugins. For a new OpenCode learning setup,
 `claude-smart install --provider opencode --model provider/model` saves the
-model used for local learning and the optimizer. With no model selected,
+model used for local learning. With no model selected,
 OpenCode resolves its own default. A direct bridge invocation can pass
 `--model provider/model`.
 
@@ -390,10 +390,12 @@ When upgrading an installation that used `CLAUDE_SMART_OPENCODE_MODEL`, record
 the effective model. Move an effective legacy override to
 `REFLEXIO_NATIVE_CLI_MODEL=local-cli/opencode/<model>` in `~/.claude-smart/.env`
 for the existing OpenCode learning route, or pass the model directly to a standalone bridge.
-Keep any saved learning model that already overrode the legacy value. Clear
-the old assignment in the saved environment and shell, then restart the
-local backend if it is running. Keep the existing provider, executable
-override, and local CLI opt-in when making this change.
+If a saved learning model already overrode the legacy value, preserve that effective
+model. Clear the retired OpenCode assignment from the saved environment and shell,
+then run confirmed `claude-smart setup` to convert the saved provider/model/native
+selection into `REFLEXIO_NATIVE_CLI_MODEL`. Keep the executable override. Restart
+the local backend after successful conversion; do not retain the three retired
+learning selector assignments.
 
 **V2 plugin reload mid-turn.** OpenCode closes the old plugin instance, awaiting its cleanup and then closing its event streams, before it loads the new instance, and it holds plugin readiness until the swap is done. The old event stream therefore cannot run until the turn ends. Instead, cleanup in `plugin/opencode/v2.ts` hands each open turn, with the V1 hooks that captured it, to the next `setup()` for the same directory. That instance publishes the turn once, at its `session.execution.*` event. Events published during the swap reach no instance. If the terminal event is lost that way, the turn is published when the session's next prompt arrives. A turn that no new instance takes over is not published.
 
@@ -909,12 +911,20 @@ uv run --project plugin --no-sync python -c "import reflexio, os; print(reflexio
 
 ## Tests
 
+From a fresh checkout, install the root test tooling and materialize the locked SDK bundle before running the
+native owner and dispatch tests. Bundle generation does not replace the locked
+PyPI test interpreter with the vendor package.
+
 ```bash
+npm ci
+uv run --project plugin python scripts/vendor-reflexio.py --bundle-only --write
 uv run --project plugin pytest --rootdir . -o addopts= tests/ -q   # claude-smart package tests (from repo root)
 cd ../reflexio && uv run pytest tests/server/llm/ -q -o 'addopts='   # reflexio patch tests
 ```
 
-Run both locally before `make release`. There's no CI gate today — the release flow trusts the maintainer.
+Run the relevant suites locally before `make release`. The GitHub integration
+workflow also gates the locked dependencies, pytest suite, and cross-platform
+installation/health checks.
 
 ### Exercising a hook handler directly
 

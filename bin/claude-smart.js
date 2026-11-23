@@ -2107,6 +2107,12 @@ function savedInstallConfiguration(captured) {
   const canonical = process.env[NATIVE_MODEL_ENV] ?? (
     savedCanonical?.trim() || captured.runtime.nativeSelectionConfirmed ? savedCanonical : undefined
   );
+  const nativeAssignments = captured.runtime.lines
+    .map(parseEnvLine)
+    .filter((entry) => entry?.key === NATIVE_MODEL_ENV)
+    .map((entry) => entry.value);
+  const ambiguousNativeTarget = !Object.hasOwn(process.env, NATIVE_MODEL_ENV) &&
+    new Set(nativeAssignments).size > 1;
   const canonicalParts = canonical?.split("/");
   const rawOldProvider = env.get(LEARNING_PROVIDER_ENV);
   const oldProvider = rawOldProvider ? (rawOldProvider.trim() || HOST_CLAUDE_CODE) : undefined;
@@ -2116,7 +2122,8 @@ function savedInstallConfiguration(captured) {
   const legacySelection = RETIRED_LEARNING_ENVS.some((key) => env.has(key));
   const legacyHostFallback = env.has(CLAUDE_SMART_HOST_ENV) && !isRemoteReflexioUrl(url);
   const selectionConflict = !Object.hasOwn(process.env, NATIVE_MODEL_ENV) &&
-    ((canonical !== undefined && legacySelection && canonical !== oldTarget) ||
+    (ambiguousNativeTarget ||
+      (canonical !== undefined && legacySelection && canonical !== oldTarget) ||
       (canonical === undefined && (legacySelection || legacyHostFallback) && oldEnabled &&
         (!oldProvider || oldProvider.includes("/"))));
   return {
@@ -2125,7 +2132,7 @@ function savedInstallConfiguration(captured) {
     apiKey,
     provider: canonical === undefined ? (legacySelection ? oldProvider : undefined) : canonicalParts?.[1],
     nativeTarget: canonical,
-    model: canonical === undefined ? oldModel : canonicalParts?.slice(2).join("/") || "",
+    model: ambiguousNativeTarget ? "" : canonical === undefined ? oldModel : canonicalParts?.slice(2).join("/") || "",
     selectionConflict,
     retiredOpenCodeVariant: Boolean(env.get("CLAUDE_SMART_OPENCODE_VARIANT")?.trim()),
     managedUrl: env.get("CLAUDE_SMART_MANAGED_URL") || "",
