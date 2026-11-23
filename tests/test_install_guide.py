@@ -103,6 +103,8 @@ def test_inconsistent_settings_bundle_refuses_before_preparation(tmp_path):
             "claude-code",
             "--backend",
             "local",
+            "--provider",
+            "claude-code",
             "--yes",
         ],
         env=env,
@@ -157,6 +159,8 @@ def test_lost_save_ack_stops_workers_and_retry_does_not_reimport_deleted_legacy(
         "claude-code",
         "--backend",
         "local",
+        "--provider",
+        "claude-code",
         "--yes",
     ]
     failed = subprocess.run(
@@ -326,6 +330,9 @@ def test_unattended_install_preserves_inherited_provider_overrides(
             'CLAUDE_SMART_USE_LOCAL_CLI="1"\n'
         )
     env[key] = value
+    if key == "CLAUDE_SMART_USE_LOCAL_CLI":
+        # Supply deliberate cloud intent so this case reaches retired-input admission.
+        env["REFLEXIO_NATIVE_CLI_MODEL"] = ""
     args = [
         node_bin(),
         str(installer),
@@ -525,6 +532,8 @@ if (process.env.CLAUDE_SMART_INSTALL_CHILD !== "1") {
             "claude-code",
             "--backend",
             "local",
+            "--provider",
+            "claude-code",
         ],
         env=env,
         text=True,
@@ -884,6 +893,8 @@ def test_guided_update_keeps_claude_uninstall_and_retry_recovery(
             "claude-code",
             "--backend",
             "local",
+            "--provider",
+            "claude-code",
         ],
         env=env,
         text=True,
@@ -1365,6 +1376,8 @@ def test_public_setup_preserves_policy_and_connection_choices(tmp_path, scenario
         "--host",
         "claude-code",
         "--yes",
+        "--provider",
+        "claude-code",
         *arguments,
     ]
     result = subprocess.run(
@@ -1840,7 +1853,7 @@ def test_legacy_selection_preserves_exact_boolean_and_host_semantics(
         assert len(history) == 1 and history[0].read_bytes() == original
 
 
-def test_first_local_activation_uses_chosen_integration_without_inventing_saved_host(
+def test_first_local_activation_uses_explicit_provider_without_inventing_saved_host(
     tmp_path,
 ):
     installer, env = fake_guide(tmp_path)
@@ -1853,17 +1866,25 @@ def test_first_local_activation_uses_chosen_integration_without_inventing_saved_
     selected.write_text(
         "REFLEXIO_URL=https://managed.example/\nREFLEXIO_API_KEY=fake-key\n"
     )
+    command = [
+        node_bin(),
+        str(installer),
+        "setup",
+        "--host",
+        "codex",
+        "--backend",
+        "local",
+        "--yes",
+    ]
+    original = selected.read_bytes()
+    refused = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=30, check=False
+    )
+    assert refused.returncode != 0
+    assert "--provider" in refused.stderr
+    assert selected.read_bytes() == original
     result = subprocess.run(
-        [
-            node_bin(),
-            str(installer),
-            "setup",
-            "--host",
-            "codex",
-            "--backend",
-            "local",
-            "--yes",
-        ],
+        [*command, "--provider", "codex"],
         env=env,
         text=True,
         capture_output=True,

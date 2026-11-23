@@ -356,7 +356,14 @@ function parseEnvSnapshot(bytes, exists) {
       rows.set(parsed.key, index);
     }
   }
-  return { exists, bytes, values, rows, lines };
+  const header = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith("#")) break;
+    header.push(trimmed);
+  }
+  const nativeSelectionConfirmed = header.includes("# claude-smart: native learning confirmed v1");
+  return { exists, bytes, values, rows, lines, nativeSelectionConfirmed };
 }
 
 function readEnvSnapshot(path) {
@@ -2096,7 +2103,10 @@ function savedInstallConfiguration(captured) {
   const userId = env.get(REFLEXIO_USER_ID_ENV) ?? "";
   // Decode only for the confirmed guide. The prepared SDK remains the sole
   // target validator, and ordinary runtime never accepts the old selectors.
-  const canonical = process.env[NATIVE_MODEL_ENV] ?? env.get(NATIVE_MODEL_ENV);
+  const savedCanonical = env.get(NATIVE_MODEL_ENV);
+  const canonical = process.env[NATIVE_MODEL_ENV] ?? (
+    savedCanonical?.trim() || captured.runtime.nativeSelectionConfirmed ? savedCanonical : undefined
+  );
   const canonicalParts = canonical?.split("/");
   const rawOldProvider = env.get(LEARNING_PROVIDER_ENV);
   const oldProvider = rawOldProvider ? (rawOldProvider.trim() || HOST_CLAUDE_CODE) : undefined;

@@ -240,3 +240,46 @@ def test_installed_native_admission_keeps_sdk_free_cloud_repair(
         assert "bundled SDK native model interface" in result.stderr
         assert "private-model" not in result.stdout + result.stderr
     assert selected.read_text() == original
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        None,
+        "",
+        "OTHER=keep\n",
+        "REFLEXIO_NATIVE_CLI_MODEL=\n",
+        'REFLEXIO_NATIVE_CLI_MODEL=""\n',
+        'REFLEXIO_NATIVE_CLI_MODEL=" "\n',
+    ],
+)
+def test_native_admission_requires_confirmation_before_cloud_or_sdk(
+    owner_python, tmp_path, original
+):
+    selected = tmp_path / "settings.env"
+    if original is not None:
+        selected.write_text(original)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in {"PATH", "SYSTEMROOT", "WINDIR", "TMP", "TEMP", "TMPDIR", "LANG"}
+    }
+    env.update(
+        HOME=str(tmp_path), USERPROFILE=str(tmp_path), REFLEXIO_ENV_FILE=str(selected)
+    )
+    command = [str(owner_python), "-I", "-m", "claude_smart.native_selection"]
+    unconfirmed = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=15, check=False
+    )
+    assert unconfirmed.returncode == 3, unconfirmed.stdout + unconfirmed.stderr
+    assert "confirm" in unconfirmed.stderr.lower()
+    assert "bundled SDK native model interface" not in unconfirmed.stderr
+    # Empty is a deliberate cloud opt-out, even in this SDK-free installed wheel.
+    env["REFLEXIO_NATIVE_CLI_MODEL"] = ""
+    confirmed = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=15, check=False
+    )
+    assert confirmed.returncode == 0, confirmed.stdout + confirmed.stderr
+    assert selected.exists() == (original is not None)
+    if original is not None:
+        assert selected.read_text() == original

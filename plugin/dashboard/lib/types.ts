@@ -122,7 +122,7 @@ export interface ClaudeSmartConfig {
   REFLEXIO_API_KEY: string;
   REFLEXIO_API_KEY_SET?: boolean;
   REFLEXIO_NATIVE_CLI_MODEL: string;
-  legacyLearningSelection?: boolean;
+  nativeSelectionNeedsConfirmation?: boolean;
   CLAUDE_SMART_READ_ONLY: boolean;
   CLAUDE_SMART_CLI_PATH: string;
   CLAUDE_SMART_CLI_TIMEOUT?: string;

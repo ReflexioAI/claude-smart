@@ -2141,3 +2141,85 @@ fs.renameSync = (source, target) => {
     assert [
         row["action"] for row in _calls(tmp_path) if row["root"] == str(chosen)
     ].count("start") == 2
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        None,
+        b"",
+        b"REFLEXIO_URL=http://localhost:8071/\nREFLEXIO_API_KEY=\nCLAUDE_SMART_READ_ONLY=1\n",
+        b"REFLEXIO_NATIVE_CLI_MODEL=\n",
+        b'REFLEXIO_NATIVE_CLI_MODEL=""\n',
+        b'REFLEXIO_NATIVE_CLI_MODEL=" "\n',
+    ],
+)
+def test_local_upgrade_does_not_infer_learning_from_coding_integration(
+    tmp_path, original
+):
+    from dotenv import dotenv_values
+
+    from tests.test_install_scripts import _fake_claude_install_script
+
+    package, old_root, uv, env = _fixture(tmp_path, "codex", running="none")
+    _write_bootstrap_uv(uv, mode="fresh")
+    _write_executable(tmp_path / "fake-bin/claude", _fake_claude_install_script())
+    for key in (
+        "CLAUDE_SMART_INSTALL_CHILD",
+        "CLAUDE_SMART_HOST",
+        "REFLEXIO_NATIVE_CLI_MODEL",
+        "CLAUDE_SMART_LEARNING_PROVIDER",
+        "CLAUDE_SMART_LEARNING_MODEL",
+        "CLAUDE_SMART_USE_LOCAL_CLI",
+    ):
+        env.pop(key, None)
+    env["CLAUDE_SMART_DEFER_SHARED_SERVICES"] = "1"
+    selected = tmp_path / ".claude-smart/.env"
+    if original is None:
+        selected.unlink()
+    else:
+        selected.write_bytes(original)
+    # The actual 0c02dcba launcher could run these files on Codex through its
+    # caller-host fallback. Choosing a coding integration cannot authorize a
+    # switch to the Claude/Sonnet default during update.
+    command = [
+        node_bin(),
+        str(package / "bin/claude-smart.js"),
+        "update",
+        "--host",
+        "claude-code",
+        "--backend",
+        "local",
+        "--yes",
+    ]
+    result = subprocess.run(
+        command,
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=40,
+        check=False,
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "--provider" in result.stderr
+    assert selected.exists() == (original is not None)
+    if original is not None:
+        assert selected.read_bytes() == original
+    assert (old_root / "identity").read_text() == "old"
+    assert not (tmp_path / "uv.log").exists()
+    env["REFLEXIO_NATIVE_CLI_MODEL"] = "local-cli/codex"
+    confirmed = subprocess.run(
+        command,
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=40,
+        check=False,
+    )
+    assert confirmed.returncode == 0, confirmed.stdout + confirmed.stderr
+    assert (
+        dotenv_values(selected, interpolate=False)["REFLEXIO_NATIVE_CLI_MODEL"]
+        == "local-cli/codex"
+    )

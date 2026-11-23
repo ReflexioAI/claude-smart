@@ -163,6 +163,8 @@ def test_legacy_migration_preserves_present_empty_and_raw_values(
             "claude-code",
             "--backend",
             "local",
+            "--provider",
+            "claude-code",
             "--yes",
         ],
         env=env,

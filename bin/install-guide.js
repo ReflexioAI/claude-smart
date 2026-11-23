@@ -242,8 +242,7 @@ async function configure(
     const hasCurrent = Boolean(saved.provider || config.cliPath || config.useLocalCli === "0");
     config.provider =
       options.provider ||
-      saved.provider ||
-      (!hasCurrent && hosts.length === 1 ? hosts[0] : undefined);
+      saved.provider;
     let keepCurrent = !options.provider;
     if (interactive && !options.provider) {
       // Resolve actual saved/caller intent before inserting provider/model defaults.

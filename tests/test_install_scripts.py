@@ -1134,7 +1134,9 @@ def test_installer_mode_matches_runtime_resolution(
     path.write_text(file_text)
     saved = dotenv_values(stream=StringIO(file_text))
     args = () if saved.get("REFLEXIO_API_KEY") else ("--backend", "local")
-    result = _run_public_setup(tmp_path, *args, env_extra=exported)
+    result = _run_public_setup(
+        tmp_path, *args, "--provider", "claude-code", env_extra=exported
+    )
     if scenario == "quoted whitespace url":
         # Confirmation refuses an invalid managed HTTP endpoint rather than
         # silently reclassifying/rewriting an old selection.
@@ -1268,6 +1270,8 @@ def test_public_local_choice_preserves_other_tools_and_does_not_copy_shell_secre
         tmp_path,
         "--backend",
         "local",
+        "--provider",
+        "claude-code",
         env_extra={
             "REFLEXIO_URL": "https://stale.example/",
             "REFLEXIO_API_KEY": "shell-secret",
@@ -3102,7 +3106,9 @@ def test_public_setup_migrates_once_and_honors_confirmed_local_choice(
     first = _run_public_setup(tmp_path)
     assert first.returncode == 0, first.stderr
     assert "Migrated managed Reflexio settings" in first.stdout
-    local = _run_public_setup(tmp_path, "--backend", "local")
+    local = _run_public_setup(
+        tmp_path, "--backend", "local", "--provider", "claude-code"
+    )
     assert local.returncode == 0, local.stderr
     for _ in range(2):
         again = _run_public_setup(tmp_path)
@@ -3126,7 +3132,9 @@ def test_setup_local_choice_blocks_first_legacy_reselection(tmp_path: Path) -> N
     )
     legacy.write_text(original)
     for _ in range(2):
-        result = _run_public_setup(tmp_path, "--backend", "local")
+        result = _run_public_setup(
+            tmp_path, "--backend", "local", "--provider", "claude-code"
+        )
         assert result.returncode == 0, result.stderr
         assert "Backend: Local Reflexio" in result.stdout
     assert (
@@ -3430,6 +3438,7 @@ def test_backend_python_runner_exposes_metadata_and_forwards_reflexio_args(
             "OUT": str(output),
             "PYTHONPATH": os.pathsep.join((str(tmp_path), str(sdk_root))),
             "PYTHON_DOTENV_DISABLED": "1",
+            "REFLEXIO_NATIVE_CLI_MODEL": "",
         }
     )
 
@@ -8807,7 +8816,9 @@ def test_local_legacy_runtime_flags_migrate_without_connection_keys(
     if runtime_read_only is not None:
         selected.parent.mkdir()
         selected.write_text(f'CLAUDE_SMART_READ_ONLY="{runtime_read_only}"\n')
-    result = _run_public_setup(tmp_path, "--backend", "local")
+    result = _run_public_setup(
+        tmp_path, "--backend", "local", "--provider", "claude-code"
+    )
     assert result.returncode == 0, result.stderr
     text = selected.read_text()
     expected = runtime_read_only if runtime_read_only is not None else "1"
@@ -8867,7 +8878,9 @@ def test_legacy_read_only_migration_keeps_last_assignment(
     legacy.write_text(
         f'CLAUDE_SMART_READ_ONLY="{first}"\nCLAUDE_SMART_READ_ONLY="{last_value}"\n'
     )
-    result = _run_public_setup(tmp_path, "--backend", "local")
+    result = _run_public_setup(
+        tmp_path, "--backend", "local", "--provider", "claude-code"
+    )
     assert result.returncode == 0, result.stderr
     text = (tmp_path / ".claude-smart/.env").read_text()
     assert text.count("CLAUDE_SMART_READ_ONLY=") == 1
@@ -9572,6 +9585,8 @@ def test_local_retention_defaults_preserve_dotenv_policy_across_installers(
             tmp_path,
             "--backend",
             "local",
+            "--provider",
+            "claude-code",
             env_extra={"REFLEXIO_ROW_LIMIT_INTERACTIONS": exported}
             if exported
             else None,

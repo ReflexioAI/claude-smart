@@ -60,6 +60,7 @@ export async function readConfig(): Promise<ClaudeSmartConfig> {
     REFLEXIO_URL: defaultReflexioUrl(),
     REFLEXIO_API_KEY: "",
     REFLEXIO_NATIVE_CLI_MODEL: "",
+    nativeSelectionNeedsConfirmation: true,
     CLAUDE_SMART_READ_ONLY: false,
     CLAUDE_SMART_CLI_PATH: "",
     CLAUDE_SMART_STATE_DIR: "",
@@ -74,8 +75,6 @@ export async function readConfig(): Promise<ClaudeSmartConfig> {
   for (const line of text.split("\n")) {
     const pair = parseLine(line);
     if (!pair) continue;
-    if (["CLAUDE_SMART_LEARNING_PROVIDER", "CLAUDE_SMART_LEARNING_MODEL", "CLAUDE_SMART_USE_LOCAL_CLI"].includes(pair.key))
-      out.legacyLearningSelection = true;
     if (!KNOWN.has(pair.key)) continue;
     if (pair.key === "CLAUDE_SMART_CLI_TIMEOUT" && !pair.value.trim()) {
       delete out.CLAUDE_SMART_CLI_TIMEOUT;
@@ -85,6 +84,21 @@ export async function readConfig(): Promise<ClaudeSmartConfig> {
       out[pair.key] = pair.value;
     }
   }
+  const header: string[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith("#")) break;
+    header.push(trimmed);
+  }
+  const retired = text.split("\n").some((line) => {
+    const key = parseLine(line)?.key;
+    return key && ["CLAUDE_SMART_LEARNING_PROVIDER", "CLAUDE_SMART_LEARNING_MODEL", "CLAUDE_SMART_USE_LOCAL_CLI"].includes(key);
+  });
+  const hasTarget = text.split("\n").some((line) => parseLine(line)?.key === "REFLEXIO_NATIVE_CLI_MODEL");
+  out.nativeSelectionNeedsConfirmation = Boolean(retired || !hasTarget || (
+    !String(out.REFLEXIO_NATIVE_CLI_MODEL ?? "").trim() &&
+    !header.includes("# claude-smart: native learning confirmed v1")
+  ));
   return out;
 }
 

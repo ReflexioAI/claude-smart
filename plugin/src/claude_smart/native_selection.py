@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from claude_smart.env_config import (
     NATIVE_MODEL_ENV,
     RETIRED_LEARNING_ENVS,
+    native_selection_confirmed,
     parse_env_line,
 )
 
@@ -27,8 +28,10 @@ def admit_native_learning_target() -> NativeModelRef | None:
     saved: dict[str, str] = {}
     nonempty_saved: set[str] = set()
     references: list[str] = []
+    content = ""
     if source and Path(source).is_file():
-        for line in Path(source).read_bytes().decode("utf-8").split("\n"):
+        content = Path(source).read_bytes().decode("utf-8")
+        for line in content.split("\n"):
             if (entry := parse_env_line(line)) is not None:
                 saved[entry[0]] = entry[1]
                 if entry[1].strip():
@@ -57,6 +60,12 @@ def admit_native_learning_target() -> NativeModelRef | None:
     # caller value eclipses a saved target, including later worker dotenv loads.
     selected = os.environ.get(NATIVE_MODEL_ENV, saved.get(NATIVE_MODEL_ENV, ""))
     if not selected.strip():
+        if NATIVE_MODEL_ENV not in os.environ and (
+            NATIVE_MODEL_ENV not in saved or not native_selection_confirmed(content)
+        ):
+            raise LearningSelectionError(
+                "Confirm a native learning target or explicit cloud selection in Claude Smart setup."
+            )
         return None  # Cloud-only settings repair needs no SDK/provider imports.
     try:
         from dotenv import dotenv_values

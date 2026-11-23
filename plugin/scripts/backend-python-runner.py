@@ -273,7 +273,6 @@ def main() -> int:
         reflexio_args[:2] == ["services", "start"]
         and os.environ.get("CLAUDE_SMART_BACKEND") == "1"
     ):
-        prepare_native_sdk_environment()
         # Use the same parser and precedence as the bundled launcher, including
         # a forwarded --backend-port; unknown Typer options remain its concern.
         from reflexio.cli.run_services import (
@@ -288,6 +287,7 @@ def main() -> int:
         )
         selected = parse_only_flag(options.only, {"backend", "docs"})
         if "backend" in selected:
+            prepare_native_sdk_environment()
             pin_legacy_sqlite_db_path(
                 resolve_ports(options, DEFAULT_OSS_PORTS)["backend"],
                 options.backend_host,

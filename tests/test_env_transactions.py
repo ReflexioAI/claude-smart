@@ -459,7 +459,8 @@ def test_publication_distinguishes_absent_empty_and_deleted(tmp_path: Path) -> N
     )
     assert (
         path.read_text()
-        == "# preserve\nOTHER=opaque\\path\nREFLEXIO_NATIVE_CLI_MODEL=\n"
+        == env_config.NATIVE_SELECTION_CONFIRMED_COMMENT
+        + "\n# preserve\nOTHER=opaque\\path\nREFLEXIO_NATIVE_CLI_MODEL=\n"
     )
     before = path.read_bytes()
     env_config.update_settings({}, {}, path)
@@ -1476,7 +1477,8 @@ def test_inherited_managed_endpoint_keeps_native_preferences_inactive(
     )
     assert (
         path.read_text()
-        == "OTHER=keep\nREFLEXIO_NATIVE_CLI_MODEL=inactive-opaque-preference\n"
+        == env_config.NATIVE_SELECTION_CONFIRMED_COMMENT
+        + "\nOTHER=keep\nREFLEXIO_NATIVE_CLI_MODEL=inactive-opaque-preference\n"
     )
 
 
@@ -1498,3 +1500,109 @@ def test_managed_preference_save_refuses_exported_native_shadow(tmp_path, monkey
             path,
         )
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("saved_empty", [False, True])
+def test_local_activation_requires_explicit_cloud_or_native_confirmation(
+    tmp_path, monkeypatch, saved_empty
+):
+    selected = tmp_path / ".env"
+    original = b"REFLEXIO_URL=https://managed.example/\nREFLEXIO_API_KEY=owned-key\nOTHER=keep\n"
+    if saved_empty:
+        original += b"REFLEXIO_NATIVE_CLI_MODEL=\n"
+    selected.write_bytes(original)
+    monkeypatch.delenv(env_config.NATIVE_MODEL_ENV, raising=False)
+    updates: dict[str, str | None] = {
+        "REFLEXIO_URL": "http://localhost:8071/",
+        "REFLEXIO_API_KEY": "",
+    }
+    expected = {key: [] for key in updates}
+    for line in original.decode().splitlines():
+        if (entry := env_config.parse_env_line(line)) and entry[0] in expected:
+            expected[entry[0]].append(line)
+    with pytest.raises(env_config.SettingsPreflightError) as rejected:
+        env_config.update_settings(updates, expected, selected)
+    assert rejected.value.code == 81
+    assert selected.read_bytes() == original
+    # Confirmed cloud mode needs no SDK; the original connection remains recoverable.
+    updates[env_config.NATIVE_MODEL_ENV] = ""
+    expected[env_config.NATIVE_MODEL_ENV] = (
+        ["REFLEXIO_NATIVE_CLI_MODEL="] if saved_empty else []
+    )
+    env_config.update_settings(updates, expected, selected)
+    assert b"REFLEXIO_NATIVE_CLI_MODEL=\n" in selected.read_bytes()
+    history = (
+        selected.parent
+        / "native-selection-history"
+        / (hashlib.sha256(original).hexdigest() + ".env")
+    )
+    assert history.read_bytes() == original
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_identical_native_save_still_refuses_a_caller_shadow(
+    tmp_path, monkeypatch, confirmed
+):
+    selected = tmp_path / ".env"
+    header = "# claude-smart: native learning confirmed v1\n" if confirmed else ""
+    original = (header + "REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex\n").encode()
+    selected.write_bytes(original)
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code/sonnet")
+    with pytest.raises(
+        env_config.SettingsConflictError, match="exported native target"
+    ):
+        env_config.update_settings(
+            {"REFLEXIO_NATIVE_CLI_MODEL": "local-cli/codex"},
+            {
+                "REFLEXIO_NATIVE_CLI_MODEL": [
+                    "REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex"
+                ]
+            },
+            selected,
+        )
+    assert selected.read_bytes() == original
+    assert not (tmp_path / "native-selection-history").exists()
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "",
+        "# claude-smart: legacy-env checked\n",
+        "\ufeff# claude-smart: legacy-env checked\r\n",
+    ],
+)
+def test_explicit_cloud_confirmation_preserves_import_header_and_archives_once(
+    tmp_path, monkeypatch, prefix
+):
+    selected = tmp_path / ".env"
+    original = (prefix + 'REFLEXIO_NATIVE_CLI_MODEL=""\nOTHER=keep\n').encode()
+    selected.write_bytes(original)
+    monkeypatch.delenv(env_config.NATIVE_MODEL_ENV, raising=False)
+    expected = {env_config.NATIVE_MODEL_ENV: ['REFLEXIO_NATIVE_CLI_MODEL=""']}
+    env_config.update_settings({env_config.NATIVE_MODEL_ENV: ""}, expected, selected)
+    content = selected.read_text(encoding="utf-8")
+    assert env_config.native_selection_confirmed(content)
+    if prefix:
+        assert content.removeprefix("\ufeff").startswith(
+            env_config.INSTALL_COMPLETION_COMMENT + "\n"
+        )
+    history = tmp_path / "native-selection-history"
+    assert (
+        history / (hashlib.sha256(original).hexdigest() + ".env")
+    ).read_bytes() == original
+    expected = {env_config.NATIVE_MODEL_ENV: ["REFLEXIO_NATIVE_CLI_MODEL="]}
+    env_config.update_settings({env_config.NATIVE_MODEL_ENV: ""}, expected, selected)
+    assert len(list(history.glob("*.env"))) == 1
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "OTHER=value\n# claude-smart: native learning confirmed v1\n",
+        'OTHER="multiline\n# claude-smart: native learning confirmed v1\n"\n',
+        "OTHER=value\r# claude-smart: native learning confirmed v1\n",
+    ],
+)
+def test_native_confirmation_cannot_be_spoofed_after_assignments(content):
+    assert not env_config.native_selection_confirmed(content)

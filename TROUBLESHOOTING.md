@@ -86,7 +86,11 @@ failure, then rerun `npx claude-smart update`.
 **A different LLM is being used.**
 Check `REFLEXIO_NATIVE_CLI_MODEL` in the caller environment and saved account
 file. A nonempty target explicitly selects the authenticated host and optional
-model; empty keeps configured cloud models. Caller values override the file.
+model; an explicitly confirmed empty target keeps configured cloud models.
+Old missing/blank fields need confirmation in setup because earlier launchers
+could still select a local CLI. Unattended local setup requires `--provider` or
+an explicit canonical target; `--host` only selects the coding integration.
+Caller values override the file.
 Run confirmed setup to convert obsolete learning settings. Invalid targets and
 conflicting role pins refuse rather than switching provider. Coding integration
 identity does not select the learning CLI.

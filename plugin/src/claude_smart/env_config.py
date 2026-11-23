@@ -30,6 +30,20 @@ INSTALL_COMPLETION_COMMENT = "# claude-smart: legacy-env checked"
 REFLEXIO_URL_ENV = "REFLEXIO_URL"
 CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY"
 NATIVE_MODEL_ENV = "REFLEXIO_NATIVE_CLI_MODEL"
+NATIVE_SELECTION_CONFIRMED_COMMENT = "# claude-smart: native learning confirmed v1"
+
+
+def native_selection_confirmed(content: str) -> bool:
+    """Recognize generated format metadata only in the leading comment block."""
+    for line in content.removeprefix("\ufeff").split("\n"):
+        stripped = line.strip()
+        if stripped == NATIVE_SELECTION_CONFIRMED_COMMENT:
+            return True
+        if stripped and not stripped.startswith("#"):
+            break
+    return False
+
+
 RETIRED_LEARNING_ENVS = frozenset(
     {
         "CLAUDE_SMART_USE_LOCAL_CLI",
@@ -259,6 +273,18 @@ def _settings_editor(
                 if content and not content.endswith("\n"):
                     content += newline
                 content += f"{key}={value}" + newline
+        if updates.get(NATIVE_MODEL_ENV) is not None and not native_selection_confirmed(
+            content
+        ):
+            # Preserve the legacy import sentinel's first-line position.
+            bom = "\ufeff" if content.startswith("\ufeff") else ""
+            body = content.removeprefix("\ufeff")
+            first, separator, rest = body.partition("\n")
+            marker = NATIVE_SELECTION_CONFIRMED_COMMENT + newline
+            if first.rstrip("\r") == INSTALL_COMPLETION_COMMENT:
+                content = bom + first + (separator or newline) + marker + rest
+            else:
+                content = bom + marker + body
         return content, None
 
     return edit
@@ -599,8 +625,15 @@ def _edit_env_file[Result](
                         for line in content.split("\n")
                         if (entry := parse_env_line(line)) is not None
                     }
-                    if before_keys & RETIRED_LEARNING_ENVS and not (
-                        after_keys & RETIRED_LEARNING_ENVS
+                    if exists and (
+                        (
+                            before_keys & RETIRED_LEARNING_ENVS
+                            and not after_keys & RETIRED_LEARNING_ENVS
+                        )
+                        or (
+                            not native_selection_confirmed(original)
+                            and native_selection_confirmed(content)
+                        )
                     ):
                         history = path.parent / "native-selection-history"
                         snapshot = history / (
@@ -684,7 +717,8 @@ def _verify_staged_native_selection(staged: Path) -> None:
     values = {}
     nonempty_saved: set[str] = set()
     native_references: set[str] = set()
-    for line in staged.read_bytes().decode("utf-8").split("\n"):
+    content = staged.read_bytes().decode("utf-8")
+    for line in content.split("\n"):
         if (entry := parse_env_line(line)) is not None:
             values[entry[0]] = entry[1]
             if entry[1].strip():
@@ -711,6 +745,8 @@ def _verify_staged_native_selection(staged: Path) -> None:
     ):
         raise SettingsPreflightError(81)
     if not desired.strip():
+        if NATIVE_MODEL_ENV not in values or not native_selection_confirmed(content):
+            raise SettingsPreflightError(81)
         # Disabling native generation needs no provider import or executable.
         # SDK-free connection/cloud repairs must remain possible.
         return

@@ -352,7 +352,7 @@ def test_dashboard_clearing_the_key_drops_a_remote_url(tmp_path: Path) -> None:
     _run_config_module(
         tmp_path,
         'await m.writeConfig({ REFLEXIO_URL: "https://www.reflexio.ai/", '
-        'REFLEXIO_API_KEY: "" });',
+        'REFLEXIO_API_KEY: "", REFLEXIO_NATIVE_CLI_MODEL: "" });',
         {},
     )
     text = env_file.read_text()
@@ -407,7 +407,7 @@ def test_changing_runtime_mode_keeps_connections_but_never_reuses_cloud_key_loca
     )
     _run_config_module(
         tmp_path,
-        'await m.writeConfig({REFLEXIO_URL:"http://localhost:9090/"}); process.stdout.write(JSON.stringify(await m.managedReflexioSettings()));',
+        'await m.writeConfig({REFLEXIO_URL:"http://localhost:9090/",REFLEXIO_NATIVE_CLI_MODEL:""}); process.stdout.write(JSON.stringify(await m.managedReflexioSettings()));',
         {},
     )
     text = config.read_text()
@@ -432,7 +432,7 @@ def test_explicitly_clearing_managed_key_also_forgets_saved_dashboard_key(
     )
     _run_config_module(
         tmp_path,
-        'await m.writeConfig({REFLEXIO_API_KEY:""}); process.stdout.write("true");',
+        'await m.writeConfig({REFLEXIO_API_KEY:"",REFLEXIO_NATIVE_CLI_MODEL:""}); process.stdout.write("true");',
         {},
     )
     assert "cloud-secret" not in config.read_text()
@@ -624,6 +624,7 @@ def test_dashboard_native_conversion_keeps_exact_private_original(tmp_path):
     )
     assert snapshot.read_bytes() == original
     assert selected.read_bytes().startswith(
+        b"# claude-smart: native learning confirmed v1\r\n"
         b"# keep private original\r\nOTHER=untouched\r\n"
     )
     assert not any(
@@ -656,3 +657,37 @@ def test_dashboard_local_activation_validates_inactive_native_target(tmp_path):
     )
     assert "failed prepared SDK validation" in out
     assert selected.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "original,needs_confirmation",
+    [
+        ("", True),
+        ("REFLEXIO_NATIVE_CLI_MODEL=\n", True),
+        (
+            "# claude-smart: native learning confirmed v1\nREFLEXIO_NATIVE_CLI_MODEL=\n",
+            False,
+        ),
+        ("# claude-smart: native learning confirmed v1\nOTHER=keep\n", True),
+        (
+            'OTHER="multiline\n# claude-smart: native learning confirmed v1\n"\nREFLEXIO_NATIVE_CLI_MODEL=\n',
+            True,
+        ),
+        ("REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex\n", False),
+        (
+            "REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex\nCLAUDE_SMART_USE_LOCAL_CLI=1\n",
+            True,
+        ),
+    ],
+)
+def test_dashboard_distinguishes_confirmed_cloud_from_old_blank_templates(
+    tmp_path, original, needs_confirmation
+):
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    selected.write_text(original)
+    result = _run_config_module(
+        tmp_path, "process.stdout.write(JSON.stringify(await m.readConfig()));", {}
+    )
+    assert json.loads(result)["nativeSelectionNeedsConfirmation"] is needs_confirmation
+    assert selected.read_text() == original

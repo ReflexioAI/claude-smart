@@ -181,11 +181,17 @@ def _run_runner(home: Path, *metadata: str) -> subprocess.CompletedProcess[str]:
     # Exercise the actual backend-start preparation. Intercept only the final
     # CLI delegation, so no daemon is launched by this identity regression.
     return _run_selected_command(
-        home, ["services", "start", "--only", "backend"], metadata
+        home, ["services", "start", "--only", "backend"], metadata, native_target=""
     )
 
 
-def _run_selected_command(home: Path, args: list[str], metadata: tuple[str, ...]):
+def _run_selected_command(
+    home: Path,
+    args: list[str],
+    metadata: tuple[str, ...],
+    *,
+    native_target: str | None = None,
+):
     script = (
         "import runpy,sys\n"
         "runner = runpy.run_path(sys.argv[1])\n"
@@ -194,6 +200,10 @@ def _run_selected_command(home: Path, args: list[str], metadata: tuple[str, ...]
         "raise SystemExit(runner['main']())\n"
     )
     env = _env(home)
+    if native_target is not None:
+        # Database-identity scenarios explicitly use cloud learning. Docs/help
+        # scenarios leave the choice absent and must never enter admission.
+        env["REFLEXIO_NATIVE_CLI_MODEL"] = native_target
     env.pop("REFLEXIO_DEFAULT_ORG_ID", None)
     return subprocess.run(
         [sys.executable, "-P", "-c", script, str(RUNNER), *metadata, "--", *args],
@@ -325,7 +335,9 @@ def test_backend_preserves_native_selection_through_worker_reload(
     tmp_path: Path, reference: str
 ) -> None:
     dotenv = tmp_path / ".env"
-    original = f"REFLEXIO_NATIVE_CLI_MODEL={reference}\n"
+    original = (
+        "# claude-smart: native learning confirmed v1\n" if not reference else ""
+    ) + f"REFLEXIO_NATIVE_CLI_MODEL={reference}\n"
     dotenv.write_text(original)
     env = _env(tmp_path)
     for name in (
@@ -541,6 +553,7 @@ def test_backend_runner_uses_sdk_binding_capability_without_exporting_selector(
     storage: str,
 ) -> None:
     env = _env(tmp_path)
+    env["REFLEXIO_NATIVE_CLI_MODEL"] = ""
     env.pop("REFLEXIO_DEFAULT_ORG_ID", None)
     env["PYTHON_DOTENV_DISABLED"] = "1"
     if stale:
@@ -1008,7 +1021,7 @@ def test_forwarded_occupied_port_refuses_preparation_and_pin(tmp_path):
                 "--backend-port",
                 str(listener.getsockname()[1]),
             ],
-            env=_env(tmp_path),
+            env={**_env(tmp_path), "REFLEXIO_NATIVE_CLI_MODEL": ""},
             cwd=tmp_path,
             text=True,
             capture_output=True,
@@ -1039,7 +1052,7 @@ def test_failed_identity_pin_never_delegates_to_cli_or_selects_another_database(
     )
     result = subprocess.run(
         [sys.executable, "-P", "-c", script],
-        env=_env(tmp_path),
+        env={**_env(tmp_path), "REFLEXIO_NATIVE_CLI_MODEL": ""},
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -1102,7 +1115,9 @@ def test_default_and_combined_service_selection_still_pin_backend(tmp_path, only
     args = ["services", "start"]
     if only is not None:
         args.extend(["--only", only])
-    result = _run_selected_command(tmp_path, args, ("--claude-smart-backend=1",))
+    result = _run_selected_command(
+        tmp_path, args, ("--claude-smart-backend=1",), native_target=""
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     basename = f"reflexio_{ORG}.db" if BINDING_VENDOR else "reflexio.db"
     assert json.loads(_config_file(tmp_path).read_text())["storage_config"] == {

@@ -153,7 +153,8 @@ npx claude-smart install --host claude-code,codex --backend managed \
 Existing `--host codex` and `--host opencode` commands still work. Without a terminal,
 saved backend/provider settings are reused; a fresh install requires `--backend`.
 Use `--yes` to skip interactive questions when all required settings are supplied
-or saved. For multiple local agents, specify `--provider` unless one is already saved.
+or saved. For local mode, specify `--provider` unless a learning selection is already saved
+and confirmed; the coding integration never selects the learning provider.
 Use `--read-only` to retrieve memories without publishing interactions, or `--learn`
 to resume learning. The interactive guide offers both modes for either backend.
 

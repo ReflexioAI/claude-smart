@@ -50,7 +50,7 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `REFLEXIO_NATIVE_CLI_MODEL` | empty (configured cloud models) | Native generation target: `local-cli/claude-code`, `local-cli/codex`, or `local-cli/opencode`, optionally followed by `/model`. Omit the model to delegate to the selected CLI. The prepared bundled SDK validates the target. Explicit caller values, including empty opt-out, override saved settings; a save hidden by a conflicting caller refuses. The guide serializes confirmed provider/model choices into this field. |
+| `REFLEXIO_NATIVE_CLI_MODEL` | explicit selection required | Native generation target: `local-cli/claude-code`, `local-cli/codex`, or `local-cli/opencode`, optionally followed by `/model`. Omit the model to delegate to the selected CLI. The prepared bundled SDK validates the target. Explicit caller values, including empty opt-out, override saved settings; a save hidden by a conflicting caller refuses. The guide serializes confirmed provider/model choices into this field. |
 | `CLAUDE_SMART_LOCAL_URL`, `CLAUDE_SMART_LOCAL_API_KEY` | unset (bundled loopback endpoint, no key) | Private saved local dashboard connection. The installer and Configure page retain the previous connection when changing runtime modes. These keys are not exposed to browser clients. |
 | `CLAUDE_SMART_MANAGED_URL`, `CLAUDE_SMART_MANAGED_API_KEY` | unset (managed view unavailable) | Private saved managed dashboard connection. Allows viewing managed data while the runtime remains local. Selecting a view does not rewrite runtime settings, start services, or send cloud credentials to the local endpoint. |
 | `REFLEXIO_EMBEDDING_PROVIDER` | model-derived when unset | Embedding provider mode: `cloud`, `local_service`, `internal_service`, or `off`. |
@@ -103,6 +103,16 @@ validation leaves the original intact. Existing model roles, accounts,
 executable overrides and learned data are preserved. The dashboard's explicit
 "Choose cloud models" action selects an empty native target; Save then confirms
 conversion, while unrelated settings saves keep legacy choices untouched.
+
+Old missing or blank target fields do not prove cloud intent: earlier launchers
+could still select a local CLI. Setup therefore requires an explicit provider or
+canonical target, including an explicitly empty caller value for cloud models.
+The settings owner records confirmation using a generated leading comment,
+`# claude-smart: native learning confirmed v1`, so saved empty targets remain
+unambiguous on restart. This is file-format metadata, not another setting.
+Initial confirmation also archives the exact original file. The legacy-import
+sentinel remains first when present. Unattended setup never infers a learning
+provider from `--host`.
 For an ambiguous legacy file with a custom executable, supply the canonical
 native target explicitly to confirmed setup to retain the executable binding.
 An explicit `--provider` choice replaces that binding by design.

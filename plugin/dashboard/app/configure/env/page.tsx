@@ -49,7 +49,7 @@ export default function ConfigureEnvPage() {
       const envUpdate: Partial<ClaudeSmartConfig> = { ...config };
       if (!apiKeyDirty) delete envUpdate.REFLEXIO_API_KEY;
       delete envUpdate.REFLEXIO_API_KEY_SET;
-      delete envUpdate.legacyLearningSelection;
+      delete envUpdate.nativeSelectionNeedsConfirmation;
       // An unrelated save must not turn an unconverted legacy selection into
       // the empty canonical default (which explicitly disables native use).
       if (!nativeTargetDirty) delete envUpdate.REFLEXIO_NATIVE_CLI_MODEL;
@@ -76,7 +76,8 @@ export default function ConfigureEnvPage() {
     }
   };
 
-  const cloudModelsSelected = nativeTargetDirty && config !== null &&
+  const cloudModelsSelected = config !== null &&
+    (nativeTargetDirty || !config.nativeSelectionNeedsConfirmation) &&
     !String(config.REFLEXIO_NATIVE_CLI_MODEL ?? "").trim();
 
   return (
@@ -190,27 +191,27 @@ export default function ConfigureEnvPage() {
                   }}
                   placeholder="local-cli/codex (empty uses configured cloud models)"
                 />
-                {config.legacyLearningSelection && (
-                  <div className="space-y-2">
+                <div className="space-y-2">
+                  {config.nativeSelectionNeedsConfirmation && (
                     <p className="text-xs text-muted-foreground">
-                      Legacy learning settings need conversion. Run claude-smart
-                      setup to preserve their selection, choose a native target
-                      here, or choose cloud models below. Other edits keep them unchanged.
+                      Learning selection needs confirmation. Run claude-smart
+                      setup to preserve the selection, choose a native target
+                      here, or choose cloud models below. Other edits keep it unchanged.
                     </p>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={cloudModelsSelected}
-                      onClick={() => {
-                        update("REFLEXIO_NATIVE_CLI_MODEL", "");
-                        setNativeTargetDirty(true);
-                      }}
-                    >
-                      {cloudModelsSelected ? "Cloud models selected" : "Choose cloud models"}
-                    </Button>
-                  </div>
-                )}
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={cloudModelsSelected}
+                    onClick={() => {
+                      update("REFLEXIO_NATIVE_CLI_MODEL", "");
+                      setNativeTargetDirty(true);
+                    }}
+                  >
+                    {cloudModelsSelected ? "Cloud models selected" : "Choose cloud models"}
+                  </Button>
+                </div>
                 <p className="text-xs text-muted-foreground">
                   Choose a host, with an optional model: local-cli/codex or
                   local-cli/claude-code/sonnet. An empty target keeps generation
