@@ -173,6 +173,15 @@ def test_guided_node_host_uses_prepared_interpreter_for_settings(
     tmp_path, host, outcome
 ):
     package, root, uv, env = _fixture(tmp_path, host, running="none")
+    # Local saves belong to the prepared generation. Managed single-host saves
+    # retain the deferred IPC worker, so its disconnect cases exercise that mode.
+    managed = outcome in {
+        "guide-disconnects",
+        "early-disconnect",
+        "ack-disconnects",
+        "guide-exits-after-save",
+    }
+    env["FIXTURE_GUIDED_API_KEY"] = "owned-test-key"
     adapter = (
         tmp_path / ".codex/claude-smart/marketplace"
         if host == "codex"
@@ -293,6 +302,23 @@ if (typeof process.send === "function") {
             1,
         ),
     )
+    fetch_stub = tmp_path / "managed-fetch.cjs"
+    fetch_stub.write_text("global.fetch=async()=>({ok:true,json:async()=>({})});\n")
+    env["NODE_OPTIONS"] = (
+        env.get("NODE_OPTIONS", "") + f' --require "{fetch_stub}"'
+    ).strip()
+    backend_args = (
+        [
+            "--backend",
+            "managed",
+            "--url",
+            "https://managed.invalid/",
+            "--api-key-env",
+            "FIXTURE_GUIDED_API_KEY",
+        ]
+        if managed
+        else ["--backend", "local", "--provider", "codex"]
+    )
     result = subprocess.run(
         [
             node_bin(),
@@ -300,10 +326,7 @@ if (typeof process.send === "function") {
             "update",
             "--host",
             host,
-            "--backend",
-            "local",
-            "--provider",
-            "codex",
+            *backend_args,
             "--read-only",
             "--yes",
         ],
@@ -331,7 +354,8 @@ if (typeof process.send === "function") {
             time.sleep(0.02)
         assert worker_exit.read_text() == "0"
         assert (tmp_path / "settings-at-ack").read_bytes() == settings.read_bytes()
-        assert b"REFLEXIO_ROW_LIMIT_INTERACTIONS=731\n" in settings.read_bytes()
+        assert b"REFLEXIO_URL=https://managed.invalid/" in settings.read_bytes()
+        assert b"REFLEXIO_ROW_LIMIT_INTERACTIONS=" not in settings.read_bytes()
         assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
         assert (root / "identity").read_text() == "new"
         assert adapter.exists()
@@ -340,7 +364,18 @@ if (typeof process.send === "function") {
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert "Preparing Python and runtime dependencies" in result.stdout
         assert b"CLAUDE_SMART_READ_ONLY=1\n" in settings.read_bytes()
-        assert (root / "identity").read_text() == "new"
+        if managed:
+            active_root = root
+        else:
+            selector = tmp_path / ".claude-smart/guided-runtimes/selected"
+            active_root = selector.parent / selector.read_text().strip() / "plugin"
+            assert (root / "identity").read_text() == "old"
+            assert (
+                b"REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex\n" in settings.read_bytes()
+            )
+            assert b"CLAUDE_SMART_LEARNING_PROVIDER=" not in settings.read_bytes()
+            assert b"REFLEXIO_ROW_LIMIT_INTERACTIONS=731\n" in settings.read_bytes()
+        assert (active_root / "identity").read_text() == "new"
         if host == "codex":
             manifest = next(adapter.rglob("codex-hooks.json"))
             contents = manifest.read_text()
@@ -351,7 +386,9 @@ if (typeof process.send === "function") {
             assert str(launchers[0].resolve()) in contents
             assert str(node.resolve()) not in contents
         else:
-            assert (root / "opencode/dist/server.mjs").as_uri() in adapter.read_text()
+            assert (
+                active_root / "opencode/dist/server.mjs"
+            ).as_uri() in adapter.read_text()
         return
 
     assert result.returncode != 0
@@ -365,7 +402,13 @@ if (typeof process.send === "function") {
         ).read_text() == "other host diagnostic"
     assert (root / "identity").read_text() == "old"
     assert not adapter.exists()
-    log = next((tmp_path / ".claude-smart/install-logs").glob(f"update-{host}-*.log"))
+    # Local preparation fails in the guide before any registration child/log.
+    report = result.stdout + result.stderr
+    if managed:
+        log = next(
+            (tmp_path / ".claude-smart/install-logs").glob(f"update-{host}-*.log")
+        )
+        report += log.read_text()
     expected_error = {
         "stale-settings": "Settings changed after confirmation",
         "invalid-default": "Settings save could not be confirmed",
@@ -373,7 +416,7 @@ if (typeof process.send === "function") {
         "early-disconnect": "Installation guide disconnected before passing settings",
         "preparation-fails": "uv sync failed",
     }[outcome]
-    assert expected_error in log.read_text()
+    assert expected_error in report, report
 
 
 @pytest.mark.parametrize(
@@ -743,10 +786,30 @@ fs.renameSync = (from, to) => {
         assert all(row["selected_root"] == str(selected.resolve()) for row in stops)
 
 
-def _run_guided_node_update(home, package, env, host):
+def _run_guided_node_update(home, package, env, host, *, backend="managed"):
     env = {
         key: value for key, value in env.items() if key != "CLAUDE_SMART_INSTALL_CHILD"
     }
+    # This family protects the deferred settings worker retained for managed
+    # single-host registration. Local mode uses the prepared generation owner.
+    env["FIXTURE_GUIDED_API_KEY"] = "owned-test-key"
+    fetch_stub = home / "managed-fetch.cjs"
+    fetch_stub.write_text("global.fetch=async()=>({ok:true,json:async()=>({})});\n")
+    env["NODE_OPTIONS"] = (
+        env.get("NODE_OPTIONS", "") + f' --require "{fetch_stub}"'
+    ).strip()
+    backend_args = (
+        [
+            "--backend",
+            "managed",
+            "--url",
+            "https://managed.invalid/",
+            "--api-key-env",
+            "FIXTURE_GUIDED_API_KEY",
+        ]
+        if backend == "managed"
+        else ["--backend", "local", "--provider", host]
+    )
     return subprocess.run(
         [
             node_bin(),
@@ -754,10 +817,7 @@ def _run_guided_node_update(home, package, env, host):
             "update",
             "--host",
             host,
-            "--backend",
-            "local",
-            "--provider",
-            host,
+            *backend_args,
             "--read-only",
             "--yes",
         ],
@@ -770,8 +830,9 @@ def _run_guided_node_update(home, package, env, host):
     )
 
 
+@pytest.mark.parametrize("backend", ["local", "managed"])
 @pytest.mark.parametrize("stage", ["build", "publish"])
-def test_guided_opencode_keeps_settings_when_loader_appears(tmp_path, stage):
+def test_guided_opencode_keeps_settings_when_loader_appears(tmp_path, stage, backend):
     package, root, uv, env = _fixture(tmp_path, "opencode", running="none")
     settings = tmp_path / ".claude-smart/.env"
     original = settings.read_bytes()
@@ -801,17 +862,21 @@ def test_guided_opencode_keeps_settings_when_loader_appears(tmp_path, stage):
             )
         )
 
-    result = _run_guided_node_update(tmp_path, package, env, "opencode")
+    result = _run_guided_node_update(
+        tmp_path, package, env, "opencode", backend=backend
+    )
     assert result.returncode != 0
     assert settings.read_bytes() == original
     assert adapter.read_text() == "foreign loader\n"
     assert (root / "identity").read_text() == "old"
-    log = next((tmp_path / ".claude-smart/install-logs").glob("update-opencode-*.log"))
+    report = result.stdout + result.stderr
+    for log in (tmp_path / ".claude-smart/install-logs").glob("update-opencode-*.log"):
+        report += log.read_text()
     expected = {
         "build": "It is not a claude-smart loader",
         "publish": "OpenCode loader changed before settings were saved",
     }
-    assert expected[stage] in log.read_text()
+    assert expected[stage] in report, report
 
 
 @pytest.mark.parametrize(
@@ -951,15 +1016,16 @@ def test_guided_codex_keeps_settings_when_hook_manifest_is_invalid(
     _write_executable(node, f'#!/bin/sh\nexec {shlex.quote(node_bin())} "$@"\n')
     (package / "plugin/hooks/codex-hooks.json").write_text(manifest)
 
-    result = _run_guided_node_update(tmp_path, package, env, "codex")
+    result = _run_guided_node_update(tmp_path, package, env, "codex", backend="local")
 
     assert result.returncode != 0
     assert settings.read_bytes() == before
     assert (root / "identity").read_text() == "old"
     assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
-    log = next((tmp_path / ".claude-smart/install-logs").glob("update-codex-*.log"))
-    assert "could not prepare claude-smart Codex runtime" in log.read_text()
-    assert reason in log.read_text()
+    report = result.stdout + result.stderr
+    for log in (tmp_path / ".claude-smart/install-logs").glob("update-codex-*.log"):
+        report += log.read_text()
+    assert reason in report, report
 
 
 @pytest.mark.parametrize(
@@ -1872,7 +1938,7 @@ def test_uninstall_checks_surviving_integrations(
     caller_inventory = {
         "fallback": surviving_inventory,
         "unknown": failed_inventory,
-    }.get(claude, "#!/bin/sh\nprintf '%s\\n' '[]'\n")
+    }.get(claude or "", "#!/bin/sh\nprintf '%s\\n' '[]'\n")
     if claude == "no-fallback":
         env["PATH"] = os.pathsep.join(
             directory
@@ -1923,11 +1989,15 @@ def test_guided_uninstall_keeps_standalone_codex_home(tmp_path, recorded):
     standalone_home = Path(env["CODEX_HOME"])
     guided_home = tmp_path / "guided-codex-home"
 
-    def run(*args, codex_home):
+    def run(*args, codex_home, standalone=False):
         result = subprocess.run(
             [*launcher, *args],
             cwd=tmp_path,
-            env={**env, "CODEX_HOME": str(codex_home)},
+            env={
+                **env,
+                "CODEX_HOME": str(codex_home),
+                **({"CLAUDE_SMART_INSTALL_CHILD": "1"} if standalone else {}),
+            },
             text=True,
             capture_output=True,
             check=False,
@@ -1937,7 +2007,9 @@ def test_guided_uninstall_keeps_standalone_codex_home(tmp_path, recorded):
         return result.stdout
 
     setup = ["setup", "--backend", "local", "--provider", "codex", "--yes"]
-    run(*setup, "--host", "codex", codex_home=standalone_home)
+    # Seed the retained standalone worker layout, then qualify its upgrade to
+    # the public prepared coordinator. Public local setup always creates a generation.
+    run("install", "--host", "codex", codex_home=standalone_home, standalone=True)
     if not recorded:
         registry = tmp_path / ".claude-smart/guided-runtimes/codex-homes"
         for entry in registry.iterdir():

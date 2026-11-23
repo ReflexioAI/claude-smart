@@ -48,12 +48,6 @@ export REFLEXIO_ENV_FILE="$HOME/.claude-smart/.env"
 # reranker model, even if a shared Reflexio env file enables it.
 export REFLEXIO_RERANK_ENABLED=false
 
-# The authenticated host CLI retains its own opt-in. Embedding execution is
-# selected by the SDK's model/endpoint policy, without a second plugin toggle.
-export CLAUDE_SMART_USE_LOCAL_CLI="${CLAUDE_SMART_USE_LOCAL_CLI:-1}"
-# The backend can be spawned from contexts whose PATH lacks the host
-# CLI dir (commonly ~/.local/bin or /opt/homebrew/bin). Pin the CLI
-# explicitly if we can resolve it from our own (post-login-path) PATH.
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "backend-service.sh" "$@"
 PLUGIN_ROOT_CANONICAL="$(cd "$PLUGIN_ROOT" 2>/dev/null && pwd -P || printf '%s\n' "$PLUGIN_ROOT")"
@@ -92,30 +86,10 @@ plugin_root_has_version_manifest() {
 
 PLUGIN_VERSION="$(plugin_version_from_root "$PLUGIN_ROOT_CANONICAL")"
 
-# Integration identity is per hook; the saved learning provider is shared.
-# Older installs without the new setting retain their existing host fallback.
-learning_provider="${CLAUDE_SMART_LEARNING_PROVIDER:-${CLAUDE_SMART_HOST:-claude-code}}"
-# The backend performs learning; hook processes retain their coding identity.
-export CLAUDE_SMART_HOST="$learning_provider"
-if [ -z "${CLAUDE_SMART_CLI_PATH:-}" ]; then
-  if [ "$learning_provider" = "opencode" ]; then
-    # Preserve Reflexio's Claude CLI provider contract while routing
-    # generation through the user's authenticated OpenCode setup. The bridge
-    # resolves opencode from CLAUDE_SMART_OPENCODE_PATH or PATH; don't require
-    # Git Bash's PATH to match the installer shell's PATH here.
-    claude_smart_prepend_node_bins
-    CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"
-    export CLAUDE_SMART_CLI_PATH
-  elif [ "$learning_provider" = "codex" ]; then
-    # The bundled SDK owns native Codex execution, including CLI/model selection.
-    claude_smart_prepend_node_bins
-  elif _cs_cli_path=$(command -v claude 2>/dev/null) && [ -n "$_cs_cli_path" ]; then
-    export CLAUDE_SMART_CLI_PATH="$_cs_cli_path"
-  elif [ -x "$HOME/.local/bin/claude" ]; then
-    export CLAUDE_SMART_CLI_PATH="$HOME/.local/bin/claude"
-  fi
-  unset _cs_cli_path
-fi
+# Keep hook identity independent of native learning. The Python admission step
+# reads the canonical target and only then selects any required host adapter.
+# The SDK resolves the selected host's executable from this prepared PATH.
+claude_smart_prepend_node_bins
 
 STATE_DIR="$HOME/.claude-smart"
 backend_pid_key="$(

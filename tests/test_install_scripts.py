@@ -104,13 +104,21 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
     # fake for the settings operation itself.
     lock_root = Path(filelock.__file__).parent.parent
     owner_program = (
-        "import sys, runpy; sys.path[:0] = sys.argv[1:3]; "
-        "sys.argv = ['claude_smart.env_config', *sys.argv[3:]]; "
-        "runpy.run_module('claude_smart.env_config', run_name='__main__', alter_sys=True)"
+        "import os,sys,runpy;from pathlib import Path;"
+        "source,deps,sdk,prefix,module,*arguments=sys.argv[1:];"
+        "sys.path[:0]=[source,sdk,deps];sys.prefix=prefix;"
+        "sys.executable=str(Path(prefix)/('Scripts/python.exe' if os.name=='nt' else 'bin/python'));"
+        "sys.argv=[module,*arguments];"
+        "runpy.run_module(module,run_name='__main__',alter_sys=True)"
     )
     direct_owner_program = (
-        "import sys, runpy; sys.path.insert(0, sys.argv[1]); "
-        "sys.argv = sys.argv[2:]; runpy.run_path(sys.argv[0], run_name='__main__')"
+        "import os,sys,runpy;from pathlib import Path;"
+        "deps,prefix,*arguments=sys.argv[1:];"
+        "plugin=Path(prefix).parent;"
+        "sys.path[:0]=[str(plugin/'src'),str(Path(prefix)/'fixture-site-packages'),deps];"
+        "sys.prefix=prefix;"
+        "sys.executable=str(Path(prefix)/('Scripts/python.exe' if os.name=='nt' else 'bin/python'));"
+        "sys.argv=arguments;runpy.run_path(sys.argv[0],run_name='__main__')"
     )
     # The installer controls the interpreter. Model the fake uv install by
     # exposing the copied fixture wheel source under the candidate's prefix.
@@ -141,9 +149,16 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         f"  cat > \"$python_root/bin/python\" <<'PYSH'\n"
         "#!/bin/sh\n"
         'if [ "$1" = "-P" ]; then shift; fi\n'
-        'if [ "$1" = "-I" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "claude_smart.env_config" ]; then\n'
-        "  shift 3\n"
-        f'  exec {shlex.quote(sys.executable)} -I -c {shlex.quote(owner_program)} "$PWD/src" {shlex.quote(str(lock_root))} "$@"\n'
+        'fixture_prefix="$(cd "$(dirname "$0")/.." && pwd)"\n'
+        'fixture_plugin="$(cd "$fixture_prefix/.." && pwd)"\n'
+        'if [ "$1" = "-I" ] && [ "${2:-}" = "-m" ] && { [ "${3:-}" = "claude_smart.env_config" ] || [ "${3:-}" = "claude_smart.native_selection" ]; }; then\n'
+        '  fixture_module="$3"; shift 3\n'
+        '  fixture_sdk="$fixture_prefix/fixture-site-packages"\n'
+        '  if [ ! -d "$fixture_sdk/reflexio" ]; then\n'
+        '    fixture_sdk="$fixture_plugin/vendor/reflexio"\n'
+        f'    [ -d "$fixture_sdk" ] || fixture_sdk={shlex.quote(str(REPO_ROOT / "plugin/vendor/reflexio"))}\n'
+        "  fi\n"
+        f'  exec {shlex.quote(sys.executable)} -I -c {shlex.quote(owner_program)} "$fixture_plugin/src" {shlex.quote(str(lock_root))} "$fixture_sdk" "$fixture_prefix" "$fixture_module" "$@"\n'
         "fi\n"
         'if [ "$1" = "-I" ] && [ "$2" = "-X" ] && [ "$3" = "utf8" ] && [ "$4" = "-c" ]; then\n'
         "  shift 4\n"
@@ -151,7 +166,7 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         "fi\n"
         'if [ "$1" = "-I" ] && [ "$2" != "-m" ]; then\n'
         "  shift\n"
-        f'  exec {shlex.quote(sys.executable)} -I -c {shlex.quote(direct_owner_program)} {shlex.quote(str(lock_root))} "$@"\n'
+        f'  exec {shlex.quote(sys.executable)} -I -c {shlex.quote(direct_owner_program)} {shlex.quote(str(lock_root))} "$fixture_prefix" "$@"\n'
         "fi\n"
         'case "$1" in */backend-inference-owner.py) [ "${CLAUDE_SMART_TEST_INFERENCE_OWNER:-}" != "exit" ] || exit 1; printf "%s\\n" "${CLAUDE_SMART_TEST_INFERENCE_OWNER:-colocated}"; exit 0 ;; esac\n'
         'if [ "$1" = "-" ] && [ "$2" = "onnxruntime" ] && [ -n "${CLAUDE_SMART_TEST_ONNXRUNTIME_IMPORT_STATUS:-}" ]; then\n'
@@ -826,7 +841,8 @@ def test_smart_install_repairs_local_env_defaults(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert not (tmp_path / ".claude-smart/install-failed").exists()
     text = (tmp_path / ".claude-smart/.env").read_text()
-    assert "CLAUDE_SMART_USE_LOCAL_CLI=1\n" in text
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=" not in text
+    assert "REFLEXIO_NATIVE_CLI_MODEL=" not in text
     assert 'CLAUDE_SMART_READ_ONLY="0"\n' in text
     assert "CLAUDE_SMART_HOST=" not in text
     assert "REFLEXIO_ROW_LIMIT_INTERACTIONS=500\n" in text
@@ -876,7 +892,9 @@ def test_smart_install_seeds_local_defaults_whenever_runtime_is_local(
     assert not (tmp_path / ".claude-smart/install-failed").exists()
     assert json.loads(result.stdout) == {"continue": True, "suppressOutput": True}
     text = env_file.read_text()
-    assert ("CLAUDE_SMART_USE_LOCAL_CLI=" in text) is local
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=" not in text
+    assert "REFLEXIO_NATIVE_CLI_MODEL=" not in text
+    assert ("REFLEXIO_ROW_LIMIT_INTERACTIONS=" in text) is local
     assert text.startswith(file_text)
     if not local:
         assert text == file_text
@@ -1149,7 +1167,10 @@ def test_installer_mode_matches_runtime_resolution(
             assert key == "key=set"
     assert "rflx-shell" not in path.read_text()
     if not managed:
-        assert "CLAUDE_SMART_USE_LOCAL_CLI=" in path.read_text()
+        assert (
+            "REFLEXIO_NATIVE_CLI_MODEL=local-cli/claude-code/sonnet" in path.read_text()
+        )
+        assert "CLAUDE_SMART_USE_LOCAL_CLI=" not in path.read_text()
 
 
 def test_no_code_path_uses_the_shared_reflexio_env_file() -> None:
@@ -1277,15 +1298,22 @@ def test_public_install_preserves_legacy_learning_host_across_integrations(
         path.write_text('# keep\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_READ_ONLY="1"\n')
     original = legacy.read_bytes()
     result = _run_public_setup(tmp_path, "--backend", "local")
+    # A coding-host fallback did not establish an independent learning host.
+    # Require confirmation rather than silently switching Codex to Claude.
+    assert result.returncode != 0
+    assert "explicit --provider" in result.stderr
+    assert selected.read_bytes() == original
+    assert legacy.read_bytes() == original
+    result = _run_public_setup(tmp_path, "--backend", "local", "--provider", "codex")
     assert result.returncode == 0, result.stderr
     assert legacy.read_bytes() == original
     text = selected.read_text()
     assert "CLAUDE_SMART_HOST=codex" in text
     assert (
         dotenv_values(stream=StringIO(text), interpolate=False).get(
-            "CLAUDE_SMART_LEARNING_PROVIDER"
+            "REFLEXIO_NATIVE_CLI_MODEL"
         )
-        == "codex"
+        == "local-cli/codex"
     )
     assert (
         dotenv_values(stream=StringIO(text), interpolate=False).get(
@@ -1338,7 +1366,12 @@ def test_node_installer_restores_publish_hooks_from_source(tmp_path: Path) -> No
 def _copy_prepared_policy_owner(plugin_root: Path) -> None:
     owner = plugin_root / "src/claude_smart"
     owner.mkdir(parents=True, exist_ok=True)
-    for name in ("__init__.py", "env_config.py", "opencode_scope.py"):
+    for name in (
+        "__init__.py",
+        "env_config.py",
+        "native_selection.py",
+        "opencode_scope.py",
+    ):
         shutil.copy2(REPO_ROOT / "plugin/src/claude_smart" / name, owner / name)
 
 
@@ -1348,8 +1381,8 @@ def _seed_prepared_policy(home: Path, provider: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\n'
-        'CLAUDE_SMART_READ_ONLY="0"\nCLAUDE_SMART_USE_LOCAL_CLI="1"\n'
-        f'CLAUDE_SMART_LEARNING_PROVIDER="{provider}"\n'
+        'CLAUDE_SMART_READ_ONLY="0"\n'
+        f'REFLEXIO_NATIVE_CLI_MODEL="local-cli/{provider}"\n'
     )
 
 
@@ -1372,6 +1405,11 @@ def _fake_claude_code_package(tmp_path: Path, smart_install: str) -> Path:
     # Shared Node preparation invokes the real import-light repair owner.
     _copy_prepared_policy_owner(package_root / "plugin")
     shutil.copy2(REPO_ROOT / "plugin/scripts/guided-command.sh", scripts)
+    # Local guided setup now prepares the same complete runtime for every host.
+    # Exercise real hook rendering and native admission, rather than stubbing
+    # their validation as a successful settings publication.
+    shutil.copytree(REPO_ROOT / "plugin/hooks", package_root / "plugin/hooks")
+    shutil.copy2(REPO_ROOT / "plugin/scripts/backend-python-runner.py", scripts)
     for name in ("opencode-claude-compat", "opencode-claude-compat.js"):
         shutil.copy2(REPO_ROOT / "plugin/scripts" / name, scripts)
     _write_executable(scripts / "smart-install.sh", smart_install)
@@ -4391,7 +4429,8 @@ def test_smart_install_does_not_persist_retired_embedding_export(
 
     assert result.returncode == 0, result.stderr
     text = (tmp_path / ".claude-smart" / ".env").read_text()
-    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=" not in text
+    assert "REFLEXIO_NATIVE_CLI_MODEL=" not in text
     assert "CLAUDE_SMART_USE_LOCAL_EMBEDDING" not in text
 
 
@@ -4672,7 +4711,8 @@ def test_smart_install_repairs_reflexio_template_env_drift(tmp_path: Path) -> No
     assert second.returncode == 0, second.stderr
     text = selected.read_text()
     assert text.startswith(original)
-    assert "CLAUDE_SMART_USE_LOCAL_CLI=1\n" in text
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=" not in text
+    assert "REFLEXIO_NATIVE_CLI_MODEL=" not in text
     assert 'CLAUDE_SMART_READ_ONLY="0"\n' in text
     assert "CLAUDE_SMART_HOST=" not in text
     assert "REFLEXIO_ROW_LIMIT_INTERACTIONS=500\n" in text
@@ -5804,7 +5844,7 @@ def test_backend_service_reports_retired_model_before_replacement(
     report = result.stdout + result.stderr
     assert result.returncode == (1 if command == "preflight" else 0), report
     assert "CLAUDE_SMART_CLI_MODEL has been retired" in report
-    assert "CLAUDE_SMART_LEARNING_MODEL" in report
+    assert "REFLEXIO_NATIVE_CLI_MODEL" in report
     assert "private-retired-model" not in report
     assert not (tmp_path / "started").exists()
     assert dotenv.read_text() == original
@@ -8793,7 +8833,13 @@ def test_legacy_windows_cli_path_keeps_original_backslashes(tmp_path: Path) -> N
     legacy.parent.mkdir()
     path = r"C:\Users\Alice\claude.exe"
     legacy.write_text(f'export CLAUDE_SMART_CLI_PATH="{path}"\n')
-    result = _run_public_setup(tmp_path, "--backend", "local")
+    # The path is opaque; its filename cannot authorize a learning host.
+    result = _run_public_setup(
+        tmp_path,
+        "--backend",
+        "local",
+        env_extra={"REFLEXIO_NATIVE_CLI_MODEL": "local-cli/claude-code"},
+    )
     assert result.returncode == 0, result.stderr
     env = _isolated_env(tmp_path)
     env.pop("CLAUDE_SMART_CLI_PATH", None)
@@ -9648,7 +9694,8 @@ def test_smart_install_observes_connection_changes_during_preparation(
     assert result.returncode == 0, result.stderr
     assert not (selected.parent / "install-failed").exists()
     assert selected.read_text().startswith(replacement)
-    assert "CLAUDE_SMART_USE_LOCAL_CLI=1\n" in selected.read_text()
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=" not in selected.read_text()
+    assert "REFLEXIO_NATIVE_CLI_MODEL=" not in selected.read_text()
     assert "old-secret" not in result.stdout + result.stderr + selected.read_text()
 
 

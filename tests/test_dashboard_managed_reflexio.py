@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
+import sysconfig
 from pathlib import Path
 
 import pytest
 
-from tests.test_env_bootstrap import owner_python as owner_python
+from tests.test_env_bootstrap import owner_python as owner_python  # noqa: PLC0414 — register the shared pytest fixture
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -110,6 +113,57 @@ def _prepared_dashboard_owner(tmp_path, owner_python):
     )
 
 
+@pytest.fixture(scope="module")
+def native_owner_python(tmp_path_factory, owner_python):
+    """Install the actual bundle over the same isolated settings-owner package.
+
+    Reuse this run's locked dependencies without reading caller PYTHONPATH.
+    The SDK-free owner remains unchanged for connection/credential repairs.
+    """
+    root = tmp_path_factory.mktemp("native-settings-owner") / "runtime"
+    shutil.copytree(owner_python.parent.parent, root, symlinks=True)
+    python = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    site = Path(
+        subprocess.check_output(
+            [
+                str(python),
+                "-I",
+                "-c",
+                "import sysconfig;print(sysconfig.get_path('purelib'))",
+            ],
+            text=True,
+            timeout=15,
+        ).strip()
+    )
+    vendor = REPO_ROOT / "plugin/vendor/reflexio"
+    assert (vendor / "reflexio/server/llm/_native_model_ref.py").is_file()
+    (site / "qualified-native-runtime.pth").write_text(
+        str(vendor) + "\n" + sysconfig.get_path("purelib") + "\n"
+    )
+    actual = subprocess.check_output(
+        [
+            str(python),
+            "-I",
+            "-c",
+            "from pathlib import Path;import reflexio.server.llm._native_model_ref as m;print(Path(m.__file__).resolve())",
+        ],
+        text=True,
+        timeout=15,
+    ).strip()
+    assert (
+        Path(actual) == (vendor / "reflexio/server/llm/_native_model_ref.py").resolve()
+    )
+    return python
+
+
+@pytest.fixture
+def native_dashboard_owner(_prepared_dashboard_owner, native_owner_python, tmp_path):
+    alias = tmp_path / ".venv"
+    assert alias.is_symlink()
+    alias.unlink()
+    alias.symlink_to(native_owner_python.parent.parent, target_is_directory=True)
+
+
 def _run_config_module(
     tmp_path: Path,
     script: str,
@@ -120,8 +174,11 @@ def _run_config_module(
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required")
-    probe = subprocess.run(  # noqa: S603 — repository-controlled test command.
-        [node, "-p", "process.features.typescript"], capture_output=True, text=True
+    probe = subprocess.run(
+        [node, "-p", "process.features.typescript"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if probe.stdout.strip() in {"", "false", "undefined"}:
         pytest.skip("this node cannot strip TypeScript types")
@@ -129,7 +186,7 @@ def _run_config_module(
     env["HOME"] = str(tmp_path)
     env.update(env_extra)
     module = REPO_ROOT / "plugin" / "dashboard" / "lib" / f"{module_name}.ts"
-    result = subprocess.run(  # noqa: S603 — repository-controlled test command.
+    result = subprocess.run(
         [
             node,
             "--no-warnings",
@@ -183,49 +240,55 @@ def test_dashboard_proxy_prefers_the_saved_file_over_its_launch_env(
     assert json.loads(out) == {"url": "https://a.example/", "apiKey": "ka"}
 
 
-@pytest.mark.parametrize("model", ["provider/model#high", "#high"])
-@pytest.mark.parametrize("saved_provider", [False, True])
-def test_dashboard_saves_opencode_variant_reference(
-    tmp_path: Path, model: str, saved_provider: bool
-) -> None:
-    env = {"CLAUDE_SMART_HOST": "opencode"} if not saved_provider else {}
-    env_file = tmp_path / ".claude-smart" / ".env"
-    env_file.parent.mkdir()
-    if saved_provider:
-        env_file.write_text("CLAUDE_SMART_LEARNING_PROVIDER=opencode\n")
+@pytest.mark.usefixtures("native_dashboard_owner")
+@pytest.mark.parametrize("model", ["provider/model#high", "#high", "opaque-model"])
+def test_dashboard_saves_sdk_native_model_reference(tmp_path: Path, model: str) -> None:
+    reference = f"local-cli/opencode/{model}"
     out = _run_config_module(
         tmp_path,
-        f"await m.writeConfig({{CLAUDE_SMART_LEARNING_MODEL: {json.dumps(model)}}}); "
+        f"await m.writeConfig({{REFLEXIO_NATIVE_CLI_MODEL: {json.dumps(reference)}}}); "
         "process.stdout.write(JSON.stringify(await m.readConfig()));",
-        env,
+        {},
     )
-    assert json.loads(out)["CLAUDE_SMART_LEARNING_MODEL"] == model
+    assert json.loads(out)["REFLEXIO_NATIVE_CLI_MODEL"] == reference
 
 
-@pytest.mark.parametrize("provider", ["codex", "claude-code"])
-def test_dashboard_refuses_variant_reference_for_other_providers(tmp_path, provider):
+@pytest.mark.usefixtures("native_dashboard_owner")
+@pytest.mark.parametrize(
+    "target", ["local-cli/unsupported/private-model", "local-cli/codex/"]
+)
+def test_dashboard_refuses_invalid_sdk_target_without_changing_file(tmp_path, target):
     env_file = tmp_path / ".claude-smart" / ".env"
     env_file.parent.mkdir()
-    saved = f"CLAUDE_SMART_LEARNING_PROVIDER={provider}\n"
+    saved = "REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex/kept-model\n"
     env_file.write_text(saved)
     out = _run_config_module(
         tmp_path,
-        'try { await m.writeConfig({CLAUDE_SMART_LEARNING_MODEL: "#high"}); } '
+        f"try {{ await m.writeConfig({{REFLEXIO_NATIVE_CLI_MODEL: {json.dumps(target)}}}); }} "
         "catch (error) { process.stdout.write(error.message); }",
-        {"CLAUDE_SMART_LEARNING_PROVIDER": "opencode"},
+        {},
     )
-    assert "valid model reference" in out
+    assert "failed prepared SDK validation" in out
     assert env_file.read_text() == saved
 
 
+@pytest.mark.usefixtures("native_dashboard_owner")
 @pytest.mark.parametrize(
-    "owner", ["CLAUDE_SMART_LEARNING_PROVIDER", "CLAUDE_SMART_HOST"]
+    "owner", ["CLAUDE_SMART_LEARNING_PROVIDER", "REFLEXIO_NATIVE_CLI_MODEL"]
 )
-def test_dashboard_model_save_rechecks_provider_before_publication(tmp_path, owner):
+def test_dashboard_native_save_rechecks_selection_before_publication(tmp_path, owner):
     env_file = tmp_path / ".claude-smart" / ".env"
     env_file.parent.mkdir()
-    env_file.write_text(f"{owner}=opencode\n")
-    switched = f"{owner}=codex\n"
+    original = (
+        "opencode"
+        if owner == "CLAUDE_SMART_LEARNING_PROVIDER"
+        else "local-cli/opencode"
+    )
+    replacement = (
+        "codex" if owner == "CLAUDE_SMART_LEARNING_PROVIDER" else "local-cli/codex"
+    )
+    env_file.write_text(f"{owner}={original}\n")
+    switched = f"{owner}={replacement}\n"
     out = _run_config_module(
         tmp_path,
         """
@@ -235,12 +298,12 @@ fs.mkdir = async (...args) => {
   await fs.writeFile(ENV_FILE, SWITCHED);
   return mkdir(...args);
 };
-try { await m.writeConfig({CLAUDE_SMART_LEARNING_MODEL: "#high"}); }
+try { await m.writeConfig({REFLEXIO_NATIVE_CLI_MODEL: "local-cli/opencode/provider/model#high"}); }
 catch (error) { process.stdout.write(error.message); }
 """.replace("ENV_FILE", json.dumps(str(env_file))).replace(
             "SWITCHED", json.dumps(switched)
         ),
-        {"CLAUDE_SMART_LEARNING_PROVIDER": "", "CLAUDE_SMART_HOST": ""},
+        {},
     )
     assert "reload and retry" in out
     assert env_file.read_text() == switched
@@ -502,7 +565,10 @@ def test_dashboard_accepts_bom_prefixed_first_assignment(
             ("\ufeff" + export + first + "=" + values[first] + "\n").encode()
         )
 
-def test_dashboard_unrelated_save_does_not_materialize_a_timeout(tmp_path: Path) -> None:
+
+def test_dashboard_unrelated_save_does_not_materialize_a_timeout(
+    tmp_path: Path,
+) -> None:
     out = _run_config_module(
         tmp_path,
         "const saved = await m.readConfig(); "
@@ -530,4 +596,63 @@ def test_dashboard_timeout_save_and_clear_preserve_presence(tmp_path: Path) -> N
     states = json.loads(out)
     assert states["kept"]["CLAUDE_SMART_CLI_TIMEOUT"] == "75"
     assert "CLAUDE_SMART_CLI_TIMEOUT" not in states["cleared"]
-    assert "CLAUDE_SMART_CLI_TIMEOUT" not in (tmp_path / ".claude-smart/.env").read_text()
+    assert (
+        "CLAUDE_SMART_CLI_TIMEOUT" not in (tmp_path / ".claude-smart/.env").read_text()
+    )
+
+
+@pytest.mark.usefixtures("native_dashboard_owner")
+def test_dashboard_native_conversion_keeps_exact_private_original(tmp_path):
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = (
+        b"# keep private original\r\nOTHER=untouched\r\n"
+        b"CLAUDE_SMART_LEARNING_PROVIDER=codex\r\n"
+        b"CLAUDE_SMART_LEARNING_MODEL=private-model\r\n"
+        b"CLAUDE_SMART_USE_LOCAL_CLI=1\r\n"
+    )
+    selected.write_bytes(original)
+    _run_config_module(
+        tmp_path,
+        "await m.writeConfig({REFLEXIO_NATIVE_CLI_MODEL:'local-cli/codex/private-model'});",
+        {},
+    )
+    snapshot = (
+        selected.parent
+        / "native-selection-history"
+        / (hashlib.sha256(original).hexdigest() + ".env")
+    )
+    assert snapshot.read_bytes() == original
+    assert selected.read_bytes().startswith(
+        b"# keep private original\r\nOTHER=untouched\r\n"
+    )
+    assert not any(
+        name in selected.read_bytes()
+        for name in (
+            b"CLAUDE_SMART_LEARNING_PROVIDER",
+            b"CLAUDE_SMART_LEARNING_MODEL",
+            b"CLAUDE_SMART_USE_LOCAL_CLI",
+        )
+    )
+    if os.name != "nt":
+        assert stat.S_IMODE(snapshot.stat().st_mode) == 0o600
+        assert stat.S_IMODE(snapshot.parent.stat().st_mode) == 0o700
+
+
+@pytest.mark.usefixtures("native_dashboard_owner")
+def test_dashboard_local_activation_validates_inactive_native_target(tmp_path):
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = (
+        b"REFLEXIO_URL=https://managed.example/\n"
+        b"REFLEXIO_NATIVE_CLI_MODEL=local-cli/unsupported/private-model\n"
+    )
+    selected.write_bytes(original)
+    out = _run_config_module(
+        tmp_path,
+        "try {await m.writeConfig({REFLEXIO_URL:'http://localhost:8071/'});} "
+        "catch(error){process.stdout.write(error.message);}",
+        {},
+    )
+    assert "failed prepared SDK validation" in out
+    assert selected.read_bytes() == original

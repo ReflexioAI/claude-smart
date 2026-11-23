@@ -146,7 +146,6 @@ install_complete() {
   claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook || return 1
   if ! claude_smart_reflexio_url_is_remote; then
     [ -f "$HOME/.claude-smart/.env" ] || return 1
-    grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_USE_LOCAL_CLI[[:space:]]*=' "$HOME/.claude-smart/.env" || return 1
     grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_SMART_READ_ONLY[[:space:]]*=' "$HOME/.claude-smart/.env" || return 1
     grep -qE '^[[:space:]]*(export[[:space:]]+)?REFLEXIO_ROW_LIMIT_INTERACTIONS[[:space:]]*=' "$HOME/.claude-smart/.env" || return 1
   fi

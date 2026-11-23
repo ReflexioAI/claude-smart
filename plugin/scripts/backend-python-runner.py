@@ -9,124 +9,36 @@ import sys
 from importlib.util import find_spec
 from pathlib import Path
 
+from claude_smart.native_selection import (
+    LearningSelectionError,
+    admit_native_learning_target,
+)
+
 # The one file every claude-smart release up to 0.2.x stored memory in.
 LEGACY_DB_FILENAME = "reflexio.db"
 ORG_ID = "claude-smart"
 LEGACY_ORG_ENV = "REFLEXIO_DEFAULT_ORG_ID"
 LEGACY_MODEL_ENV = "CLAUDE_SMART_CLI_MODEL"
-LEGACY_MODEL_GUIDANCE = (
-    "CLAUDE_SMART_CLI_MODEL has been retired. Move the effective model to "
-    "CLAUDE_SMART_LEARNING_MODEL and remove the old assignment."
-)
-
-
-class LearningSelectionError(ValueError):
-    """Safe model-selection error to report before replacing a backend."""
-
-
-def _check_retired_learning_settings(*, opencode_enabled: bool) -> None:
-    from dotenv import dotenv_values
-
-    env_file = os.environ.get("REFLEXIO_ENV_FILE", "")
-    saved = (
-        dotenv_values(env_file, interpolate=False)
-        if env_file and Path(env_file).is_file()
-        else {}
-    )
-    retired = {LEGACY_MODEL_ENV: LEGACY_MODEL_GUIDANCE}
-    if opencode_enabled:
-        retired["CLAUDE_SMART_OPENCODE_VARIANT"] = (
-            "CLAUDE_SMART_OPENCODE_VARIANT has been retired. Use provider/model#variant "
-            "or #variant in CLAUDE_SMART_LEARNING_MODEL, then remove the old setting."
-        )
-    for name, guidance in retired.items():
-        if os.environ.get(name, "").strip() or (saved.get(name) or "").strip():
-            raise LearningSelectionError(guidance)
 
 
 def prepare_native_sdk_environment() -> None:
-    """Project saved learning intent through the bundled SDK's native parser."""
-    from reflexio.env_utils import env_truthy
-
-    host = os.environ.get("CLAUDE_SMART_HOST", "").strip() or "claude-code"
-    enabled_name = "CLAUDE_SMART_USE_LOCAL_CLI"
-    intent = os.environ.get(enabled_name, "")
-    _check_retired_learning_settings(
-        opencode_enabled=host == "opencode" and env_truthy(intent),
-    )
-    model = os.environ.get("CLAUDE_SMART_LEARNING_MODEL", "").strip()
-    try:
-        from reflexio.server.llm._native_model_ref import (
-            NativeCLISelectionError,
-            parse_native_model_ref,
+    """Publish admitted intent only in the backend child and its workers."""
+    target = admit_native_learning_target()
+    if (
+        target is not None
+        and target.host == "opencode"
+        and not os.environ.get("CLAUDE_SMART_CLI_PATH", "").strip()
+    ):
+        adapter = Path(__file__).parent / (
+            "opencode-claude-compat.cmd"
+            if os.name == "nt"
+            else "opencode-claude-compat"
         )
-    except ImportError as exc:
-        # Storage-only legacy SDK callers do not request native generation.
-        # Never translate their saved model into the retired launch field.
-        if (
-            not env_truthy(intent)
-            and not os.environ.get("REFLEXIO_NATIVE_CLI_MODEL", "").strip()
-        ):
-            return
-        raise LearningSelectionError(
-            "Claude Smart requires its bundled SDK native model interface. "
-            "Repair or update the plugin bundle before restarting."
-        ) from exc
-
-    target_name = "REFLEXIO_NATIVE_CLI_MODEL"
-    selected = os.environ.get(target_name, "")
-    if env_truthy(intent):
-        if (
-            host == "claude-code"
-            and not model
-            and (selected == "local-cli/claude-code/sonnet" or _has_saved_sonnet_pin())
-        ):
-            raise LearningSelectionError(
-                "An explicit Sonnet pin needs CLAUDE_SMART_LEARNING_MODEL=sonnet. "
-                "Save that learning model before restarting."
-            )
-        target = f"local-cli/{host}/{model}" if model else f"local-cli/{host}"
-        try:
-            parsed = parse_native_model_ref(target)
-            if parsed.host != host:
-                raise LearningSelectionError(
-                    "Claude Smart learning provider is unsupported"
-                )
-            target = parsed.reference
-        except NativeCLISelectionError as exc:
-            raise LearningSelectionError(
-                "Claude Smart learning provider or model is unsupported"
-            ) from exc
-        if selected.strip() and selected != target:
-            raise LearningSelectionError(
-                "Native model conflicts with the saved Claude Smart selection. "
-                "Make REFLEXIO_NATIVE_CLI_MODEL agree with CLAUDE_SMART_LEARNING_MODEL."
-            )
-        os.environ[target_name] = target
-    elif intent.strip() and selected.strip():
-        raise LearningSelectionError(
-            "Native model conflicts with disabled Claude Smart CLI learning"
-        )
-
-    # The SDK reloads the same dotenv file in uvicorn children. An empty process
-    # value eclipses any saved legacy selector without changing the user's file.
-    os.environ[enabled_name] = ""
+        os.environ["CLAUDE_SMART_CLI_PATH"] = str(adapter)
+    os.environ["REFLEXIO_NATIVE_CLI_MODEL"] = target.reference if target else ""
+    # The SDK reloads dotenv in workers; empty masks never modify the saved file.
+    os.environ["CLAUDE_SMART_USE_LOCAL_CLI"] = ""
     os.environ[LEGACY_MODEL_ENV] = ""
-
-
-def _has_saved_sonnet_pin() -> bool:
-    # Use the SDK's read-only historical decoder. Startup owns config upgrades.
-    from reflexio.cli.paths import reflexio_home
-    from reflexio.config_env import StoredConfigurationError
-    from reflexio.config_file import LocalConfigFile
-
-    config = reflexio_home() / "configs" / f"config_{ORG_ID}.json"
-    try:
-        document = LocalConfigFile(config).read_document_for_conversion()
-    except (FileNotFoundError, StoredConfigurationError):
-        return False
-    roles = document.get("llm_config")
-    return isinstance(roles, dict) and "local-cli/claude-code/sonnet" in roles.values()
 
 
 def _incomplete_installation(path: Path, org_id: str) -> bool:
@@ -312,7 +224,7 @@ def pin_legacy_sqlite_db_path(
                 f"remain in {derived} and are not merged",
                 file=sys.stderr,
             )
-    except Exception:  # noqa: BLE001 - redact saved settings and database details
+    except Exception:  # noqa: BLE001 — redact saved settings and database details
         raise RuntimeError(
             "Could not prepare the local configuration and pin SQLite db_path; "
             "startup stopped to preserve database identity. Stop old writers, "

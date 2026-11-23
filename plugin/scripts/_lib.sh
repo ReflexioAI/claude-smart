@@ -123,15 +123,15 @@ claude_smart_source_reflexio_env() {
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
     case "$key" in
-      # Shared connection and learning settings: file wins over values inherited
+      # Shared connection settings: file wins over values inherited
       # by a long-lived backend/dashboard or exported by a per-agent hook.
-      REFLEXIO_URL|REFLEXIO_API_KEY|REFLEXIO_USER_ID|CLAUDE_SMART_READ_ONLY|CLAUDE_SMART_LEARNING_PROVIDER|CLAUDE_SMART_LEARNING_MODEL)
+      REFLEXIO_URL|REFLEXIO_API_KEY|REFLEXIO_USER_ID|CLAUDE_SMART_READ_ONLY)
         value="$(claude_smart_env_unquote "$value")"
         export "$key=$value"
         ;;
       # CLAUDE_SMART_* flags: respect anything the caller already exported so
       # per-session overrides (e.g., a manual test) take precedence over the file.
-      CLAUDE_SMART_USE_LOCAL_CLI|CLAUDE_SMART_HOST|CLAUDE_SMART_BACKEND_AUTOSTART|CLAUDE_SMART_DASHBOARD_AUTOSTART|CLAUDE_SMART_CLI_PATH|CLAUDE_SMART_OPENCODE_PATH|CLAUDE_SMART_CLI_TIMEOUT|CLAUDE_SMART_STATE_DIR)
+      CLAUDE_SMART_HOST|CLAUDE_SMART_BACKEND_AUTOSTART|CLAUDE_SMART_DASHBOARD_AUTOSTART|CLAUDE_SMART_CLI_PATH|CLAUDE_SMART_OPENCODE_PATH|CLAUDE_SMART_CLI_TIMEOUT|CLAUDE_SMART_STATE_DIR)
         if [ -z "$(eval "printf '%s' \"\${$key:-}\"")" ]; then
           value="$(claude_smart_env_unquote "$value")"
           export "$key=$value"

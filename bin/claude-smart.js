@@ -67,6 +67,9 @@ const CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY";
 const CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI";
 const CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST";
 const LEARNING_PROVIDER_ENV = "CLAUDE_SMART_LEARNING_PROVIDER";
+const NATIVE_MODEL_ENV = "REFLEXIO_NATIVE_CLI_MODEL";
+const RETIRED_LEARNING_ENVS = [CLAUDE_SMART_USE_LOCAL_CLI_ENV, LEARNING_PROVIDER_ENV,
+  "CLAUDE_SMART_LEARNING_MODEL"];
 const CLAUDE_SMART_OPENCODE_PATH_ENV = "CLAUDE_SMART_OPENCODE_PATH";
 const REFLEXIO_USER_ID_ENV = "REFLEXIO_USER_ID";
 const HOST_CLAUDE_CODE = "claude-code";
@@ -325,7 +328,6 @@ function writePrivateFile(path, content) {
 // Match _lib.sh: caller-first flags retain their first nonempty saved value;
 // shared connection/learning fields retain the last assignment, even empty.
 const CALLER_FIRST_ENV_KEYS = new Set([
-  "CLAUDE_SMART_USE_LOCAL_CLI",
   "CLAUDE_SMART_HOST",
   "CLAUDE_SMART_BACKEND_AUTOSTART",
   "CLAUDE_SMART_DASHBOARD_AUTOSTART",
@@ -345,7 +347,10 @@ function parseEnvSnapshot(bytes, exists) {
     const parsed = parseEnvLine(line);
     if (
       parsed &&
-      (!CALLER_FIRST_ENV_KEYS.has(parsed.key) || !values.get(parsed.key))
+      (!(CALLER_FIRST_ENV_KEYS.has(parsed.key) ||
+        // Only confirmed migration consumes this retired field. Preserve the
+        // old first-nonempty opt-out; ordinary readers never export it.
+        parsed.key === CLAUDE_SMART_USE_LOCAL_CLI_ENV) || !values.get(parsed.key))
     ) {
       values.set(parsed.key, parsed.value);
       rows.set(parsed.key, index);
@@ -439,8 +444,6 @@ function readInstallPolicy() {
     "REFLEXIO_API_KEY",
     "REFLEXIO_USER_ID",
     "CLAUDE_SMART_READ_ONLY",
-    LEARNING_PROVIDER_ENV,
-    "CLAUDE_SMART_LEARNING_MODEL",
   ]) {
     if (values.has(key)) process.env[key] = values.get(key);
   }
@@ -455,7 +458,7 @@ function readInstallPolicy() {
     managed,
     url,
     readOnly,
-    provider: values.get(LEARNING_PROVIDER_ENV) || values.get(CLAUDE_SMART_HOST_ENV),
+    provider: (process.env[NATIVE_MODEL_ENV] ?? values.get(NATIVE_MODEL_ENV))?.split("/")[1],
   };
 }
 
@@ -2091,12 +2094,29 @@ function savedInstallConfiguration(captured) {
       : "");
   const apiKey = env.get("REFLEXIO_API_KEY") ?? "";
   const userId = env.get(REFLEXIO_USER_ID_ENV) ?? "";
+  // Decode only for the confirmed guide. The prepared SDK remains the sole
+  // target validator, and ordinary runtime never accepts the old selectors.
+  const canonical = process.env[NATIVE_MODEL_ENV] ?? env.get(NATIVE_MODEL_ENV);
+  const canonicalParts = canonical?.split("/");
+  const rawOldProvider = env.get(LEARNING_PROVIDER_ENV);
+  const oldProvider = rawOldProvider ? (rawOldProvider.trim() || HOST_CLAUDE_CODE) : undefined;
+  const oldModel = env.get("CLAUDE_SMART_LEARNING_MODEL")?.trim() || "";
+  const oldEnabled = /^(?:1|true|yes|on)$/i.test((env.get(CLAUDE_SMART_USE_LOCAL_CLI_ENV) || "1").trim());
+  const oldTarget = oldEnabled ? `local-cli/${oldProvider}${oldModel ? `/${oldModel}` : ""}` : "";
+  const legacySelection = RETIRED_LEARNING_ENVS.some((key) => env.has(key));
+  const legacyHostFallback = env.has(CLAUDE_SMART_HOST_ENV) && !isRemoteReflexioUrl(url);
+  const selectionConflict = !Object.hasOwn(process.env, NATIVE_MODEL_ENV) &&
+    ((canonical !== undefined && legacySelection && canonical !== oldTarget) ||
+      (canonical === undefined && (legacySelection || legacyHostFallback) && oldEnabled &&
+        (!oldProvider || oldProvider.includes("/"))));
   return {
     backend: env.size ? (isRemoteReflexioUrl(url) ? "managed" : "local") : null,
     url,
     apiKey,
-    provider: env.get(LEARNING_PROVIDER_ENV) || env.get(CLAUDE_SMART_HOST_ENV),
-    model: env.get("CLAUDE_SMART_LEARNING_MODEL") || "",
+    provider: canonical === undefined ? (legacySelection ? oldProvider : undefined) : canonicalParts?.[1],
+    nativeTarget: canonical,
+    model: canonical === undefined ? oldModel : canonicalParts?.slice(2).join("/") || "",
+    selectionConflict,
     retiredOpenCodeVariant: Boolean(env.get("CLAUDE_SMART_OPENCODE_VARIANT")?.trim()),
     managedUrl: env.get("CLAUDE_SMART_MANAGED_URL") || "",
     managedApiKey: env.get("CLAUDE_SMART_MANAGED_API_KEY") || "",
@@ -2104,7 +2124,7 @@ function savedInstallConfiguration(captured) {
     localApiKey: env.get("CLAUDE_SMART_LOCAL_API_KEY") || "",
     cliPath: env.get("CLAUDE_SMART_CLI_PATH") || "",
     opencodePath: env.get(CLAUDE_SMART_OPENCODE_PATH_ENV),
-    useLocalCli: env.get(CLAUDE_SMART_USE_LOCAL_CLI_ENV),
+    useLocalCli: (canonical === undefined ? oldEnabled : Boolean(canonical.trim())) ? "1" : "0",
     readOnly: ["1", "true", "yes", "on"].includes(
       (env.get(CLAUDE_SMART_READ_ONLY_ENV) || "").toLowerCase(),
     ),
@@ -2126,7 +2146,6 @@ function planInstallSettings(config, captured) {
   const previous = installEnvironment(captured);
   const previousProvider =
     previous.get(LEARNING_PROVIDER_ENV) || previous.get(CLAUDE_SMART_HOST_ENV);
-  if (previousProvider) values[LEARNING_PROVIDER_ENV] = previousProvider;
   // Keep an independent account override. Bind a validated relative Windows
   // selection to the file we checked so the relocated runtime uses it.
   const savedOpenCodePath = previous.get(CLAUDE_SMART_OPENCODE_PATH_ENV);
@@ -2153,10 +2172,11 @@ function planInstallSettings(config, captured) {
   remember(previous.get("REFLEXIO_URL"), previous.get("REFLEXIO_API_KEY"));
   remember(values.REFLEXIO_URL, values.REFLEXIO_API_KEY);
   if (config.backend === "local") {
-    if (config.provider) values[LEARNING_PROVIDER_ENV] = config.provider;
-    // Make the explicit CLI choice effective even after a previous cloud setup.
-    values[CLAUDE_SMART_USE_LOCAL_CLI_ENV] = config.useLocalCli;
-    values.CLAUDE_SMART_LEARNING_MODEL = config.model || "";
+    if (RETIRED_LEARNING_ENVS.some((key) => process.env[key]))
+      throw new Error("Remove exported obsolete learning selectors before confirming setup.");
+    // Friendly guide controls serialize one target; no second runtime compiler.
+    values[NATIVE_MODEL_ENV] = config.nativeTarget;
+    for (const key of RETIRED_LEARNING_ENVS) values[key] = null;
     if ((previous.get("CLAUDE_SMART_CLI_PATH") || "") !== config.cliPath) {
       values.CLAUDE_SMART_CLI_PATH = config.cliPath;
     }
@@ -2197,7 +2217,13 @@ function planInstallSettings(config, captured) {
 function usePublishedSettings({ request, cliPath }) {
   // Subsequent operations must inherit the confirmed choices, including the
   // caller-first learning settings and an explicitly cleared custom CLI path.
-  Object.assign(process.env, request.updates);
+  for (const [key, value] of Object.entries(request.updates)) {
+    // The backend child reads saved native intent at each start. Exporting it
+    // here would turn stale saved state into a caller override on the next edit.
+    if (key === NATIVE_MODEL_ENV) continue;
+    if (value === null) delete process.env[key];
+    else process.env[key] = value;
+  }
   if (cliPath !== null) process.env.CLAUDE_SMART_CLI_PATH = cliPath;
 }
 
@@ -2278,9 +2304,7 @@ function runSettingsProcess(command, args, runtime, environment, input) {
   });
 }
 
-async function publishInstallSettings(request) {
-  ensureRollbackOnExit();
-  const plugin = join(PACKAGE_ROOT, "plugin");
+function verifySettingsOwnerBundle(plugin = join(PACKAGE_ROOT, "plugin")) {
   const requirements = join(plugin, "settings-owner.requirements.txt");
   const generated = readFileSync(requirements, "utf8");
   for (const name of ["pyproject.toml", "uv.lock"]) {
@@ -2298,6 +2322,13 @@ async function publishInstallSettings(request) {
     throw new Error(
       "Settings publisher bundle is incomplete; update claude-smart before retrying.",
     );
+  return { requirements, pythonRequirement };
+}
+
+async function publishInstallSettings(request) {
+  ensureRollbackOnExit();
+  const plugin = join(PACKAGE_ROOT, "plugin");
+  const { requirements, pythonRequirement } = verifySettingsOwnerBundle(plugin);
   const runtime = {
     directory: mkdtempSync(join(tmpdir(), "claude-smart-settings-")),
     temporary: true,
@@ -2406,6 +2437,8 @@ async function writeConfirmedSettings(python, args, runtime, environment, reques
     throw new Error(
       "Settings are busy; retry after the other save finishes.",
     );
+  if (saved.code === 81)
+    throw new Error("Native learning target failed prepared SDK validation; settings were not saved. Check the target and plugin bundle before retrying.");
   if (saved.code === 80 && request.opencode_loader)
     throw new Error(`OpenCode loader changed before settings were saved at ${request.opencode_loader.path}; reload and retry.`);
   if (args.includes("--check-windows-embedding")) {
@@ -2430,6 +2463,7 @@ async function writeConfirmedSettings(python, args, runtime, environment, reques
 }
 
 async function publishFromPreparedRuntime(pluginRoot, settings, openCodeLoader, { guideWorker = true } = {}) {
+  verifySettingsOwnerBundle(pluginRoot);
   const args = ["-I", "-m", "claude_smart.env_config", "publish-prepared-install"];
   if (isWindows()) {
     requireWindowsEmbeddingBash();
@@ -2461,6 +2495,15 @@ function reportRuntimePhase(label, settings) {
   if (settings && process.connected) process.send({ phase: label }, () => {});
 }
 
+function guideProgress(label) {
+  const started = Date.now();
+  const timer = setInterval(
+    () => process.stdout.write(`  ${label}… ${Math.floor((Date.now() - started) / 1000)}s\n`),
+    5000,
+  );
+  return () => clearInterval(timer);
+}
+
 async function runGuidedHost(command, host, options, label, settings, preparedRuntime) {
   const generation = preparedRuntime?.id;
   mkdirSync(join(CLAUDE_SMART_STATE_DIR, "install-logs"), { recursive: true });
@@ -2474,11 +2517,7 @@ async function runGuidedHost(command, host, options, label, settings, preparedRu
   if (options.global) args.push("--global");
   if (options.local) args.push("--local");
   process.stdout.write(`\n${label}…\n  Log: ${log}\n`);
-  const started = Date.now();
-  const timer = setInterval(
-    () => process.stdout.write(`  ${label}… ${Math.floor((Date.now() - started) / 1000)}s\n`),
-    5000,
-  );
+  const stopProgress = guideProgress(label);
   let accepted = false;
   const acceptSettings = () => {
     if (accepted) return;
@@ -2545,7 +2584,7 @@ async function runGuidedHost(command, host, options, label, settings, preparedRu
     }
     return { code, log };
   } finally {
-    clearInterval(timer);
+    stopProgress();
     closeSync(fd);
   }
 }
@@ -2598,7 +2637,7 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   if (saved.retiredOpenCodeVariant || process.env.CLAUDE_SMART_OPENCODE_VARIANT?.trim()) {
     throw new Error(
       "CLAUDE_SMART_OPENCODE_VARIANT has been retired. Move the variant to " +
-      "CLAUDE_SMART_LEARNING_MODEL=provider/model#variant and remove the old assignment before updating.",
+      "REFLEXIO_NATIVE_CLI_MODEL=local-cli/opencode/provider/model#variant and remove the old assignment before updating.",
     );
   }
   const resolveForLaunch = (lookup) => lookup() ?? withWorkerPath(lookup);
@@ -2997,6 +3036,7 @@ async function refreshSelectedServices(root, setup, { restart = true } = {}) {
 }
 
 async function prepareGuidedRuntime(config, options, settings, baseline) {
+  verifySettingsOwnerBundle();
   assertSupportedRuntimePlatform();
   const openCodeArgs = options.global ? ["--global"] : [];
   if (config.hosts.includes(HOST_CODEX)) validateCodexPackage();
@@ -3006,6 +3046,7 @@ async function prepareGuidedRuntime(config, options, settings, baseline) {
   const pluginRoot = join(directory, "plugin");
   const id = basename(directory);
   const discardAdapters = [];
+  const stopProgress = guideProgress("Preparing shared runtime");
   // The interpreter embeds its prefix, so build at the final physical path.
   let published = false;
   const discard = () => {
@@ -3057,6 +3098,7 @@ async function prepareGuidedRuntime(config, options, settings, baseline) {
     acceptGuideSettings(settings);
     return { id, previous, openCode };
   } finally {
+    stopProgress();
     process.removeListener("exit", discard);
     discard();
   }
@@ -3116,7 +3158,7 @@ async function runGuidedCommand(command, args) {
         const settings = planInstallSettings(config, captured);
         // Recovery keeps the previous generation intact until registration is
         // complete, even when the user retries with just one host.
-        if (multipleHosts || baseline || pathEntryExists(GUIDED_SELECTED_RUNTIME)) {
+        if (config.backend === "local" || multipleHosts || baseline || pathEntryExists(GUIDED_SELECTED_RUNTIME)) {
           preparedRuntime = await prepareGuidedRuntime(config, options, settings, baseline);
           return;
         }

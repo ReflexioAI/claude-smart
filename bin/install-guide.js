@@ -238,7 +238,7 @@ async function configure(
   if (backend === "local") {
     const providers = inventory.filter((agent) => agent.available);
     config.cliPath = process.env.CLAUDE_SMART_CLI_PATH || saved.cliPath || "";
-    config.useLocalCli = process.env.CLAUDE_SMART_USE_LOCAL_CLI || saved.useLocalCli || "1";
+    config.useLocalCli = saved.useLocalCli || "1";
     const hasCurrent = Boolean(saved.provider || config.cliPath || config.useLocalCli === "0");
     config.provider =
       options.provider ||
@@ -267,7 +267,7 @@ async function configure(
     config.model =
       options.model ||
       (!saved.provider || config.provider === saved.provider
-        ? process.env.CLAUDE_SMART_LEARNING_MODEL || saved.model
+        ? saved.model
         : "") ||
       "";
     if (
@@ -313,20 +313,23 @@ async function configure(
       config.useLocalCli !== "0"
     )
       config.model = "sonnet";
-    const modelPattern = config.provider === "opencode"
-      ? /^(?:[A-Za-z0-9][A-Za-z0-9._:/-]*)?(?:#[A-Za-z0-9][A-Za-z0-9._-]*)?$/
-      : /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
-    if (config.model && (config.model.length > 200 || !modelPattern.test(config.model)))
-      throw new Error("Learning model must be a valid model reference");
+    if (keepCurrent && saved.selectionConflict)
+      throw new Error("Saved learning selection is ambiguous. Choose an explicit --provider before confirming setup.");
+    if (options.model && !options.provider && saved.nativeTarget?.trim() &&
+        !saved.nativeTarget.startsWith("local-cli/"))
+      throw new Error("Choose an explicit --provider before replacing an invalid native target.");
+    // The prepared SDK validates the final opaque model reference before save.
     if (options.model && config.useLocalCli === "0")
       throw new Error(
         "--model selects a local agent model. Configure cloud-provider models in Reflexio settings instead.",
       );
+    config.nativeTarget = keepCurrent && !options.model && saved.nativeTarget !== undefined
+      ? saved.nativeTarget
+      : config.useLocalCli === "0" ? ""
+      : `local-cli/${config.provider}${config.model ? `/${config.model}` : ""}`;
+    if (config.useLocalCli !== "0" && !config.provider)
+      throw new Error("Choose a background learning provider with --provider claude-code, codex, or opencode");
     if (!config.cliPath && config.useLocalCli !== "0") {
-      if (!config.provider)
-        throw new Error(
-          "Choose a background learning provider with --provider claude-code, codex, or opencode",
-        );
       if (!providers.some((agent) => agent.host === config.provider))
         throw new Error(`Background learning provider ${LABELS[config.provider]} is not available`);
     }

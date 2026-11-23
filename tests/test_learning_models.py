@@ -17,7 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Executable POSIX fake CLI fixture")
-@pytest.mark.parametrize("provider,model", [("opencode", "openai/gpt-6.1-sol")])
+@pytest.mark.parametrize(
+    "provider,model", [("opencode", "openai/gpt-6.1-sol"), ("opencode", "opaque-model")]
+)
 def test_extraction_bridge_passes_selected_model_to_agent(
     tmp_path: Path, provider: str, model: str
 ) -> None:
@@ -35,7 +37,7 @@ else console.log(JSON.stringify({{type:'result',result:'reply'}}));
 """)
     executable.chmod(0o755)
     env = dict(os.environ)
-    env["CLAUDE_SMART_LEARNING_MODEL"] = model
+    env.pop("CLAUDE_SMART_LEARNING_MODEL", None)
     env[f"CLAUDE_SMART_{provider.upper()}_PATH"] = str(executable)
     result = subprocess.run(
         [
@@ -45,7 +47,7 @@ else console.log(JSON.stringify({{type:'result',result:'reply'}}));
             "--output-format",
             "json",
             "--model",
-            "claude-provider-placeholder",
+            model,
         ],
         check=False,
         input="test prompt",
@@ -97,8 +99,13 @@ def test_installer_preserves_model_on_update_and_adopts_new_provider_default(
         assert result.returncode == 0, result.stdout + result.stderr
         assert (
             dotenv_values(state / ".env", interpolate=False)[
-                "CLAUDE_SMART_LEARNING_MODEL"
+                "REFLEXIO_NATIVE_CLI_MODEL"
             ]
-            == expected
+            == (
+                "local-cli/codex/"
+                if args == ["--host", "claude-code"]
+                else "local-cli/claude-code/"
+            )
+            + expected
         )
         assert f"Learning model: {expected}" in result.stdout

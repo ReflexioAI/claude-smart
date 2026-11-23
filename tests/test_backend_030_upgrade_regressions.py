@@ -87,6 +87,7 @@ def test_undrained_selected_database_refuses_before_incompatible_config_publicat
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert reader.returncode == 0, reader.stderr
     current_generation = int(reader.stdout.strip().splitlines()[-1])
@@ -212,7 +213,7 @@ def test_backend_refuses_retired_model_before_sdk_dispatch(
     dotenv = tmp_path / ".env"
     dotenv.touch()
     monkeypatch.setenv("REFLEXIO_ENV_FILE", str(dotenv))
-    monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", "provider/selected")
+    monkeypatch.delenv("CLAUDE_SMART_LEARNING_MODEL", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
     if source == "process":
         monkeypatch.setenv("CLAUDE_SMART_CLI_MODEL", "private-retired-model")
@@ -221,7 +222,7 @@ def test_backend_refuses_retired_model_before_sdk_dispatch(
     original = dotenv.read_bytes()
 
     prepare = runpy.run_path(str(RUNNER))["prepare_native_sdk_environment"]
-    with pytest.raises(ValueError, match="CLAUDE_SMART_LEARNING_MODEL") as exc_info:
+    with pytest.raises(ValueError, match="CLAUDE_SMART_CLI_MODEL") as exc_info:
         prepare()
 
     assert "private-retired-model" not in str(exc_info.value)
@@ -238,8 +239,7 @@ def test_preflight_refuses_retired_opencode_variant_without_rewriting(
     path.write_text(original)
     monkeypatch.setenv("REFLEXIO_ENV_FILE", str(path))
     monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
-    monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
-    monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", "#high")
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/opencode/#high")
     monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
     monkeypatch.delenv(old_name, raising=False)
     if source == "process":
@@ -249,12 +249,11 @@ def test_preflight_refuses_retired_opencode_variant_without_rewriting(
     with pytest.raises(ValueError, match=f"{old_name} has been retired") as failure:
         prepare()
 
-    assert "#variant in CLAUDE_SMART_LEARNING_MODEL" in str(failure.value)
+    assert "REFLEXIO_NATIVE_CLI_MODEL" in str(failure.value)
     assert "private-variant" not in str(failure.value)
     assert path.read_text() == original
 
-    monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "0")
-    monkeypatch.delenv("REFLEXIO_NATIVE_CLI_MODEL", raising=False)
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "")
     prepare()
     assert path.read_text() == original
 
@@ -271,8 +270,7 @@ def test_learning_preflight_preserves_explicit_sonnet_pin(
     env.update(
         REFLEXIO_ENV_FILE=str(tmp_path / ".env"),
         CLAUDE_SMART_HOST="claude-code",
-        CLAUDE_SMART_USE_LOCAL_CLI="1",
-        CLAUDE_SMART_LEARNING_MODEL="",
+        REFLEXIO_NATIVE_CLI_MODEL="local-cli/claude-code",
     )
     pin = "local-cli/claude-code/sonnet"
     config = _config_file(tmp_path)
@@ -294,11 +292,15 @@ def test_learning_preflight_preserves_explicit_sonnet_pin(
             timeout=30,
         )
 
-    refused = preflight()
-    assert refused.returncode == 3, refused.stderr
-    assert "CLAUDE_SMART_LEARNING_MODEL=sonnet" in refused.stdout
-
-    env["CLAUDE_SMART_LEARNING_MODEL"] = "sonnet"
+    initial = preflight()
+    if pin_source == "stored-role":
+        assert initial.returncode == 3, initial.stderr
+        assert "local-cli/claude-code/sonnet" in initial.stdout
+        assert config.read_text() == original
+    else:
+        # The canonical environment pin already expresses the complete intent.
+        assert initial.returncode == 0, initial.stdout + initial.stderr
+    env["REFLEXIO_NATIVE_CLI_MODEL"] = pin
     repaired = preflight()
     assert repaired.returncode == 0, repaired.stderr
     if pin_source == "stored-role":
@@ -310,31 +312,32 @@ def test_learning_preflight_preserves_explicit_sonnet_pin(
 @requires_vendor
 @requires_binding_vendor
 @pytest.mark.parametrize(
-    ("host", "model", "enabled", "expected"),
+    "reference",
     [
-        ("claude-code", "sonnet", "1", "local-cli/claude-code/sonnet"),
-        ("claude-code", "", "1", "local-cli/claude-code"),
-        ("codex", "", "1", "local-cli/codex"),
-        ("opencode", " provider/model ", "true", "local-cli/opencode/provider/model"),
-        ("claude-code", "sonnet", "0", "disabled"),
+        "local-cli/claude-code/sonnet",
+        "local-cli/claude-code",
+        "local-cli/codex",
+        "local-cli/opencode/provider/model",
+        "",
     ],
 )
-def test_backend_projects_native_selection_through_worker_reload(
-    tmp_path: Path, host: str, model: str, enabled: str, expected: str
+def test_backend_preserves_native_selection_through_worker_reload(
+    tmp_path: Path, reference: str
 ) -> None:
     dotenv = tmp_path / ".env"
-    original = (
-        f"CLAUDE_SMART_USE_LOCAL_CLI={enabled}\nCLAUDE_SMART_LEARNING_MODEL={model}\n"
-    )
+    original = f"REFLEXIO_NATIVE_CLI_MODEL={reference}\n"
     dotenv.write_text(original)
     env = _env(tmp_path)
-    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
-    env.pop("CLAUDE_SMART_CLI_MODEL", None)
+    for name in (
+        "REFLEXIO_NATIVE_CLI_MODEL",
+        "CLAUDE_SMART_CLI_MODEL",
+        "CLAUDE_SMART_USE_LOCAL_CLI",
+        "CLAUDE_SMART_LEARNING_MODEL",
+    ):
+        env.pop(name, None)
     env.update(
         REFLEXIO_ENV_FILE=str(dotenv),
-        CLAUDE_SMART_HOST=host,
-        CLAUDE_SMART_USE_LOCAL_CLI=enabled,
-        CLAUDE_SMART_LEARNING_MODEL=model,
+        CLAUDE_SMART_HOST="unrelated-coding-integration",
     )
     result = subprocess.run(
         [
@@ -364,7 +367,7 @@ subprocess.run([sys.executable, "-P", "-c", worker], check=True)
         timeout=45,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().splitlines()[-1] == expected
+    assert result.stdout.strip().splitlines()[-1] == (reference or "disabled")
     assert dotenv.read_text() == original
 
 
@@ -858,6 +861,7 @@ def test_explicit_saved_config_upgrade_preserves_original_and_database(
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert (rejected.returncode != 0) == historical_alias, rejected.stderr
     assert original.read_bytes() == before
@@ -879,6 +883,7 @@ def test_explicit_saved_config_upgrade_preserves_original_and_database(
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert original.read_bytes() == before
@@ -1008,6 +1013,7 @@ def test_forwarded_occupied_port_refuses_preparation_and_pin(tmp_path):
             text=True,
             capture_output=True,
             timeout=30,
+            check=False,
         )
     assert result.returncode != 0
     assert "ports conflict" in result.stdout
@@ -1038,6 +1044,7 @@ def test_failed_identity_pin_never_delegates_to_cli_or_selects_another_database(
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode != 0
     assert "startup stopped to preserve database identity" in result.stderr

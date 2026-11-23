@@ -13,10 +13,9 @@ import type { ClaudeSmartConfig } from "./types";
 const KNOWN_KEYS = [
   "REFLEXIO_URL",
   "REFLEXIO_API_KEY",
-  "CLAUDE_SMART_USE_LOCAL_CLI",
   "CLAUDE_SMART_READ_ONLY",
   "CLAUDE_SMART_CLI_PATH",
-  "CLAUDE_SMART_LEARNING_MODEL",
+  "REFLEXIO_NATIVE_CLI_MODEL",
   "CLAUDE_SMART_CLI_TIMEOUT",
   "CLAUDE_SMART_STATE_DIR",
 ] as const;
@@ -24,7 +23,6 @@ const KNOWN_KEYS = [
 const KNOWN = new Set<string>(KNOWN_KEYS);
 
 const BOOL_KEYS = new Set([
-  "CLAUDE_SMART_USE_LOCAL_CLI",
   "CLAUDE_SMART_READ_ONLY",
 ]);
 
@@ -61,12 +59,9 @@ export async function readConfig(): Promise<ClaudeSmartConfig> {
   const defaults: ClaudeSmartConfig = {
     REFLEXIO_URL: defaultReflexioUrl(),
     REFLEXIO_API_KEY: "",
-    // Absent means the local CLI default (smart-install seeds it as 1).
-    // Reading false would make the next save disable authenticated CLI use.
-    CLAUDE_SMART_USE_LOCAL_CLI: true,
+    REFLEXIO_NATIVE_CLI_MODEL: "",
     CLAUDE_SMART_READ_ONLY: false,
     CLAUDE_SMART_CLI_PATH: "",
-    CLAUDE_SMART_LEARNING_MODEL: "",
     CLAUDE_SMART_STATE_DIR: "",
   };
   let text: string;
@@ -79,6 +74,8 @@ export async function readConfig(): Promise<ClaudeSmartConfig> {
   for (const line of text.split("\n")) {
     const pair = parseLine(line);
     if (!pair) continue;
+    if (["CLAUDE_SMART_LEARNING_PROVIDER", "CLAUDE_SMART_LEARNING_MODEL", "CLAUDE_SMART_USE_LOCAL_CLI"].includes(pair.key))
+      out.legacyLearningSelection = true;
     if (!KNOWN.has(pair.key)) continue;
     if (pair.key === "CLAUDE_SMART_CLI_TIMEOUT" && !pair.value.trim()) {
       delete out.CLAUDE_SMART_CLI_TIMEOUT;
@@ -160,22 +157,8 @@ export async function writeConfig(
     const pair = parseLine(line);
     if (pair) current.set(pair.key, pair.value);
   }
-  const model = update.CLAUDE_SMART_LEARNING_MODEL;
-  const provider =
-    (current.get("CLAUDE_SMART_LEARNING_PROVIDER") ??
-      process.env.CLAUDE_SMART_LEARNING_PROVIDER) ||
-    process.env.CLAUDE_SMART_HOST ||
-    current.get("CLAUDE_SMART_HOST") ||
-    "claude-code";
-  const modelPattern =
-    provider === "opencode"
-      ? /^(?:[A-Za-z0-9][A-Za-z0-9._:/-]*)?(?:#[A-Za-z0-9][A-Za-z0-9._-]*)?$/
-      : /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
-  if (
-    model &&
-    (typeof model !== "string" || model.length > 200 || !modelPattern.test(model))
-  )
-    throw new Error("Learning model must be a valid model reference");
+  // The prepared Python publisher validates the canonical target with the SDK.
+  // Keep opaque host model IDs out of a second dashboard grammar.
   await fs.mkdir(path.dirname(file), { recursive: true });
 
   const currentUrl = current.get("REFLEXIO_URL") || defaultReflexioUrl();
@@ -257,9 +240,11 @@ export async function writeConfig(
     "CLAUDE_SMART_LOCAL_URL",
     "CLAUDE_SMART_LOCAL_API_KEY",
   ]);
-  if ("CLAUDE_SMART_LEARNING_MODEL" in updates) {
-    dependencies.add("CLAUDE_SMART_LEARNING_PROVIDER");
-    dependencies.add("CLAUDE_SMART_HOST");
+  if ("REFLEXIO_NATIVE_CLI_MODEL" in updates) {
+    for (const key of ["CLAUDE_SMART_LEARNING_PROVIDER", "CLAUDE_SMART_LEARNING_MODEL", "CLAUDE_SMART_USE_LOCAL_CLI"]) {
+      updates[key] = null;
+      dependencies.add(key);
+    }
   }
   const expected: Record<string, string[]> = Object.fromEntries(
     [...dependencies].map((key) => [key, []]),
@@ -303,7 +288,7 @@ function publishSettings(request: {
     const child = execFile(
       python,
       ["-I", "-m", "claude_smart.env_config", "publish"],
-      { timeout: 10_000, maxBuffer: 65_536, windowsHide: true },
+      { timeout: 30_000, maxBuffer: 65_536, windowsHide: true },
       (error, stdout, stderr) => {
         if (error) {
           reject(

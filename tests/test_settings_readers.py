@@ -58,7 +58,7 @@ def test_shell_reads_bom_and_export_assignments(
     }
     env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path))
     library = Path(__file__).resolve().parents[1] / "plugin/scripts/_lib.sh"
-    result = subprocess.run(  # noqa: S603 — actual repository reader and fixed test script.
+    result = subprocess.run(
         [
             bash,
             "--noprofile",
@@ -73,9 +73,10 @@ def test_shell_reads_bom_and_export_assignments(
         text=True,
         capture_output=True,
         timeout=10,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == value
+    assert result.stdout == ("" if key == "CLAUDE_SMART_USE_LOCAL_CLI" else value)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Owned hook probe uses a POSIX executable")
@@ -92,7 +93,7 @@ def test_shell_reads_bom_and_export_assignments(
             "https://owned.example/",
         ),
         ("REFLEXIO_API_KEY", "", "stale-owned-key", ""),
-        ("CLAUDE_SMART_USE_LOCAL_CLI", "0", "", "0"),
+        ("CLAUDE_SMART_USE_LOCAL_CLI", "0", "", ""),
         ("CLAUDE_SMART_USE_LOCAL_CLI", "0", "1", "1"),
         (
             "CLAUDE_SMART_CLI_PATH",
@@ -146,13 +147,14 @@ def test_codex_hook_reads_export_assignments_with_existing_precedence(
     env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path), PLUGIN_ROOT=str(root))
     env[key] = inherited
     launcher = Path(__file__).resolve().parents[1] / "plugin/scripts/codex-hook.js"
-    result = subprocess.run(  # noqa: S603 — actual launcher, owned runtime and HOME.
+    result = subprocess.run(
         [node, str(launcher), "hook", "session-start"],
         env=env,
         input="{}",
         text=True,
         capture_output=True,
         timeout=10,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(captured.read_text()).get(key) == expected
@@ -197,4 +199,8 @@ def test_public_setup_reuses_exported_saved_policy(
         if (pair := parse_env_line(line))
     )
     for key, value in values.items():
-        assert saved[key] == value
+        if key in {"CLAUDE_SMART_LEARNING_PROVIDER", "CLAUDE_SMART_USE_LOCAL_CLI"}:
+            assert key not in saved
+        else:
+            assert saved[key] == value
+    assert saved["REFLEXIO_NATIVE_CLI_MODEL"] == ""
