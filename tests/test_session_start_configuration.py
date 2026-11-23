@@ -66,7 +66,7 @@ def test_session_start_preserves_server_policy(tmp_path, legacy_value, optimizer
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
-    project = tmp_path / "project"
+    project = tmp_path / "reflexio"
     project.mkdir()
     env = os.environ.copy()
     for name in (
@@ -81,6 +81,7 @@ def test_session_start_preserves_server_policy(tmp_path, legacy_value, optimizer
         REFLEXIO_URL=f"http://127.0.0.1:{server.server_port}",
         REFLEXIO_API_KEY="owned-test-key",
         CLAUDE_SMART_STATE_DIR=str(tmp_path / "state"),
+        CLAUDE_SMART_REFLEXIO_DIR=str(project),
         PYTHONPATH=str(Path(__file__).resolve().parents[1] / "plugin" / "src"),
     )
     env.pop("CLAUDE_SMART_ENABLE_OPTIMIZER", None)
