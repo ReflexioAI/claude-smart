@@ -20,7 +20,7 @@ def owner_python(tmp_path_factory):
     venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(root)
     python = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     site = Path(
-        subprocess.check_output(  # noqa: S603 — owned prepared interpreter and fixed argv.
+        subprocess.check_output(
             [
                 str(python),
                 "-I",
@@ -64,12 +64,13 @@ def _run(owner_python, home, *arguments, extra=None):
         REFLEXIO_ENV_FILE=str(home / "unrelated-sdk.env"),
     )
     environment.update(extra or {})
-    return subprocess.run(  # noqa: S603 — owned prepared interpreter and fixed internal action.
+    return subprocess.run(
         [str(owner_python), "-I", "-m", "claude_smart.env_config", *arguments],
         env=environment,
         text=True,
         capture_output=True,
         timeout=15,
+        check=False,
     )
 
 
@@ -89,7 +90,8 @@ def test_real_entrypoint_repairs_missing_defaults_and_is_idempotent(
     assert json.loads(result.stdout)["ok"] is True
     selected = tmp_path / ".claude-smart/.env"
     assert "REFLEXIO_ROW_LIMIT_INTERACTIONS=9000\n" in selected.read_text()
-    assert "CLAUDE_SMART_USE_LOCAL_CLI=0\n" in selected.read_text()
+    assert "CLAUDE_SMART_USE_LOCAL_CLI" not in selected.read_text()
+    assert "REFLEXIO_NATIVE_CLI_MODEL" not in selected.read_text()
     original = selected.read_bytes()
     again = _run(owner_python, tmp_path, "bootstrap-repair")
     assert again.returncode == 0
@@ -137,10 +139,7 @@ def test_fresh_file_connection_and_empty_values_win_without_retargeting(
     assert selected.read_text().startswith(original)
     assert not (selected.parent / ".env.bak").exists()
     assert "stale-secret" not in result.stdout + result.stderr
-    if url.startswith("https:"):
-        assert selected.read_text() == original
-    else:
-        assert "CLAUDE_SMART_USE_LOCAL_CLI=" in selected.read_text()
+    assert selected.read_text() == original
 
 
 def test_busy_owner_is_transient_and_never_reports_success(owner_python, tmp_path):
@@ -186,7 +185,8 @@ def test_repair_does_not_treat_literal_value_suffix_as_connection(
     result = _run(owner_python, tmp_path, "bootstrap-repair")
 
     assert result.returncode == 0, result.stderr
-    assert "CLAUDE_SMART_USE_LOCAL_CLI" in json.loads(result.stdout)["added"]
+    assert "REFLEXIO_ROW_LIMIT_INTERACTIONS" in json.loads(result.stdout)["added"]
+    assert "CLAUDE_SMART_USE_LOCAL_CLI" not in selected.read_text()
     assert selected.read_bytes().startswith(original)
     before = selected.read_bytes()
     retry = _run(owner_python, tmp_path, "bootstrap-repair")
@@ -207,3 +207,79 @@ def test_repair_separates_additions_from_unterminated_literal_cr(
 
     assert result.returncode == 0, result.stderr
     assert selected.read_bytes().startswith(original + b"\n")
+
+
+@pytest.mark.parametrize("target", ["", "local-cli/codex/private-model"])
+def test_installed_native_admission_keeps_sdk_free_cloud_repair(
+    owner_python, tmp_path, target
+):
+    selected = tmp_path / "settings.env"
+    original = "# private selected configuration\n"
+    selected.write_text(original)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in {"PATH", "SYSTEMROOT", "WINDIR", "TMP", "TEMP", "TMPDIR", "LANG"}
+    }
+    env.update(
+        HOME=str(tmp_path),
+        USERPROFILE=str(tmp_path),
+        REFLEXIO_ENV_FILE=str(selected),
+        REFLEXIO_NATIVE_CLI_MODEL=target,
+    )
+    result = subprocess.run(
+        [str(owner_python), "-I", "-m", "claude_smart.native_selection"],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == (3 if target else 0), result.stdout + result.stderr
+    if target:
+        assert "bundled SDK native model interface" in result.stderr
+        assert "private-model" not in result.stdout + result.stderr
+    assert selected.read_text() == original
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        None,
+        "",
+        "OTHER=keep\n",
+        "REFLEXIO_NATIVE_CLI_MODEL=\n",
+        'REFLEXIO_NATIVE_CLI_MODEL=""\n',
+        'REFLEXIO_NATIVE_CLI_MODEL=" "\n',
+    ],
+)
+def test_native_admission_requires_confirmation_before_cloud_or_sdk(
+    owner_python, tmp_path, original
+):
+    selected = tmp_path / "settings.env"
+    if original is not None:
+        selected.write_text(original)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in {"PATH", "SYSTEMROOT", "WINDIR", "TMP", "TEMP", "TMPDIR", "LANG"}
+    }
+    env.update(
+        HOME=str(tmp_path), USERPROFILE=str(tmp_path), REFLEXIO_ENV_FILE=str(selected)
+    )
+    command = [str(owner_python), "-I", "-m", "claude_smart.native_selection"]
+    unconfirmed = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=15, check=False
+    )
+    assert unconfirmed.returncode == 3, unconfirmed.stdout + unconfirmed.stderr
+    assert "confirm" in unconfirmed.stderr.lower()
+    assert "bundled SDK native model interface" not in unconfirmed.stderr
+    # Empty is a deliberate cloud opt-out, even in this SDK-free installed wheel.
+    env["REFLEXIO_NATIVE_CLI_MODEL"] = ""
+    confirmed = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=15, check=False
+    )
+    assert confirmed.returncode == 0, confirmed.stdout + confirmed.stderr
+    assert selected.exists() == (original is not None)
+    if original is not None:
+        assert selected.read_text() == original

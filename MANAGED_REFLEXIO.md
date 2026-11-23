@@ -191,11 +191,10 @@ REFLEXIO_USER_ID="global_user"
 The file is written with mode `0600`. Unknown keys, comments, and unrelated
 settings are preserved.
 
-When switching from local mode to managed mode, setup removes local-only flags:
-
-```env
-CLAUDE_SMART_USE_LOCAL_CLI=...
-```
+Switching to managed mode preserves inactive local preferences, including
+`REFLEXIO_NATIVE_CLI_MODEL`. These do not configure the managed server.
+Confirmed local setup converts obsolete learning selectors before starting a
+local backend. Switching dashboard views alone does not perform conversion.
 
 If an existing `REFLEXIO_URL` points at a loopback host (`localhost`,
 `127.0.0.1`, `0.0.0.0`, `[::1]`, over `http` or `https`), setup replaces it

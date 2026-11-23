@@ -124,9 +124,6 @@ def test_hook_commands_pass_explicit_host() -> None:
 def test_codex_hooks_use_expected_events_and_marketplace_fallback() -> None:
     hooks = _read_json("plugin/hooks/codex-hooks.json")["hooks"]
     codex_env = (REPO_ROOT / "plugin" / "scripts" / "_codex_env.sh").read_text()
-    backend_service = (
-        REPO_ROOT / "plugin" / "scripts" / "backend-service.sh"
-    ).read_text()
     assert set(hooks) == {
         "SessionStart",
         "UserPromptSubmit",
@@ -135,7 +132,6 @@ def test_codex_hooks_use_expected_events_and_marketplace_fallback() -> None:
         "Stop",
     }
     assert 'CLAUDE_SMART_HOST="codex"' in codex_env
-    assert 'export CLAUDE_SMART_HOST="$learning_provider"' in backend_service
     for command in _command_hooks("plugin/hooks/codex-hooks.json"):
         assert "_codex_env.sh" in command
         assert "printenv PATH" not in command
@@ -254,7 +250,7 @@ def test_codex_stop_prefers_last_assistant_message(session_dir, monkeypatch) -> 
         stop.publish_outbox,
         "enqueue",
         lambda session_id, project_id: (
-            calls.append(dict(session_id=session_id, project_id=project_id)) or True
+            calls.append({"session_id": session_id, "project_id": project_id}) or True
         ),
     )
     monkeypatch.setattr(stop.ids, "resolve_user_id", lambda *_a, **_kw: "demo")
@@ -310,7 +306,7 @@ def test_codex_stop_skips_internal_prompt_from_transcript(
         stop.publish_outbox,
         "enqueue",
         lambda session_id, project_id: (
-            calls.append(dict(session_id=session_id, project_id=project_id)) or True
+            calls.append({"session_id": session_id, "project_id": project_id}) or True
         ),
     )
 
@@ -327,7 +323,7 @@ def test_codex_stop_skips_orphan_title_response(session_dir, monkeypatch) -> Non
         stop.publish_outbox,
         "enqueue",
         lambda session_id, project_id: (
-            calls.append(dict(session_id=session_id, project_id=project_id)) or True
+            calls.append({"session_id": session_id, "project_id": project_id}) or True
         ),
     )
 
@@ -351,7 +347,7 @@ def test_codex_stop_skips_orphan_suggestions_response(session_dir, monkeypatch) 
         stop.publish_outbox,
         "enqueue",
         lambda session_id, project_id: (
-            calls.append(dict(session_id=session_id, project_id=project_id)) or True
+            calls.append({"session_id": session_id, "project_id": project_id}) or True
         ),
     )
 
@@ -379,7 +375,7 @@ def test_codex_stop_keeps_user_requested_title_json(session_dir, monkeypatch) ->
         stop.publish_outbox,
         "enqueue",
         lambda session_id, project_id: (
-            calls.append(dict(session_id=session_id, project_id=project_id)) or True
+            calls.append({"session_id": session_id, "project_id": project_id}) or True
         ),
     )
     state.append(
@@ -415,7 +411,7 @@ def test_codex_stop_keeps_user_requested_suggestions_json(
         stop.publish_outbox,
         "enqueue",
         lambda session_id, project_id: (
-            calls.append(dict(session_id=session_id, project_id=project_id)) or True
+            calls.append({"session_id": session_id, "project_id": project_id}) or True
         ),
     )
     state.append(

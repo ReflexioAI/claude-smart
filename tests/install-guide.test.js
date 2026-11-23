@@ -384,11 +384,11 @@ test("OpenCode setup saves explicit and default-model variant references", async
     const config = await configure(options("opencode", model), agents, {}, neverAsk, false);
     assert.equal(config.model, model);
   }
-  for (const [provider, model] of [["opencode", "#"], ["codex", "#high"]]) {
-    await assert.rejects(
-      configure(options(provider, model), agents, {}, neverAsk, false),
-      /valid model reference/,
-    );
+  // The prepared SDK owns target grammar. The guide preserves opaque model
+  // IDs for that validator instead of enforcing a second provider regex.
+  for (const [provider, model] of [["opencode", "opaque model"], ["codex", "#high"]]) {
+    const config = await configure(options(provider, model), agents, {}, neverAsk, false);
+    assert.equal(config.model, model);
   }
 });
 
@@ -589,6 +589,13 @@ test("Keep does not invent a provider for existing cloud/custom execution", asyn
   ]) {
     for (const host of ["claude-code", "codex"]) {
       for (const interactive of [false, true]) {
+        if (saved.cliPath) {
+          await assert.rejects(
+            configure({ hosts: [host], backend: "local" }, inventory, saved, confirmCurrent([]), interactive),
+            /Choose a background learning provider/,
+          );
+          continue;
+        }
         const config = await configure(
           { hosts: [host], backend: "local" },
           inventory,

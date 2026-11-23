@@ -69,18 +69,19 @@ def test_saved_codex_learning_reaches_native_bundled_sdk(
         OMP_NUM_THREADS="1",
         OPENBLAS_NUM_THREADS="1",
         CLAUDE_SMART_HOST=coding_host,
-        CLAUDE_SMART_LEARNING_PROVIDER="codex",
-        CLAUDE_SMART_USE_LOCAL_CLI="1",
+        REFLEXIO_NATIVE_CLI_MODEL=(
+            f"local-cli/codex/{learning_model.strip()}"
+            if learning_model is not None
+            else "local-cli/codex"
+        ),
     )
     if legacy_path:
         env["CLAUDE_SMART_CODEX_PATH"] = "private-retired-executable"
     if explicit_path:
         env["CLAUDE_SMART_CLI_PATH"] = str(cli)
-    if learning_model is not None:
-        env["CLAUDE_SMART_LEARNING_MODEL"] = learning_model
     source = (ROOT / "plugin/scripts/backend-service.sh").read_text()
     selection = source[
-        source.index("learning_provider=") : source.index("\nSTATE_DIR=")
+        source.index("# Keep hook identity independent") : source.index("\nSTATE_DIR=")
     ]
     runner = str(ROOT / "plugin/scripts/backend-python-runner.py")
     program = (
@@ -169,16 +170,13 @@ def test_predecessor_sdk_never_receives_retired_model_selection(
     program = """import os, runpy, sys
 prepare = runpy.run_path(sys.argv[1])["prepare_native_sdk_environment"]
 before = dict(os.environ)
-if os.environ["CLAUDE_SMART_USE_LOCAL_CLI"] == "0":
+try:
     prepare()
+except ValueError as exc:
+    assert "retired" in str(exc)
+    assert "private-selected-model" not in str(exc)
 else:
-    try:
-        prepare()
-    except ValueError as exc:
-        assert "bundled SDK" in str(exc)
-        assert "private-selected-model" not in str(exc)
-    else:
-        raise AssertionError("An obsolete SDK must refuse native selection")
+    raise AssertionError("Retired selectors require confirmed conversion")
 assert dict(os.environ) == before
 assert not os.environ.get("CLAUDE_SMART_CLI_MODEL")
 """
@@ -201,7 +199,7 @@ assert not os.environ.get("CLAUDE_SMART_CLI_MODEL")
     assert dotenv.read_text() == original
 
 
-@pytest.mark.parametrize("host", ["unsupported-host", "codex/private-provider"])
+@pytest.mark.parametrize("host", ["unsupported-host", "codex/"])
 def test_native_host_validation_preserves_environment(tmp_path, monkeypatch, host):
     import runpy
 
@@ -209,16 +207,109 @@ def test_native_host_validation_preserves_environment(tmp_path, monkeypatch, hos
     dotenv.touch()
     monkeypatch.setenv("REFLEXIO_ENV_FILE", str(dotenv))
     monkeypatch.setenv("CLAUDE_SMART_HOST", host)
-    monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
-    monkeypatch.setenv("CLAUDE_SMART_LEARNING_MODEL", "private-model")
-    monkeypatch.delenv("REFLEXIO_NATIVE_CLI_MODEL", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_LEARNING_MODEL", raising=False)
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", f"local-cli/{host}")
     monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
     prepare = runpy.run_path(str(ROOT / "plugin/scripts/backend-python-runner.py"))[
         "prepare_native_sdk_environment"
     ]
     before = dict(os.environ)
-    with pytest.raises(ValueError, match="unsupported") as failure:
+    with pytest.raises(ValueError, match="invalid") as failure:
         prepare()
     assert "private" not in str(failure.value)
     assert dict(os.environ) == before
     assert dotenv.read_bytes() == b""
+
+
+@pytest.mark.parametrize("selected", [None, ""])
+def test_native_opt_out_eclipses_worker_dotenv(tmp_path, monkeypatch, selected):
+    import runpy
+
+    from reflexio.server.llm._native_model_ref import configured_native_model
+
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex/private-model\n")
+    monkeypatch.setenv("REFLEXIO_ENV_FILE", str(dotenv))
+    for key in (
+        "CLAUDE_SMART_LEARNING_PROVIDER",
+        "CLAUDE_SMART_LEARNING_MODEL",
+        "CLAUDE_SMART_USE_LOCAL_CLI",
+        "CLAUDE_SMART_CLI_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    if selected is None:
+        monkeypatch.delenv("REFLEXIO_NATIVE_CLI_MODEL", raising=False)
+    else:
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", selected)
+    prepare = runpy.run_path(str(ROOT / "plugin/scripts/backend-python-runner.py"))[
+        "prepare_native_sdk_environment"
+    ]
+    prepare()
+    if selected is None:
+        observed = configured_native_model()
+        assert observed is not None
+        assert observed.reference == "local-cli/codex/private-model"
+    else:
+        assert os.environ["REFLEXIO_NATIVE_CLI_MODEL"] == ""
+        assert configured_native_model() is None
+    assert (
+        dotenv.read_text()
+        == "REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex/private-model\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "CLAUDE_SMART_LEARNING_PROVIDER",
+        "CLAUDE_SMART_LEARNING_MODEL",
+        "CLAUDE_SMART_USE_LOCAL_CLI",
+    ],
+)
+@pytest.mark.parametrize(
+    "source",
+    [
+        "process",
+        "saved",
+        "saved_duplicate_empty",
+        "saved_empty",
+        "saved_whitespace",
+        "process_whitespace",
+    ],
+)
+def test_retired_learning_selector_refuses_before_publication(
+    tmp_path, monkeypatch, key, source
+):
+    import runpy
+
+    dotenv = tmp_path / ".env"
+    value = "1" if key == "CLAUDE_SMART_USE_LOCAL_CLI" else "private-retired-value"
+    if source == "saved_empty":
+        value = ""
+    elif source.endswith("whitespace"):
+        value = " "
+    original = f"{key}={value}\n" if source.startswith("saved") else ""
+    if source == "saved_duplicate_empty":
+        original += f"{key}=\n"
+    dotenv.write_text(original)
+    monkeypatch.setenv("REFLEXIO_ENV_FILE", str(dotenv))
+    for name in (
+        "CLAUDE_SMART_LEARNING_PROVIDER",
+        "CLAUDE_SMART_LEARNING_MODEL",
+        "CLAUDE_SMART_USE_LOCAL_CLI",
+        "CLAUDE_SMART_CLI_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/codex")
+    if source.startswith("process"):
+        monkeypatch.setenv(key, value)
+    prepare = runpy.run_path(str(ROOT / "plugin/scripts/backend-python-runner.py"))[
+        "prepare_native_sdk_environment"
+    ]
+    before = dict(os.environ)
+    with pytest.raises(ValueError, match=key) as failure:
+        prepare()
+    assert "private-retired-value" not in str(failure.value)
+    assert dict(os.environ) == before
+    assert dotenv.read_text() == original

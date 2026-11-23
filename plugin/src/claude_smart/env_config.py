@@ -29,15 +29,30 @@ LEGACY_REFLEXIO_ENV_PATH = Path.home() / ".reflexio" / ".env"
 INSTALL_COMPLETION_COMMENT = "# claude-smart: legacy-env checked"
 REFLEXIO_URL_ENV = "REFLEXIO_URL"
 CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY"
-CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
+NATIVE_MODEL_ENV = "REFLEXIO_NATIVE_CLI_MODEL"
+NATIVE_SELECTION_CONFIRMED_COMMENT = "# claude-smart: native learning confirmed v1"
+
+
+def native_selection_confirmed(content: str) -> bool:
+    """Recognize generated format metadata only in the leading comment block."""
+    for line in content.removeprefix("\ufeff").split("\n"):
+        stripped = line.strip()
+        if stripped == NATIVE_SELECTION_CONFIRMED_COMMENT:
+            return True
+        if stripped and not stripped.startswith("#"):
+            break
+    return False
+
+
+RETIRED_LEARNING_ENVS = frozenset(
+    {
+        "CLAUDE_SMART_USE_LOCAL_CLI",
+        "CLAUDE_SMART_LEARNING_PROVIDER",
+        "CLAUDE_SMART_LEARNING_MODEL",
+    }
+)
 
 _LOCAL_DEFAULT_ENTRIES = (
-    (
-        "# Route local generation through the selected host CLI; "
-        "0 uses configured cloud LLM credentials instead.",
-        CLAUDE_SMART_USE_LOCAL_CLI_ENV,
-        "1",
-    ),
     (None, CLAUDE_SMART_READ_ONLY_ENV, "0"),
     (
         "# Local interaction history row cap; 0 disables cap cleanup",
@@ -45,10 +60,7 @@ _LOCAL_DEFAULT_ENTRIES = (
         "500",
     ),
 )
-_ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS = {
-    CLAUDE_SMART_USE_LOCAL_CLI_ENV,
-    "REFLEXIO_ROW_LIMIT_INTERACTIONS",
-}
+_ENV_OVERRIDABLE_LOCAL_DEFAULT_KEYS = {"REFLEXIO_ROW_LIMIT_INTERACTIONS"}
 _LOCAL_REFLEXIO_URL_RE = re.compile(
     r"http://(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(/?|:.*)"
 )
@@ -103,6 +115,10 @@ def load_reflexio_env(path: Path | None = None) -> None:
         if parsed is None:
             continue
         key, value = parsed
+        if key in RETIRED_LEARNING_ENVS or key == NATIVE_MODEL_ENV:
+            # Only the backend child reads saved execution intent. Hook/client
+            # processes must not turn it into a stale inherited override.
+            continue
         # Shell hooks and status select the first nonempty saved session directory.
         if key == "CLAUDE_SMART_STATE_DIR" and not os.environ.get(key):
             os.environ[key] = value
@@ -161,7 +177,28 @@ def update_settings(
     an existing empty assignment remains present. Unrelated edits survive.
     Values travel on stdin to the prepared module, never command arguments.
     """
-    _edit_env_file(path or CLAUDE_SMART_ENV_PATH, _settings_editor(updates, expected))
+    edit = _settings_editor(updates, expected)
+    validate_native = bool(
+        updates.keys() & (RETIRED_LEARNING_ENVS | {NATIVE_MODEL_ENV})
+    )
+    if REFLEXIO_URL_ENV in updates:
+        original_urls = expected[REFLEXIO_URL_ENV]
+        previous_url = (
+            (parse_env_line(original_urls[-1]) or ("", ""))[1]
+            if original_urls
+            else os.environ.get(REFLEXIO_URL_ENV, "")
+        )
+        requested_url = updates[REFLEXIO_URL_ENV]
+        if requested_url is None:
+            requested_url = os.environ.get(REFLEXIO_URL_ENV, "")
+        validate_native |= reflexio_url_is_remote(
+            previous_url
+        ) and not reflexio_url_is_remote(requested_url)
+    _edit_env_file(
+        path or CLAUDE_SMART_ENV_PATH,
+        edit,
+        validate=_verify_staged_native_selection if validate_native else None,
+    )
 
 
 def _settings_editor(
@@ -169,7 +206,7 @@ def _settings_editor(
 ) -> Callable[[str], tuple[str | None, None]]:
     """Build the same pure edit for dashboard and confirmed installation."""
     if not isinstance(updates, dict) or not isinstance(expected, dict):
-        raise ValueError("Settings edits require updates and original assignments")
+        raise TypeError("Settings edits require updates and original assignments")
     for key in updates.keys() | expected.keys():
         if (
             not isinstance(key, str)
@@ -236,6 +273,21 @@ def _settings_editor(
                 if content and not content.endswith("\n"):
                     content += newline
                 content += f"{key}={value}" + newline
+        # The first rewritten assignment may have carried the file BOM.
+        if existing.startswith("\ufeff") and not content.startswith("\ufeff"):
+            content = "\ufeff" + content
+        if updates.get(NATIVE_MODEL_ENV) is not None and not native_selection_confirmed(
+            content
+        ):
+            # Preserve the legacy import sentinel's first-line position.
+            bom = "\ufeff" if content.startswith("\ufeff") else ""
+            body = content.removeprefix("\ufeff")
+            first, separator, rest = body.partition("\n")
+            marker = NATIVE_SELECTION_CONFIRMED_COMMENT + newline
+            if first.rstrip("\r") == INSTALL_COMPLETION_COMMENT:
+                content = bom + first + (separator or newline) + marker + rest
+            else:
+                content = bom + marker + body
         return content, None
 
     return edit
@@ -276,7 +328,7 @@ def publish_install(
     ):
         raise ValueError("Invalid installation snapshot")
     if not isinstance(updates, dict):
-        raise ValueError("Invalid installation updates")
+        raise TypeError("Invalid installation updates")
     # Validate canonical edits before entering the transaction, as publish does.
     _settings_editor(updates, {key: [] for key in updates})
     legacy_digest = None
@@ -347,6 +399,8 @@ def publish_install(
     with ExitStack() as open_files:
 
         def validate(staged: Path) -> None:
+            if updates.keys() & (RETIRED_LEARNING_ENVS | {NATIVE_MODEL_ENV}):
+                _verify_staged_native_selection(staged)
             if check_windows_embedding:
                 _verify_staged_windows_embedding(staged)
             if loader is not None:
@@ -357,7 +411,9 @@ def publish_install(
             edit,
             expected_snapshot=(existed, digest),
             validate=validate
-            if check_windows_embedding or loader is not None
+            if check_windows_embedding
+            or loader is not None
+            or updates.keys() & (RETIRED_LEARNING_ENVS | {NATIVE_MODEL_ENV})
             else None,
         )
 
@@ -559,6 +615,42 @@ def _edit_env_file[Result](
                     # Match the old in-place writer's read-only-attribute repair.
                     path.chmod(0o600)
                 if not unchanged:
+                    # Retiring saved selectors is a one-way, confirmed edit.
+                    # Keep exact original bytes under the same private writer
+                    # after validation, before committing their replacement.
+                    before_keys = {
+                        entry[0]
+                        for line in original.split("\n")
+                        if (entry := parse_env_line(line)) is not None
+                    }
+                    after_keys = {
+                        entry[0]
+                        for line in content.split("\n")
+                        if (entry := parse_env_line(line)) is not None
+                    }
+                    if exists and (
+                        (
+                            before_keys & RETIRED_LEARNING_ENVS
+                            and not after_keys & RETIRED_LEARNING_ENVS
+                        )
+                        or (
+                            not native_selection_confirmed(original)
+                            and native_selection_confirmed(content)
+                        )
+                    ):
+                        history = path.parent / "native-selection-history"
+                        snapshot = history / (
+                            hashlib.sha256(source).hexdigest() + ".env"
+                        )
+
+                        def retain(previous: str) -> tuple[str, None]:
+                            if os.path.lexists(snapshot) and previous != original:
+                                raise SettingsConflictError(
+                                    "Saved selection history changed"
+                                )
+                            return original, None
+
+                        _edit_env_file(snapshot, retain)
                     temporary.replace(path)
             return result
     except Timeout:
@@ -623,6 +715,67 @@ def _verify_opencode_loader(
     raise SettingsPreflightError(80)
 
 
+def _verify_staged_native_selection(staged: Path) -> None:
+    """Use the prepared SDK before committing a changed native selection."""
+    values = {}
+    nonempty_saved: set[str] = set()
+    native_references: set[str] = set()
+    content = staged.read_bytes().decode("utf-8")
+    for line in content.split("\n"):
+        if (entry := parse_env_line(line)) is not None:
+            values[entry[0]] = entry[1]
+            if entry[1].strip():
+                nonempty_saved.add(entry[0])
+            if entry[0] == NATIVE_MODEL_ENV:
+                native_references.add(entry[1])
+    if len(native_references) > 1:
+        raise SettingsPreflightError(81)
+    desired = values.get(NATIVE_MODEL_ENV, "")
+    inherited = os.environ.get(NATIVE_MODEL_ENV)
+    if inherited is not None and inherited != desired:
+        raise SettingsConflictError(
+            "An exported native target would hide this saved change; clear it and retry"
+        )
+    if reflexio_url_is_remote(
+        values.get(REFLEXIO_URL_ENV, os.environ.get(REFLEXIO_URL_ENV, ""))
+    ):
+        return  # Inactive local preferences never activate a managed backend.
+    if any(
+        name in values or os.environ.get(name, "") for name in RETIRED_LEARNING_ENVS
+    ) or (
+        "CLAUDE_SMART_CLI_MODEL" in nonempty_saved
+        or os.environ.get("CLAUDE_SMART_CLI_MODEL", "").strip()
+    ):
+        raise SettingsPreflightError(81)
+    if not desired.strip():
+        if NATIVE_MODEL_ENV not in values or not native_selection_confirmed(content):
+            raise SettingsPreflightError(81)
+        # Disabling native generation needs no provider import or executable.
+        # SDK-free connection/cloud repairs must remain possible.
+        return
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-m",
+                "claude_smart.native_selection",
+            ],
+            cwd=staged.parent,
+            env={**os.environ, "REFLEXIO_ENV_FILE": str(staged)},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise SettingsPreflightError(81) from None
+    if result.returncode:
+        raise SettingsPreflightError(81)
+
+
 def _verify_staged_windows_embedding(staged: Path) -> None:
     root = Path.cwd()
     # The SDK gives a working-directory dotenv file precedence. A bundled
@@ -630,7 +783,7 @@ def _verify_staged_windows_embedding(staged: Path) -> None:
     if os.path.lexists(root / ".env"):
         raise SettingsPreflightError(79)
     try:
-        result = subprocess.run(  # noqa: S603 — the prepared runtime owns both paths.
+        result = subprocess.run(
             [
                 sys.executable,
                 "-I",
@@ -644,6 +797,7 @@ def _verify_staged_windows_embedding(staged: Path) -> None:
             stderr=subprocess.DEVNULL,
             timeout=15,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
         )
     except subprocess.TimeoutExpired:
         raise SettingsPreflightError(78) from None
@@ -735,8 +889,13 @@ def main(argv: list[str] | None = None) -> int:
         print(str(error), file=sys.stderr)
         return 75
     except SettingsPreflightError as error:
+        if error.code == 81:
+            print(
+                "Native learning target failed prepared SDK validation; settings were not saved.",
+                file=sys.stderr,
+            )
         return error.code
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError):
         print(
             "Cannot update settings; check file access and single-line UTF-8 values.",
             file=sys.stderr,

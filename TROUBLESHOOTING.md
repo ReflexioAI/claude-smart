@@ -84,7 +84,16 @@ failure, then rerun `npx claude-smart update`.
 `uv` is installed into the standard Astral locations (`~/.local/bin` or `~/.cargo/bin`). The private dashboard runtime is at `~/.claude-smart/node/current`. Set `CLAUDE_SMART_NODE_LTS_MAJOR` (default `26`) to choose the Node LTS major used by the private bootstrap.
 
 **A different LLM is being used.**
-Reflexio's provider priority is `claude-code > local > anthropic > gemini > ... > openai`. If you have `CLAUDE_SMART_USE_LOCAL_CLI=1` *and* an Anthropic key set, claude-code still wins for generation; `local` sits above openai/gemini for embeddings. Check the startup log line `Primary provider for generation: <name>` and `Embedding provider: <name>` to confirm.
+Check `REFLEXIO_NATIVE_CLI_MODEL` in the caller environment and saved account
+file. A nonempty target explicitly selects the authenticated host and optional
+model; an explicitly confirmed empty target keeps configured cloud models.
+Old missing/blank fields need confirmation in setup because earlier launchers
+could still select a local CLI. Unattended local setup requires `--provider` or
+an explicit canonical target; `--host` only selects the coding integration.
+Caller values override the file.
+Run confirmed setup to convert obsolete learning settings. Invalid targets and
+conflicting role pins refuse rather than switching provider. Coding integration
+identity does not select the learning CLI.
 
 **I want to wipe everything and start over.**
 ```bash

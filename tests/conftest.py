@@ -51,9 +51,17 @@ def clear_reflexio_connection_env(monkeypatch, tmp_path):
     monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
     monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_READ_ONLY", raising=False)
-    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    # Admission publishes these process-owned fields in real startup tests.
+    # Record even an initially absent key so teardown also removes new writes.
+    for name in (
+        "REFLEXIO_NATIVE_CLI_MODEL",
+        "CLAUDE_SMART_USE_LOCAL_CLI",
+        "CLAUDE_SMART_CLI_MODEL",
+        "CLAUDE_SMART_CLI_PATH",
+    ):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
-    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_OPENCODE_PATH", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_OPENCODE_MODEL", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_LEARNING_PROVIDER", raising=False)

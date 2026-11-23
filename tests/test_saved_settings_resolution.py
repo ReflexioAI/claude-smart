@@ -82,11 +82,20 @@ def test_public_setup_keep_retains_effective_duplicate_flags(
     assert result.returncode == 0, result.stderr
     target = tmp_path / ".claude-smart/.env"
     saved = dotenv_values(target)
-    assert saved["CLAUDE_SMART_LEARNING_PROVIDER"] == "codex"
-    assert saved["CLAUDE_SMART_USE_LOCAL_CLI"] == "0"
-    # Reload actual saved state; coding HOST itself still follows the old worker
-    # contract, while LEARNING_PROVIDER retains independent learning selection.
-    keys = [key for key in flags if key != "CLAUDE_SMART_HOST"]
+    assert saved["REFLEXIO_NATIVE_CLI_MODEL"] == ""
+    for name in (
+        "CLAUDE_SMART_LEARNING_PROVIDER",
+        "CLAUDE_SMART_LEARNING_MODEL",
+        "CLAUDE_SMART_USE_LOCAL_CLI",
+    ):
+        assert name not in saved
+    # Retired learning choices do not reach hook environments. The independent
+    # executable, timeout, state and coding-integration settings still do.
+    keys = [
+        key
+        for key in flags
+        if key not in {"CLAUDE_SMART_HOST", "CLAUDE_SMART_USE_LOCAL_CLI"}
+    ]
     assert _reload(env, keys) == [flags[key] for key in keys]
     assert saved["CLAUDE_SMART_READ_ONLY"] == "0"  # Shared fields still take last.
     if source == "legacy":
@@ -154,12 +163,15 @@ def test_legacy_migration_preserves_present_empty_and_raw_values(
             "claude-code",
             "--backend",
             "local",
+            "--provider",
+            "claude-code",
             "--yes",
         ],
         env=env,
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     keys = ["CLAUDE_SMART_CLI_TIMEOUT", "CLAUDE_SMART_CLI_PATH"]
@@ -194,14 +206,19 @@ def test_public_setup_retains_last_shared_values_including_empty(tmp_path):
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "Backend: Local Reflexio" in result.stdout
     keys = [
         "REFLEXIO_API_KEY",
         "REFLEXIO_USER_ID",
-        "CLAUDE_SMART_LEARNING_MODEL",
         "CLAUDE_SMART_READ_ONLY",
-        "CLAUDE_SMART_LEARNING_PROVIDER",
     ]
-    assert _reload(env, keys) == ["", "", "", "0", "codex"]
+    assert _reload(env, keys) == ["", "", "0"]
+    from dotenv import dotenv_values
+
+    saved = dotenv_values(target, interpolate=False)
+    assert saved["REFLEXIO_NATIVE_CLI_MODEL"] == ""
+    assert "CLAUDE_SMART_LEARNING_MODEL" not in saved
+    assert "CLAUDE_SMART_LEARNING_PROVIDER" not in saved

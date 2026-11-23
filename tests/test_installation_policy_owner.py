@@ -20,7 +20,6 @@ from tests.test_install_scripts import (
 @pytest.mark.parametrize(
     "field",
     [
-        "CLAUDE_SMART_USE_LOCAL_CLI",
         "CLAUDE_SMART_HOST",
         "CLAUDE_SMART_BACKEND_AUTOSTART",
         "CLAUDE_SMART_DASHBOARD_AUTOSTART",
@@ -127,7 +126,8 @@ def test_shared_preparation_repairs_only_missing_defaults_with_real_owner(
     else:
         assert "REFLEXIO_ROW_LIMIT_INTERACTIONS=500" in text
         assert 'CLAUDE_SMART_READ_ONLY="0"' in text
-        assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in text
+        assert "CLAUDE_SMART_USE_LOCAL_CLI=1" not in text
+        assert "REFLEXIO_NATIVE_CLI_MODEL=" not in text
         assert selected.stat().st_mode & 0o777 == 0o600
 
 
@@ -158,8 +158,7 @@ def test_successful_install_starts_stored_learning_target_not_coding_identity(
     selected = tmp_path / ".claude-smart/.env"
     selected.parent.mkdir()
     original = f'REFLEXIO_URL="http://localhost:{port}/"\nREFLEXIO_API_KEY=""\nCLAUDE_SMART_READ_ONLY="0"\nCLAUDE_SMART_HOST=codex\nCLAUDE_SMART_HOST=claude-code\n'
-    if provider:
-        original += f'CLAUDE_SMART_LEARNING_PROVIDER="{provider}"\n'
+    original += f'REFLEXIO_NATIVE_CLI_MODEL="local-cli/{provider or "codex"}"\n'
     selected.write_text(original)
     try:
         result = _run_fake_claude_code_install(
@@ -215,9 +214,10 @@ def test_managed_confirmation_preserves_independent_legacy_learning_intent(
     )
     assert result.returncode == 0, result.stderr
     text = selected.read_text()
-    assert dotenv_values(selected, interpolate=False)[
-        "CLAUDE_SMART_LEARNING_PROVIDER"
-    ] == (stored_provider or "codex")
+    assert (
+        dotenv_values(selected, interpolate=False).get("CLAUDE_SMART_LEARNING_PROVIDER")
+        == stored_provider
+    )
     assert 'CLAUDE_SMART_LEARNING_MODEL="kept/native-model"' in text
     assert 'CLAUDE_SMART_CLI_PATH="/kept/custom"' in text
     assert "CLAUDE_SMART_USE_LOCAL_CLI=0" in text
@@ -234,7 +234,7 @@ def test_installer_refused_native_preflight_preserves_existing_services(tmp_path
     selected.parent.mkdir()
     original = (
         'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\n'
-        'CLAUDE_SMART_READ_ONLY="0"\nCLAUDE_SMART_LEARNING_PROVIDER="codex"\n'
+        'CLAUDE_SMART_READ_ONLY="0"\nREFLEXIO_NATIVE_CLI_MODEL="local-cli/codex"\n'
     )
     selected.write_text(original)
     marker = tmp_path / "existing-backend"

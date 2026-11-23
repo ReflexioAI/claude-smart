@@ -14,7 +14,7 @@ export async function GET() {
         id: connectionIdentity(sources.local),
         url: sources.local.url,
         configured: Boolean(sources.local.url),
-        learningModel: String(config.CLAUDE_SMART_LEARNING_MODEL || ""),
+        learningModel: String(config.REFLEXIO_NATIVE_CLI_MODEL || ""),
       },
       managed: {
         id: connectionIdentity(sources.managed),

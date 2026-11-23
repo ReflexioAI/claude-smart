@@ -1,7 +1,6 @@
 """Tests for OpenCode host support."""
 
 # Contract subprocesses execute repository code or fixture scripts in owned homes.
-# ruff: noqa: S603, S607
 
 from __future__ import annotations
 
@@ -271,7 +270,7 @@ def test_opencode_learning_loop_buffers_injects_tools_and_publishes(
         "publish_unpublished",
         # The Stop drain deadline is a monotonic instant; its bound is
         # covered by test_stop_bounds_its_synchronous_drain_inside_the_hook_limit.
-        lambda deadline, **kw: published.append(kw) or ("ok", 3),  # noqa: ARG005 -- Required named callback argument.
+        lambda deadline, **kw: published.append(kw) or ("ok", 3),
     )
 
     user_prompt.handle(
@@ -327,18 +326,6 @@ def test_opencode_learning_loop_buffers_injects_tools_and_publishes(
     ]
 
 
-def test_opencode_backend_service_uses_bridge_without_opencode_path_probe() -> None:
-    service = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
-
-    assert 'if [ "$learning_provider" = "opencode" ]' in service
-    assert (
-        'CLAUDE_SMART_CLI_PATH="$(claude_smart_opencode_compat_path "$PLUGIN_ROOT")"'
-        in service
-    )
-    assert "command -v opencode" not in service
-    assert 'export CLAUDE_SMART_HOST="$learning_provider"' in service
-
-
 def test_opencode_server_resolves_windows_bash_before_spawning() -> None:
     server = (REPO_ROOT / "plugin" / "opencode" / "server.mts").read_text()
 
@@ -361,18 +348,18 @@ def test_opencode_server_resolves_windows_bash_before_spawning() -> None:
         "modern",
     ),
     [
-        ("claude-sonnet-4-6", None, None, None, None, False),
+        ("claude-sonnet-4-6", None, None, "claude-sonnet-4-6", None, False),
         ("provider/explicit", None, None, "provider/explicit", None, False),
-        ("provider/explicit", "provider/saved", None, "provider/saved", None, False),
+        ("provider/explicit", "provider/saved", None, "provider/explicit", None, False),
         (
             "provider/explicit",
             "provider/saved#high",
             None,
-            "provider/saved",
-            "high",
+            "provider/explicit",
+            None,
             False,
         ),
-        ("provider/explicit", "#low", None, None, "low", False),
+        ("provider/explicit", "#low", None, "provider/explicit", None, False),
         ("#medium", None, None, None, "medium", False),
         ("provider/explicit", None, "CLAUDE_SMART_OPENCODE_MODEL", None, None, False),
         (
@@ -384,14 +371,14 @@ def test_opencode_server_resolves_windows_bash_before_spawning() -> None:
             False,
         ),
         (
-            "provider/explicit",
+            "provider/explicit#high",
             "provider/saved#high",
             None,
-            "provider/saved#high",
+            "provider/explicit#high",
             None,
             True,
         ),
-        ("provider/explicit", "#high", None, None, None, True),
+        ("#high", "#low", None, None, None, True),
     ],
 )
 def test_opencode_cli_bridge_translates_claude_contract(
@@ -508,7 +495,7 @@ process.stdout.write(JSON.stringify({{
         assert not call_log.exists()
         return
 
-    if modern and saved_model == "#high":
+    if modern and requested_model == "#high":
         assert result.returncode != 0
         assert "compatible variant option" in result.stderr
         assert not call_log.exists()
@@ -1085,15 +1072,24 @@ def test_public_setup_checks_opencode_variant_before_publication(
     else:
         assert result.returncode == 0, result.stderr
         values = dotenv_values(selected, interpolate=False)
-        assert values["CLAUDE_SMART_LEARNING_MODEL"] == model
+        assert values["REFLEXIO_NATIVE_CLI_MODEL"] == f"local-cli/opencode/{model}"
+        assert "CLAUDE_SMART_LEARNING_MODEL" not in values
         if case in {"named-executable", "worker-named", "empty-path-entry"}:
-            assert Path(values["CLAUDE_SMART_CLI_PATH"]) == executable
+            selected_cli = values["CLAUDE_SMART_CLI_PATH"]
+            assert selected_cli is not None
+            assert Path(selected_cli) == executable
         if case == "symlink-parent":
             assert values["CLAUDE_SMART_CLI_PATH"] == str(cli)
-        if case in {"blank-opencode-path", "worker-default"}:
-            assert Path(values["CLAUDE_SMART_OPENCODE_PATH"]) == executable
-        if case == "session-opencode-override":
-            assert Path(values["CLAUDE_SMART_OPENCODE_PATH"]) == saved_executable
+        if case in {
+            "blank-opencode-path",
+            "worker-default",
+            "session-opencode-override",
+        }:
+            selected_opencode = values["CLAUDE_SMART_OPENCODE_PATH"]
+            assert selected_opencode is not None
+            assert Path(selected_opencode) == (
+                saved_executable if case == "session-opencode-override" else executable
+            )
 
 
 def _fake_opencode_path(tmp_path: Path) -> Path:
@@ -1515,7 +1511,8 @@ def test_node_opencode_install_preserves_existing_claude_and_codex_state_on_wind
     assert runtime_env.startswith(original)
     assert "CLAUDE_SMART_HOST=opencode" not in runtime_env
     assert "CLAUDE_SMART_OPENCODE_PATH=" not in runtime_env
-    assert "CLAUDE_SMART_USE_LOCAL_CLI=1" in runtime_env
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=" not in runtime_env
+    assert "REFLEXIO_NATIVE_CLI_MODEL=" not in runtime_env
     assert "REFLEXIO_ROW_LIMIT_INTERACTIONS=500" in runtime_env
     # ~/.reflexio/.env belongs to other Reflexio tools and is never rewritten.
     assert (home / ".reflexio" / ".env").read_text() == original

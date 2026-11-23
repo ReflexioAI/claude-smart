@@ -18,7 +18,7 @@ import pytest
 from claude_smart import env_config
 
 from tests.settings_owner_cases import assert_real_settings_owner
-from tests.settings_owner_cases import locked_owner_wheel as locked_owner_wheel
+from tests.settings_owner_cases import locked_owner_wheel as locked_owner_wheel  # noqa: PLC0414 — register the shared pytest fixture
 
 
 def _append_settings(path, values):
@@ -57,7 +57,7 @@ env_config._edit_env_file(path, lambda previous: (previous + 'FIRST="one"\\n', N
     environment["PYTHONPATH"] = os.pathsep.join(
         [str(Path(__file__).resolve().parents[1] / "plugin/src"), *sys.path]
     )
-    with subprocess.Popen(  # noqa: S603 — owned test child.
+    with subprocess.Popen(
         [
             sys.executable,
             "-c",
@@ -104,7 +104,7 @@ def test_repair_preserves_caps_read_only_and_host_and_is_idempotent(
     original = 'CLAUDE_SMART_HOST=opencode\nCLAUDE_SMART_READ_ONLY="1"\nREFLEXIO_ROW_LIMIT_INTERACTIONS=0\nREFLEXIO_API_KEY="keep"\n'
     path.write_text(original)
     monkeypatch.setenv("REFLEXIO_ROW_LIMIT_INTERACTIONS", "9000")
-    assert env_config.repair_bootstrap_env(path) == ["CLAUDE_SMART_USE_LOCAL_CLI"]
+    assert env_config.repair_bootstrap_env(path) == []
     assert path.read_text().startswith(original)
     before = path.read_bytes()
     assert env_config.repair_bootstrap_env(path) == []
@@ -361,7 +361,7 @@ def _native_powershell(script):
     powershell = shutil.which("powershell.exe")
     assert powershell is not None
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-    result = subprocess.run(  # noqa: S603 — repository-controlled test command.
+    result = subprocess.run(
         [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
         capture_output=True,
         text=True,
@@ -459,7 +459,8 @@ def test_publication_distinguishes_absent_empty_and_deleted(tmp_path: Path) -> N
     )
     assert (
         path.read_text()
-        == "# preserve\nOTHER=opaque\\path\nREFLEXIO_NATIVE_CLI_MODEL=\n"
+        == env_config.NATIVE_SELECTION_CONFIRMED_COMMENT
+        + "\n# preserve\nOTHER=opaque\\path\nREFLEXIO_NATIVE_CLI_MODEL=\n"
     )
     before = path.read_bytes()
     env_config.update_settings({}, {}, path)
@@ -633,7 +634,7 @@ def test_prepared_module_publishes_stdin_without_values_in_output(
         "runpy.run_module('claude_smart.env_config',run_name='__main__')"
     )
     args = [sys.executable, "-c", program]
-    result = subprocess.run(  # noqa: S603 — fixed prepared-module invocation.
+    result = subprocess.run(
         args,
         input=json.dumps(payload, ensure_ascii=False),
         encoding="utf-8",
@@ -641,13 +642,14 @@ def test_prepared_module_publishes_stdin_without_values_in_output(
         text=True,
         capture_output=True,
         timeout=10,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "private-canary" not in result.stdout + result.stderr
     assert (home / ".claude-smart/.env").read_text(
         encoding="utf-8"
     ) == "REFLEXIO_API_KEY=private-canary-λ\n"
-    result = subprocess.run(  # noqa: S603 — fixed prepared-module invocation.
+    result = subprocess.run(
         args,
         input=json.dumps(payload, ensure_ascii=False),
         encoding="utf-8",
@@ -655,6 +657,7 @@ def test_prepared_module_publishes_stdin_without_values_in_output(
         text=True,
         capture_output=True,
         timeout=10,
+        check=False,
     )
     assert result.returncode == 73
     assert "private-canary" not in result.stdout + result.stderr
@@ -662,7 +665,7 @@ def test_prepared_module_publishes_stdin_without_values_in_output(
         "updates": {"REFLEXIO_API_KEY": "new-owned-key"},
         "expected": {"REFLEXIO_API_KEY": ["REFLEXIO_API_KEY=private-canary-λ"]},
     }
-    result = subprocess.run(  # noqa: S603 — same owned module invocation.
+    result = subprocess.run(
         args,
         input=json.dumps(payload, ensure_ascii=False),
         encoding="utf-8",
@@ -670,6 +673,7 @@ def test_prepared_module_publishes_stdin_without_values_in_output(
         text=True,
         capture_output=True,
         timeout=10,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "private-canary" not in result.stdout + result.stderr
@@ -851,7 +855,8 @@ def test_prepared_settings_verify_staged_windows_backend_before_commit(
     original = target.read_bytes()
     observed = tmp_path / "observed-settings"
     monkeypatch.chdir(tmp_path)
-    args = ({"REFLEXIO_URL": local}, snapshot, None)
+    updates: dict[str, str | None] = {"REFLEXIO_URL": local}
+    args = (updates, snapshot, None)
     if case == "attached":
         env_config.publish_install(*args, prepared=True, check_windows_embedding=True)
         assert f"REFLEXIO_URL={local}\n".encode() in target.read_bytes()
@@ -1129,7 +1134,7 @@ require(process.argv[1]).publishInstallSettings({}).then(
         "TEMP": str(temporary),
         "TMP": str(temporary),
     }
-    child = subprocess.Popen(  # noqa: S603 -- Owned HOME, repository source, no external network.
+    child = subprocess.Popen(
         [
             node,
             "-e",
@@ -1254,9 +1259,11 @@ def test_scoped_loader_removal_preserves_replacement(
     with pytest.raises(ValueError, match="replacement was restored"):
         if phase == "uninstall":
             loader.write_bytes(original)
-            plan = {
+            snapshot = opencode_scope._snapshot(loader)
+            plan: opencode_scope._Edit = {
                 "path": str(loader),
-                **opencode_scope._snapshot(loader),
+                "contents": snapshot["contents"],
+                "identity": snapshot["identity"],
                 "replacement": None,
             }
             opencode_scope._publish([plan], check=False)
@@ -1282,9 +1289,11 @@ def test_scoped_loader_removal_preserves_in_place_edit(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     loader = tmp_path.resolve() / "claude-smart.js"
     loader.write_bytes(b"generated bytes")
-    plan = {
+    snapshot = opencode_scope._snapshot(loader)
+    plan: opencode_scope._Edit = {
         "path": str(loader),
-        **opencode_scope._snapshot(loader),
+        "contents": snapshot["contents"],
+        "identity": snapshot["identity"],
         "replacement": None,
     }
     rename = os.rename
@@ -1343,7 +1352,7 @@ def test_scoped_loader_install_and_remove_on_separate_local_volume(
         prefix="claude-smart-scope-", dir=tmpfs
     ) as project:
         loader = Path(project) / "loader.js"
-        edit = {
+        edit: opencode_scope._Edit = {
             "path": str(loader),
             "contents": None,
             "identity": None,
@@ -1353,14 +1362,276 @@ def test_scoped_loader_install_and_remove_on_separate_local_volume(
         assert not loader.exists()
         opencode_scope._publish([edit], check=False)
         assert loader.read_text() == "probe"
-        opencode_scope._publish(
-            [
-                {
-                    "path": str(loader),
-                    **opencode_scope._snapshot(loader),
-                    "replacement": None,
-                }
-            ],
-            check=False,
-        )
+        snapshot = opencode_scope._snapshot(loader)
+        removal: opencode_scope._Edit = {
+            "path": str(loader),
+            "contents": snapshot["contents"],
+            "identity": snapshot["identity"],
+            "replacement": None,
+        }
+        opencode_scope._publish([removal], check=False)
         assert not list(loader.parent.iterdir())
+
+
+def test_confirmed_cloud_conversion_preserves_original_bytes(tmp_path, monkeypatch):
+    target = ""
+    path = tmp_path / ".env"
+    original = (
+        b"# private original\r\nOTHER=untouched\r\n"
+        b"CLAUDE_SMART_LEARNING_PROVIDER=codex\r\n"
+        b"CLAUDE_SMART_LEARNING_MODEL=private-model\r\n"
+        b"CLAUDE_SMART_USE_LOCAL_CLI=1\r\n"
+    )
+    path.write_bytes(original)
+    for name in (*env_config.RETIRED_LEARNING_ENVS, env_config.NATIVE_MODEL_ENV):
+        monkeypatch.delenv(name, raising=False)
+    updates = dict.fromkeys(env_config.RETIRED_LEARNING_ENVS)
+    updates[env_config.NATIVE_MODEL_ENV] = target
+    expected = {name: [] for name in updates}
+    for line in original.decode().splitlines():
+        if (entry := env_config.parse_env_line(line)) and entry[0] in expected:
+            expected[entry[0]].append(line)
+    env_config.update_settings(updates, expected, path)
+    snapshot = (
+        path.parent
+        / "native-selection-history"
+        / (hashlib.sha256(original).hexdigest() + ".env")
+    )
+    assert snapshot.read_bytes() == original
+    assert b"# private original\r\nOTHER=untouched\r\n" in path.read_bytes()
+    assert not any(
+        name.encode() in path.read_bytes() for name in env_config.RETIRED_LEARNING_ENVS
+    )
+    assert env_config.parse_env_line(path.read_text().splitlines()[-1]) == (
+        env_config.NATIVE_MODEL_ENV,
+        target,
+    )
+    if os.name != "nt":
+        assert stat.S_IMODE(snapshot.stat().st_mode) == 0o600
+        assert stat.S_IMODE(snapshot.parent.stat().st_mode) == 0o700
+
+
+def test_caller_shadow_keeps_confirmed_file_and_history_absent(tmp_path, monkeypatch):
+    path = tmp_path / ".env"
+    original = b"# do not rewrite\nCLAUDE_SMART_LEARNING_MODEL=private-model\n"
+    path.write_bytes(original)
+    for name in (*env_config.RETIRED_LEARNING_ENVS, env_config.NATIVE_MODEL_ENV):
+        monkeypatch.delenv(name, raising=False)
+    target = "local-cli/codex"
+    monkeypatch.setenv(env_config.NATIVE_MODEL_ENV, "local-cli/claude-code")
+    updates = {"CLAUDE_SMART_LEARNING_MODEL": None, env_config.NATIVE_MODEL_ENV: target}
+    expected = {
+        "CLAUDE_SMART_LEARNING_MODEL": ["CLAUDE_SMART_LEARNING_MODEL=private-model"],
+        env_config.NATIVE_MODEL_ENV: [],
+    }
+    with pytest.raises(
+        env_config.SettingsConflictError, match="exported native target"
+    ):
+        env_config.update_settings(updates, expected, path)
+    assert path.read_bytes() == original
+    assert not (path.parent / "native-selection-history").exists()
+    assert not list(tmp_path.glob(".env-*/settings"))
+
+
+def test_local_activation_refuses_ambiguous_inactive_native_target(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / ".env"
+    original = (
+        b"REFLEXIO_URL=https://managed.example/\n"
+        b"REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex\nREFLEXIO_NATIVE_CLI_MODEL=\n"
+    )
+    path.write_bytes(original)
+    monkeypatch.delenv("REFLEXIO_NATIVE_CLI_MODEL", raising=False)
+    with pytest.raises(env_config.SettingsPreflightError):
+        env_config.update_settings(
+            {"REFLEXIO_URL": "http://localhost:8071/"},
+            {"REFLEXIO_URL": ["REFLEXIO_URL=https://managed.example/"]},
+            path,
+        )
+    assert path.read_bytes() == original
+
+
+def test_empty_native_update_cannot_hide_nonblank_retired_duplicate(tmp_path):
+    path = tmp_path / ".env"
+    original = b"CLAUDE_SMART_USE_LOCAL_CLI=1\nCLAUDE_SMART_USE_LOCAL_CLI=\n"
+    path.write_bytes(original)
+    with pytest.raises(env_config.SettingsPreflightError):
+        env_config.update_settings(
+            {"REFLEXIO_NATIVE_CLI_MODEL": ""}, {"REFLEXIO_NATIVE_CLI_MODEL": []}, path
+        )
+    assert path.read_bytes() == original
+    assert not (tmp_path / "native-selection-history").exists()
+
+
+def test_inherited_managed_endpoint_keeps_native_preferences_inactive(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / ".env"
+    path.write_text("OTHER=keep\n")
+    monkeypatch.setenv("REFLEXIO_URL", "https://managed.example/")
+    env_config.update_settings(
+        {"REFLEXIO_NATIVE_CLI_MODEL": "inactive-opaque-preference"},
+        {"REFLEXIO_NATIVE_CLI_MODEL": []},
+        path,
+    )
+    assert (
+        path.read_text()
+        == env_config.NATIVE_SELECTION_CONFIRMED_COMMENT
+        + "\nOTHER=keep\nREFLEXIO_NATIVE_CLI_MODEL=inactive-opaque-preference\n"
+    )
+
+
+def test_managed_preference_save_refuses_exported_native_shadow(tmp_path, monkeypatch):
+    path = tmp_path / ".env"
+    original = b"REFLEXIO_URL=https://managed.example/\nREFLEXIO_NATIVE_CLI_MODEL=local-cli/codex\n"
+    path.write_bytes(original)
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/codex")
+    with pytest.raises(
+        env_config.SettingsConflictError, match="exported native target"
+    ):
+        env_config.update_settings(
+            {"REFLEXIO_NATIVE_CLI_MODEL": "local-cli/claude-code"},
+            {
+                "REFLEXIO_NATIVE_CLI_MODEL": [
+                    "REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex"
+                ]
+            },
+            path,
+        )
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("saved_empty", [False, True])
+def test_local_activation_requires_explicit_cloud_or_native_confirmation(
+    tmp_path, monkeypatch, saved_empty
+):
+    selected = tmp_path / ".env"
+    original = b"REFLEXIO_URL=https://managed.example/\nREFLEXIO_API_KEY=owned-key\nOTHER=keep\n"
+    if saved_empty:
+        original += b"REFLEXIO_NATIVE_CLI_MODEL=\n"
+    selected.write_bytes(original)
+    monkeypatch.delenv(env_config.NATIVE_MODEL_ENV, raising=False)
+    updates: dict[str, str | None] = {
+        "REFLEXIO_URL": "http://localhost:8071/",
+        "REFLEXIO_API_KEY": "",
+    }
+    expected = {key: [] for key in updates}
+    for line in original.decode().splitlines():
+        if (entry := env_config.parse_env_line(line)) and entry[0] in expected:
+            expected[entry[0]].append(line)
+    with pytest.raises(env_config.SettingsPreflightError) as rejected:
+        env_config.update_settings(updates, expected, selected)
+    assert rejected.value.code == 81
+    assert selected.read_bytes() == original
+    # Confirmed cloud mode needs no SDK; the original connection remains recoverable.
+    updates[env_config.NATIVE_MODEL_ENV] = ""
+    expected[env_config.NATIVE_MODEL_ENV] = (
+        ["REFLEXIO_NATIVE_CLI_MODEL="] if saved_empty else []
+    )
+    env_config.update_settings(updates, expected, selected)
+    assert b"REFLEXIO_NATIVE_CLI_MODEL=\n" in selected.read_bytes()
+    history = (
+        selected.parent
+        / "native-selection-history"
+        / (hashlib.sha256(original).hexdigest() + ".env")
+    )
+    assert history.read_bytes() == original
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_identical_native_save_still_refuses_a_caller_shadow(
+    tmp_path, monkeypatch, confirmed
+):
+    selected = tmp_path / ".env"
+    header = "# claude-smart: native learning confirmed v1\n" if confirmed else ""
+    original = (header + "REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex\n").encode()
+    selected.write_bytes(original)
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code/sonnet")
+    with pytest.raises(
+        env_config.SettingsConflictError, match="exported native target"
+    ):
+        env_config.update_settings(
+            {"REFLEXIO_NATIVE_CLI_MODEL": "local-cli/codex"},
+            {
+                "REFLEXIO_NATIVE_CLI_MODEL": [
+                    "REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex"
+                ]
+            },
+            selected,
+        )
+    assert selected.read_bytes() == original
+    assert not (tmp_path / "native-selection-history").exists()
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "",
+        "# claude-smart: legacy-env checked\n",
+        "\ufeff# claude-smart: legacy-env checked\r\n",
+    ],
+)
+def test_explicit_cloud_confirmation_preserves_import_header_and_archives_once(
+    tmp_path, monkeypatch, prefix
+):
+    selected = tmp_path / ".env"
+    original = (prefix + 'REFLEXIO_NATIVE_CLI_MODEL=""\nOTHER=keep\n').encode()
+    selected.write_bytes(original)
+    monkeypatch.delenv(env_config.NATIVE_MODEL_ENV, raising=False)
+    expected = {env_config.NATIVE_MODEL_ENV: ['REFLEXIO_NATIVE_CLI_MODEL=""']}
+    env_config.update_settings({env_config.NATIVE_MODEL_ENV: ""}, expected, selected)
+    content = selected.read_text(encoding="utf-8")
+    assert env_config.native_selection_confirmed(content)
+    if prefix:
+        assert content.removeprefix("\ufeff").startswith(
+            env_config.INSTALL_COMPLETION_COMMENT + "\n"
+        )
+    history = tmp_path / "native-selection-history"
+    assert (
+        history / (hashlib.sha256(original).hexdigest() + ".env")
+    ).read_bytes() == original
+    expected = {env_config.NATIVE_MODEL_ENV: ["REFLEXIO_NATIVE_CLI_MODEL="]}
+    env_config.update_settings({env_config.NATIVE_MODEL_ENV: ""}, expected, selected)
+    assert len(list(history.glob("*.env"))) == 1
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "OTHER=value\n# claude-smart: native learning confirmed v1\n",
+        'OTHER="multiline\n# claude-smart: native learning confirmed v1\n"\n',
+        "OTHER=value\r# claude-smart: native learning confirmed v1\n",
+    ],
+)
+def test_native_confirmation_cannot_be_spoofed_after_assignments(content):
+    assert not env_config.native_selection_confirmed(content)
+
+
+@pytest.mark.parametrize("encoded", ["", '""'])
+def test_confirming_first_assignment_preserves_bom_and_exact_recovery(
+    tmp_path, monkeypatch, encoded
+):
+    selected = tmp_path / ".env"
+    assignment = f"\ufeffREFLEXIO_NATIVE_CLI_MODEL={encoded}"
+    original = (assignment + "\r\nOTHER=keep\r\n").encode("utf-8")
+    selected.write_bytes(original)
+    monkeypatch.delenv(env_config.NATIVE_MODEL_ENV, raising=False)
+    env_config.update_settings(
+        {env_config.NATIVE_MODEL_ENV: ""},
+        {env_config.NATIVE_MODEL_ENV: [assignment]},
+        selected,
+    )
+    assert selected.read_bytes().startswith(
+        ("\ufeff" + env_config.NATIVE_SELECTION_CONFIRMED_COMMENT + "\r\n").encode(
+            "utf-8"
+        )
+    )
+    assert selected.read_bytes().count(b"\xef\xbb\xbf") == 1
+    assert b"REFLEXIO_NATIVE_CLI_MODEL=\r\nOTHER=keep\r\n" in selected.read_bytes()
+    snapshot = (
+        tmp_path
+        / "native-selection-history"
+        / (hashlib.sha256(original).hexdigest() + ".env")
+    )
+    assert snapshot.read_bytes() == original

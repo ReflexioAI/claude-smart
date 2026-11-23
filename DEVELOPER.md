@@ -9,7 +9,7 @@ Internal notes for maintainers of `claude-smart`. End-user install instructions 
 | `plugin/` | Claude Code plugin — hooks, slash commands, install script, and the Python package |
 | `plugin/src/claude_smart/` | Python package — hook handler, CLI, reflexio adapter |
 | `plugin/pyproject.toml` | Python manifest for the plugin (deps + console scripts for the plugin venv); npm-only, not published to PyPI |
-| `tests/` | Pytest suite for the Python package (run via `uv run --project plugin pytest tests/ -q` from repo root) |
+| `tests/` | Pytest suite for the Python package (see [Tests](#tests) for bundle preparation and commands) |
 | `bin/claude-smart.js` | Node wrapper so `npx claude-smart install` works |
 | `bin/install-guide.js` | Dependency-free guided install/uninstall UI and configuration selection |
 | `package.json` | npm manifest — ships `bin/`, marketplace metadata, `plugin/`, `README.md`, and `LICENSE` |
@@ -50,9 +50,7 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CLAUDE_SMART_USE_LOCAL_CLI` | `1` for missing local policy; explicit `0` preserved | Route generation through the selected learning CLI, independently of the coding integration. Confirmation preserves cloud opt-out and explicit overrides; repair supplies only a missing local default. |
-| `CLAUDE_SMART_LEARNING_PROVIDER` | unset (legacy host fallback) | Saved local background learning provider: `claude-code`, `codex`, or `opencode`. Independent of the agent collecting interactions. The guided installer saves the user's choice; session hooks and integration removal do not change it. An explicit `CLAUDE_SMART_CLI_PATH` still overrides the executable; the guide preserves it on unattended updates and clears it when choosing a provider interactively or with `--provider`. |
-| `CLAUDE_SMART_LEARNING_MODEL` | unset (provider-configured default) | Local learning model ID selected by the installer (`--model`). Routed to local extraction and the optimizer. A blank value lets the selected CLI choose. New Claude Code setup can recommend and save Sonnet explicitly. Unattended updates preserve the setting; choosing a different provider resets it unless a model is explicitly supplied. Applying it refreshes the local backend through the installer. Managed learning models are configured by the cloud service; the installer reports its configured model when the API exposes one. |
+| `REFLEXIO_NATIVE_CLI_MODEL` | explicit selection required | Native generation target: `local-cli/claude-code`, `local-cli/codex`, or `local-cli/opencode`, optionally followed by `/model`. Omit the model to delegate to the selected CLI. The prepared bundled SDK validates the target. Explicit caller values, including empty opt-out, override saved settings; a save hidden by a conflicting caller refuses. The guide serializes confirmed provider/model choices into this field. |
 | `CLAUDE_SMART_LOCAL_URL`, `CLAUDE_SMART_LOCAL_API_KEY` | unset (bundled loopback endpoint, no key) | Private saved local dashboard connection. The installer and Configure page retain the previous connection when changing runtime modes. These keys are not exposed to browser clients. |
 | `CLAUDE_SMART_MANAGED_URL`, `CLAUDE_SMART_MANAGED_API_KEY` | unset (managed view unavailable) | Private saved managed dashboard connection. Allows viewing managed data while the runtime remains local. Selecting a view does not rewrite runtime settings, start services, or send cloud credentials to the local endpoint. |
 | `REFLEXIO_EMBEDDING_PROVIDER` | model-derived when unset | Embedding provider mode: `cloud`, `local_service`, `internal_service`, or `off`. |
@@ -62,7 +60,7 @@ Tunables read by the plugin at runtime. Most users don't need to touch these —
 | `REFLEXIO_RERANK_ENABLED` | `false` (hard-set by `backend-service.sh`) | claude-smart disables Reflexio's shared-service cross-encoder completely, so the local inference process skips reranker model loading and prewarm. This is intentionally not user-overridable in the bundled backend. |
 | `CLAUDE_SMART_CITATIONS` | `on` | Controls the final `✨ claude-smart rule applied` marker instruction. `on` (default) injects a compact instruction asking the assistant to cite only memories that materially changed the answer. `off` skips injection of the citation instruction entirely and strips any stray marker line from the assistant text before publishing. Legacy values `auto` and `marker-only` are accepted as enabled aliases. Set in Claude Code settings (hook env), not `~/.reflexio/.env`. |
 | `CLAUDE_SMART_DASHBOARD_URL` | Local URL using `DASHBOARD_PORT` (3001 by default) | Base URL for local citation links and learning-stall notices. Set it for a public dashboard origin such as a reverse proxy. Model-facing citation links use short `/rules/{citationId}` resolver URLs; canonical direct links remain `/skills/project/{id}`, `/skills/shared/{id}`, and `/preferences/project/{id}`. `/preferences/{id}` remains a compatibility alias. |
-| `CLAUDE_SMART_CLI_PATH` | `claude` on Claude Code; native `codex` on Codex | Override the executable Reflexio calls for local generation. |
+| `CLAUDE_SMART_CLI_PATH` | Selected native host executable | Override the native-learning executable independently of the coding integration. OpenCode uses the owned adapter when required. |
 | `CLAUDE_SMART_MAX_INJECTED_ITEMS` | `6` | Total results one UserPromptSubmit or PreToolUse search may return across its three collections. Enforced as a per-collection `top_k` of `cap // 3` (at least 1), so nothing the server marks as served is dropped. `0` removes the cap (`top_k` 5); empty or invalid values use the default. Hook env. |
 | `CLAUDE_SMART_STATE_DIR` | `~/.claude-smart/sessions/` | Where the per-session JSONL buffer lives. On POSIX, an absolute directory also owns the diagnostic `hook.log`. Windows and relative or default paths use `~/.claude-smart/hook.log` for diagnostics. |
 | `CLAUDE_SMART_NODE_LTS_MAJOR` | `26` | Major version used when the installer downloads private Node.js/npm into `~/.claude-smart/node/current`. |
@@ -77,30 +75,58 @@ On POSIX, hook diagnostics follow the selected absolute session directory. If yo
 the selected absolute directory's `hook.log` (or `~/.claude-smart/hook.log` on Windows or for a default
 or relative session location). Existing logs and session buffers stay at their previous paths.
 
-The bundled backend launcher passes the saved provider and model to the SDK as
-one native model reference. It preserves the CLI opt-out and the saved file
-when the bundled SDK loads settings again in worker processes. Its native-reference
-parser owns supported hosts and opaque model validation; the plugin does not
-maintain a separate host parser or predecessor-SDK native generation path.
+Native admission lives in `plugin/src/claude_smart/native_selection.py` and
+is reused by prepared validation and backend startup. The bundled SDK owns
+native syntax; `env_config.py` owns confirmed settings publication and recovery.
 
-To upgrade an installation that still sets `CLAUDE_SMART_CLI_MODEL`, record the
-effective model, move it to `CLAUDE_SMART_LEARNING_MODEL`, and clear the old
-assignment in the saved environment and shell before starting the backend.
-Keep any existing saved model that already overrode the old value. The launcher
-rejects that field and requires the native model interface from its bundled SDK.
-If native generation is selected and that interface is missing, repair or update
-the plugin bundle before restarting;
-preflight refuses before replacing a running backend or publishing model settings.
+The backend child reads the canonical native target directly. Coding-host
+identity never chooses learning execution. Hook, dashboard and installer parents
+do not export a file-loaded target into their long-lived environment. Workers
+retain the selected target, including empty opt-out. Invalid native intent
+refuses rather than falling back to an HTTP provider.
 
-If a native Claude Code role already pins `local-cli/claude-code/sonnet`,
-save `CLAUDE_SMART_LEARNING_MODEL=sonnet` before restarting. The bundled
-launcher also checks for that pin in the inherited native model selector. A
-blank model otherwise delegates to Claude Code's configured default.
+`CLAUDE_SMART_USE_LOCAL_CLI`, `CLAUDE_SMART_LEARNING_PROVIDER`, and
+`CLAUDE_SMART_LEARNING_MODEL` are retired runtime selectors. Confirmed
+`npx claude-smart setup` / `update` converts an unambiguous saved selection,
+preserving host, model and cloud opt-out. A coding-host-only fallback cannot
+establish learning intent; choose its provider explicitly. Conflicting saved
+choices require an explicit canonical target or provider selection. Remove
+obsolete exported selectors from the calling shell; normal starts reject saved
+retired fields, including empty assignments, and nonempty exported selectors.
+They do not rewrite saved settings.
 
-For OpenCode, use `provider/model#variant` in `CLAUDE_SMART_LEARNING_MODEL`
-to select both, or `#variant` to keep OpenCode's default model. Move any
-nonblank `CLAUDE_SMART_OPENCODE_VARIANT` into that model reference and remove
-the old setting before restarting.
+Conversion validates staged settings through the prepared SDK under the shared
+settings lock and compare-and-swap. It keeps the exact original file in private
+`~/.claude-smart/native-selection-history/<sha256>.env` recovery storage before
+publication; these files contain secrets and must not be published. Failed
+validation leaves the original intact. Existing model roles, accounts,
+executable overrides and learned data are preserved. The dashboard's explicit
+"Choose cloud models" action selects an empty native target; Save then confirms
+conversion, while unrelated settings saves keep legacy choices untouched.
+
+Old missing or blank target fields do not prove cloud intent: earlier launchers
+could still select a local CLI. Setup therefore requires an explicit provider or
+canonical target, including an explicitly empty caller value for cloud models.
+The settings owner records confirmation using a generated leading comment,
+`# claude-smart: native learning confirmed v1`, so saved empty targets remain
+unambiguous on restart. This is file-format metadata, not another setting.
+Initial confirmation also archives the exact original file. The legacy-import
+sentinel remains first when present. Unattended setup never infers a learning
+provider from `--host`.
+For an ambiguous legacy file with a custom executable, supply the canonical
+native target explicitly to confirmed setup to retain the executable binding.
+An explicit `--provider` choice replaces that binding by design.
+
+`CLAUDE_SMART_CLI_MODEL` remains rejected: record the effective model, choose its
+canonical native target, and remove the obsolete assignment. An incomplete SDK
+bundle refuses native admission before an existing backend is replaced.
+A saved Claude Code Sonnet role pin needs `local-cli/claude-code/sonnet`;
+leaving the target model unspecified does not override that pin.
+
+For OpenCode use `local-cli/opencode/provider/model#variant`, or
+`local-cli/opencode/#variant` to retain the default model. Move obsolete
+`CLAUDE_SMART_OPENCODE_VARIANT` into this reference and remove the old setting.
+The bridge passes the SDK model argument unchanged, including plain model IDs.
 
 
 ## Embeddings
@@ -356,18 +382,20 @@ repair rather than silently choosing a different executable from PATH.
 
 **Model selection.** OpenCode support uses OpenCode's plugin loader to inject relevant learned context into the system prompt of the first model request after each prompt. Learning extraction runs `opencode run` with `OPENCODE_PURE=1` from an isolated temp project. On OpenCode 1.x that skips external plugins; V2 has no pure mode, so there the extraction run loads the user's global plugins. For a new OpenCode learning setup,
 `claude-smart install --provider opencode --model provider/model` saves the
-model used for local learning and the optimizer. With no model selected,
+model used for local learning. With no model selected,
 OpenCode resolves its own default. A direct bridge invocation can pass
 `--model provider/model`.
 
 When upgrading an installation that used `CLAUDE_SMART_OPENCODE_MODEL`, record
 the effective model. Move an effective legacy override to
-`CLAUDE_SMART_LEARNING_MODEL` in `~/.claude-smart/.env` for the existing
-OpenCode learning route, or pass the model directly to a standalone bridge.
-Keep any saved learning model that already overrode the legacy value. Clear
-the old assignment in the saved environment and shell, then restart the
-local backend if it is running. Keep the existing provider, executable
-override, and local CLI opt-in when making this change.
+`REFLEXIO_NATIVE_CLI_MODEL=local-cli/opencode/<model>` in `~/.claude-smart/.env`
+for the existing OpenCode learning route, or pass the model directly to a standalone bridge.
+If a saved learning model already overrode the legacy value, preserve that effective
+model. Clear the retired OpenCode assignment from the saved environment and shell,
+then run confirmed `claude-smart setup` to convert the saved provider/model/native
+selection into `REFLEXIO_NATIVE_CLI_MODEL`. Keep the executable override. Restart
+the local backend after successful conversion; do not retain the three retired
+learning selector assignments.
 
 **V2 plugin reload mid-turn.** OpenCode closes the old plugin instance, awaiting its cleanup and then closing its event streams, before it loads the new instance, and it holds plugin readiness until the swap is done. The old event stream therefore cannot run until the turn ends. Instead, cleanup in `plugin/opencode/v2.ts` hands each open turn, with the V1 hooks that captured it, to the next `setup()` for the same directory. That instance publishes the turn once, at its `session.execution.*` event. Events published during the swap reach no instance. If the terminal event is lost that way, the turn is published when the session's next prompt arrives. A turn that no new instance takes over is not published.
 
@@ -883,12 +911,37 @@ uv run --project plugin --no-sync python -c "import reflexio, os; print(reflexio
 
 ## Tests
 
+From a fresh checkout, prepare the exact locked SDK and the historical source
+used by compatibility tests, as CI does. The private temporary checkout is
+removed afterward. Bundle generation does not replace the locked PyPI test
+interpreter with the vendor package.
+
 ```bash
-uv run --project plugin pytest --rootdir . -o addopts= tests/ -q   # claude-smart package tests (from repo root)
-cd ../reflexio && uv run pytest tests/server/llm/ -q -o 'addopts='   # reflexio patch tests
+(
+  set -eu
+  npm ci
+  test_sdk_root=$(mktemp -d -t claude-smart-test-sdk.XXXXXX)
+  trap 'rm -rf "$test_sdk_root"' EXIT
+  test_sdk_repo=$(uv run --project plugin python -c 'import json; print(json.load(open("reflexio.lock.json"))["repo"])')
+  test_sdk_commit=$(uv run --project plugin python -c 'import json; print(json.load(open("reflexio.lock.json"))["commit"])')
+  git clone --quiet "$test_sdk_repo" "$test_sdk_root/current"
+  git -C "$test_sdk_root/current" checkout --quiet --detach "$test_sdk_commit"
+  test "$(git -C "$test_sdk_root/current" rev-parse HEAD)" = "$test_sdk_commit"
+  uv run --project plugin python scripts/vendor-reflexio.py \
+    --reflexio-path "$test_sdk_root/current" --require-clean --bundle-only --write
+  mkdir "$test_sdk_root/predecessor"
+  git -C "$test_sdk_root/current" archive --format=tar \
+    --output="$test_sdk_root/predecessor.tar" 70daf32c2b47b35dd0fe7be1d6f64d648a67eb8a
+  tar -xf "$test_sdk_root/predecessor.tar" -C "$test_sdk_root/predecessor"
+  CLAUDE_SMART_TEST_CURRENT_SDK="$test_sdk_root/current" \
+  CLAUDE_SMART_TEST_PREDECESSOR_SDK="$test_sdk_root/predecessor" \
+    uv run --project plugin pytest --rootdir . -o addopts= tests/ -q
+)
 ```
 
-Run both locally before `make release`. There's no CI gate today — the release flow trusts the maintainer.
+For SDK changes, also run its relevant tests from your SDK development checkout
+that contains those changes, not the temporary checkout removed above, before release. The GitHub integration workflow gates the locked dependencies, pytest
+suite, and cross-platform installation/health checks.
 
 ### Exercising a hook handler directly
 

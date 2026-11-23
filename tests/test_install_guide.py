@@ -2,7 +2,6 @@
 
 # Contract subprocesses run repository scripts or fixture executables in owned homes.
 # This is the same trusted-argv policy as the enterprise deploy-script tests.
-# ruff: noqa: S603, S607
 
 from __future__ import annotations
 
@@ -12,6 +11,7 @@ import re
 import select
 import shutil
 import subprocess
+import sys
 import time
 from io import StringIO
 from pathlib import Path
@@ -23,6 +23,7 @@ from tests.test_install_scripts import (
     LIB,
     NODE_INSTALLER,
     REPO_ROOT,
+    _copy_codex_install_sources,
     _fake_claude_code_package,
     _fake_claude_install_script,
     _install_opencode_tarball_fixture,
@@ -64,7 +65,7 @@ def test_public_setup_preserves_a_concurrent_edit_after_preview(tmp_path):
         + ");return{ok:true,json:async()=>({})};};\n"
     )
     env["NODE_OPTIONS"] = f'--require "{stub}"'
-    result = subprocess.run(  # noqa: S603 -- Repository public CLI, owned HOME and fake host tools.
+    result = subprocess.run(
         [
             node_bin(),
             str(installer),
@@ -79,6 +80,7 @@ def test_public_setup_preserves_a_concurrent_edit_after_preview(tmp_path):
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 1
     assert "changed after confirmation" in result.stderr
@@ -92,7 +94,7 @@ def test_inconsistent_settings_bundle_refuses_before_preparation(tmp_path):
     installer, env = fake_guide(tmp_path)
     metadata = installer.parent.parent / "plugin/pyproject.toml"
     metadata.write_bytes(metadata.read_bytes() + b"\n# changed without regeneration\n")
-    result = subprocess.run(  # noqa: S603 -- Repository public CLI and owned tools/configuration.
+    result = subprocess.run(
         [
             node_bin(),
             str(installer),
@@ -101,12 +103,15 @@ def test_inconsistent_settings_bundle_refuses_before_preparation(tmp_path):
             "claude-code",
             "--backend",
             "local",
+            "--provider",
+            "claude-code",
             "--yes",
         ],
         env=env,
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 1
     assert "bundle is inconsistent" in result.stderr
@@ -137,7 +142,7 @@ def test_lost_save_ack_stops_workers_and_retry_does_not_reimport_deleted_legacy(
     owner.write_text(
         original.replace(
             acknowledgement,
-            '    if arguments == ["publish-install"]:\n        '
+            '    if arguments and arguments[0] in {"publish-install", "publish-prepared-install"}:\n        '
             + interruption
             + "\n"
             + acknowledgement,
@@ -154,14 +159,17 @@ def test_lost_save_ack_stops_workers_and_retry_does_not_reimport_deleted_legacy(
         "claude-code",
         "--backend",
         "local",
+        "--provider",
+        "claude-code",
         "--yes",
     ]
-    failed = subprocess.run(  # noqa: S603 -- Owned public flow with a post-commit acknowledgement fault.
+    failed = subprocess.run(
         command,
         env=env,
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert failed.returncode == 1
     assert (
@@ -183,12 +191,13 @@ def test_lost_save_ack_stops_workers_and_retry_does_not_reimport_deleted_legacy(
         )
     )
     owner.write_text(original)
-    retried = subprocess.run(  # noqa: S603 -- Same owned public flow after a fresh read/confirmation.
+    retried = subprocess.run(
         command,
         env=env,
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert retried.returncode == 0, retried.stderr
     assert "CLAUDE_SMART_CLI_TIMEOUT" not in dotenv_values(selected)
@@ -204,16 +213,6 @@ def fake_guide(
     package = _fake_claude_code_package(
         tmp_path,
         "#!/bin/sh\n"
-        + (
-            "i=0\n"
-            'while [ ! -e "$HOME/guide-progress" ]; do\n'
-            '  [ "$i" -lt 40 ] || exit 97\n'
-            "  sleep 0.25\n"
-            "  i=$((i + 1))\n"
-            "done\n"
-            if wait_for_progress
-            else ""
-        )
         + "uv sync --locked --python 3.12 --quiet || exit $?\n"
         + '"$PWD/.venv/bin/python" -I -m claude_smart.env_config bootstrap-repair >/dev/null || exit $?\n'
         + 'printf \'{"continue":true,"suppressOutput":true}\\n\'\n',
@@ -229,6 +228,22 @@ def fake_guide(
         "exit 0\n",
     )
     _write_bootstrap_uv(fake_bin / "uv", mode="fresh")
+    if wait_for_progress:
+        uv = fake_bin / "uv"
+        uv.write_text(
+            uv.read_text().replace(
+                "#!/bin/sh\n",
+                "#!/bin/sh\n"
+                'if [ "$1" = sync ]; then\n'
+                "  i=0\n"
+                '  while [ ! -e "$HOME/guide-progress" ]; do\n'
+                '    [ "$i" -lt 40 ] || exit 97\n'
+                "    sleep 0.25; i=$((i + 1))\n"
+                "  done\n"
+                "fi\n",
+                1,
+            )
+        )
     env = guide_env(tmp_path)
     # Managed configuration discovery is read-only, but installer tests must
     # not contact a real managed account or depend on network availability.
@@ -268,6 +283,7 @@ def test_setup_does_not_treat_completion_text_inside_a_value_as_metadata(tmp_pat
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     content = selected.read_text()
@@ -314,6 +330,9 @@ def test_unattended_install_preserves_inherited_provider_overrides(
             'CLAUDE_SMART_USE_LOCAL_CLI="1"\n'
         )
     env[key] = value
+    if key == "CLAUDE_SMART_USE_LOCAL_CLI":
+        # Supply deliberate cloud intent so this case reaches retired-input admission.
+        env["REFLEXIO_NATIVE_CLI_MODEL"] = ""
     args = [
         node_bin(),
         str(installer),
@@ -325,7 +344,18 @@ def test_unattended_install_preserves_inherited_provider_overrides(
     ]
     if explicit_provider:
         args += ["--provider", "claude-code"]
-    result = subprocess.run(args, env=env, text=True, capture_output=True, timeout=30)
+    result = subprocess.run(
+        args, env=env, text=True, capture_output=True, timeout=30, check=False
+    )
+    if key == "CLAUDE_SMART_USE_LOCAL_CLI":
+        assert result.returncode != 0
+        assert "obsolete learning selectors" in result.stderr
+        return
+    if not saved and not explicit_provider:
+        assert result.returncode != 0
+        assert "Choose a background learning provider" in result.stderr
+        assert not config_path.exists()
+        return
     assert result.returncode == 0, result.stdout + result.stderr
     settings = config_path.read_text()
     if explicit_provider:
@@ -333,9 +363,9 @@ def test_unattended_install_preserves_inherited_provider_overrides(
         assert f'{key}="{value}"' not in settings
         assert (
             dotenv_values(stream=StringIO(settings), interpolate=False).get(
-                "CLAUDE_SMART_USE_LOCAL_CLI"
+                "REFLEXIO_NATIVE_CLI_MODEL"
             )
-            == "1"
+            == "local-cli/claude-code/sonnet"
         )
     else:
         assert summary in result.stdout
@@ -367,6 +397,7 @@ def test_guided_coordinator_rejects_incomplete_package_before_registration(
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 1, result.stderr
     assert (
@@ -485,7 +516,7 @@ if (process.env.CLAUDE_SMART_INSTALL_CHILD !== "1") {
   const write = process.stdout.write;
   process.stdout.write = function(chunk, ...args) {
     const result = write.call(this, chunk, ...args);
-    if (/Installing Claude Code integration… [0-9]+s/.test(String(chunk)))
+    if (/Preparing shared runtime… [0-9]+s/.test(String(chunk)))
       writeFileSync(join(process.env.HOME, "guide-progress"), "");
     return result;
   };
@@ -501,17 +532,18 @@ if (process.env.CLAUDE_SMART_INSTALL_CHILD !== "1") {
             "claude-code",
             "--backend",
             "local",
+            "--provider",
+            "claude-code",
         ],
         env=env,
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "Preparing Python and runtime dependencies" in result.stdout
-    progress = re.search(
-        r"Installing Claude Code integration… ([0-9]+)s", result.stdout
-    )
+    progress = re.search(r"Preparing shared runtime… ([0-9]+)s", result.stdout)
     assert progress, result.stdout
     assert int(progress[1]) >= 5
     assert progress.start() < result.stdout.index("Installation complete")
@@ -573,6 +605,7 @@ def test_guided_uninstall_keeps_data_configuration_and_remaining_integration(
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "Claude Code: removed" in result.stdout
@@ -600,42 +633,29 @@ def test_guided_uninstall_keeps_data_configuration_and_remaining_integration(
 
 
 @pytest.mark.parametrize("host", ["claude-code", "codex", "opencode"])
-def test_saved_learning_provider_wins_over_hook_identity(
+def test_saved_native_target_is_not_exported_into_hook_identity(
     tmp_path: Path, host: str
 ) -> None:
     state = tmp_path / ".claude-smart"
     state.mkdir()
-    (state / ".env").write_text('CLAUDE_SMART_LEARNING_PROVIDER="codex"\n')
+    original = 'REFLEXIO_NATIVE_CLI_MODEL="local-cli/codex/private-model"\n'
+    (state / ".env").write_text(original)
     env = guide_env(tmp_path)
     env["CLAUDE_SMART_HOST"] = host
-    env["CLAUDE_SMART_LEARNING_PROVIDER"] = "claude-code"
+    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
     result = subprocess.run(
         [
             "bash",
             "-c",
-            f'. "{LIB}"; claude_smart_source_reflexio_env; printf "%s:%s" "$CLAUDE_SMART_HOST" "$CLAUDE_SMART_LEARNING_PROVIDER"',
+            f'. "{LIB}"; claude_smart_source_reflexio_env; printf "%s:%s" "$CLAUDE_SMART_HOST" "${{REFLEXIO_NATIVE_CLI_MODEL:-}}"',
         ],
         env=env,
         text=True,
         capture_output=True,
         check=True,
     )
-    assert result.stdout == f"{host}:codex"
-    # Execute the actual backend selection block against the loaded environment.
-    source = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
-    block = source[source.index("learning_provider=") : source.index("\nSTATE_DIR=")]
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f'. "{LIB}"; claude_smart_source_reflexio_env; PLUGIN_ROOT=/fixture; {block}\nprintf "%s" "$CLAUDE_SMART_CLI_PATH"',
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    assert result.stdout == ""
+    assert result.stdout == f"{host}:"
+    assert (state / ".env").read_text() == original
 
 
 @pytest.mark.skipif(os.name == "nt", reason="PTY terminal fixtures require POSIX")
@@ -702,6 +722,7 @@ def test_node_guide_contracts_are_in_pytest_ci() -> None:
         text=True,
         capture_output=True,
         timeout=15,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -720,6 +741,7 @@ def test_final_uninstall_does_not_restart_services_from_a_surviving_npx_root(
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "no integrations remain" in result.stdout
@@ -820,6 +842,7 @@ def test_guided_command_preserves_managed_key_read_only_and_sharing(
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "Managed Reflexio" in result.stdout
@@ -870,11 +893,14 @@ def test_guided_update_keeps_claude_uninstall_and_retry_recovery(
             "claude-code",
             "--backend",
             "local",
+            "--provider",
+            "claude-code",
         ],
         env=env,
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     calls = (tmp_path / "claude.log").read_text()
@@ -901,6 +927,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         text=True,
         capture_output=True,
         timeout=60,
+        check=False,
     )
     assert removal.returncode == 0, removal.stdout + removal.stderr
     _write_fake_claude_installer(tmp_path / "fake-bin" / "claude")
@@ -914,24 +941,26 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     env.pop("CLAUDE_SMART_INSTALL_CHILD", None)
     config_path = home / ".claude-smart" / ".env"
     if provider_mode == "cloud":
-        # Start with a real standalone Codex runtime that must not supersede
-        # the cache binding written by the following shared install.
+        # Seed the retained standalone worker path to qualify upgrading an
+        # older installation; public local setup now prepares a shared runtime.
         previous = subprocess.run(
             [str(installer), "install", "--host", "codex", "--yes"],
             cwd=project,
-            env=env,
+            env={**env, "CLAUDE_SMART_INSTALL_CHILD": "1"},
             text=True,
             capture_output=True,
             timeout=60,
+            check=False,
         )
         assert previous.returncode == 0, previous.stdout + previous.stderr
     config_path.unlink()
     provider_args = ["--provider", "codex", "--read-only"]
     if provider_mode == "custom":
         env["CLAUDE_SMART_CLI_PATH"] = "/custom/router"
+        env["REFLEXIO_NATIVE_CLI_MODEL"] = "local-cli/codex"
         provider_args = []
     elif provider_mode == "cloud":
-        env["CLAUDE_SMART_USE_LOCAL_CLI"] = "0"
+        env["REFLEXIO_NATIVE_CLI_MODEL"] = ""
         provider_args = []
     expected_learning = {
         "named": "Codex CLI",
@@ -964,6 +993,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         text=True,
         capture_output=True,
         timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Claude Code: installed" in result.stdout
@@ -983,17 +1013,14 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         )
         == "global_user"
     )
-    if provider_mode == "named":
-        assert (
-            dotenv_values(stream=StringIO(settings), interpolate=False)[
-                "CLAUDE_SMART_LEARNING_PROVIDER"
-            ]
-            == "codex"
-        )
-    else:
-        assert "CLAUDE_SMART_LEARNING_PROVIDER=" not in settings
+    native_target = dotenv_values(stream=StringIO(settings), interpolate=False)[
+        "REFLEXIO_NATIVE_CLI_MODEL"
+    ]
+    assert native_target == ("" if provider_mode == "cloud" else "local-cli/codex")
+    assert "CLAUDE_SMART_LEARNING_PROVIDER=" not in settings
+    assert "CLAUDE_SMART_USE_LOCAL_CLI=" not in settings
     env.pop("CLAUDE_SMART_CLI_PATH", None)
-    env.pop("CLAUDE_SMART_USE_LOCAL_CLI", None)
+    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
     version = json.loads((REPO_ROOT / "package.json").read_text())["version"]
     cache = (
         home / ".codex" / "plugins" / "cache" / "reflexioai" / "claude-smart" / version
@@ -1031,6 +1058,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
         text=True,
         capture_output=True,
         timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"Background learning: {expected_learning}" in result.stdout
@@ -1063,6 +1091,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
             text=True,
             capture_output=True,
             timeout=30,
+            check=False,
         )
         assert status.returncode == 0, status.stdout + status.stderr
         assert "Prepared runtime version: not installed" in status.stdout
@@ -1079,6 +1108,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
             text=True,
             capture_output=True,
             timeout=30,
+            check=False,
         )
         assert foreign.returncode == 0, foreign.stdout + foreign.stderr
         assert "Prepared runtime version: not installed" in foreign.stdout
@@ -1098,6 +1128,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
             text=True,
             capture_output=True,
             timeout=60,
+            check=False,
         )
         assert removal.returncode == 0, removal.stdout + removal.stderr
     if provider_mode in surviving_hosts:
@@ -1114,6 +1145,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
             text=True,
             capture_output=True,
             timeout=60,
+            check=False,
         )
         assert next_install.returncode == 0, next_install.stdout + next_install.stderr
         link = home / ".reflexio/plugin-root"
@@ -1126,6 +1158,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
             text=True,
             capture_output=True,
             timeout=60,
+            check=False,
         )
         assert next_remove.returncode == 0, next_remove.stdout + next_remove.stderr
         assert retired.is_dir()
@@ -1135,7 +1168,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
 @pytest.mark.parametrize("provider", [None, "claude-code", "codex", "opencode"])
 @pytest.mark.parametrize("override", [False, True])
 @pytest.mark.parametrize("action", ["backend", "hook"])
-def test_actual_codex_node_hook_uses_selected_learning_provider(
+def test_actual_codex_node_hook_keeps_native_admission_in_backend_child(
     tmp_path: Path, provider: str | None, override: bool, action: str
 ) -> None:
     from tests.test_install_scripts import CODEX_HOOK
@@ -1147,21 +1180,16 @@ def test_actual_codex_node_hook_uses_selected_learning_provider(
     state = tmp_path / ".claude-smart"
     state.mkdir()
     (state / ".env").write_text(
-        f'CLAUDE_SMART_LEARNING_PROVIDER="{provider}"\n' if provider else ""
+        f'REFLEXIO_NATIVE_CLI_MODEL="local-cli/{provider}"\n' if provider else ""
     )
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     _write_executable(fake_bin / "claude", "#!/bin/sh\nexit 0\n")
-    source = (REPO_ROOT / "plugin/scripts/backend-service.sh").read_text()
-    selection = source[
-        source.index("learning_provider=") : source.index("\nSTATE_DIR=")
-    ]
     # Exercise service fallback and hook attribution through the real Node
     # entrypoint with a backend and interpreter confined to the test account.
     recorder = (
         "#!/bin/bash\n"
         f'. "{LIB}"\nclaude_smart_source_reflexio_env\n'
-        f'PLUGIN_ROOT="{root}"\n{selection}\n'
         'printf "%s\\n" "$CLAUDE_SMART_CLI_PATH" > "$HOME/selected-cli"\n'
         'printf "%s\\n" "$CLAUDE_SMART_HOST" > "$HOME/learning-host"\n'
         "printf '{\"continue\":true}\\n'\n"
@@ -1182,30 +1210,29 @@ def test_actual_codex_node_hook_uses_selected_learning_provider(
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     env["CLAUDE_PLUGIN_ROOT"] = str(root)
     env["CLAUDE_SMART_HOST"] = "opencode"
-    env["CLAUDE_SMART_LEARNING_PROVIDER"] = "codex" if provider else ""
+    env.pop("CLAUDE_SMART_LEARNING_PROVIDER", None)
+    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
     if override:
         env["CLAUDE_SMART_CLI_PATH"] = "/explicit/learning-cli"
     args = [node_bin(), str(CODEX_HOOK), action]
     if action == "hook":
         args.append("post-tool")
     result = subprocess.run(
-        args, input="{}", env=env, text=True, capture_output=True, timeout=10
+        args,
+        input="{}",
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
-    expected = (
-        "/explicit/learning-cli"
-        if override
-        else str(fake_bin / "claude")
-        if provider == "claude-code" and action == "backend"
-        else str(scripts / "opencode-claude-compat")
-        if provider == "opencode"
-        else ""
-    )
+    expected = "/explicit/learning-cli" if override else ""
     assert (tmp_path / "selected-cli").read_text().strip() == expected
     if action == "hook":
         assert (tmp_path / "hook-identity").read_text().strip() == "codex"
     assert (tmp_path / "learning-host").read_text().strip() == (
-        "opencode" if action == "hook" else provider or "codex"
+        "opencode" if action == "hook" else "codex"
     )
 
 
@@ -1240,6 +1267,7 @@ def test_learning_summary_and_sonnet_default_on_actual_guide(
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     summary = result.stdout.split("Installation complete", 1)[1]
@@ -1253,44 +1281,13 @@ def test_learning_summary_and_sonnet_default_on_actual_guide(
         dotenv_values(
             stream=StringIO((tmp_path / ".claude-smart/.env").read_text()),
             interpolate=False,
-        ).get("CLAUDE_SMART_LEARNING_MODEL")
-        == "sonnet"
+        ).get("REFLEXIO_NATIVE_CLI_MODEL")
+        == "local-cli/claude-code/sonnet"
     )
 
 
-@pytest.mark.parametrize(
-    "provider,explicit,use_local_cli,expected",
-    [
-        ("claude-code", "", "1", ""),
-        ("claude-code", "chosen-model", "1", "chosen-model"),
-        ("claude-code", "", "0", ""),
-        ("codex", "", "1", ""),
-        ("opencode", "", "1", ""),
-    ],
-)
-def test_backend_learning_model_selection(
-    tmp_path: Path, provider: str, explicit: str, use_local_cli: str, expected: str
-) -> None:
-    source = (REPO_ROOT / "plugin/scripts/backend-service.sh").read_text()
-    block = source[source.index("learning_provider=") : source.index("\nSTATE_DIR=")]
-    env = guide_env(tmp_path)
-    env["CLAUDE_SMART_LEARNING_PROVIDER"] = provider
-    env["CLAUDE_SMART_LEARNING_MODEL"] = explicit
-    env["CLAUDE_SMART_USE_LOCAL_CLI"] = use_local_cli
-    env.pop("CLAUDE_SMART_CLI_MODEL", None)
-    env.pop("CLAUDE_SMART_CLI_PATH", None)
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f'. "{LIB}"; PLUGIN_ROOT=/fixture; {block}\nprintf "%s:%s" "${{CLAUDE_SMART_CLI_MODEL:-}}" "${{CLAUDE_SMART_LEARNING_MODEL:-}}"',
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    assert result.stdout == f":{expected}"
+# The removed shell compiler's five string-projection cases are superseded
+# by test_native_codex_learning's actual SDK dispatch/refusal/worker matrix.
 
 
 @pytest.mark.parametrize("arguments", [[], ["--help"], ["--backend", "local"]])
@@ -1312,6 +1309,7 @@ def test_private_setup_refuses_before_configuration_or_installation(
         text=True,
         capture_output=True,
         timeout=10,
+        check=False,
     )
     assert result.returncode != 0
     assert (
@@ -1370,6 +1368,8 @@ def test_public_setup_preserves_policy_and_connection_choices(tmp_path, scenario
     if scenario == "local-to-managed":
         env["NEW_MANAGED_KEY"] = "new-managed-key"
         arguments = ["--backend", "managed", "--api-key-env", "NEW_MANAGED_KEY"]
+    if scenario != "local-to-managed":
+        arguments += ["--provider", "claude-code"]
     before_legacy = legacy.read_bytes() if legacy.exists() else None
     command = [
         node_bin(),
@@ -1381,7 +1381,7 @@ def test_public_setup_preserves_policy_and_connection_choices(tmp_path, scenario
         *arguments,
     ]
     result = subprocess.run(
-        command, env=env, text=True, capture_output=True, timeout=30
+        command, env=env, text=True, capture_output=True, timeout=30, check=False
     )
     assert result.returncode == 0, result.stdout + result.stderr
     config = dotenv_values(selected)
@@ -1413,7 +1413,7 @@ def test_public_setup_preserves_policy_and_connection_choices(tmp_path, scenario
         assert "# claude-smart: legacy-env checked" in selected.read_text().splitlines()
         assert not (selected.parent / "legacy-reflexio-env-checked").exists()
         again = subprocess.run(
-            command, env=env, text=True, capture_output=True, timeout=30
+            command, env=env, text=True, capture_output=True, timeout=30, check=False
         )
         assert again.returncode == 0, again.stderr
         assert dotenv_values(selected)["REFLEXIO_API_KEY"] == ""
@@ -1436,6 +1436,7 @@ def test_public_setup_invalid_arguments_preserve_saved_state(tmp_path, arguments
         text=True,
         capture_output=True,
         timeout=10,
+        check=False,
     )
     assert result.returncode != 0
     assert selected.read_bytes() == original
@@ -1471,6 +1472,7 @@ def test_setup_rejects_empty_supplied_managed_key_before_writes(tmp_path, creden
         text=True,
         capture_output=True,
         timeout=10,
+        check=False,
     )
     assert result.returncode != 0
     assert "requires a saved API key" in result.stderr
@@ -1512,6 +1514,8 @@ def test_interactive_setup_confirmation_preserves_effective_learning_intent(
         "CLAUDE_SMART_LEARNING_PROVIDER",
         "CLAUDE_SMART_USE_LOCAL_CLI",
         "CLAUDE_SMART_CLI_PATH",
+        "CLAUDE_SMART_HOST",
+        "REFLEXIO_NATIVE_CLI_MODEL",
     ):
         env.pop(name, None)
     selected = tmp_path / ".claude-smart/.env"
@@ -1545,17 +1549,32 @@ def test_interactive_setup_confirmation_preserves_effective_learning_intent(
     if runtime_kind == "caller-custom":
         env["CLAUDE_SMART_CLI_PATH"] = expected_path = "/caller/custom-native"
     elif runtime_kind == "caller-cloud":
-        env["CLAUDE_SMART_USE_LOCAL_CLI"] = expected_enable = "0"
+        env["REFLEXIO_NATIVE_CLI_MODEL"] = ""
+        expected_enable = "0"
+    elif runtime_kind == "duplicate-host":
+        # Coding integration history cannot authorize a learning host. The
+        # caller explicitly resolves this otherwise ambiguous conversion.
+        env["REFLEXIO_NATIVE_CLI_MODEL"] = "local-cli/codex/native/kept-model"
     elif runtime_kind == "caller-model":
-        env["CLAUDE_SMART_LEARNING_MODEL"] = expected_model = "native/caller-model"
+        expected_model = "native/caller-model"
+        env["REFLEXIO_NATIVE_CLI_MODEL"] = f"local-cli/codex/{expected_model}"
     master, slave = pty.openpty()
     process = subprocess.Popen(
-        [node_bin(), str(installer), "setup"],
+        [
+            sys.executable,
+            "-c",
+            # Give the detached dependency/registration children a genuine
+            # controlling terminal; inherited slave FDs alone lose writes on
+            # macOS once a session-leader child exits.
+            "import os,sys;os.login_tty(0);os.execv(sys.argv[1],sys.argv[1:])",
+            node_bin(),
+            str(installer),
+            "setup",
+        ],
         stdin=slave,
         stdout=slave,
         stderr=slave,
         env=env,
-        start_new_session=True,
     )
     os.close(slave)
     output = b""
@@ -1593,9 +1612,22 @@ def test_interactive_setup_confirmation_preserves_effective_learning_intent(
         if expected_path and expected_enable != "0":
             assert f"custom executable ({expected_path})".encode() in output
         config = dotenv_values(selected)
-        assert config["CLAUDE_SMART_LEARNING_PROVIDER"] == "codex"
-        assert config["CLAUDE_SMART_LEARNING_MODEL"] == expected_model
-        assert config["CLAUDE_SMART_USE_LOCAL_CLI"] == expected_enable
+        assert config["REFLEXIO_NATIVE_CLI_MODEL"] == (
+            "" if expected_enable == "0" else f"local-cli/codex/{expected_model}"
+        )
+        for retired in (
+            "CLAUDE_SMART_LEARNING_PROVIDER",
+            "CLAUDE_SMART_LEARNING_MODEL",
+            "CLAUDE_SMART_USE_LOCAL_CLI",
+        ):
+            assert retired not in config
+        # One-way conversion retains the effective and inactive old choices,
+        # including duplicate assignments, as exact private recovery bytes.
+        history = list((selected.parent / "native-selection-history").glob("*.env"))
+        assert len(history) == 1
+        assert (
+            expected_model in history[0].read_text() or runtime_kind == "caller-model"
+        )
         # Check the actual reader: dotenv_values would use the last duplicate,
         # while runtime caller-first execution flags retain the first nonempty.
         loaded = subprocess.run(
@@ -1680,6 +1712,7 @@ def test_confirmed_local_endpoint_is_saved_in_runtime_loopback_form(
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (
@@ -1704,9 +1737,11 @@ def test_confirmed_local_endpoint_is_saved_in_runtime_loopback_form(
         [
             "bash",
             "-c",
-            '. "$1"; if claude_smart_reflexio_url_is_remote; then exit 2; fi; '
-            "REFLEXIO_URL=https://owned-remote.example/; "
-            "claude_smart_reflexio_url_is_remote",
+            (
+                '. "$1"; if claude_smart_reflexio_url_is_remote; then exit 2; fi; '
+                "REFLEXIO_URL=https://owned-remote.example/; "
+                "claude_smart_reflexio_url_is_remote"
+            ),
             "bash",
             str(LIB),
         ],
@@ -1714,6 +1749,7 @@ def test_confirmed_local_endpoint_is_saved_in_runtime_loopback_form(
         text=True,
         capture_output=True,
         timeout=10,
+        check=False,
     )
     assert shell.returncode == 0, shell.stdout + shell.stderr
 
@@ -1737,7 +1773,248 @@ def test_installed_claude_slash_commands_follow_selector_file_without_junction(
         )
         env = dict(os.environ, HOME=str(tmp_path), ARGUMENTS="test")
         result = subprocess.run(
-            ["bash", "-c", invocation], env=env, capture_output=True, text=True
+            ["bash", "-c", invocation],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         assert result.returncode == 0, (command.name, result.stderr)
         assert Path(result.stdout.strip()).parent == scripts
+
+
+@pytest.mark.parametrize(
+    "rows,expected",
+    [
+        # Confirmed against the actual 0c02dcba launcher: shell :-1 defaulting
+        # precedes the Python SDK boolean read; whitespace is not empty.
+        (
+            "CLAUDE_SMART_LEARNING_PROVIDER=codex\nCLAUDE_SMART_LEARNING_MODEL=private-model\n",
+            "local-cli/codex/private-model",
+        ),
+        (
+            'CLAUDE_SMART_LEARNING_PROVIDER=codex\nCLAUDE_SMART_USE_LOCAL_CLI=""\nCLAUDE_SMART_LEARNING_MODEL=private-model\n',
+            "local-cli/codex/private-model",
+        ),
+        (
+            "CLAUDE_SMART_USE_LOCAL_CLI=1\nCLAUDE_SMART_LEARNING_MODEL=private-model\n",
+            None,
+        ),
+        (
+            'CLAUDE_SMART_USE_LOCAL_CLI=""\nCLAUDE_SMART_LEARNING_MODEL=private-model\n',
+            None,
+        ),
+        (
+            'CLAUDE_SMART_LEARNING_PROVIDER=codex\nCLAUDE_SMART_USE_LOCAL_CLI=" "\nCLAUDE_SMART_LEARNING_MODEL=private-model\n',
+            "",
+        ),
+        (
+            'CLAUDE_SMART_LEARNING_PROVIDER=" codex "\nCLAUDE_SMART_USE_LOCAL_CLI=1\nCLAUDE_SMART_LEARNING_MODEL=private-model\n',
+            "local-cli/codex/private-model",
+        ),
+    ],
+)
+def test_legacy_selection_preserves_exact_boolean_and_host_semantics(
+    tmp_path, rows, expected
+):
+    installer, env = fake_guide(tmp_path)
+    env.pop("CLAUDE_SMART_HOST", None)
+    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = ("REFLEXIO_URL=http://localhost:8071/\n" + rows).encode()
+    selected.write_bytes(original)
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            "setup",
+            "--host",
+            "claude-code",
+            "--backend",
+            "local",
+            "--yes",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if expected is None:
+        assert result.returncode != 0
+        assert "explicit --provider" in result.stderr
+        assert selected.read_bytes() == original
+        assert not (selected.parent / "native-selection-history").exists()
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert dotenv_values(selected)["REFLEXIO_NATIVE_CLI_MODEL"] == expected
+        history = list((selected.parent / "native-selection-history").glob("*.env"))
+        assert len(history) == 1 and history[0].read_bytes() == original
+
+
+def test_first_local_activation_uses_explicit_provider_without_inventing_saved_host(
+    tmp_path,
+):
+    installer, env = fake_guide(tmp_path)
+    _copy_codex_install_sources(installer.parent.parent)
+    _write_fake_codex(tmp_path / "fake-bin/codex")
+    env.pop("CLAUDE_SMART_HOST", None)
+    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    selected.write_text(
+        "REFLEXIO_URL=https://managed.example/\nREFLEXIO_API_KEY=fake-key\n"
+    )
+    command = [
+        node_bin(),
+        str(installer),
+        "setup",
+        "--host",
+        "codex",
+        "--backend",
+        "local",
+        "--yes",
+    ]
+    original = selected.read_bytes()
+    refused = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=30, check=False
+    )
+    assert refused.returncode != 0
+    assert "--provider" in refused.stderr
+    assert selected.read_bytes() == original
+    result = subprocess.run(
+        [*command, "--provider", "codex"],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert dotenv_values(selected)["REFLEXIO_NATIVE_CLI_MODEL"] == "local-cli/codex"
+
+
+@pytest.mark.parametrize(
+    "reference", ["not-native/codex/private-model", "local-cli/codex/"]
+)
+def test_saved_canonical_reference_is_not_repaired_into_an_unrequested_target(
+    tmp_path, reference
+):
+    installer, env = fake_guide(tmp_path)
+    env.pop("CLAUDE_SMART_HOST", None)
+    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = f"REFLEXIO_URL=http://localhost:8071/\nREFLEXIO_NATIVE_CLI_MODEL={reference}\n".encode()
+    selected.write_bytes(original)
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            "setup",
+            "--host",
+            "claude-code",
+            "--backend",
+            "local",
+            "--yes",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert selected.read_bytes() == original
+    assert not (selected.parent / "native-selection-history").exists()
+
+
+@pytest.mark.parametrize(
+    "references",
+    [
+        ["local-cli/codex/first-model", "local-cli/claude-code/sonnet"],
+        ["", "local-cli/codex/second-model"],
+        ["local-cli/codex/first-model", "local-cli/codex/second-model"],
+    ],
+)
+@pytest.mark.parametrize("repair", ["provider", "caller"])
+def test_unattended_keep_refuses_conflicting_native_assignments_then_explicit_choice_repairs(
+    tmp_path, references, repair
+):
+    installer, env = fake_guide(tmp_path)
+    _copy_codex_install_sources(installer.parent.parent)
+    _write_fake_codex(tmp_path / "fake-bin/codex")
+    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = (
+        "REFLEXIO_URL=http://localhost:8071/\nOTHER=keep\n"
+        + "".join(
+            f"REFLEXIO_NATIVE_CLI_MODEL={reference}\n" for reference in references
+        )
+    ).encode()
+    selected.write_bytes(original)
+    command = [
+        node_bin(),
+        str(installer),
+        "setup",
+        "--host",
+        "claude-code",
+        "--backend",
+        "local",
+        "--yes",
+    ]
+    refused = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=30, check=False
+    )
+    assert refused.returncode != 0, refused.stdout + refused.stderr
+    assert "ambiguous" in refused.stderr.lower()
+    assert selected.read_bytes() == original
+    assert not (selected.parent / "native-selection-history").exists()
+    if repair == "provider":
+        command.extend(["--provider", "codex"])
+    else:
+        env["REFLEXIO_NATIVE_CLI_MODEL"] = "local-cli/codex"
+    confirmed = subprocess.run(
+        command, env=env, text=True, capture_output=True, timeout=30, check=False
+    )
+    assert confirmed.returncode == 0, confirmed.stdout + confirmed.stderr
+    assert dotenv_values(selected)["REFLEXIO_NATIVE_CLI_MODEL"] == "local-cli/codex"
+    assert selected.read_text().count("REFLEXIO_NATIVE_CLI_MODEL=") == 1
+    history = list((selected.parent / "native-selection-history").glob("*.env"))
+    assert len(history) == 1 and history[0].read_bytes() == original
+
+
+def test_unattended_keep_accepts_identical_native_assignments(tmp_path):
+    installer, env = fake_guide(tmp_path)
+    _copy_codex_install_sources(installer.parent.parent)
+    _write_fake_codex(tmp_path / "fake-bin/codex")
+    env.pop("REFLEXIO_NATIVE_CLI_MODEL", None)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    selected.write_text(
+        "REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex/kept-model\nREFLEXIO_NATIVE_CLI_MODEL=local-cli/codex/kept-model\n"
+    )
+    result = subprocess.run(
+        [
+            node_bin(),
+            str(installer),
+            "setup",
+            "--host",
+            "claude-code",
+            "--backend",
+            "local",
+            "--yes",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        dotenv_values(selected)["REFLEXIO_NATIVE_CLI_MODEL"]
+        == "local-cli/codex/kept-model"
+    )

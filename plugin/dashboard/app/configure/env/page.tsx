@@ -15,6 +15,7 @@ import type { ClaudeSmartConfig } from "@/lib/types";
 export default function ConfigureEnvPage() {
   const [config, setConfig] = useState<ClaudeSmartConfig | null>(null);
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
+  const [nativeTargetDirty, setNativeTargetDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -48,17 +49,25 @@ export default function ConfigureEnvPage() {
       const envUpdate: Partial<ClaudeSmartConfig> = { ...config };
       if (!apiKeyDirty) delete envUpdate.REFLEXIO_API_KEY;
       delete envUpdate.REFLEXIO_API_KEY_SET;
+      delete envUpdate.nativeSelectionNeedsConfirmation;
+      // An unrelated save must not turn an unconverted legacy selection into
+      // the empty canonical default (which explicitly disables native use).
+      if (!nativeTargetDirty) delete envUpdate.REFLEXIO_NATIVE_CLI_MODEL;
       const envRes = await fetch("/api/config", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(envUpdate),
       });
-      if (!envRes.ok)
-        throw new Error(`environment save failed: ${envRes.status}`);
+      if (!envRes.ok) {
+        const failure = await envRes.json().catch(() => null);
+        throw new Error(typeof failure?.error === "string" ? failure.error :
+          `environment save failed: ${envRes.status}`);
+      }
       const updated: ClaudeSmartConfig = await envRes.json();
       setConfig(updated);
       window.dispatchEvent(new Event(SETTINGS_CHANGED_EVENT));
       setApiKeyDirty(false);
+      setNativeTargetDirty(false);
       setSaved(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -66,6 +75,10 @@ export default function ConfigureEnvPage() {
       setSaving(false);
     }
   };
+
+  const cloudModelsSelected = config !== null &&
+    (nativeTargetDirty || !config.nativeSelectionNeedsConfirmation) &&
+    !String(config.REFLEXIO_NATIVE_CLI_MODEL ?? "").trim();
 
   return (
     <>
@@ -93,7 +106,7 @@ export default function ConfigureEnvPage() {
         {saved && (
           <div className="rounded-lg border border-border bg-accent/40 px-4 py-2.5 text-sm flex items-center gap-2">
             <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
-            Saved to ~/.claude-smart/.env and Claude Code settings
+            Saved to ~/.claude-smart/.env
           </div>
         )}
 
@@ -142,24 +155,6 @@ export default function ConfigureEnvPage() {
 
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <Label htmlFor="use-local-cli">
-                    CLAUDE_SMART_USE_LOCAL_CLI
-                  </Label>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Route generation through the local <code>claude</code> CLI.
-                  </p>
-                </div>
-                <Switch
-                  id="use-local-cli"
-                  checked={!!config.CLAUDE_SMART_USE_LOCAL_CLI}
-                  onCheckedChange={(v) =>
-                    update("CLAUDE_SMART_USE_LOCAL_CLI", v)
-                  }
-                />
-              </div>
-
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
                   <Label htmlFor="read-only-mode">CLAUDE_SMART_READ_ONLY</Label>
                   <p className="text-xs text-muted-foreground mt-0.5">
                     Keep session context available but skip publishing
@@ -186,18 +181,43 @@ export default function ConfigureEnvPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="learning-model">Local learning model</Label>
+                <Label htmlFor="learning-model">Native learning target</Label>
                 <Input
                   id="learning-model"
-                  value={String(config.CLAUDE_SMART_LEARNING_MODEL ?? "")}
-                  onChange={(event) =>
-                    update("CLAUDE_SMART_LEARNING_MODEL", event.target.value)
-                  }
-                  placeholder="Provider default"
+                  value={String(config.REFLEXIO_NATIVE_CLI_MODEL ?? "")}
+                  onChange={(event) => {
+                    update("REFLEXIO_NATIVE_CLI_MODEL", event.target.value);
+                    setNativeTargetDirty(true);
+                  }}
+                  placeholder="local-cli/codex (empty uses configured cloud models)"
                 />
+                <div className="space-y-2">
+                  {config.nativeSelectionNeedsConfirmation && (
+                    <p className="text-xs text-muted-foreground">
+                      Learning selection needs confirmation. Run claude-smart
+                      setup to preserve the selection, choose a native target
+                      here, or choose cloud models below. Other edits keep it unchanged.
+                    </p>
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={cloudModelsSelected}
+                    onClick={() => {
+                      update("REFLEXIO_NATIVE_CLI_MODEL", "");
+                      setNativeTargetDirty(true);
+                    }}
+                  >
+                    {cloudModelsSelected ? "Cloud models selected" : "Choose cloud models"}
+                  </Button>
+                </div>
                 <p className="text-xs text-muted-foreground">
-                  Model ID supported by your local learning agent. Apply changes
-                  with claude-smart update, which refreshes the backend. Managed
+                  Choose a host, with an optional model: local-cli/codex or
+                  local-cli/claude-code/sonnet. An empty target keeps generation
+                  on your configured cloud models. Saving a target replaces obsolete
+                  learning selectors and preserves their original settings.
+                  Run claude-smart update to refresh the backend. Managed
                   Reflexio uses its server configuration.
                 </p>
               </div>

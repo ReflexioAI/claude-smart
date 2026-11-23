@@ -26,12 +26,12 @@ function main(argv) {
     const { outputFormat, systemPrompt, model } = parseSupportedArgs(argv);
     if (process.env.CLAUDE_SMART_OPENCODE_MODEL?.trim()) {
       throw new Error(
-        "CLAUDE_SMART_OPENCODE_MODEL has been retired. Use CLAUDE_SMART_LEARNING_MODEL for the saved OpenCode route, or pass --model when invoking this bridge directly. Clear the old setting.",
+        "CLAUDE_SMART_OPENCODE_MODEL has been retired. Use REFLEXIO_NATIVE_CLI_MODEL for the saved OpenCode route, or pass --model when invoking this bridge directly. Clear the old setting.",
       );
     }
     if (process.env.CLAUDE_SMART_OPENCODE_VARIANT?.trim()) {
       throw new Error(
-        "CLAUDE_SMART_OPENCODE_VARIANT has been retired. Use provider/model#variant or #variant in CLAUDE_SMART_LEARNING_MODEL, then remove the old setting.",
+        "CLAUDE_SMART_OPENCODE_VARIANT has been retired. Use provider/model#variant or #variant in REFLEXIO_NATIVE_CLI_MODEL, then remove the old setting.",
       );
     }
     const prompt = fs.readFileSync(0, "utf8");
@@ -217,7 +217,9 @@ function runOpenCode({ prompt, model, workDir }) {
       shell: batch,
     });
   };
-  const reference = opencodeModel(model);
+  // The SDK owns selection. Its child metadata must not become a second
+  // user-setting channel or override the model argument.
+  const reference = model || "";
   const separator = reference.indexOf("#");
   if (separator === -1) {
     if (reference) args.push("--model", reference);
@@ -265,13 +267,6 @@ function runOpenCode({ prompt, model, workDir }) {
     throw new Error("opencode CLI returned empty output");
   }
   return content;
-}
-
-function opencodeModel(modelFromArgs) {
-  const explicit = (process.env.CLAUDE_SMART_LEARNING_MODEL || "").trim();
-  if (explicit) return explicit;
-  const candidate = (modelFromArgs || "").trim();
-  return candidate.includes("/") || candidate.startsWith("#") ? candidate : "";
 }
 
 function parseOpenCodeJson(stdout) {
