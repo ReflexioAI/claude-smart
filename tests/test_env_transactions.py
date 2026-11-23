@@ -1606,3 +1606,32 @@ def test_explicit_cloud_confirmation_preserves_import_header_and_archives_once(
 )
 def test_native_confirmation_cannot_be_spoofed_after_assignments(content):
     assert not env_config.native_selection_confirmed(content)
+
+
+@pytest.mark.parametrize("encoded", ["", '""'])
+def test_confirming_first_assignment_preserves_bom_and_exact_recovery(
+    tmp_path, monkeypatch, encoded
+):
+    selected = tmp_path / ".env"
+    assignment = f"\ufeffREFLEXIO_NATIVE_CLI_MODEL={encoded}"
+    original = (assignment + "\r\nOTHER=keep\r\n").encode("utf-8")
+    selected.write_bytes(original)
+    monkeypatch.delenv(env_config.NATIVE_MODEL_ENV, raising=False)
+    env_config.update_settings(
+        {env_config.NATIVE_MODEL_ENV: ""},
+        {env_config.NATIVE_MODEL_ENV: [assignment]},
+        selected,
+    )
+    assert selected.read_bytes().startswith(
+        ("\ufeff" + env_config.NATIVE_SELECTION_CONFIRMED_COMMENT + "\r\n").encode(
+            "utf-8"
+        )
+    )
+    assert selected.read_bytes().count(b"\xef\xbb\xbf") == 1
+    assert b"REFLEXIO_NATIVE_CLI_MODEL=\r\nOTHER=keep\r\n" in selected.read_bytes()
+    snapshot = (
+        tmp_path
+        / "native-selection-history"
+        / (hashlib.sha256(original).hexdigest() + ".env")
+    )
+    assert snapshot.read_bytes() == original

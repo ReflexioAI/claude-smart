@@ -273,6 +273,9 @@ def _settings_editor(
                 if content and not content.endswith("\n"):
                     content += newline
                 content += f"{key}={value}" + newline
+        # The first rewritten assignment may have carried the file BOM.
+        if existing.startswith("\ufeff") and not content.startswith("\ufeff"):
+            content = "\ufeff" + content
         if updates.get(NATIVE_MODEL_ENV) is not None and not native_selection_confirmed(
             content
         ):
