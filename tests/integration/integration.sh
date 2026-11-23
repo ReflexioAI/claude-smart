@@ -109,6 +109,10 @@ export REFLEXIO_ENV_FILE="$HOME/.claude-smart/.env"
 export REFLEXIO_URL="http://localhost:$BACKEND_PORT/"
 unset REFLEXIO_API_KEY REFLEXIO_USER_ID
 
+# Health/transport qualification uses no native agent generation. Make the
+# harness cloud choice explicit instead of relying on an old blank template.
+export REFLEXIO_NATIVE_CLI_MODEL=""
+
 sanitize_integration_env_file() {
   env_file="$HOME/.claude-smart/.env"
   [ -f "$env_file" ] || return 0
