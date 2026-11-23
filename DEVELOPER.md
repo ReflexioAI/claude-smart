@@ -911,20 +911,37 @@ uv run --project plugin --no-sync python -c "import reflexio, os; print(reflexio
 
 ## Tests
 
-From a fresh checkout, install the root test tooling and materialize the locked SDK bundle before running the
-native owner and dispatch tests. Bundle generation does not replace the locked
-PyPI test interpreter with the vendor package.
+From a fresh checkout, prepare the exact locked SDK and the historical source
+used by compatibility tests, as CI does. The private temporary checkout is
+removed afterward. Bundle generation does not replace the locked PyPI test
+interpreter with the vendor package.
 
 ```bash
-npm ci
-uv run --project plugin python scripts/vendor-reflexio.py --bundle-only --write
-uv run --project plugin pytest --rootdir . -o addopts= tests/ -q   # claude-smart package tests (from repo root)
-cd ../reflexio && uv run pytest tests/server/llm/ -q -o 'addopts='   # reflexio patch tests
+(
+  set -eu
+  npm ci
+  test_sdk_root=$(mktemp -d -t claude-smart-test-sdk.XXXXXX)
+  trap 'rm -rf "$test_sdk_root"' EXIT
+  test_sdk_repo=$(uv run --project plugin python -c 'import json; print(json.load(open("reflexio.lock.json"))["repo"])')
+  test_sdk_commit=$(uv run --project plugin python -c 'import json; print(json.load(open("reflexio.lock.json"))["commit"])')
+  git clone --quiet "$test_sdk_repo" "$test_sdk_root/current"
+  git -C "$test_sdk_root/current" checkout --quiet --detach "$test_sdk_commit"
+  test "$(git -C "$test_sdk_root/current" rev-parse HEAD)" = "$test_sdk_commit"
+  uv run --project plugin python scripts/vendor-reflexio.py \
+    --reflexio-path "$test_sdk_root/current" --require-clean --bundle-only --write
+  mkdir "$test_sdk_root/predecessor"
+  git -C "$test_sdk_root/current" archive --format=tar \
+    --output="$test_sdk_root/predecessor.tar" 70daf32c2b47b35dd0fe7be1d6f64d648a67eb8a
+  tar -xf "$test_sdk_root/predecessor.tar" -C "$test_sdk_root/predecessor"
+  CLAUDE_SMART_TEST_CURRENT_SDK="$test_sdk_root/current" \
+  CLAUDE_SMART_TEST_PREDECESSOR_SDK="$test_sdk_root/predecessor" \
+    uv run --project plugin pytest --rootdir . -o addopts= tests/ -q
+)
 ```
 
-Run the relevant suites locally before `make release`. The GitHub integration
-workflow also gates the locked dependencies, pytest suite, and cross-platform
-installation/health checks.
+For SDK changes, also run its relevant tests from that SDK checkout before
+release. The GitHub integration workflow gates the locked dependencies, pytest
+suite, and cross-platform installation/health checks.
 
 ### Exercising a hook handler directly
 
