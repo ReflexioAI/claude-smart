@@ -1001,6 +1001,95 @@ def test_normal_runner_upgrades_agent_policy_before_pinning_owned_database(
 
 
 @requires_vendor
+@pytest.mark.parametrize("manual_only", [False, True])
+def test_desktop_profile_upgrade_preserves_cadence_and_existing_data(
+    tmp_path: Path, manual_only: bool
+) -> None:
+    first = _run_runner(tmp_path, "--claude-smart-backend=1")
+    assert first.returncode == 0, first.stderr
+    path = _config_file(tmp_path)
+    document = json.loads(path.read_text())
+    current_version = document["_reflexio_config_file"]["version"]
+    assert current_version >= 17
+    target = Path(document["storage_config"]["db_path"])
+    # Complete the normal first storage open before simulating saved settings.
+    assert _opened_db_path(tmp_path) == str(target)
+    with sqlite3.connect(target) as connection:
+        connection.execute("CREATE TABLE upgrade_history(note TEXT)")
+        connection.execute("INSERT INTO upgrade_history VALUES('remembered')")
+
+    document["_reflexio_config_file"]["version"] = 16
+    document["profile_stride_size"] = 13
+    document["profile_extractor_config"] = {
+        "extraction_definition_prompt": "Extract durable user preferences.",
+        "context_prompt": "Keep the operator's custom context.",
+        "manual_trigger": manual_only,
+        "opaque_profile_option": {"preserve": True},
+    }
+    document["opaque"] = {"preserve": "operator extension"}
+    original = json.dumps(document, indent=2).encode()
+    path.write_bytes(original)
+    before_backups = set(
+        (path.parent / ".config-migrations" / path.name).glob("*.json")
+    )
+
+    result = _run_runner(tmp_path, "--claude-smart-backend=1")
+    assert result.returncode == 0, result.stdout + result.stderr
+    current = json.loads(path.read_bytes())
+    assert current["_reflexio_config_file"]["version"] == current_version
+    assert current["profile_stride_size"] == (0 if manual_only else 13)
+    profile = current["profile_extractor_config"]
+    assert "manual_trigger" not in profile
+    assert profile["context_prompt"] == "Keep the operator's custom context."
+    assert profile["opaque_profile_option"] == {"preserve": True}
+    assert current["opaque"] == document["opaque"]
+    assert current["storage_config"]["db_path"] == str(target)
+    assert _opened_db_path(tmp_path) == str(target)
+    with sqlite3.connect(target) as connection:
+        assert connection.execute("SELECT note FROM upgrade_history").fetchall() == [
+            ("remembered",)
+        ]
+    backups = set((path.parent / ".config-migrations" / path.name).glob("*.json"))
+    added = backups - before_backups
+    assert len(added) == 1 and next(iter(added)).read_bytes() == original
+    before = path.read_bytes()
+    repeated = _run_runner(tmp_path, "--claude-smart-backend=1")
+    assert repeated.returncode == 0, repeated.stderr
+    assert path.read_bytes() == before
+    assert (
+        set((path.parent / ".config-migrations" / path.name).glob("*.json")) == backups
+    )
+
+
+@requires_vendor
+def test_desktop_current_profile_input_refuses_the_retired_manual_switch(
+    tmp_path: Path,
+) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-c",
+            "from reflexio.models.config_schema import ProfileExtractorConfig\n"
+            "try:\n"
+            " ProfileExtractorConfig(extraction_definition_prompt='Extract preferences.',manual_trigger=True)\n"
+            "except ValueError:\n"
+            " print('retired input refused')\n"
+            "else:\n"
+            " raise AssertionError('The desktop SDK still accepts manual_trigger')\n",
+        ],
+        env=_env(tmp_path),
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "retired input refused"
+
+
+@requires_vendor
 def test_forwarded_occupied_port_refuses_preparation_and_pin(tmp_path):
     path = _config_file(tmp_path)
     path.parent.mkdir(parents=True)
