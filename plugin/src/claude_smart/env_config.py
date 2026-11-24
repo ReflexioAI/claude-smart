@@ -115,9 +115,12 @@ def load_reflexio_env(path: Path | None = None) -> None:
         if parsed is None:
             continue
         key, value = parsed
-        if key in RETIRED_LEARNING_ENVS or key == NATIVE_MODEL_ENV:
-            # Only the backend child reads saved execution intent. Hook/client
-            # processes must not turn it into a stale inherited override.
+        if key in RETIRED_LEARNING_ENVS or key in {
+            NATIVE_MODEL_ENV,
+            "CLAUDE_SMART_HOST",
+        }:
+            # The backend owns learning intent; the dispatcher owns hook identity.
+            # Saved values must not become ambient overrides for either.
             continue
         # Shell hooks and status select the first nonempty saved session directory.
         if key == "CLAUDE_SMART_STATE_DIR" and not os.environ.get(key):

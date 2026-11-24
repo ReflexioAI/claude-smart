@@ -65,7 +65,8 @@ const CLAUDE_SMART_ENV_PATH = join(homedir(), ".claude-smart", ".env");
 const MANAGED_REFLEXIO_URL = "https://www.reflexio.ai/";
 const CLAUDE_SMART_READ_ONLY_ENV = "CLAUDE_SMART_READ_ONLY";
 const CLAUDE_SMART_USE_LOCAL_CLI_ENV = "CLAUDE_SMART_USE_LOCAL_CLI";
-const CLAUDE_SMART_HOST_ENV = "CLAUDE_SMART_HOST";
+// Confirmation-only detection of ambiguous historical settings.
+const LEGACY_HOST_ENV = "CLAUDE_SMART_HOST";
 const LEARNING_PROVIDER_ENV = "CLAUDE_SMART_LEARNING_PROVIDER";
 const NATIVE_MODEL_ENV = "REFLEXIO_NATIVE_CLI_MODEL";
 const RETIRED_LEARNING_ENVS = [CLAUDE_SMART_USE_LOCAL_CLI_ENV, LEARNING_PROVIDER_ENV,
@@ -328,7 +329,6 @@ function writePrivateFile(path, content) {
 // Match _lib.sh: caller-first flags retain their first nonempty saved value;
 // shared connection/learning fields retain the last assignment, even empty.
 const CALLER_FIRST_ENV_KEYS = new Set([
-  "CLAUDE_SMART_HOST",
   "CLAUDE_SMART_BACKEND_AUTOSTART",
   "CLAUDE_SMART_DASHBOARD_AUTOSTART",
   "CLAUDE_SMART_CLI_PATH",
@@ -1091,26 +1091,6 @@ function repairPluginRoot() {
   }
 }
 
-function hostForPluginRoot(root) {
-  const real = (path) => {
-    try {
-      return realpathSync(path);
-    } catch {
-      return path;
-    }
-  };
-  const target = real(root);
-  const under = (dir) => target === real(dir) || target.startsWith(`${real(dir)}${sep}`);
-  if (under(OPENCODE_LOCAL_PACKAGE_DIR)) return HOST_OPENCODE;
-  if (
-    under(CODEX_RUNTIME_PACKAGE_DIR) ||
-    under(CODEX_PLUGIN_CACHE_DIR) ||
-    under(CODEX_MARKETPLACE_DIR)
-  )
-    return HOST_CODEX;
-  return HOST_CLAUDE_CODE;
-}
-
 function forcePluginRoot(pluginRoot) {
   forceLegacyPluginRoot(pluginRoot);
   recordGuidedSelection(pluginRoot);
@@ -1379,13 +1359,11 @@ let installStateSnapshot = null;
 
 function snapshotInstallState({ preserveFailureMarker = false } = {}) {
   const read = (path) => (existsSync(path) ? readFileSync(path) : null);
-  const host = readEnvFile(CLAUDE_SMART_ENV_PATH).get(CLAUDE_SMART_HOST_ENV) ?? null;
   installStateSnapshot = {
     failureMarker: preserveFailureMarker ? undefined : read(INSTALL_FAILURE_MARKER),
     // Bootstraps repoint the shared plugin-root before they finish.
     pluginRoot: activePluginRoot(),
     pluginRootBroken: pluginRootIsBroken(),
-    restartHost: process.env.CLAUDE_SMART_HOST || host || HOST_CLAUDE_CODE,
   };
   ensureRollbackOnExit();
 }
@@ -1525,14 +1503,14 @@ function servicePortRefusesConnections(status) {
   return !probe.error && !probe.signal && probe.status === 0;
 }
 
-async function stopServicesForInstall(installedRoot, host, previousStatus = null) {
+async function stopServicesForInstall(installedRoot, previousStatus = null) {
   // Shared services may belong to another integration. Never use a candidate
   // npm source as the recovery runtime for a first installation.
   const root = installStateSnapshot?.pluginRoot || installedRoot;
   if (!root || !existsSync(join(root, "scripts", "backend-service.sh"))) return;
   // Guided publication has already committed settings. Its cutover recovers
   // forward, since restarting an old service would read the new settings.
-  if (!previousStatus) stoppedServices = { root, host, backend: false, dashboard: false };
+  if (!previousStatus) stoppedServices = { root, backend: false, dashboard: false };
   ensureRollbackOnExit();
   const failed = [];
   const reportsActiveService = /^(running on |stale claude-smart backend on )/;
@@ -1579,7 +1557,7 @@ function restartStoppedServices() {
   stoppedServices = null;
   if (!stopped || !existsSync(join(stopped.root, "scripts", "backend-service.sh"))) return;
   if (!stopped.backend && !stopped.dashboard) return;
-  if (stopped.backend) startBackendService(stopped.root, stopped.host);
+  if (stopped.backend) runPluginService(stopped.root, "backend-service.sh", "start");
   if (stopped.dashboard) runPluginService(stopped.root, "dashboard-service.sh", "start");
   process.stderr.write(`Restarted claude-smart services from ${stopped.root}.\n`);
 }
@@ -2120,7 +2098,7 @@ function savedInstallConfiguration(captured) {
   const oldEnabled = /^(?:1|true|yes|on)$/i.test((env.get(CLAUDE_SMART_USE_LOCAL_CLI_ENV) || "1").trim());
   const oldTarget = oldEnabled ? `local-cli/${oldProvider}${oldModel ? `/${oldModel}` : ""}` : "";
   const legacySelection = RETIRED_LEARNING_ENVS.some((key) => env.has(key));
-  const legacyHostFallback = env.has(CLAUDE_SMART_HOST_ENV) && !isRemoteReflexioUrl(url);
+  const legacyHostFallback = env.has(LEGACY_HOST_ENV) && !isRemoteReflexioUrl(url);
   const selectionConflict = !Object.hasOwn(process.env, NATIVE_MODEL_ENV) &&
     (ambiguousNativeTarget ||
       (canonical !== undefined && legacySelection && canonical !== oldTarget) ||
@@ -2161,8 +2139,7 @@ function planInstallSettings(config, captured) {
   // Keep both dashboard connections when the runtime switches modes. Viewing
   // either source must not rewrite the active hook/learning configuration.
   const previous = installEnvironment(captured);
-  const previousProvider =
-    previous.get(LEARNING_PROVIDER_ENV) || previous.get(CLAUDE_SMART_HOST_ENV);
+  const previousProvider = previous.get(LEARNING_PROVIDER_ENV);
   // Keep an independent account override. Bind a validated relative Windows
   // selection to the file we checked so the relocated runtime uses it.
   const savedOpenCodePath = previous.get(CLAUDE_SMART_OPENCODE_PATH_ENV);
@@ -3004,7 +2981,7 @@ async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
       if (pending.root && startup !== pending.id && pending.predecessorStopped !== true) {
         if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
           throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
-        await stopServicesForInstall(pending.root, null, pending.status);
+        await stopServicesForInstall(pending.root, pending.status);
       }
       // Publish forward recovery before discarding the predecessor record.
       writeGuidedRecord(GUIDED_PENDING_STARTUP, pending.id);
@@ -3047,9 +3024,8 @@ async function recoverSelectedStartup(root) {
 }
 
 async function refreshSelectedServices(root, setup, { restart = true } = {}) {
-  const host = setup.provider || hostForPluginRoot(root);
   startDeferredDashboardBuild(root);
-  return startAndReportServices(root, host, setup, { summaryOnly: true, restart });
+  return startAndReportServices(root, setup, { summaryOnly: true, restart });
 }
 
 async function prepareGuidedRuntime(config, options, settings, baseline) {
@@ -3237,7 +3213,7 @@ async function runGuidedCommand(command, args) {
             const survivors = installedPluginRoots(codexSurvivors, claudePlugins);
             if (!survivors.includes(root)) {
               const { status } = observePreviousServices();
-              await stopServicesForInstall(root, null, status);
+              await stopServicesForInstall(root, status);
               root = survivors[0];
               if (root) forcePluginRoot(root);
               else {
@@ -3332,12 +3308,6 @@ function runPluginService(pluginRoot, scriptName, subcommand, envOverrides = {})
   return result.status === 0;
 }
 
-function startBackendService(pluginRoot, host) {
-  return runPluginService(pluginRoot, "backend-service.sh", "start", {
-    CLAUDE_SMART_HOST: host,
-  });
-}
-
 function httpProbe(url, timeoutMs = 1000) {
   return new Promise((resolve) => {
     let request;
@@ -3430,10 +3400,8 @@ function isBundledBackendUrl(url) {
 }
 
 async function startAndReportServices(
-  pluginRoot, host, setup, { summaryOnly = false, restart = true } = {},
+  pluginRoot, setup, { summaryOnly = false, restart = true } = {},
 ) {
-  // A stored learning target wins over the integration that supplied the runtime.
-  const learningHost = setup.provider || host;
   if (process.env.CLAUDE_SMART_DEFER_SHARED_SERVICES === "1") return { ready: true, summary: [] };
   const { managed, url: hooksUrl } = setup;
   const summary = [];
@@ -3472,17 +3440,13 @@ async function startAndReportServices(
     // A same-root backend can be healthy but still use the previous payload's
     // bind address or extraction bridge. Preparation succeeded before this
     // point; restart only owned services to apply the installed configuration.
-    if (restart && !(await runServiceWithProgress(pluginRoot, "backend-service.sh", "preflight", {
-      CLAUDE_SMART_HOST: learningHost,
-    }))) {
+    if (restart && !(await runServiceWithProgress(pluginRoot, "backend-service.sh", "preflight"))) {
       report("Backend preflight refused; existing services were not changed. Repair the saved learning settings or plugin bundle, then retry.\n");
       return { ready: false, summary };
     }
     process.stdout.write(`\nStarting local Reflexio at ${localBackendUrl()}…\n`);
     if (restart) await runServiceWithProgress(pluginRoot, "backend-service.sh", "stop");
-    await runServiceWithProgress(pluginRoot, "backend-service.sh", "start", {
-      CLAUDE_SMART_HOST: learningHost,
-    });
+    await runServiceWithProgress(pluginRoot, "backend-service.sh", "start");
     const url = localBackendUrl();
     backendReady = false;
     if (await waitForHttp(`${url}health`, 5, ({ status }) => status === 200)) {
@@ -3509,9 +3473,7 @@ async function startAndReportServices(
   }
   process.stdout.write("Starting local dashboard (first build may take 1–2 minutes)…\n");
   if (restart) await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "stop");
-  await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "start", {
-    CLAUDE_SMART_HOST: learningHost,
-  });
+  await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "start");
   const port = (process.env.DASHBOARD_PORT || "").trim() || "3001";
   const url = `http://localhost:${port}/`;
   // Same marker dashboard-service.sh trusts: a foreign app on the port answers
@@ -4964,8 +4926,7 @@ async function runInstall(args, options = {}) {
   // Stop services running from the previous root (e.g. a pruned npx dir or an
   // older copy) before the copy under them is replaced.
   const previousRoot = activePluginRoot();
-  // Restart with the host that root was running for (e.g. Codex's bridge).
-  if (!runtime && previousRoot) await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
+  if (!runtime && previousRoot) await stopServicesForInstall(previousRoot);
   let source;
   try {
     source = runtime
@@ -5061,7 +5022,7 @@ async function runInstall(args, options = {}) {
 
   commitLocalPluginPackages([CLAUDE_CODE_LOCAL_PACKAGE_DIR]);
   startDeferredDashboardBuild(pluginRoot);
-  await startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup);
+  await startAndReportServices(pluginRoot, setup);
 
   process.stdout.write(
     [
@@ -5115,7 +5076,7 @@ async function runInstallCodex(settings, runtime) {
   const previousRoot = existsSync(CODEX_RUNTIME_PLUGIN_ROOT)
     ? CODEX_RUNTIME_PLUGIN_ROOT
     : findCodexPluginRoot();
-  if (!runtime) await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
+  if (!runtime) await stopServicesForInstall(previousRoot);
   let renderedHooks;
   try {
     if (!runtime) {
@@ -5201,7 +5162,7 @@ async function runInstallCodex(settings, runtime) {
     }
     // Preparation and publication succeeded; discard the rollback cache only now.
     commitLocalPluginPackages([cacheDir, runtime ? marketplaceRoot : CODEX_RUNTIME_PACKAGE_DIR]);
-    await startAndReportServices(pluginRoot, HOST_CODEX, setup);
+    await startAndReportServices(pluginRoot, setup);
   } catch (err) {
     process.stderr.write(
       `error: automatic Codex plugin install failed: ${err && err.message ? err.message : err}\n`,
@@ -5312,7 +5273,7 @@ async function runInstallOpenCode(args, settings, runtime, scopedPlan) {
   if (!runtime) assertOpenCodeInstallConfiguration(args);
   const installedRoot = join(OPENCODE_LOCAL_PACKAGE_DIR, "plugin");
   const previousRoot = existsSync(installedRoot) ? installedRoot : null;
-  if (!runtime) await stopServicesForInstall(previousRoot, installStateSnapshot.restartHost);
+  if (!runtime) await stopServicesForInstall(previousRoot);
   let packageRoot;
   try {
     packageRoot = runtime?.packageRoot ?? installOpenCodePluginPackage();
@@ -5343,7 +5304,7 @@ async function runInstallOpenCode(args, settings, runtime, scopedPlan) {
     );
   }
   clearRecoveredOpenCodeFailure(pluginRoot, previousFailure);
-  await startAndReportServices(pluginRoot, HOST_OPENCODE, setup);
+  await startAndReportServices(pluginRoot, setup);
   reportOpenCodeConfigBackups(results);
   process.stdout.write(
     [

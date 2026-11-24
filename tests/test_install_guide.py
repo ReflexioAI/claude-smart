@@ -1041,12 +1041,12 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     assert str(runtime.resolve()) in json.dumps(claude_manifest)
     assert "ensure-plugin-root.sh" not in json.dumps(claude_manifest)
     assert str(runtime.resolve()) in (cache / "hooks/codex-hooks.json").read_text()
+    loader = project / ".opencode/plugins/claude-smart.js"
     if provider_mode == "named":
         assert "Stop" not in claude_manifest["hooks"]
         codex_manifest = json.loads((cache / "hooks/codex-hooks.json").read_text())
         assert "Stop" not in codex_manifest["hooks"]
         assert "OpenCode: installed" in result.stdout
-        loader = project / ".opencode/plugins/claude-smart.js"
         assert (
             runtime.resolve() / "opencode/dist/server.mjs"
         ).as_uri() in loader.read_text()
@@ -1168,7 +1168,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
 @pytest.mark.parametrize("provider", [None, "claude-code", "codex", "opencode"])
 @pytest.mark.parametrize("override", [False, True])
 @pytest.mark.parametrize("action", ["backend", "hook"])
-def test_actual_codex_node_hook_keeps_native_admission_in_backend_child(
+def test_actual_codex_node_entrypoint_preserves_caller_context_and_cli_override(
     tmp_path: Path, provider: str | None, override: bool, action: str
 ) -> None:
     from tests.test_install_scripts import CODEX_HOOK
@@ -1179,19 +1179,18 @@ def test_actual_codex_node_hook_keeps_native_admission_in_backend_child(
     (root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
     state = tmp_path / ".claude-smart"
     state.mkdir()
-    (state / ".env").write_text(
-        f'REFLEXIO_NATIVE_CLI_MODEL="local-cli/{provider}"\n' if provider else ""
-    )
+    original = f'REFLEXIO_NATIVE_CLI_MODEL="local-cli/{provider}"\n' if provider else ""
+    (state / ".env").write_text(original)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     _write_executable(fake_bin / "claude", "#!/bin/sh\nexit 0\n")
-    # Exercise service fallback and hook attribution through the real Node
+    # Exercise service dispatch and hook attribution through the real Node
     # entrypoint with a backend and interpreter confined to the test account.
     recorder = (
         "#!/bin/bash\n"
         f'. "{LIB}"\nclaude_smart_source_reflexio_env\n'
         'printf "%s\\n" "$CLAUDE_SMART_CLI_PATH" > "$HOME/selected-cli"\n'
-        'printf "%s\\n" "$CLAUDE_SMART_HOST" > "$HOME/learning-host"\n'
+        'printf "%s\\n" "$CLAUDE_SMART_HOST" > "$HOME/inherited-host"\n'
         "printf '{\"continue\":true}\\n'\n"
     )
     _write_executable(scripts / "backend-service.sh", recorder)
@@ -1201,7 +1200,7 @@ def test_actual_codex_node_hook_keeps_native_admission_in_backend_child(
         prepared_python,
         "#!/bin/sh\n"
         'printf "%s\\n" "$3" > "$HOME/hook-identity"\n'
-        'printf "%s\\n" "$CLAUDE_SMART_HOST" > "$HOME/learning-host"\n'
+        'printf "%s\\n" "$CLAUDE_SMART_HOST" > "$HOME/inherited-host"\n'
         'printf "%s\\n" "$CLAUDE_SMART_CLI_PATH" > "$HOME/selected-cli"\n'
         "printf '{\"continue\":true}\\n'\n",
     )
@@ -1231,9 +1230,10 @@ def test_actual_codex_node_hook_keeps_native_admission_in_backend_child(
     assert (tmp_path / "selected-cli").read_text().strip() == expected
     if action == "hook":
         assert (tmp_path / "hook-identity").read_text().strip() == "codex"
-    assert (tmp_path / "learning-host").read_text().strip() == (
-        "opencode" if action == "hook" else "codex"
-    )
+    else:
+        assert not (tmp_path / "hook-identity").exists()
+    assert (tmp_path / "inherited-host").read_text().strip() == "opencode"
+    assert (state / ".env").read_text() == original
 
 
 @pytest.mark.parametrize("command", ["install", "update", "setup"])

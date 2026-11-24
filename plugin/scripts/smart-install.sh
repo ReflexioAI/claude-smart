@@ -653,23 +653,8 @@ fi
 claude_smart_source_reflexio_env
 verify_windows_local_embedding_runtime
 
-case "${CLAUDE_SMART_HOST:-claude-code}" in
-  opencode)
-    if [ -z "${CLAUDE_SMART_OPENCODE_PATH:-}" ] && ! command -v opencode >/dev/null 2>&1; then
-      echo "[claude-smart] WARNING: 'opencode' CLI not on PATH and CLAUDE_SMART_OPENCODE_PATH is not set — reflexio extractors will have no LLM until OpenCode is installed" >&2
-    fi
-    ;;
-  codex)
-    if ! command -v codex >/dev/null 2>&1; then
-      echo "[claude-smart] WARNING: 'codex' CLI not on PATH — reflexio extractors will have no LLM until Codex is installed" >&2
-    fi
-    ;;
-  *)
-    if ! command -v claude >/dev/null 2>&1; then
-      echo "[claude-smart] WARNING: 'claude' CLI not on PATH — reflexio extractors will have no LLM until Claude Code is installed" >&2
-    fi
-    ;;
-esac
+# Learning selection and errors belong to the selected SDK provider, not the
+# coding integration that happened to request dependency preparation.
 
 LEGACY_CS_CITE="$HOME/.claude-smart/bin/cs-cite"
 if [ -e "$LEGACY_CS_CITE" ]; then

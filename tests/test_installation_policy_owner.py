@@ -1,12 +1,15 @@
 """Prepared host workers preserve caller/runtime policy instead of choosing it."""
 
 import os
+import shlex
 import subprocess
+import sys
 
 import pytest
 from dotenv import dotenv_values
 
 from tests.test_install_scripts import (
+    REPO_ROOT,
     _fake_claude_code_package,
     _fake_claude_install_script,
     _isolated_env,
@@ -53,7 +56,7 @@ def test_prepared_worker_uses_effective_flag_without_rewriting_duplicates(
     assert result.returncode != 0
     assert "smart-install.sh failed" in result.stderr
     assert (tmp_path / "seen-flag").read_text().removesuffix("\n") == (
-        first or "selected"
+        "" if field == "CLAUDE_SMART_HOST" else (first or "selected")
     )
     assert selected.read_text() == original
 
@@ -151,9 +154,21 @@ def test_successful_install_starts_stored_learning_target_not_coding_identity(
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     package = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    # The current backend reads its canonical intent through the actual SDK
+    # admission boundary; the installer supplies neither coding host nor learner.
+    program = (
+        "import os,sys;from pathlib import Path;"
+        f"sys.path[:0]={[str(REPO_ROOT / 'plugin/vendor/reflexio'), str(REPO_ROOT / 'plugin/src')]!r};"
+        "os.environ['REFLEXIO_ENV_FILE']=str(Path.home()/'.claude-smart/.env');"
+        "from claude_smart.native_selection import admit_native_learning_target;"
+        "target=admit_native_learning_target()\n"
+        "with (Path.home()/'started-host').open('a') as log:\n"
+        " log.write(sys.argv[1]+':'+(target.reference if target else 'cloud')+'\\n')\n"
+    )
     _write_executable(
         package / "plugin/scripts/backend-service.sh",
-        '#!/bin/sh\nif [ "$1" = status ]; then echo "running on http://localhost:1"; else echo "$1:$CLAUDE_SMART_HOST" >> "$HOME/started-host"; fi\n',
+        '#!/bin/sh\nif [ "$1" = status ]; then echo "running on http://localhost:1"; else\n'
+        f' exec {shlex.quote(sys.executable)} -I -c {shlex.quote(program)} "$1"\nfi\n',
     )
     selected = tmp_path / ".claude-smart/.env"
     selected.parent.mkdir()
@@ -169,7 +184,7 @@ def test_successful_install_starts_stored_learning_target_not_coding_identity(
         server.server_close()
     assert result.returncode == 0, result.stderr
     assert (
-        f"start:{provider or 'codex'}"
+        f"start:local-cli/{provider or 'codex'}"
         in (tmp_path / "started-host").read_text().splitlines()
     )
     assert selected.read_text() == original
@@ -254,7 +269,7 @@ def test_installer_refused_native_preflight_preserves_existing_services(tmp_path
     )
     assert result.returncode == 0, result.stdout + result.stderr
     calls = (tmp_path / "service-sequence").read_text().splitlines()
-    assert "preflight:codex" in calls
+    assert "preflight:" in calls
     assert not [call for call in calls if call.startswith(("stop:", "start:"))]
     assert marker.exists()
     assert not (tmp_path / "started-backend").exists()

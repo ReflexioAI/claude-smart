@@ -131,7 +131,7 @@ claude_smart_source_reflexio_env() {
         ;;
       # CLAUDE_SMART_* flags: respect anything the caller already exported so
       # per-session overrides (e.g., a manual test) take precedence over the file.
-      CLAUDE_SMART_HOST|CLAUDE_SMART_BACKEND_AUTOSTART|CLAUDE_SMART_DASHBOARD_AUTOSTART|CLAUDE_SMART_CLI_PATH|CLAUDE_SMART_OPENCODE_PATH|CLAUDE_SMART_CLI_TIMEOUT|CLAUDE_SMART_STATE_DIR)
+      CLAUDE_SMART_BACKEND_AUTOSTART|CLAUDE_SMART_DASHBOARD_AUTOSTART|CLAUDE_SMART_CLI_PATH|CLAUDE_SMART_OPENCODE_PATH|CLAUDE_SMART_CLI_TIMEOUT|CLAUDE_SMART_STATE_DIR)
         if [ -z "$(eval "printf '%s' \"\${$key:-}\"")" ]; then
           value="$(claude_smart_env_unquote "$value")"
           export "$key=$value"
@@ -208,7 +208,9 @@ claude_smart_is_internal_invocation_env() {
 }
 
 claude_smart_emit_continue() {
-  if [ "${1:-${CLAUDE_SMART_HOST:-claude-code}}" = "codex" ]; then
+  # Service/install commands signal success by exit status, without hook output.
+  [ "$#" -gt 0 ] || return 0
+  if [ "$1" = "codex" ]; then
     echo '{"continue":true}'
   else
     echo '{"continue":true,"suppressOutput":true}'

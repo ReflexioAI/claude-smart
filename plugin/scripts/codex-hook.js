@@ -340,7 +340,6 @@ function runServiceScript(root, scriptName, action, logName) {
       ...process.env,
       PLUGIN_ROOT: root,
       CLAUDE_PLUGIN_ROOT: root,
-      CLAUDE_SMART_HOST: "codex",
       BACKEND_PORT: String(DEFAULT_BACKEND_PORT),
       EMBEDDING_PORT: String(DEFAULT_EMBEDDING_PORT),
       REFLEXIO_URL: readBackendUrl(),
