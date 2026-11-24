@@ -1995,8 +1995,7 @@ def test_failed_install_preserves_duplicate_host_and_restarts_effective_runtime(
 
 
 def test_failed_install_removes_a_host_it_added(tmp_path: Path) -> None:
-    # Pre-split installs can have no CLAUDE_SMART_HOST (runtime default:
-    # Claude Code); a failed install must not leave its own host behind.
+    # A failed install must preserve absence of retired host metadata.
     package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 7\n")
     runtime_env = tmp_path / ".claude-smart" / ".env"
     runtime_env.parent.mkdir()
@@ -2013,9 +2012,8 @@ def test_failed_install_removes_a_host_it_added(tmp_path: Path) -> None:
 
 
 def test_failed_codex_install_restores_the_previous_host(tmp_path: Path) -> None:
-    # `install --host codex` writes CLAUDE_SMART_HOST=codex up front; if it
-    # fails before the Codex runtime is installed, the active install's host
-    # (and so its extraction bridge) must come back.
+    # A failed Codex install preserves the active runtime's original metadata;
+    # the recovered runtime owns its historical interpretation.
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for Node installer test")
