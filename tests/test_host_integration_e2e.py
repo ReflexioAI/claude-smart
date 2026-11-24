@@ -18,7 +18,9 @@ def test_host_happy_path_applies_learning_buffers_tools_and_publishes(
     host: str,
     session_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode" if host == "codex" else "codex")
     run_host_learning_happy_path(
         host,
         work_root=tmp_path,

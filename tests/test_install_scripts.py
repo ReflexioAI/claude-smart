@@ -832,7 +832,7 @@ def test_smart_install_repairs_local_env_defaults(tmp_path: Path) -> None:
     assert 'CLAUDE_SMART_READ_ONLY="0"\n' in text
     assert "CLAUDE_SMART_HOST=" not in text
     assert "REFLEXIO_ROW_LIMIT_INTERACTIONS=500\n" in text
-    assert json.loads(result.stdout) == {"continue": True, "suppressOutput": True}
+    assert result.stdout == ""
 
 
 def _smart_install_functions(*names: str) -> str:
@@ -876,7 +876,7 @@ def test_smart_install_seeds_local_defaults_whenever_runtime_is_local(
     )
     assert result.returncode == 0, result.stderr
     assert not (tmp_path / ".claude-smart/install-failed").exists()
-    assert json.loads(result.stdout) == {"continue": True, "suppressOutput": True}
+    assert result.stdout == ""
     text = env_file.read_text()
     assert "CLAUDE_SMART_USE_LOCAL_CLI=" not in text
     assert "REFLEXIO_NATIVE_CLI_MODEL=" not in text
@@ -1038,7 +1038,7 @@ def test_reflexio_env_loader_exports_read_only_flag(tmp_path: Path) -> None:
     assert result.stdout.strip() == "1"
 
 
-def test_reflexio_env_loader_exports_host_flag(tmp_path: Path) -> None:
+def test_reflexio_env_loader_keeps_retired_host_opaque(tmp_path: Path) -> None:
     env_path = tmp_path / ".claude-smart" / ".env"
     env_path.parent.mkdir()
     env_path.write_text('CLAUDE_SMART_HOST="opencode"\n')
@@ -1060,7 +1060,8 @@ def test_reflexio_env_loader_exports_host_flag(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "opencode"
+    assert result.stdout == "\n"
+    assert env_path.read_text() == 'CLAUDE_SMART_HOST="opencode"\n'
 
 
 _MODE_SCENARIOS = {
@@ -1965,9 +1966,14 @@ def test_failed_install_preserves_duplicate_host_and_restarts_effective_runtime(
     stable = tmp_path / ".claude-smart/claude-code/claude-smart"
     scripts = stable / "plugin/scripts"
     scripts.mkdir(parents=True)
+    shutil.copy2(
+        REPO_ROOT / "tests/fixtures/host_env_predecessor_104bc462.sh",
+        scripts / "legacy-env.sh",
+    )
     _write_executable(
         scripts / "backend-service.sh",
-        "#!/bin/sh\n"
+        '#!/bin/bash\n. "$(dirname "$0")/legacy-env.sh"\n'
+        "claude_smart_source_reflexio_env\n"
         'if [ "$1" = status ]; then\n'
         f'    [ -f "$HOME/backend-stopped" ] && echo "not running" || echo "running on http://localhost:{_free_port()}"\n'
         "    exit 0\n"
@@ -1989,8 +1995,7 @@ def test_failed_install_preserves_duplicate_host_and_restarts_effective_runtime(
 
 
 def test_failed_install_removes_a_host_it_added(tmp_path: Path) -> None:
-    # Pre-split installs can have no CLAUDE_SMART_HOST (runtime default:
-    # Claude Code); a failed install must not leave its own host behind.
+    # A failed install must preserve absence of retired host metadata.
     package_root = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 7\n")
     runtime_env = tmp_path / ".claude-smart" / ".env"
     runtime_env.parent.mkdir()
@@ -2007,9 +2012,8 @@ def test_failed_install_removes_a_host_it_added(tmp_path: Path) -> None:
 
 
 def test_failed_codex_install_restores_the_previous_host(tmp_path: Path) -> None:
-    # `install --host codex` writes CLAUDE_SMART_HOST=codex up front; if it
-    # fails before the Codex runtime is installed, the active install's host
-    # (and so its extraction bridge) must come back.
+    # A failed Codex install preserves the active runtime's original metadata;
+    # the recovered runtime owns its historical interpretation.
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for Node installer test")
@@ -3495,8 +3499,8 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
         "the installer starts and reports services once the plugin is registered"
         in smart_install
     )
-    assert "function startBackendService(pluginRoot, host)" in node_installer
-    assert "CLAUDE_SMART_HOST: host" in node_installer
+    assert "CLAUDE_SMART_HOST: host" not in node_installer
+    assert "process.env.CLAUDE_SMART_HOST" not in node_installer
     assert "const bash = resolveUsableBash();" in node_installer
     assert "Git Bash is required for claude-smart services on Windows" in node_installer
     assert "bash is required but was not found on PATH" in node_installer
@@ -3505,23 +3509,16 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
         in node_installer
     )
     assert (
-        'await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "start", {\n'
-        "    CLAUDE_SMART_HOST: learningHost,\n"
-        "  });" in node_installer
+        'await runServiceWithProgress(pluginRoot, "dashboard-service.sh", "start")'
+        in node_installer
     )
     assert "const PLUGIN_SERVICE_TIMEOUT_MS = 45_000" in node_installer
     assert "timeout: PLUGIN_SERVICE_TIMEOUT_MS" in node_installer
     assert 'killSignal: "SIGTERM"' in node_installer
     assert 'result.error && result.error.code === "ETIMEDOUT"' in node_installer
-    assert (
-        'runPluginService(pluginRoot, "backend-service.sh", "start"' in node_installer
-    )
     assert 'const HOST_CLAUDE_CODE = "claude-code"' in node_installer
     assert 'const HOST_CODEX = "codex"' in node_installer
-    assert (
-        "startAndReportServices(pluginRoot, HOST_CLAUDE_CODE, setup)" in node_installer
-    )
-    assert "startAndReportServices(pluginRoot, HOST_CODEX, setup)" in node_installer
+    assert "startAndReportServices(pluginRoot, setup)" in node_installer
     assert (
         'runPluginService(pluginRoot, "dashboard-service.sh", "stop")' in node_installer
     )
@@ -4827,7 +4824,7 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
         timeout=25,
     )
     assert start.returncode == 0, start.stderr
-    assert start.stdout.strip() == '{"continue":true}'
+    assert start.stdout == ""
     backend_log = (tmp_path / ".claude-smart" / "backend.log").read_text()
     assert "Embedding service did not become healthy" in backend_log
     assert "semantic retrieval remains unavailable" in backend_log
@@ -4960,7 +4957,7 @@ def test_backend_service_restarts_stale_owned_listener_even_when_unhealthy(
         )
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == '{"continue":true}'
+        assert result.stdout == ""
         stale.wait(timeout=5)
         _wait_for_file_text(tmp_path / "python.log", "spawned backend")
         assert (
@@ -5109,7 +5106,7 @@ def test_backend_start_reaps_older_markerless_peer_from_other_root(
         )
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == '{"continue":true}'
+        assert result.stdout == ""
         legacy.wait(timeout=5)
         _wait_for_file_text(tmp_path / "python.log", "spawned backend")
         assert (
@@ -5223,7 +5220,7 @@ def test_backend_start_accepts_unknown_version_legacy_peer(
         )
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == '{"continue":true}'
+        assert result.stdout == ""
         assert peer.poll() is None
         assert peer_runner.poll() is None
         python_log = tmp_path / "python.log"
@@ -5332,7 +5329,7 @@ def test_backend_start_accepts_compatible_other_root_without_downgrade(
         )
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == '{"continue":true}'
+        assert result.stdout == ""
         assert peer.poll() is None
         python_log = tmp_path / "python.log"
         assert "spawned backend" not in (
@@ -5423,7 +5420,7 @@ def test_backend_stop_does_not_kill_newer_peer_from_shared_pid(
         )
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == '{"continue":true}'
+        assert result.stdout == ""
         assert peer.poll() is None
         assert peer_runner.poll() is None
         assert (state_dir / "backend.pid").exists()
@@ -5494,7 +5491,7 @@ def test_backend_stop_reaps_legacy_same_root_shared_pid(
         )
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == '{"continue":true}'
+        assert result.stdout == ""
         legacy.wait(timeout=5)
     finally:
         if legacy.poll() is None:
@@ -5538,7 +5535,7 @@ def test_backend_start_waits_for_existing_service_lock_without_spawn(
         )
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == '{"continue":true}'
+        assert result.stdout == ""
         python_log = tmp_path / "python.log"
         assert "spawned backend" not in (
             python_log.read_text() if python_log.exists() else ""
@@ -5597,7 +5594,7 @@ def test_backend_start_honors_startup_grace_for_recorded_pid(
         )
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == '{"continue":true}'
+        assert result.stdout == ""
         assert warming.poll() is None
         python_log = tmp_path / "python.log"
         assert "spawned backend" not in (
@@ -5709,7 +5706,7 @@ def test_backend_service_does_not_kill_foreign_listener(tmp_path: Path) -> None:
         )
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == '{"continue":true}'
+        assert result.stdout == ""
         assert foreign.poll() is None
         python_log = tmp_path / "python.log"
         assert "spawned backend" not in (
@@ -6004,7 +6001,7 @@ def test_backend_start_missing_vendor_still_accepts_healthy_other_root(
 
         assert result.returncode == 0, result.stderr
         # Plain continue: no "backend is not running" panel over a live backend.
-        assert result.stdout.strip() == '{"continue":true}'
+        assert result.stdout == ""
         assert "preflight failed" not in result.stdout
         assert peer.poll() is None
         python_log = tmp_path / "python.log"
@@ -6203,7 +6200,7 @@ def test_codex_session_start_hook_has_install_recovery_budget() -> None:
 
 @pytest.mark.parametrize("guided", [False, True])
 @pytest.mark.parametrize("failure", ["missing-uv", "broken-import"])
-def test_hook_entry_self_heal_preserves_declared_host(
+def test_hook_entry_self_heal_keeps_identity_in_the_dispatcher(
     tmp_path: Path, failure: str, guided: bool
 ) -> None:
     scripts = tmp_path / "plugin" / "scripts"
@@ -6278,7 +6275,7 @@ def test_hook_entry_self_heal_preserves_declared_host(
     deadline = time.monotonic() + 5
     while not record.exists() and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert record.read_text() == "codex:1\n"
+    assert record.read_text() == "opencode:1\n"
     assert not (tmp_path / "service-start").exists()
 
 
@@ -9640,7 +9637,7 @@ def test_smart_install_busy_settings_is_transient_without_failure_or_success_mar
         )
     assert result.returncode == 75
     assert "busy" in result.stderr
-    assert json.loads(result.stdout) == {"continue": True, "suppressOutput": True}
+    assert result.stdout == ""
     assert selected.read_text() == original
     assert not (selected.parent / "install-failed").exists()
     assert not (selected.parent / "install-complete").exists()

@@ -33,7 +33,6 @@ def isolated_runtime_host(monkeypatch):
     from claude_smart import runtime
 
     monkeypatch.setattr(runtime, "_current_host", None)
-    monkeypatch.delenv(runtime.HOST_ENV, raising=False)
     return runtime
 
 
@@ -2206,9 +2205,10 @@ class _ServerLikeSearch(_SearchRecorder):
     def search_all(self, **kwargs):
         self.calls.append(kwargs)
         top_k = kwargs["top_k"]
-        result = tuple(
-            list(self._hits[key][:top_k])
-            for key in ("playbooks", "agent_playbooks", "profiles")
+        result = (
+            list(self._hits["playbooks"][:top_k]),
+            list(self._hits["agent_playbooks"][:top_k]),
+            list(self._hits["profiles"][:top_k]),
         )
         self.returned = [
             str(

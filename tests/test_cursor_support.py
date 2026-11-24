@@ -41,6 +41,7 @@ def test_cursor_hook_records_cursor_in_session_and_hook_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A Cursor-fired Claude Code plugin hook keeps Cursor provenance."""
+    monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
     monkeypatch.setenv("CURSOR_VERSION", "3.11.0")
     monkeypatch.setenv("CURSOR_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(

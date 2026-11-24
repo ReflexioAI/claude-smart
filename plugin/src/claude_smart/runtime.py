@@ -13,7 +13,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-HOST_ENV = "CLAUDE_SMART_HOST"
 INTERNAL_ENV = "CLAUDE_SMART_INTERNAL"
 
 HOST_CLAUDE_CODE = "claude-code"
@@ -115,14 +114,12 @@ def set_host(value: str | None) -> str:
 
 def host() -> str:
     """Return the current host, defaulting to Claude Code for compatibility."""
-    value = _current_host if _current_host is not None else os.environ.get(HOST_ENV)
-    return _resolve_host(value, HOST_CLAUDE_CODE)
+    return _resolve_host(_current_host, HOST_CLAUDE_CODE)
 
 
 def attribution_host() -> str:
     """Return the explicitly selected record host, or unknown when unset."""
-    value = _current_host if _current_host is not None else os.environ.get(HOST_ENV)
-    return _resolve_host(value, HOST_UNKNOWN)
+    return _resolve_host(_current_host, HOST_UNKNOWN)
 
 
 def is_codex() -> bool:

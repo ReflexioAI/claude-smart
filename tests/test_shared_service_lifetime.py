@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -164,8 +163,6 @@ def test_cached_session_end_does_not_initialize_shared_service_state(
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    expected = {"continue": True}
-    if host == "claude-code":
-        expected["suppressOutput"] = True
-    assert json.loads(result.stdout) == expected
+    # Empty successful command output is valid for either cached hook host.
+    assert result.stdout == ""
     assert list(home.iterdir()) == []

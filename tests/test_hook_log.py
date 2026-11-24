@@ -794,10 +794,11 @@ def test_hook_identity_comes_from_executing_runtime(
     source = executing / "src" / "claude_smart" / "runtime.py"
     source.parent.mkdir(parents=True)
     shutil.copy2(runtime.__file__, source)
-    monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+    monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(installed))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "account"))
     loaded = runpy.run_path(str(source))
+    loaded["set_host"]("codex")
     monkeypatch.setattr(runtime, "plugin_metadata", loaded["plugin_metadata"])
     # The loaded runtime stays at v1 even if its files are replaced mid-hook.
     (executing / ".codex-plugin" / "plugin.json").write_text('{"version":"3.0.0"}')
@@ -812,6 +813,7 @@ def test_hook_identity_comes_from_executing_runtime(
     else:
         manifest.write_text("invalid json")
     loaded = runpy.run_path(str(source))
+    loaded["set_host"]("codex")
     monkeypatch.setattr(runtime, "plugin_metadata", loaded["plugin_metadata"])
     hook_log.log_event(event="stop", host="codex", session_id="existing")
     assert _read_lines(hook_log_path)[-1]["plugin_version"] == "unknown"

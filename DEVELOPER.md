@@ -53,6 +53,30 @@ and read-only policy as any other project.
 without a fixed replacement path or selector; old assignments have no effect
 and can be removed. No saved configuration is rewritten by hook startup.
 
+## Invocation host authority
+
+The hook dispatcher binds its declared host before loading settings; established
+Cursor metadata can refine the Claude-compatible entrypoint. That context owns
+attribution and event formatting. A fresh, unbound process has unknown
+attribution. `CLAUDE_SMART_HOST` no longer selects either behavior, and saved
+assignments remain opaque rather than being rewritten at startup.
+
+Shared backend/dashboard services do not belong to one coding host. Installation,
+start, stop and rollback use their existing ownership checks and exit status;
+service commands do not emit host-specific hook JSON. Cached service hooks may
+succeed with empty output. Actual event hooks keep their declared formatter.
+The installer no longer guesses a missing learner from coding-host metadata:
+confirmed learning selection, SDK admission and provider errors own that policy.
+
+Native learning remains selected by `REFLEXIO_NATIVE_CLI_MODEL`. Restoring a
+previous package restores its original settings; that runtime owns its historical
+interpretation. Rollback tests use the frozen predecessor loader from `104bc462`,
+while current startup tests exercise the actual bundled SDK admission boundary.
+No new setting, host heuristic or fixed learner replaces the retired selector.
+The [SDK producer cleanup](https://github.com/ReflexioAI/reflexio/pull/1159)
+is independent: an older qualified bundle may still emit unused host metadata,
+which current dispatchers ignore. It does not restore a configuration selector.
+
 ## Environment variables
 
 Citation prompts use Markdown links in all hosts. The transcript reader still

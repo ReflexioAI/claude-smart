@@ -107,6 +107,18 @@ if action == "status":
     if installed:
         shutil.copytree(package / "plugin", root)
         (root / "identity").write_text("old")
+        # Rollback recovers an older runtime, whose own env reader stays frozen.
+        shutil.copy2(
+            REPO_ROOT / "tests/fixtures/host_env_predecessor_104bc462.sh",
+            root / "scripts/legacy-env.sh",
+        )
+        for service in ("backend", "dashboard"):
+            script = root / f"scripts/{service}-service.sh"
+            original = script.read_text()
+            script.write_text(
+                '#!/bin/bash\n. "$(dirname "$0")/legacy-env.sh"\n'
+                "claude_smart_source_reflexio_env\n" + original.split("\n", 1)[1]
+            )
         (root.parent / "package.json").write_text('{"name":"claude-smart"}')
         link = tmp_path / ".reflexio/plugin-root"
         link.parent.mkdir()
@@ -463,6 +475,7 @@ def test_multihost_preparation_failure_preserves_settings_and_registration(
         )
         expected = "missing version"
     outside = tmp_path / "unrelated-file"
+    config = tmp_path / "opencode.jsonc"
     if failure in {"redirected-scope", "redirected-backup"}:
         _write_bootstrap_uv(uv, mode="fresh")
         try:
@@ -472,7 +485,6 @@ def test_multihost_preparation_failure_preserves_settings_and_registration(
                 scoped.rename(moved)
                 scoped.symlink_to(moved, target_is_directory=True)
             else:
-                config = tmp_path / "opencode.jsonc"
                 config.write_text('{ "plugin": ["claude-smart"], /* keep */ }\n')
                 outside.write_text("outside sentinel")
                 (tmp_path / "opencode.jsonc.bak").symlink_to(outside)
@@ -1468,9 +1480,7 @@ def test_codex_postcommit_trust_failure_keeps_new_runtime_and_cache(tmp_path):
 
 @pytest.mark.parametrize("host", ["codex", "opencode"])
 @pytest.mark.parametrize("saved_host", [None, "claude-code"])
-def test_restart_without_caller_host_uses_saved_host_or_existing_default(
-    tmp_path, host, saved_host
-):
+def test_rollback_lets_previous_runtime_load_its_saved_host(tmp_path, host, saved_host):
     package, _, _, env = _fixture(tmp_path, host, running="backend")
     env["CLAUDE_SMART_HOST"] = ""
     env_file = tmp_path / ".claude-smart/.env"
@@ -1483,7 +1493,7 @@ def test_restart_without_caller_host_uses_saved_host_or_existing_default(
     assert "uv sync failed" in result.stderr, result.stderr
     starts = [row for row in _calls(tmp_path) if row["action"] == "start"]
     assert len(starts) == 1
-    assert starts[0]["host"] == "claude-code"
+    assert starts[0]["host"] == (saved_host or "")
     assert ("CLAUDE_SMART_HOST=" in starts[0]["file"]) == (saved_host is not None)
 
 

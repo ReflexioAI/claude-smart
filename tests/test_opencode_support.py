@@ -10,7 +10,6 @@ import shlex
 import shutil
 import subprocess
 import textwrap
-from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
@@ -20,18 +19,6 @@ from claude_smart.events import post_tool, stop, user_prompt
 from dotenv import dotenv_values
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
-@pytest.fixture(autouse=True)
-def restore_runtime_host() -> Generator[None, None, None]:
-    previous_host = getattr(runtime, "_current_host", None)
-    previous_env = os.environ.get(runtime.HOST_ENV)
-    yield
-    runtime._current_host = previous_host
-    if previous_env is None:
-        os.environ.pop(runtime.HOST_ENV, None)
-    else:
-        os.environ[runtime.HOST_ENV] = previous_env
 
 
 def _read_json(path: str) -> dict[str, Any]:
@@ -65,7 +52,7 @@ def _write_fake_bash_recorder(tmp_path: Path, *, user_prompt_context: str = "") 
         'script="$1"\n'
         "shift\n"
         "payload=$(cat || true)\n"
-        'PAYLOAD="$payload" node -e \'require("fs").appendFileSync(process.env.CALL_LOG, JSON.stringify({ script: process.argv[1], args: process.argv.slice(2), payload: process.env.PAYLOAD, learningHost: process.env.CLAUDE_SMART_HOST }) + "\\n")\' "$script" "$@"\n'
+        'PAYLOAD="$payload" node -e \'require("fs").appendFileSync(process.env.CALL_LOG, JSON.stringify({ script: process.argv[1], args: process.argv.slice(2), payload: process.env.PAYLOAD, inheritedHost: process.env.CLAUDE_SMART_HOST }) + "\\n")\' "$script" "$@"\n'
         'if [ "${2:-}" = "user-prompt" ]; then\n'
         f"  printf '%s\\n' '{response}'\n"
         "else\n"
@@ -508,7 +495,7 @@ process.stdout.write(JSON.stringify({{
         "result": "bridge output",
     }
     call = json.loads(call_log.read_text())
-    assert call["env"]["CLAUDE_SMART_HOST"] == "opencode"
+    assert call["env"].get("CLAUDE_SMART_HOST") is None
     assert call["env"]["CLAUDE_SMART_INTERNAL"] == "1"
     # Pure mode is set via env (not the rejected --pure flag) so the extractor
     # subprocess skips the user's external plugins on hosts that honor it.
@@ -2618,8 +2605,7 @@ def test_node_opencode_server_dispatches_lifecycle_tool_idle_and_dispose(
     assert ("dashboard-service.sh", ["session-end"]) not in command_pairs
     assert ("backend-service.sh", ["session-end"]) not in command_pairs
     for call in parsed["calls"]:
-        is_hook = Path(call["script"]).name == "hook_entry.sh"
-        assert call["learningHost"] == ("codex" if is_hook else "opencode")
+        assert call["inheritedHost"] == "codex"
     stop_calls = [
         json.loads(call["payload"])
         for call in parsed["calls"]

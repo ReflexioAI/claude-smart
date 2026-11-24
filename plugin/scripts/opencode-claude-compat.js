@@ -126,7 +126,6 @@ function dispatchEnvironment(workDir) {
     OPENCODE_PURE: "1",
     // OpenCode can resolve its project from PWD instead of the spawn cwd.
     PWD: workDir,
-    CLAUDE_SMART_HOST: "opencode",
     CLAUDE_SMART_INTERNAL: "1",
     CLAUDE_CODE_ENTRYPOINT: "optimizer",
   };

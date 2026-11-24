@@ -112,13 +112,15 @@ def test_hook_commands_pass_explicit_host() -> None:
     claude_commands = [
         c for c in _command_hooks("plugin/hooks/hooks.json") if "hook_entry.sh" in c
     ]
-    codex_commands = _command_hooks("plugin/hooks/codex-hooks.json")
+    codex_commands = [
+        c
+        for c in _command_hooks("plugin/hooks/codex-hooks.json")
+        if "hook_entry.sh" in c
+    ]
     assert claude_commands
     assert codex_commands
     assert all('hook_entry.sh" claude-code ' in c for c in claude_commands)
-    assert all(
-        'hook_entry.sh" codex ' in c for c in codex_commands if "hook_entry.sh" in c
-    )
+    assert all('hook_entry.sh" codex ' in c for c in codex_commands)
 
 
 def test_codex_hooks_use_expected_events_and_marketplace_fallback() -> None:
@@ -131,7 +133,7 @@ def test_codex_hooks_use_expected_events_and_marketplace_fallback() -> None:
         "PostToolUse",
         "Stop",
     }
-    assert 'CLAUDE_SMART_HOST="codex"' in codex_env
+    assert "CLAUDE_SMART_HOST" not in codex_env
     for command in _command_hooks("plugin/hooks/codex-hooks.json"):
         assert "_codex_env.sh" in command
         assert "printenv PATH" not in command
