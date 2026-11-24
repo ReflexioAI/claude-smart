@@ -410,6 +410,15 @@ equivalent action.
 
 ## Configuration
 
+The bundled SDK uses one canonical HTTP quota policy. If you set inherited
+`RATELIMIT_HEADER_*`, `RATELIMIT_HEADERS_ENABLED`, or
+`RATELIMIT_IN_MEMORY_FALLBACK_ENABLED` assignments, remove them **including blank
+assignments** before upgrading. Select fallback through
+`RATELIMIT_IN_MEMORY_FALLBACK` (unset, `inherit`, or custom rules). Quota rejection
+uses standard `Retry-After`; optional successful-response quota metadata is
+retired. See the [SDK quota upgrade guide](https://github.com/ReflexioAI/reflexio/blob/main/developer.md#http-quota-ownership).
+
+
 Advanced users can tune claude-smart via environment variables — see [DEVELOPER.md](./DEVELOPER.md#environment-variables) for the full list.
 
 ### Where data lives
