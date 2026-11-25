@@ -547,6 +547,50 @@ def test_inference_owner_uses_same_retired_org_policy_as_backend(tmp_path, sourc
 
 
 @requires_vendor
+@pytest.mark.parametrize("attached", [False, True])
+def test_inference_owner_reports_the_sdk_inference_readiness_deadline(
+    tmp_path, attached
+):
+    """The hook's startup window follows the deadline the SDK supervisor uses."""
+    env = _env(tmp_path)
+    env["PYTHON_DOTENV_DISABLED"] = "1"
+    env.pop("REFLEXIO_EMBEDDING_SERVICE_URL", None)
+    if attached:
+        env["REFLEXIO_EMBEDDING_SERVICE_URL"] = "http://127.0.0.1:9/"
+    probe = (
+        "import math, sys; from reflexio.cli import utils; "
+        "print(math.ceil(utils._LOCAL_INFERENCE_READY_TIMEOUT_SECS))"
+    )
+    sdk = subprocess.run(
+        [sys.executable, "-P", "-c", probe],
+        env=env,
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            str(RUNNER.with_name("backend-inference-owner.py")),
+            "--inference-ready-timeout",
+        ],
+        env=env,
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    expected = "0" if attached else sdk.stdout.strip()
+    assert result.stdout.strip() == expected
+
+
+@requires_vendor
 @pytest.mark.parametrize("stale", [False, True])
 @pytest.mark.parametrize("storage", ["fresh", "custom", "non_sqlite"])
 def test_backend_runner_uses_sdk_binding_capability_without_exporting_selector(

@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from contextlib import redirect_stdout
 from importlib import import_module
 from importlib.util import find_spec
+import math
 import os
 from pathlib import Path
 import sys
@@ -80,6 +81,25 @@ def inference_is_colocated() -> bool:
         return should_start_local_embedding_service()
 
 
+def colocated_inference_ready_timeout_seconds() -> int:
+    """Return how long the SDK supervisor waits for colocated inference.
+
+    The supervisor bounds that wait itself and exits when it expires, so the
+    hook must not treat a launch inside it as stuck. Attached inference is
+    not awaited before the API starts, so it adds no time.
+    """
+    if not inference_is_colocated():
+        return 0
+    with redirect_stdout(sys.stderr):
+        from reflexio.cli import utils
+    # Read the deadline the selected SDK's launcher actually uses rather than
+    # copying its value; an SDK without it fails the query, never guesses.
+    timeout = float(utils._LOCAL_INFERENCE_READY_TIMEOUT_SECS)
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError(f"unusable local inference readiness timeout: {timeout!r}")
+    return math.ceil(timeout)
+
+
 def main() -> int:
     if sys.argv[1:] == ["--validate-windows-embedding"]:
         # The isolated interpreter must use the same vendor source as the
@@ -92,6 +112,9 @@ def main() -> int:
                 import_module("onnxruntime")
             except Exception:
                 return 77
+        return 0
+    if sys.argv[1:] == ["--inference-ready-timeout"]:
+        print(colocated_inference_ready_timeout_seconds())
         return 0
     print("colocated" if inference_is_colocated() else "attached")
     return 0
