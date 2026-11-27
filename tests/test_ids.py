@@ -78,7 +78,7 @@ def test_resolve_keeps_separate_git_dir_checkout_on_its_toplevel(
     tmp_path, monkeypatch
 ) -> None:
     # Its git dir is called ``.git`` but lives elsewhere; it is not a linked
-    # worktree, so it must keep its own id (regression guard for review of #195).
+    # worktree, so it must keep its own id.
     _isolate_git_env(monkeypatch)
     app = tmp_path / "app"
     store = tmp_path / "meta" / "store"

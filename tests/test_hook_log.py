@@ -335,8 +335,8 @@ def test_dispatcher_emits_continue_on_handler_success(
 ) -> None:
     """The success path must emit the ``{"continue": true}`` JSON on stdout.
 
-    Regression: an earlier version only emitted on the exception path,
-    leaving successful hook fires silent and blocking the parent session.
+    Emitting it only on the exception path would leave successful hook
+    fires silent and block the parent session.
     """
 
     def stop_ok(_payload: dict[str, Any]) -> tuple[str, int]:
@@ -401,9 +401,9 @@ def test_dispatcher_emits_continue_on_handler_exception(
 def test_log_event_tolerates_unparseable_publish_count(hook_log_path) -> None:
     """A non-int publish_count must not raise — the hook is best-effort.
 
-    Addresses CodeRabbit review on PR #30: ``int(publish_count or 0)``
-    used to raise TypeError on garbage callers, breaking the "never abort
-    a hook fire" contract. Defensive coercion falls back to 0.
+    A bare ``int()`` raises TypeError on such a value, which would break
+    the "never abort a hook fire" contract. Defensive coercion falls back
+    to 0.
     """
     # Object value with no usable int conversion.
     hook_log.log_event(
@@ -675,11 +675,10 @@ def test_contended_log_skips_append_without_blocking_or_racing_rotation(
 ) -> None:
     """Best-effort logging cannot block a hook behind another log rotation.
 
-    Regression for CodeRabbit review on PR #30: the rotation
-    ``read_bytes → write tmp → rename`` sequence used to race with a
-    concurrent appender — a record landing in the original file between
-    the read and the rename was overwritten by the rename and lost. The
-    exclusive flock around append + rotate closes that gap.
+    Unlocked, the rotation ``read_bytes → write tmp → rename`` sequence
+    races with a concurrent appender — a record landing in the original
+    file between the read and the rename is overwritten by the rename and
+    lost. The exclusive flock around append + rotate closes that gap.
 
     Forces the race deterministically: thread A's ``log_event`` triggers
     rotation and is paused inside ``Path.replace``; thread B's

@@ -31,7 +31,7 @@ class _ConflictResponse:
         self.request_id = request_id
 
     def json(self) -> dict[str, Any]:
-        # reflexio #807: routes/interactions.py raises HTTPException(409, detail=...)
+        # Reflexio's routes/interactions.py raises HTTPException(409, detail=...)
         return {
             "detail": {
                 "reason": "request_id_conflict",
@@ -52,8 +52,8 @@ class _Server:
     """Stores what it accepts; optionally dies once or rejects a poison batch.
 
     ``shape`` selects the reused-request_id contract: ``legacy`` servers answer
-    200 ``success: false`` "already exists"; ``modern`` ones (reflexio #807)
-    replay an identical retry and answer 409 for different content.
+    200 ``success: false`` "already exists"; ``modern`` ones replay an
+    identical retry and answer 409 for different content.
     """
 
     def __init__(

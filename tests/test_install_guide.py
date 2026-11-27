@@ -942,7 +942,7 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     config_path = home / ".claude-smart" / ".env"
     if provider_mode == "cloud":
         # Seed the retained standalone worker path to qualify upgrading an
-        # older installation; public local setup now prepares a shared runtime.
+        # older installation; public local setup prepares a shared runtime.
         previous = subprocess.run(
             [str(installer), "install", "--host", "codex", "--yes"],
             cwd=project,
@@ -1284,10 +1284,6 @@ def test_learning_summary_and_sonnet_default_on_actual_guide(
         ).get("REFLEXIO_NATIVE_CLI_MODEL")
         == "local-cli/claude-code/sonnet"
     )
-
-
-# The removed shell compiler's five string-projection cases are superseded
-# by test_native_codex_learning's actual SDK dispatch/refusal/worker matrix.
 
 
 @pytest.mark.parametrize("arguments", [[], ["--help"], ["--backend", "local"]])

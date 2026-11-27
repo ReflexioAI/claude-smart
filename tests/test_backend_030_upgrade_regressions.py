@@ -7,7 +7,7 @@ claude-smart 0.3.0 bundled a Reflexio that resolves a null
 ``storage_config.db_path`` per org. When the shared ``reflexio.db`` held any
 row another org had labelled, it refused to adopt the file and opened an
 empty ``reflexio_claude-smart.db``, so existing installs looked wiped.
-``backend-python-runner.py`` now pins the path before the backend starts.
+``backend-python-runner.py`` pins the path before the backend starts.
 
 These tests run the real runner against the vendored Reflexio, because only
 the vendored copy has the resolver that caused the regression. CI vendors it

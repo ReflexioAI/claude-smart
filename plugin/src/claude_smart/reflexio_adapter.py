@@ -44,7 +44,7 @@ _RETRIEVED_REF_KEYS = frozenset(
     {"kind", "learning_id", "exposure_receipt", "exposure_receipt_digest", "loaded"}
 )
 _SERVER_MESSAGE_LIMIT = 200
-# Reflexio >= #807 answers a reused request_id naming different content with
+# Newer Reflexio servers answer a reused request_id naming different content with
 # HTTP 409 and this reason; an identical retry succeeds with ``replayed``.
 _REQUEST_ID_CONFLICT = "request_id_conflict"
 _SEARCH_MODE_HYBRID = "hybrid"  # reflexio.models.config_schema.SearchMode.HYBRID

@@ -220,8 +220,8 @@ def _claude_plugin_cache_version_dir(tmp_path: Path) -> Path:
     """Return a versioned plugin dir shaped like Claude Code's plugin cache.
 
     Only a convenient isolated location for a copied plugin tree (the
-    backend-service tests run scripts from it). The Node installer no longer
-    reads the cache: Claude Code runs the plugin in place from the stable copy
+    backend-service tests run scripts from it). The Node installer does not
+    read the cache: Claude Code runs the plugin in place from the stable copy
     under ~/.claude-smart/claude-code.
     """
     pyproject = (REPO_ROOT / "plugin" / "pyproject.toml").read_text()
@@ -648,8 +648,8 @@ def test_detached_spawns_with_log_redirection_preserve_output_on_windows() -> No
     )
     # The backend runner is a long-lived daemon and is squeezed from both
     # sides: it must NOT opt out of the default close, because opting out
-    # without a redirect hands the hook's stdout to the daemon
-    # (claude-smart#163), and a raw redirect here would bypass the capped
+    # without a redirect hands the hook's stdout to the daemon, and a raw
+    # redirect here would bypass the capped
     # appender (see test_backend_service_uses_capped_logging).
     assert (
         "CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached bash "
@@ -661,8 +661,8 @@ def test_detached_spawns_with_log_redirection_preserve_output_on_windows() -> No
 def test_detached_spawn_does_not_hold_caller_stdio(tmp_path: Path) -> None:
     """A detached child must not keep the caller's stdout/stderr open.
 
-    Regression for #163. Claude Code gives a hook a socketpair for stdout/stderr
-    and waits for EOF on it. `backend-service.sh start` spawns a long-lived
+    Claude Code gives a hook a socketpair for stdout/stderr and waits for EOF
+    on it. `backend-service.sh start` spawns a long-lived
     daemon, so if that daemon inherits those fds EOF never arrives and the
     SessionStart hook hangs forever -- the hook's own timeout does not help,
     because its bash has already exited while the daemon holds the fds.
@@ -1170,10 +1170,9 @@ def test_installer_mode_matches_runtime_resolution(
 
 
 def test_no_code_path_uses_the_shared_reflexio_env_file() -> None:
-    """Class guard: #85 moved the runtime to ~/.claude-smart/.env, but the npx
-    installer, the setup wizard, and the dashboard Configure page kept using
-    ~/.reflexio/.env, so they reported and edited config the runtime never read.
-    Only the named legacy-migration constants may reference it."""
+    """Class guard: the runtime reads ~/.claude-smart/.env, so a code path
+    that uses ~/.reflexio/.env reports and edits config the runtime never
+    reads. Only the named legacy-migration constants may reference it."""
     literal = re.compile(
         r"""\.reflexio/\.env|["']\.reflexio["']\s*(,|/)\s*["']\.env["']"""
     )
@@ -1403,7 +1402,7 @@ def _fake_claude_code_package(tmp_path: Path, smart_install: str) -> Path:
     # Shared Node preparation invokes the real import-light repair owner.
     _copy_prepared_policy_owner(package_root / "plugin")
     shutil.copy2(REPO_ROOT / "plugin/scripts/guided-command.sh", scripts)
-    # Local guided setup now prepares the same complete runtime for every host.
+    # Local guided setup prepares the same complete runtime for every host.
     # Exercise real hook rendering and native admission, rather than stubbing
     # their validation as a successful settings publication.
     shutil.copytree(REPO_ROOT / "plugin/hooks", package_root / "plugin/hooks")
@@ -2019,7 +2018,7 @@ def test_failed_codex_install_restores_the_previous_host(tmp_path: Path) -> None
         pytest.skip("node is required for Node installer test")
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
-    # Install now captures service status as update does. Intercept service
+    # Install captures service status as update does. Intercept service
     # scripts so this real CLI/interrupt contract never probes a live listener.
     _write_executable(
         fake_bin / "bash",
@@ -2250,7 +2249,7 @@ def test_interrupt_during_a_codex_cli_step_stops_its_descendants(
         pytest.skip("node is required for Node installer test")
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
-    # Install now captures service status as update does. Intercept service
+    # Install captures service status as update does. Intercept service
     # scripts so this real CLI/interrupt contract never probes a live listener.
     _write_executable(
         fake_bin / "bash",
@@ -3524,7 +3523,8 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     )
     assert "function stopClaudeSmartServices(pluginRoot)" in node_installer
     # The service scripts always exit 0, so a start is only claimed after an
-    # HTTP probe (see test_node_install_reports_backend_status_from_probe).
+    # HTTP probe (see
+    # test_node_install_ignores_foreign_reflexio_env_and_probes_backend).
     assert "Started claude-smart backend service." not in node_installer
 
 
@@ -3540,10 +3540,10 @@ def test_smart_install_recreates_corrupt_venv() -> None:
 
 
 def test_cli_sh_self_heals_when_claude_smart_unimportable() -> None:
-    """Regression: cli.sh used to exec `python -m claude_smart.cli` even when
-    the package wasn't importable, leaking a bare ModuleNotFoundError into
-    the slash-command transcript when SessionStart's background install
-    hadn't finished. It must now mirror hook_entry.sh's import probe."""
+    """cli.sh must mirror hook_entry.sh's import probe. Exec'ing
+    `python -m claude_smart.cli` while the package is not importable leaks a
+    bare ModuleNotFoundError into the slash-command transcript when
+    SessionStart's background install has not finished."""
     cli_sh = (REPO_ROOT / "plugin" / "scripts" / "cli.sh").read_text()
 
     assert "claude_smart_python_imports" in cli_sh
@@ -3637,7 +3637,7 @@ def test_service_start_scripts_guard_internal_invocations() -> None:
 def test_claude_code_install_uses_bundled_package_root() -> None:
     """Regression guard: Claude Code installer must point `claude plugin marketplace
     add` at the npm package root (which carries the bundled plugin), not a GitHub
-    owner/repo ref. Otherwise `make package` no longer end-to-end tests local
+    owner/repo ref. Otherwise `make package` does not end-to-end test local
     plugin changes for Claude Code."""
     node_installer = CLAUDE_SMART_BIN.read_text()
 
@@ -4561,8 +4561,8 @@ def test_smart_install_non_lock_sync_failure_stays_strict(tmp_path: Path) -> Non
 @pytest.mark.parametrize(
     "copy_dirname",
     [
-        # Windows cwd C:\Users\Alice\repo with ':' and '\' stripped by the host
-        # (issue #65). Capital 'U' — a `Cu*` glob would miss this.
+        # Windows cwd C:\Users\Alice\repo with ':' and '\' stripped by the host.
+        # Capital 'U' — a `Cu*` glob would miss this.
         "CUsersAliceRepo",
         # A different drive/dir: D:\repos\proj -> Dreposproj. No `Cu`/`CUsers`
         # prefix at all; only structural (under ~/.reflexio) detection catches it.
@@ -4576,7 +4576,7 @@ def test_smart_install_redirects_reflexio_stray_copies_to_stable_root(
     copy_dirname: str,
 ) -> None:
     """Regression: a host can expose CLAUDE_PLUGIN_ROOT as a cwd-derived copy
-    physically under ~/.reflexio (e.g. ``CUsers...`` on Windows, issue #65).
+    physically under ~/.reflexio (e.g. ``CUsers...`` on Windows).
     Installing .venv/node_modules there duplicates the full runtime per
     project; smart-install must instead use the stable plugin root recorded in
     ~/.reflexio/plugin-root. Detection is structural (any plugin dir under
@@ -4723,7 +4723,7 @@ def test_vendor_release_is_npm_only() -> None:
     developer = (REPO_ROOT / "DEVELOPER.md").read_text()
 
     assert "release-npm:" in makefile
-    # claude-smart is npm-only: its own PyPI wheel publish (uvx) was removed.
+    # claude-smart is npm-only: it has no PyPI wheel publish (uvx).
     assert "publish-pypi" not in makefile
     assert "check-pypi-compatible-reflexio" not in makefile
     # release-npm self-vendors the current (clean) reflexio submodule before publishing.

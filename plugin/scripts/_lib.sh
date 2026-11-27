@@ -388,7 +388,7 @@ claude_smart_canonical_dir() {
 # symlink, whose `pwd -P` resolves to a cache dir *outside* ~/.reflexio
 # (~/.claude, ~/.codex, or the npm global). So any plugin root that resolves
 # to a descendant of ~/.reflexio is a stray host-made copy — e.g. the Windows
-# cwd-derived `CUsers...` directories from issue #65 — that we must not
+# cwd-derived `CUsers...` directories — that we must not
 # bootstrap a heavy .venv/node_modules into.
 #
 # Detection is structural (descendant-of-~/.reflexio + plugin markers) rather
@@ -459,7 +459,7 @@ claude_smart_reexec_stable_plugin_root_if_needed() {
   [ -n "$stable" ] || return 0
   # `-f` not `-x`: we re-run via `exec bash <script>`, which does not need the
   # executable bit. Cached copies on Windows/NTFS often lack +x, so requiring
-  # -x would no-op the guard on the very platform issue #65 affects.
+  # -x would no-op the guard on the platform where stray copies appear.
   [ -f "$stable/scripts/$script" ] || return 0
   echo "[claude-smart] redirecting stray plugin copy under ~/.reflexio ($plugin_root) to stable root $stable" >&2
   shift 2
@@ -703,8 +703,7 @@ claude_smart_append_capped_log() {
 # detached daemon that inherits those fds never closes them, so the session
 # hangs on "running SessionStart hooks" forever. The hook's own timeout does
 # not save it -- the hook's shell has already exited while the daemon holds
-# the fds. This used to be POSIX callers' responsibility and one of them
-# (the backend spawn) did not do it: claude-smart#163.
+# the fds.
 _claude_smart_spawn_posix() {
   if command -v setsid >/dev/null 2>&1; then
     setsid nohup "$@" < /dev/null &

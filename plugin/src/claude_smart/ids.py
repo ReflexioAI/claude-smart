@@ -4,8 +4,8 @@ Two identifiers matter to reflexio:
 
 - ``session_id``: Claude Code's per-session id, passed in hook stdin. We
   forward it to reflexio's interaction ``session_id`` field so individual
-  turns remain attributable to their conversation, but it is no longer
-  the scope key for extracted preferences.
+  turns remain attributable to their conversation, but it is not the
+  scope key for extracted preferences.
 - ``project_id``: a stable, cross-session name for the project. We use
   this as reflexio's ``user_id`` for preferences, so user preferences
   extracted in one session are visible to every later session in the

@@ -852,7 +852,7 @@ def test_stop_retries_read_when_transcript_not_yet_flushed(
 ) -> None:
     """Race: Stop fires before Claude Code's final text write is readable.
 
-    Regression guard for the documented race in ``_read_last_assistant_text``
+    Regression guard for the documented race in ``_load_transcript_with_retry``
     — first scan sees a tool-only tail because the final ``type: text`` entry
     hasn't hit the page cache yet. The retry must pick up the text instead
     of persisting an empty Assistant record.

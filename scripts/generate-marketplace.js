@@ -31,8 +31,8 @@ function main() {
   if (!Array.isArray(manifest.plugins) || manifest.plugins.length === 0) {
     throw new Error(`${TEMPLATE} declares no plugins`);
   }
-  // package.json is the single source of version truth; `make bump` no longer
-  // rewrites this manifest because it does not exist until pack time.
+  // package.json is the single source of version truth; `make bump` does not
+  // rewrite this manifest because it does not exist until pack time.
   for (const plugin of manifest.plugins) {
     plugin.version = version;
   }

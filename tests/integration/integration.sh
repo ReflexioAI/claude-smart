@@ -302,7 +302,7 @@ stage_setup_hook() {
     cat "$HOME/.claude-smart/install-failed" >&2 || true
     fail "smart-install.sh wrote install-failed marker"
   fi
-  # smart-install.sh now spawns dashboard-build.sh detached so the install
+  # smart-install.sh spawns dashboard-build.sh detached so the install
   # hook returns immediately. Wait up to 10 minutes for the build pid file
   # to clear AND .next/ to appear before failing.
   local build_pid_file="$HOME/.claude-smart/dashboard-build.pid"

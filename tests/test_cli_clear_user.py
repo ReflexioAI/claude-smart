@@ -1,10 +1,9 @@
 """Tests for ``claude_smart.cli.cmd_clear_user``.
 
 These tests exercise the per-user-scoped clear command in isolation
-from any real reflexio server. The companion ``ReflexioClient.clear_user_data``
-method ships in a separate reflexio PR, so we inject a fake ``reflexio``
-module into ``sys.modules`` to keep the CLI's late import resolvable
-while remaining fully under the test's control.
+from any real reflexio server. A fake ``reflexio`` module is injected into
+``sys.modules`` so the CLI's late import resolves to a client fully under the
+test's control.
 """
 
 from __future__ import annotations
