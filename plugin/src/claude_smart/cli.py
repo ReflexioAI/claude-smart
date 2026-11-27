@@ -990,8 +990,6 @@ def cmd_clear_user(args: argparse.Namespace) -> int:
             url_endpoint=_resolve_reflexio_url(),
             api_key=_resolve_reflexio_api_key(),
         )
-        # The companion reflexio PR adds ``clear_user_data``; keep the
-        # CLI buildable until both sides ship together.
         response = client.clear_user_data(user_id)  # pyright: ignore[reportAttributeAccessIssue]
     except Exception as exc:  # noqa: BLE001 — surface backend failure verbatim.
         sys.stderr.write(f"error: clear-user failed: {exc}\n")

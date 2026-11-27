@@ -494,10 +494,9 @@ def test_append_concurrent_writes_do_not_corrupt_jsonl(session_dir) -> None:
 class TestWirePayloadContract:
     """The wire dict must contain only fields the server's model accepts.
 
-    ``unpublished_slice`` used to build the payload with a denylist, so buffer
-    bookkeeping rode along. ``user_id`` was harmless (the server treats it as a
-    benign request-level key and does not warn), but ``synthesised_by`` was
-    reported, and a denylist rots every time a hook adds a record key.
+    ``unpublished_slice`` builds the payload from an allowlist: with a
+    denylist, buffer bookkeeping such as ``synthesised_by`` rides along, and a
+    denylist rots every time a hook adds a record key.
     """
 
     def test_bookkeeping_keys_never_reach_the_wire(self):
@@ -529,9 +528,9 @@ class TestWirePayloadContract:
         not caught up to yet is correct — the server accepts it, and an older
         server merely reports it as unrecognised.
 
-        Equality broke CI for exactly that reason: the pinned PyPI 0.2.28 has
-        no ``retrieved_learnings``, which this plugin has been sending (and the
-        server accepting) for some time. What would be a real bug is the other
+        Equality would fail for exactly that reason whenever the pinned
+        release lags behind a field this plugin already sends and the server
+        accepts. What would be a real bug is the other
         direction — a field the installed model declares that the allowlist
         omits, because the slicer would then silently drop it.
         """
@@ -548,8 +547,8 @@ class TestWirePayloadContract:
         """A literal `created_at` in the buffer must not reach the wire.
 
         The field is in the model-contract set (it is a real InteractionData
-        field), so filtering on that set alone let it through. Only `ts` was
-        tested, which could not catch this. Backdating an interaction hides it
+        field), so filtering on that set alone would let it through, and a
+        test of `ts` alone cannot catch that. Backdating an interaction hides it
         from the extractor permanently — see `_WIRE_FIELDS`.
         """
         _, turns = state.unpublished_slice(
@@ -565,9 +564,9 @@ class TestWirePayloadContract:
     def test_buffer_timestamp_is_not_sent(self):
         """`created_at` must stay off the wire.
 
-        Carrying the buffer's `ts` across was implemented and reverted: the
-        extractor bookmark is keyed on interaction `created_at`, so a batch
-        recovered after the bookmark moved was stored and then never extracted
+        Carrying the buffer's `ts` across would lose data: the extractor
+        bookmark is keyed on interaction `created_at`, so a batch recovered
+        after the bookmark moved would be stored and then never extracted
         — permanent silent loss of learning data on the offline-recovery path
         this buffer exists for. The server stamping drain time is the lesser
         evil until ingest ordering stops depending on caller-supplied time.

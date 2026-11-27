@@ -121,11 +121,11 @@ def _inject_claude_smart(
 
     adapter = Adapter()
     # Use production publish() so user_id == project_id == agent_version.
-    # An earlier version of this harness passed user_id=session_id directly
-    # to the underlying client, which stored profiles under a different key
-    # than the one search_profiles(project_id=...) reads — making every
-    # captured profile invisible to retrieval. Going through the adapter
-    # mirrors the production hook's wiring exactly.
+    # Passing user_id=session_id directly to the underlying client would
+    # store profiles under a different key than the one
+    # search_profiles(project_id=...) reads — making every captured profile
+    # invisible to retrieval. Going through the adapter mirrors the
+    # production hook's wiring exactly.
     ok = adapter.publish(
         session_id=session_id,
         project_id=str(project_dir),

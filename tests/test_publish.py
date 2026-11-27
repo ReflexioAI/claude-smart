@@ -238,8 +238,8 @@ def test_success_does_not_hide_turn_appended_during_publish(session_dir) -> None
         {
             "role": "Assistant",
             "content": "second",
-            # `user_id` is buffer bookkeeping and is no longer put on the
-            # wire (it is sent once at the request level). `created_at` is
+            # `user_id` is buffer bookkeeping and is not put on the wire
+            # (it is sent once at the request level). `created_at` is
             # deliberately not sent either — see state.unpublished_slice.
             "retrieved_learnings": [{"kind": "profile", "learning_id": "p2"}],
         }
@@ -1352,7 +1352,7 @@ def test_unversioned_frozen_loads_recover_without_reintroducing_the_wire_field(
 
 
 def test_replay_of_stored_batch_with_citations_recovers(session_dir, tmp_path):
-    """Incident 2b8bc393: a stored request with citations wedged the session."""
+    """Replaying a stored request with citations must not wedge the session."""
     _append_cited_turn("cited")
     client = _StoredOnceClient()
     adapter = Adapter(url="https://example.com")

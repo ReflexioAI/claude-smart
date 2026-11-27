@@ -73,7 +73,7 @@ def test_codex_hook_loads_managed_reflexio_env_and_skips_backend_start() -> None
     )
     assert "loadReflexioEnv();" in script
     # Backend start (including the remote-REFLEXIO_URL skip) is delegated to
-    # backend-service.sh; codex-hook.js no longer decides locally.
+    # backend-service.sh; codex-hook.js does not decide locally.
     assert "function reflexioUrlIsRemote()" not in script
     assert "[script, action]" in script
     assert "backend-service.sh" in script

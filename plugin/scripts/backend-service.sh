@@ -985,7 +985,7 @@ case "$CMD" in
       --backend-host "${CLAUDE_SMART_BACKEND_HOST:-127.0.0.1}"
     # The runner streams the backend's own output into "$LOG_FILE" through the
     # capped appender. Its own fds are closed by claude_smart_spawn_detached so
-    # a long-lived daemon cannot hold the hook's stdout -- claude-smart#163.
+    # a long-lived daemon cannot hold the hook's stdout.
     claude_smart_spawn_detached bash "$HERE/backend-log-runner.sh" \
       "$LOG_FILE" "$LOG_MAX_BYTES" -- \
       env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \

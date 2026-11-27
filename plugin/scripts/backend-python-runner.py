@@ -136,8 +136,8 @@ def pin_legacy_sqlite_db_path(
             prepare_instance is None or os.environ.get(LEGACY_ORG_ENV)
         ):
             # Old bundles require the selector, and older dotenv templates
-            # can supply the standalone default. The former launcher always
-            # replaced that value for Claude Smart.
+            # can supply the standalone default, which this launcher replaces
+            # for Claude Smart.
             os.environ[LEGACY_ORG_ENV] = org_id
 
         port = (

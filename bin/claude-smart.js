@@ -57,7 +57,7 @@ const CODEX_MARKETPLACE_DISPLAY_NAME = "ReflexioAI";
 const CODEX_PLUGIN_ID = `claude-smart@${CODEX_MARKETPLACE_NAME}`;
 const OPENCODE_BARE_PLUGIN_SPEC = "claude-smart";
 const OPENCODE_CONFIG_NAMES = ["opencode.json", "opencode.jsonc"];
-// Pre-#85 installs kept claude-smart's managed settings here. It is also the
+// Older installs kept claude-smart's managed settings here. It is also the
 // env file of any other Reflexio tool on the machine, so it is only ever read
 // for a one-time migration (see captureInstallSnapshot), never written.
 const LEGACY_REFLEXIO_ENV_PATH = join(homedir(), ".reflexio", ".env");
@@ -547,7 +547,7 @@ function opencodeGlobalConfigDir() {
 
 // Every config file OpenCode reads for the selected scope, existing or not.
 // OpenCode merges all of them rather than picking one, so a claude-smart entry
-// in any of them is loaded. Mirrors the Python CLI's _opencode_scope_config_paths.
+// in any of them is loaded.
 function opencodeScopeConfigPaths(args = [], cwd = process.cwd()) {
   const roots = parseGlobalFlag(args) ? [opencodeGlobalConfigDir()] : [cwd, join(cwd, ".opencode")];
   return roots.flatMap((root) => OPENCODE_CONFIG_NAMES.map((name) => join(root, name)));
@@ -1353,7 +1353,7 @@ function uniquePackagePath(packageRoot, prefix) {
 const pendingPreviousPackages = new Map();
 
 // Capture marker/root recovery and prior service context before preparation.
-// Workers no longer rewrite saved HOST, so configuration needs no compensation.
+// Workers do not rewrite saved HOST, so configuration needs no compensation.
 // A leftover failure marker would suppress the restored working hooks.
 let installStateSnapshot = null;
 
@@ -2003,8 +2003,8 @@ async function runServiceWithProgress(pluginRoot, scriptName, subcommand, envOve
 
 function installInventory(options = {}) {
   const args = options.global ? ["--global"] : options.local ? ["--local"] : [];
-  // Loader file or a config reference: installs since the plugins-directory
-  // loader write no config entry, so the config alone no longer proves anything.
+  // Loader file or a config reference: the plugins-directory loader writes no
+  // config entry, so the config alone cannot prove an install.
   let openCodeInstalled = false;
   try {
     openCodeInstalled = scopeHasClaudeSmart(args) === true;
@@ -4469,8 +4469,7 @@ function tomlDottedQuoted(name) {
 }
 
 function setTomlFeature(feature, value) {
-  // Minimal port of `_set_toml_feature` in plugin/src/claude_smart/cli.py:
-  // ensures `[features]\n<feature> = <bool>\n` is present in
+  // Ensures `[features]\n<feature> = <bool>\n` is present in
   // ~/.codex/config.toml, replacing any prior value for the same key.
   const desired = `${feature} = ${value ? "true" : "false"}`;
   const sectionRe = /^\s*\[([^\]]+)\]\s*(?:#.*)?$/;
@@ -4873,7 +4872,7 @@ function receivePreparedInstallSettings() {
 function renderSharedClaudeHooks(path, pluginRoot, readOnly) {
   const manifest = JSON.parse(readFileSync(path, "utf8"));
   if (readOnly) removePublishHooks(manifest);
-  // Setup was the standalone dependency installer. These hooks only launch
+  // Setup is the standalone dependency installer. These hooks only launch
   // the prepared runtime and do not republish account selection.
   delete manifest.hooks.Setup;
   for (const blocks of Object.values(manifest.hooks)) {

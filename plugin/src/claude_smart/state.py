@@ -580,15 +580,12 @@ def unpublished_slice(
         if role not in {"User", "Assistant"}:
             continue
 
-        # Allowlist, not denylist. This used to drop four known keys and pass
-        # everything else through, so buffer-internal bookkeeping (``user_id``,
-        # ``synthesised_by``, ``id``, ``kind``, ...) rode along onto the wire.
-        # The server discards unknown keys, and now reports them: it treats
-        # `user_id` as a benign request-level key, but `synthesised_by` was
-        # warned about on every session-end anchor. More importantly a denylist
-        # rots every time a hook adds a record key, and a stricter server would
-        # turn that rot into a publish failure this plugin's adapter swallows
-        # without advancing its watermark.
+        # Allowlist, not denylist: buffer-internal bookkeeping (``user_id``,
+        # ``synthesised_by``, ``id``, ``kind``, ...) must not ride onto the
+        # wire. The server discards unknown keys and reports them. More
+        # importantly a denylist rots every time a hook adds a record key, and
+        # a stricter server would turn that rot into a publish failure this
+        # plugin's adapter swallows without advancing its watermark.
         turn = {key: value for key, value in record.items() if key in _WIRE_FIELDS}
         turn["role"] = role
         # NOTE: deliberately does NOT send `created_at`. Carrying the buffer's
