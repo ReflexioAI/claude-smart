@@ -1040,6 +1040,11 @@ machines; the default local installation has no API authentication. The value
 can be exported or stored in `~/.claude-smart/.env`; an empty value uses the
 loopback default. Managed Reflexio connections do not start this backend.
 
+The backend starts a guided runtime with its prepared interpreter. Setup owns
+the installed package, so rerun `npx claude-smart setup` if a guided runtime
+fails the vendored Reflexio check. Standalone installs can still repair their
+vendored package with `uv` before starting the backend.
+
 ### Dashboard sources in packaged installs
 
 `npm run build` first runs `scripts/prepare-tailwind-sources.cjs`. It prepends

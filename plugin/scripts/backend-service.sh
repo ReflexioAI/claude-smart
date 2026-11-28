@@ -591,9 +591,9 @@ prepare_backend_launch_environment() {
   export CLAUDE_SMART_REFLEXIO_VENDOR_ROOT="$VENDORED_REFLEXIO_FOR_PYTHON"
 }
 
-# Repair the vendored install if its version drifted, then prove this plugin
-# can import its own bundled Reflexio. Callers run this before any action that
-# would stop or replace a running service.
+# Verify the vendored install before stopping or replacing a running service.
+# Setup owns repairs for guided generations. Standalone installs can repair
+# their vendored package here before validating it.
 preflight_bundled_reflexio_runtime() {
   preflight_failure="$VENDOR_PREFLIGHT_FAILURE"
   model_preflight_failure=0
@@ -795,7 +795,7 @@ ensure_vendored_reflexio_active() {
   [ -f "$vendor/pyproject.toml" ] || return 0
   plugin_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
   [ -x "$plugin_python" ] || return 0
-  if "$plugin_python" -P - "$vendor/pyproject.toml" <<'PY' >/dev/null 2>&1; then
+  if "$plugin_python" -I - "$vendor/pyproject.toml" <<'PY' >/dev/null 2>&1; then
 import importlib.metadata
 import re
 import sys
@@ -813,6 +813,11 @@ except importlib.metadata.PackageNotFoundError:
 raise SystemExit(0 if installed == expected else 1)
 PY
     return 0
+  fi
+  if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
+    claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
+      "[claude-smart] backend: prepared Reflexio install needs repair; rerun npx claude-smart setup"
+    return 1
   fi
   claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
     "[claude-smart] backend: repairing vendored Reflexio install before start"
@@ -911,8 +916,9 @@ case "$CMD" in
     # Everything above only accepts an existing healthy backend; everything
     # below stops or replaces one. The bundled-runtime checks sit on that
     # boundary: if this plugin cannot run its own backend, report that without
-    # tearing down a backend that is currently serving.
-    if ! command -v uv >/dev/null 2>&1; then
+    # tearing down a backend that is currently serving. Only the standalone
+    # repair branch needs uv; startup uses the prepared interpreter.
+    if [ ! -f "$PLUGIN_ROOT/guide-prepared-runtime" ] && ! command -v uv >/dev/null 2>&1; then
       if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
         claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[claude-smart] backend: uv not on PATH; starting installer in background"
         CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
