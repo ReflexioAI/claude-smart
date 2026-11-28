@@ -5822,14 +5822,41 @@ def test_prepared_backend_only_setup_can_repair_the_vendored_package(
         plugin,
         "#!/bin/sh\n"
         'case "$*" in\n'
-        f"  *vendor/reflexio/pyproject.toml) exit {int(not vendor_matches)} ;;\n"
+        f'  "-I "*vendor/reflexio/pyproject.toml) exit {int(not vendor_matches)} ;;\n'
+        "  *vendor/reflexio/pyproject.toml) exit 1 ;;\n"
         '  *backend-python-runner.py*" --check-learning-model") exit 0 ;;\n'
         '  *backend-python-runner.py*) touch "$HOME/backend-started" ;;\n'
         "esac\n"
         "exit 0\n",
     )
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
+    path = _minimal_path(
+        tmp_path,
+        "awk",
+        "bash",
+        "cat",
+        "cksum",
+        "cut",
+        "date",
+        "dirname",
+        "env",
+        "grep",
+        "head",
+        "mkdir",
+        "mktemp",
+        "nohup",
+        "readlink",
+        "rm",
+        "rmdir",
+        "sed",
+        "setsid",
+        "tail",
+        "touch",
+        "tr",
+        "uname",
+        "wc",
+    )
+    bin_dir = Path(path)
+    (bin_dir / "python3").symlink_to(sys.executable)
     for name in ("lsof", "sleep"):
         _write_executable(bin_dir / name, "#!/bin/sh\nexit 0\n")
     _write_executable(bin_dir / "curl", "#!/bin/sh\nexit 22\n")
@@ -5838,9 +5865,7 @@ def test_prepared_backend_only_setup_can_repair_the_vendored_package(
             bin_dir / "uv",
             '#!/bin/sh\ntouch "$HOME/uv-called"\nexit 0\n',
         )
-    env = _backend_service_env(
-        tmp_path, bin_dir, port, PATH=f"{bin_dir}:/usr/bin:/bin", SHELL=""
-    )
+    env = _backend_service_env(tmp_path, bin_dir, port, PATH=path, SHELL="")
     env["CLAUDE_SMART_BACKEND_AUTOSTART"] = "1"
     env["CLAUDE_SMART_BOOTSTRAPPING"] = "1"
     if vendor_matches:
@@ -5862,7 +5887,7 @@ def test_prepared_backend_only_setup_can_repair_the_vendored_package(
             if marker.exists():
                 break
             time.sleep(0.025)
-        assert marker.exists()
+        assert marker.exists(), (tmp_path / ".claude-smart/backend.log").read_text()
     else:
         assert not marker.exists()
         assert not (tmp_path / "uv-called").exists()

@@ -795,7 +795,7 @@ ensure_vendored_reflexio_active() {
   [ -f "$vendor/pyproject.toml" ] || return 0
   plugin_python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
   [ -x "$plugin_python" ] || return 0
-  if "$plugin_python" -P - "$vendor/pyproject.toml" <<'PY' >/dev/null 2>&1; then
+  if "$plugin_python" -I - "$vendor/pyproject.toml" <<'PY' >/dev/null 2>&1; then
 import importlib.metadata
 import re
 import sys
