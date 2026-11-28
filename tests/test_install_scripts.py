@@ -3552,7 +3552,14 @@ def test_cli_sh_self_heals_when_claude_smart_unimportable() -> None:
 
 
 @pytest.mark.parametrize(
-    "state", ["self-heal", "ready-with-marker", "broken-with-marker", "guided-no-uv"]
+    "state",
+    [
+        "self-heal",
+        "ready-with-marker",
+        "broken-with-marker",
+        "guided-no-uv",
+        "standalone-no-uv",
+    ],
 )
 def test_cli_sh_uses_selected_runtime_readiness(tmp_path: Path, state: str) -> None:
     plugin_root = tmp_path / "plugin"
@@ -3588,10 +3595,11 @@ def test_cli_sh_uses_selected_runtime_readiness(tmp_path: Path, state: str) -> N
     ]:
         executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
 
-    if state in {"ready-with-marker", "guided-no-uv"}:
+    if state in {"ready-with-marker", "guided-no-uv", "standalone-no-uv"}:
         (tmp_path / "import-ok").touch()
-    if state == "guided-no-uv":
+    if state.endswith("-no-uv"):
         (bin_dir / "uv").unlink()
+    if state == "guided-no-uv":
         (plugin_root / "guide-prepared-runtime").write_text("runtime-AbCd12")
     marker = tmp_path / ".claude-smart/install-failed"
     if state != "self-heal":
@@ -3599,6 +3607,13 @@ def test_cli_sh_uses_selected_runtime_readiness(tmp_path: Path, state: str) -> N
         marker.write_text("another installer failed")
     env = _isolated_env(tmp_path)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    if state.endswith("-no-uv"):
+        for command in ("bash", "dirname"):
+            tool = shutil.which(command)
+            assert tool
+            (bin_dir / command).symlink_to(tool)
+        env.update(PATH=str(bin_dir), SHELL="")
+        assert shutil.which("uv", path=env["PATH"]) is None
     result = subprocess.run(
         [str(scripts / "cli.sh"), "show"],
         env=env,
@@ -6305,9 +6320,9 @@ def test_codex_session_start_hook_has_install_recovery_budget() -> None:
 
 
 @pytest.mark.parametrize("guided", [False, True])
-@pytest.mark.parametrize("failure", ["missing-uv", "broken-import"])
+@pytest.mark.parametrize("runtime_state", ["healthy-no-uv", "broken", "broken-no-uv"])
 def test_hook_entry_self_heal_keeps_identity_in_the_dispatcher(
-    tmp_path: Path, failure: str, guided: bool
+    tmp_path: Path, runtime_state: str, guided: bool
 ) -> None:
     scripts = tmp_path / "plugin" / "scripts"
     scripts.mkdir(parents=True)
@@ -6344,11 +6359,12 @@ def test_hook_entry_self_heal_keeps_identity_in_the_dispatcher(
         (tools / tool).symlink_to(target)
     python = scripts.parent / ".venv/bin/python"
     python.parent.mkdir(parents=True)
-    if failure == "broken-import":
+    if runtime_state == "broken":
         _write_executable(tools / "uv", "#!/bin/bash\nexit 22\n")
+    ready = runtime_state == "healthy-no-uv"
+    if not ready:
         _write_executable(python, "#!/bin/bash\nexit 1\n")
     else:
-        # A healthy import makes the missing-uv branch the only repair path.
         _write_executable(
             python,
             "#!/bin/bash\n"
@@ -6373,8 +6389,8 @@ def test_hook_entry_self_heal_keeps_identity_in_the_dispatcher(
     )
     assert json.loads(result.stdout) == {"continue": True}
     record = tmp_path / "repair-result"
-    if guided:
-        assert (tmp_path / "dispatched").exists() == (failure == "missing-uv")
+    if guided or ready:
+        assert (tmp_path / "dispatched").exists() == ready
         assert not (tmp_path / ".claude-smart" / "install.log").exists()
         assert not record.exists()
         return
@@ -6392,10 +6408,12 @@ def test_prepared_runtime_refuses_direct_dependency_install(tmp_path: Path) -> N
     shutil.copy2(LIB, scripts / "_lib.sh")
     shutil.copy2(SMART_INSTALL, scripts / "smart-install.sh")
     (root / "guide-prepared-runtime").write_text("runtime-AbCd12")
+    env = {"HOME": str(tmp_path), "PATH": os.defpath}
+    login_probe = _trace_login_shell(tmp_path, env)
     result = subprocess.run(
         ["bash", str(scripts / "smart-install.sh")],
         cwd=tmp_path,
-        env={"HOME": str(tmp_path), "PATH": os.defpath},
+        env=env,
         capture_output=True,
         text=True,
         timeout=10,
@@ -6404,33 +6422,42 @@ def test_prepared_runtime_refuses_direct_dependency_install(tmp_path: Path) -> N
     assert result.returncode == 1
     assert "Rerun npx claude-smart setup" in result.stderr
     assert not (tmp_path / ".claude-smart").exists()
+    assert not login_probe.exists()
 
 
+def _trace_login_shell(tmp_path: Path, env: dict[str, str]) -> Path:
+    login_shell = tmp_path / "login-shell"
+    _write_executable(
+        login_shell,
+        '#!/bin/sh\nprintf called > "$HOME/login-probed"\nprintf %s "$PATH"\n',
+    )
+    env.update(SHELL=str(login_shell), CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS="2")
+    return tmp_path / "login-probed"
+
+
+@pytest.mark.parametrize("entrypoint", [HOOK_ENTRY, CLI_SH])
 @pytest.mark.parametrize("has_git_binding", [False, True])
-def test_prepared_hook_skips_login_shell_with_setup_git_binding(
-    tmp_path: Path, has_git_binding: bool
+def test_prepared_commands_skip_login_shell_with_setup_git_binding(
+    tmp_path: Path, entrypoint: Path, has_git_binding: bool
 ) -> None:
     root = tmp_path / "plugin"
     scripts = root / "scripts"
     scripts.mkdir(parents=True)
     shutil.copy2(LIB, scripts / "_lib.sh")
-    shutil.copy2(HOOK_ENTRY, scripts / "hook_entry.sh")
+    script = scripts / entrypoint.name
+    shutil.copy2(entrypoint, script)
     (root / "guide-prepared-runtime").write_text("runtime-AbCd12")
     if has_git_binding:
         (root / "guide-git").write_text(json.dumps(shutil.which("git")))
     _write_fake_plugin_python(
         root, '#!/bin/sh\n[ "$1" = -P ] || printf \'{"continue":true}\\n\'\n'
     )
-    login_shell = tmp_path / "login-shell"
-    _write_executable(
-        login_shell,
-        '#!/bin/sh\nprintf called > "$HOME/login-probed"\nprintf %s "$PATH"\n',
-    )
     env = _isolated_env(tmp_path)
-    env.update(SHELL=str(login_shell), CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS="2")
+    login_probe = _trace_login_shell(tmp_path, env)
+    arguments = ["codex", "stop"] if entrypoint == HOOK_ENTRY else ["status"]
 
     result = subprocess.run(
-        ["/bin/bash", str(scripts / "hook_entry.sh"), "codex", "stop"],
+        ["/bin/bash", str(script), *arguments],
         env=env,
         capture_output=True,
         text=True,
@@ -6439,7 +6466,7 @@ def test_prepared_hook_skips_login_shell_with_setup_git_binding(
     )
 
     assert json.loads(result.stdout) == {"continue": True}
-    assert (tmp_path / "login-probed").exists() is not has_git_binding
+    assert login_probe.exists() is not has_git_binding
 
 
 def test_install_complete_requires_importable_hook_package() -> None:
@@ -9881,6 +9908,7 @@ def test_prepared_dashboard_repair_does_not_mutate_generation(tmp_path, entrypoi
     for name in ("_lib.sh", entrypoint):
         shutil.copy2(LIB.with_name(name), scripts / name)
     env = _isolated_env(tmp_path)
+    login_probe = _trace_login_shell(tmp_path, env)
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         env["DASHBOARD_PORT"] = str(listener.getsockname()[1])
@@ -9898,6 +9926,7 @@ def test_prepared_dashboard_repair_does_not_mutate_generation(tmp_path, entrypoi
     else:
         assert result.returncode == 1
         diagnostic = result.stderr
+        assert not login_probe.exists()
     assert "npx claude-smart setup" in diagnostic
     assert not list((root / "dashboard").iterdir())
 

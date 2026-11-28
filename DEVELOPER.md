@@ -356,9 +356,11 @@ integration. No guided-config marker is required. Removal can complete with brok
 settings and report that shared-service refresh needs repair instead of guessing.
 
 The guide records the Git executable it discovers for each prepared runtime.
-This keeps project IDs stable in linked worktrees even when the hook starts
-with a smaller PATH. If Git moves to a location available only from your login
-profile, rerun setup to discover the new location.
+Hooks and slash commands use it to keep project IDs stable in linked worktrees
+when the host starts them with a smaller PATH. If Git moves to a location
+available only from your login profile, rerun setup to discover it. Standalone
+hooks and slash commands request installation repair when their Python module
+cannot load.
 
 ### Claude Code
 

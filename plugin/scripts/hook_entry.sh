@@ -86,26 +86,6 @@ PY
   fi
 fi
 
-if [ ! -f "$PLUGIN_ROOT/guide-prepared-runtime" ] && ! command -v uv >/dev/null 2>&1; then
-  # Self-heal from skipped setup without blocking the first prompt. The
-  # installer and Setup hook own dependency bootstrap; hooks only schedule
-  # recovery and return so SessionStart stays lightweight.
-  if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" = "1" ]; then
-    claude_smart_emit_continue "$HOST"
-    exit 0
-  fi
-  if [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
-    mkdir -p "$STATE_DIR"
-    CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
-      bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
-      >>"$STATE_DIR/install.log" 2>&1 || true
-  fi
-  if ! command -v uv >/dev/null 2>&1; then
-    claude_smart_emit_continue "$HOST"
-    exit 0
-  fi
-fi
-
 ensure_hook_package_importable() {
   if claude_smart_python_imports "$PLUGIN_ROOT" claude_smart.hook; then
     return 0
