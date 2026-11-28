@@ -157,6 +157,7 @@ const COPYTREE_IGNORE_NAMES = new Set([
   "node_modules",
   ".next",
   "guide-git",
+  "guide-native-launcher",
 ]);
 function shouldCopyPath(src) {
   const base = src.split(/[\\/]/).pop() || "";
@@ -3056,6 +3057,14 @@ async function prepareGuidedRuntime(config, options, settings, baseline) {
     if (!existsSync(join(pluginRoot, "scripts", "guided-command.sh")))
       throw new Error("The guided runtime command launcher is missing");
     const tools = await bootstrapPluginRuntime(pluginRoot, { settings });
+    const nativeHost = settings.request.updates[NATIVE_MODEL_ENV]?.split("/", 3)[1];
+    if (isBundledBackendUrl(settings.request.updates.REFLEXIO_URL) &&
+        [HOST_CLAUDE_CODE, HOST_CODEX].includes(nativeHost) && !settings.cliPath?.trim()) {
+      const code = await runChecked(pluginPythonPath(pluginRoot), [
+        "-I", "-m", "claude_smart.native_selection", "--record-default-launcher", nativeHost,
+      ], { env: { ...runtimeEnv(), CLAUDE_SMART_CLI_PATH: "" } });
+      if (code !== 0) throw new Error("Could not record the prepared native launcher.");
+    }
     const git = resolveCommand(isWindows() ? ["git.exe", "git"] : ["git"]);
     if (git) {
       writeFileSync(join(pluginRoot, "guide-git"), JSON.stringify(resolve(git)), {

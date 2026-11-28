@@ -1892,6 +1892,11 @@ def test_first_local_activation_uses_explicit_provider_without_inventing_saved_h
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert dotenv_values(selected)["REFLEXIO_NATIVE_CLI_MODEL"] == "local-cli/codex"
+    (runtime,) = (tmp_path / ".claude-smart/guided-runtimes").glob("runtime-*/plugin")
+    assert json.loads((runtime / "guide-native-launcher").read_text()) == {
+        "host": "codex",
+        "executable": str(tmp_path / "fake-bin/codex"),
+    }
 
 
 @pytest.mark.parametrize(

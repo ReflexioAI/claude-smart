@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -20,6 +21,60 @@ if TYPE_CHECKING:
 
 class LearningSelectionError(ValueError):
     """Value-redacted refusal before settings or running services are replaced."""
+
+
+_PREPARED_LAUNCHER = "guide-native-launcher"
+
+
+def record_default_launcher(host: str) -> None:
+    """Record the SDK's default executable in the runtime that owns this venv."""
+    from reflexio.server.llm.providers.native_cli_provider import _resolve_cli_path
+
+    venv = Path(sys.prefix)
+    if host not in {"claude-code", "codex"} or venv.name != ".venv":
+        raise LearningSelectionError(
+            "A prepared native launcher requires the setup interpreter."
+        )
+    executable = _resolve_cli_path(host)
+    if executable is None:
+        return
+    receipt = venv.parent / _PREPARED_LAUNCHER
+    fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump({"host": host, "executable": executable}, stream)
+
+
+def use_prepared_launcher(plugin_root: Path, host: str) -> None:
+    """Reach a setup-resolved default without changing explicit SDK overrides."""
+    if os.environ.get("CLAUDE_SMART_CLI_PATH", "").strip():
+        return
+    receipt = plugin_root / _PREPARED_LAUNCHER
+    if not (plugin_root / "guide-prepared-runtime").is_file() or not receipt.is_file():
+        return
+
+    guidance = "The prepared native launcher is unavailable. Rerun Claude Smart setup."
+    try:
+        binding = json.loads(receipt.read_text(encoding="utf-8"))
+        if binding["host"] != host:
+            return
+        executable = Path(binding["executable"])
+        if not executable.is_absolute():
+            raise ValueError
+    except (OSError, ValueError, KeyError, TypeError):
+        raise LearningSelectionError(guidance) from None
+
+    from reflexio.server.llm.providers.native_cli_provider import _resolve_cli_path
+
+    original = os.environ.get("PATH")
+    os.environ["PATH"] = os.pathsep.join(
+        (str(executable.parent), original) if original else (str(executable.parent),)
+    )
+    if _resolve_cli_path(host) != str(executable):
+        if original is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = original
+        raise LearningSelectionError(guidance)
 
 
 def admit_native_learning_target() -> NativeModelRef | None:
@@ -135,7 +190,10 @@ def _has_saved_sonnet_pin() -> bool:
 
 def main() -> int:
     try:
-        admit_native_learning_target()
+        if len(sys.argv) == 3 and sys.argv[1] == "--record-default-launcher":
+            record_default_launcher(sys.argv[2])
+        else:
+            admit_native_learning_target()
     except LearningSelectionError as exc:
         print(exc, file=sys.stderr)
         return 3
