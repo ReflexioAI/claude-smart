@@ -587,7 +587,7 @@ preflight_bundled_reflexio_runtime() {
   ensure_vendored_reflexio_active || return 1
   prepare_backend_import_context
   verify_bundled_reflexio_import "$backend_python" "$backend_pythonpath" "$VENDORED_REFLEXIO_FOR_PYTHON" || return 1
-  if selection_error=$(PYTHONPATH="$backend_pythonpath" "$backend_python" "$HERE/backend-python-runner.py" --check-learning-model 2>/dev/null); then
+  if selection_error=$(cd "$PLUGIN_ROOT" && PYTHONPATH="$backend_pythonpath" "$backend_python" "$HERE/backend-python-runner.py" --check-learning-model 2>/dev/null); then
     return 0
   else
     if [ "$?" -eq 3 ]; then

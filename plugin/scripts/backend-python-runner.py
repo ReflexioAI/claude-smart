@@ -21,6 +21,21 @@ LEGACY_ORG_ENV = "REFLEXIO_DEFAULT_ORG_ID"
 LEGACY_MODEL_ENV = "CLAUDE_SMART_CLI_MODEL"
 
 
+def check_openclaw_configuration() -> None:
+    """Run the bundled SDK's read-only startup admission before replacement."""
+    if find_spec("reflexio.server.llm._openclaw_config") is None:
+        return
+    from reflexio.cli.env_loader import load_local_launch_env
+    from reflexio.server.llm._openclaw_config import openclaw_executable
+    from reflexio.server.llm._provider_errors import ProviderRequestGuardError
+
+    try:
+        load_local_launch_env(provision=False)
+        openclaw_executable()
+    except (ProviderRequestGuardError, ValueError) as exc:
+        raise LearningSelectionError(str(exc)) from None
+
+
 def prepare_native_sdk_environment() -> None:
     """Publish admitted intent only in the backend child and its workers."""
     target = admit_native_learning_target()
@@ -247,6 +262,7 @@ def main() -> int:
     if sys.argv[1:] == ["--check-learning-model"]:
         try:
             prepare_native_sdk_environment()
+            check_openclaw_configuration()
         except LearningSelectionError as exc:
             print(exc)
             return 3
