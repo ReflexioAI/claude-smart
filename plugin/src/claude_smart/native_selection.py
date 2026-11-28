@@ -57,7 +57,13 @@ def _resolve_opencode(selection: str | None = None) -> str:
 
     choices = (selection,) if selection is not None else ("opencode",)
     if selection is None and os.name == "nt":
-        choices = ("opencode.cmd", "opencode.exe", "opencode")
+        choices = (
+            str(Path(directory).absolute() / name)
+            for directory in os.get_exec_path()
+            if directory
+            for name in ("opencode.cmd", "opencode.exe", "opencode")
+            if (Path(directory) / name).is_file()
+        )
     for choice in choices:
         try:
             executable = resolve_executable(choice)

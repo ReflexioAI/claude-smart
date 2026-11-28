@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from claude_smart import cli
 
 
@@ -353,15 +352,15 @@ def test_windows_installer_resolves_configured_opencode_name(
         [
             node,
             "-e",
-            "console.log(require(process.argv[1]).resolveOpenCodePath(process.argv[2]))",
+            "console.log(require(process.argv[1]).resolveOpenCodePath(process.argv[2], process.argv[3]))",
             str(installer),
             search_dir.name if worker_path else "",
+            configured,
         ],
         cwd=tmp_path,
         env={
             **os.environ,
             "CLAUDE_SMART_TEST_PLATFORM": "win32",
-            "CLAUDE_SMART_OPENCODE_PATH": configured,
             "PATH": "" if worker_path else search_dir.name,
         },
         text=True,

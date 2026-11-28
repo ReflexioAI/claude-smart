@@ -858,7 +858,10 @@ function resolveOpenCodePath(fallbackPath = "", explicitPath = "") {
     return resolveWindowsOpenCodePath(explicitPath, searchPath);
   }
   const opencodePath = isExecutableFile(explicitPath) ? explicitPath : explicitPath.trim();
-  if (opencodePath) return isExecutableFile(opencodePath) ? opencodePath : null;
+  if (opencodePath && (isAbsolute(opencodePath) || basename(opencodePath) !== opencodePath)) {
+    return isExecutableFile(opencodePath) ? opencodePath : null;
+  }
+  if (opencodePath) return resolvePosixOpenCodeCommand(opencodePath);
   return resolvePosixOpenCodeCommand("opencode");
 }
 
@@ -2124,7 +2127,7 @@ function savedInstallConfiguration(captured) {
   };
 }
 
-function planInstallSettings(config, captured) {
+function planInstallSettings(config, captured, saved) {
   const values = {
     REFLEXIO_URL: config.url || localBackendUrl(),
     REFLEXIO_API_KEY: config.apiKey || "",
@@ -2182,6 +2185,9 @@ function planInstallSettings(config, captured) {
   return {
     request,
     cliPath: config.backend === "local" ? config.cliPath : null,
+    inactiveOpenCodeLauncher: config.backend === "managed" && saved.provider === HOST_OPENCODE
+      ? savedOpenCodeLauncher(saved.cliPath)
+      : undefined,
     adoptedOpenCodePath: config.adoptedOpenCodePath,
     expectedOpenCodeExecutable: config.expectedOpenCodeExecutable,
     migrated: Boolean(
@@ -2607,6 +2613,20 @@ function isOpenCodeBridgeLauncher(launcher) {
   return /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(launcher || ""));
 }
 
+function savedOpenCodeLauncher(selection) {
+  const root = activePluginRoot();
+  if (!root || !existsSync(join(root, "guide-prepared-runtime"))) return undefined;
+  const receipt = ["guide-native-launcher", "guide-local-opencode-launcher"]
+    .map((name) => join(root, name)).find(existsSync);
+  if (!receipt) return undefined;
+  const binding = JSON.parse(readFileSync(receipt, "utf8"));
+  if (!binding?.selection || binding.host !== HOST_OPENCODE || binding.selection !== selection) return undefined;
+  if (typeof binding.executable !== "string" || !isAbsolute(binding.executable)) {
+    throw new Error("The previous OpenCode executable could not be verified.");
+  }
+  return binding;
+}
+
 function adoptSavedOpenCodePath(config, saved, withWorkerPath) {
   if (process.env[CLAUDE_SMART_OPENCODE_PATH_ENV]?.trim()) {
     throw new Error(
@@ -2625,19 +2645,10 @@ function adoptSavedOpenCodePath(config, saved, withWorkerPath) {
   }
   config.retireSavedOpenCodePath = previous !== undefined;
   if (!bridge && config.cliPath) {
-    const root = activePluginRoot();
-    if (root && existsSync(join(root, "guide-prepared-runtime"))) {
-      const receipt = join(root, "guide-native-launcher");
-      if (existsSync(receipt)) {
-        const binding = JSON.parse(readFileSync(receipt, "utf8"));
-        if (binding?.host === HOST_OPENCODE && binding.selection === config.cliPath) {
-          if (typeof binding.executable !== "string" || !isAbsolute(binding.executable)) {
-            throw new Error("The previous OpenCode executable could not be verified.");
-          }
-          config.adoptedOpenCodePath = config.cliPath;
-          config.expectedOpenCodeExecutable = binding.executable;
-        }
-      }
+    const binding = savedOpenCodeLauncher(config.cliPath);
+    if (binding) {
+      config.adoptedOpenCodePath = binding.selection;
+      config.expectedOpenCodeExecutable = binding.executable;
     }
     return;
   }
@@ -3106,6 +3117,11 @@ async function prepareGuidedRuntime(config, options, settings, baseline) {
         "--record-adopted-opencode-launcher", settings.adoptedOpenCodePath, ...expected,
       ], { env: runtimeEnv() });
       if (code !== 0) throw new Error("Could not verify the previous OpenCode executable.");
+    } else if (settings.inactiveOpenCodeLauncher) {
+      writeFileSync(join(pluginRoot, "guide-local-opencode-launcher"), JSON.stringify(settings.inactiveOpenCodeLauncher), {
+        flag: "wx",
+        mode: 0o600,
+      });
     } else if (isBundledBackendUrl(settings.request.updates.REFLEXIO_URL) &&
         [HOST_CLAUDE_CODE, HOST_CODEX].includes(nativeHost) && !settings.cliPath?.trim()) {
       const code = await runChecked(pluginPythonPath(pluginRoot), [
@@ -3204,7 +3220,7 @@ async function runGuidedCommand(command, args) {
         }
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
         const { baseline } = await resumeGuidedShutdown({ replaceUnready: true });
-        const settings = planInstallSettings(config, captured);
+        const settings = planInstallSettings(config, captured, saved);
         // Recovery keeps the previous generation intact until registration is
         // complete, even when the user retries with just one host.
         if (config.backend === "local" || multipleHosts || baseline || pathEntryExists(GUIDED_SELECTED_RUNTIME)) {

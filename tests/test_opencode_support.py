@@ -859,6 +859,53 @@ def test_public_confirmation_adopts_the_saved_opencode_executable(
     assert "CLAUDE_SMART_OPENCODE_PATH" not in values
     assert not (tmp_path / ".reflexio/.env").exists()
 
+    decoy = tmp_path / "alternate"
+    decoy.mkdir()
+    _fake_opencode_path(decoy)
+    repeated = _run_public_setup(
+        tmp_path,
+        "--backend",
+        "local",
+        "--provider",
+        "opencode",
+        env_extra={
+            "PATH": os.pathsep.join(
+                [str(tmp_path / "fake-bin"), str(decoy), os.environ["PATH"]]
+            )
+        },
+    )
+    assert repeated.returncode == 0, repeated.stderr
+    assert dotenv_values(selected, interpolate=False)["CLAUDE_SMART_CLI_PATH"] == str(
+        executable
+    )
+
+    def current_runtime() -> Path:
+        runtimes = tmp_path / ".claude-smart/guided-runtimes"
+        return runtimes / (runtimes / "selected").read_text().strip() / "plugin"
+
+    original = json.loads((current_runtime() / "guide-native-launcher").read_text())
+    managed = _run_public_setup(
+        tmp_path,
+        "--backend",
+        "managed",
+        "--api-key-env",
+        "MANAGED_FIXTURE_KEY",
+        env_extra={"MANAGED_FIXTURE_KEY": "test-only"},
+    )
+    assert managed.returncode == 0, managed.stderr
+    assert not (current_runtime() / "guide-native-launcher").exists()
+    assert (
+        json.loads((current_runtime() / "guide-local-opencode-launcher").read_text())
+        == original
+    )
+
+    local = _run_public_setup(tmp_path, "--backend", "local")
+    assert local.returncode == 0, local.stderr
+    assert (
+        json.loads((current_runtime() / "guide-native-launcher").read_text())
+        == original
+    )
+
 
 def test_prepared_open_code_binding_uses_the_adopted_executable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -936,6 +983,7 @@ def test_opencode_setup_preserves_saved_path_if_exported_replacement_is_invalid(
         ("named-executable", ""),
         ("empty-path-entry", ""),
         ("blank-opencode-path", ""),
+        ("saved-bare-opencode-path", ""),
         ("session-opencode-override", "Move the exported CLAUDE_SMART_OPENCODE_PATH"),
         ("symlink-parent", ""),
         ("known-bridge", "before replacing the custom bridge"),
@@ -993,6 +1041,8 @@ def test_public_setup_checks_opencode_variant_before_publication(
         saved += 'CLAUDE_SMART_OPENCODE_VARIANT="" # use provider default\n'
     if case == "blank-opencode-path":
         saved += 'CLAUDE_SMART_OPENCODE_PATH=""\n'
+    if case == "saved-bare-opencode-path":
+        saved += "CLAUDE_SMART_OPENCODE_PATH=opencode\n"
     if case == "relative-opencode":
         saved += 'CLAUDE_SMART_OPENCODE_PATH="./opencode"\n'
     saved_executable = tmp_path / "account-opencode"
@@ -1075,7 +1125,6 @@ def test_public_setup_checks_opencode_variant_before_publication(
             if directory and shutil.which("opencode", path=directory) is None
         ]
         env["PATH"] = os.pathsep.join([str(tmp_path / "fake-bin"), *caller_path])
-    # The explicit provider choice resets a custom executable by design.
     provider_args = (
         [] if custom or case == "retired-whitespace" else ["--provider", "opencode"]
     )
