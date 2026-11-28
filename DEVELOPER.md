@@ -360,7 +360,8 @@ Hooks and slash commands use it to keep project IDs stable in linked worktrees
 when the host starts them with a smaller PATH. If Git moves to a location
 available only from your login profile, rerun setup to discover it. Standalone
 hooks and slash commands request installation repair when their Python module
-cannot load.
+cannot load. Standalone repair refreshes unusable Git bindings and records the
+service tools it resolves, including Node, npm, uv, and native host launchers.
 
 For the bundled backend, setup also records the default Claude Code or Codex
 launcher it resolves. The backend uses that executable for the matching native

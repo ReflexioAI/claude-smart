@@ -17,6 +17,7 @@ if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
   exit 1
 fi
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "smart-install.sh" "$@"
+claude_smart_append_service_paths "$PLUGIN_ROOT"
 claude_smart_prepend_astral_bins
 claude_smart_prepend_node_bins
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
@@ -506,50 +507,74 @@ fi
 
 preflight_supported_runtime_platform
 
-record_standalone_git() {
-  local executable python receipt
-  receipt="$PLUGIN_ROOT/guide-git"
-  executable="$(command -v git)" || return 0
+record_standalone_tools() {
+  local python runtime_root
   python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
+  runtime_root="$PLUGIN_ROOT"
   if claude_smart_is_windows; then
-    executable="$(claude_smart_to_windows_path "$executable")"
+    runtime_root="$(claude_smart_to_windows_path "$runtime_root")"
   fi
-  "$python" -I - "$receipt" "$executable" <<'PY'
+  "$python" -I - "$runtime_root" <<'PY'
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-receipt, executable = sys.argv[1:]
-executable_path = Path(executable).absolute()
-if os.name == "nt" and not executable_path.is_file():
-    executable_path = executable_path.with_suffix(".exe")
+root = Path(sys.argv[1])
+git_receipt = root / "guide-git"
+service_receipt = root / "guide-service-paths"
 
 
-def usable(path: object) -> bool:
-    return (
-        isinstance(path, str)
-        and Path(path).is_absolute()
-        and Path(path).is_file()
-        and os.access(path, os.X_OK)
-    )
+def working_git(path: object) -> bool:
+    if not isinstance(path, str) or not Path(path).is_absolute():
+        return False
+    try:
+        result = subprocess.run(
+            [path, "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=3, check=False,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
-if not usable(str(executable_path)):
-    raise SystemExit(0)
-receipt_path = Path(receipt)
+def record(receipt: Path, content: bytes, stage: Path) -> None:
+    candidate = stage / receipt.name
+    candidate.write_bytes(content)
+    candidate.chmod(0o600)
+    candidate.replace(receipt)
+
+
+# Inherited PATH keeps precedence over these standalone setup fallbacks.
+tools = ("node", "npm", "uv", "claude", "codex", "opencode", "curl", "lsof",
+         "ps", "open", "xdg-open", "powershell", "pwsh", "taskkill", "tasklist", "netstat")
+selected = set()
+for tool in tools:
+    executable = shutil.which(tool)
+    if executable and Path(executable).is_absolute():
+        selected.add(Path(executable).parent)
+directories = dict.fromkeys(
+    str(Path(directory))
+    for directory in os.get_exec_path()
+    if Path(directory) in selected
+)
+
+git = shutil.which("git")
 try:
-    if usable(json.loads(receipt_path.read_text(encoding="utf-8"))):
-        raise SystemExit(0)
+    previous_git = json.loads(git_receipt.read_text(encoding="utf-8"))
 except (OSError, ValueError):
-    pass
+    previous_git = None
+
 try:
-    with tempfile.TemporaryDirectory(prefix=".service-paths-", dir=receipt_path.parent) as stage:
-        staged_receipt = Path(stage) / receipt_path.name
-        staged_receipt.write_text(json.dumps(str(executable_path)), encoding="utf-8")
-        staged_receipt.chmod(0o600)
-        staged_receipt.replace(receipt_path)
+    with tempfile.TemporaryDirectory(prefix=".service-paths-", dir=root) as work:
+        stage = Path(work)
+        content = b"".join(os.fsencode(directory) + b"\0" for directory in directories)
+        record(service_receipt, content, stage)
+        if git != previous_git and not working_git(previous_git) and working_git(git):
+            record(git_receipt, json.dumps(git).encode("utf-8"), stage)
 except OSError:
     # Some standalone installs run from a read-only package directory.
     pass
@@ -558,7 +583,7 @@ PY
 
 if (claude_smart_source_reflexio_env; install_complete); then
   claude_smart_source_reflexio_env
-  record_standalone_git
+  record_standalone_tools
   verify_windows_local_embedding_runtime
   start_backend_service
   claude_smart_emit_continue
@@ -763,7 +788,7 @@ if [ "${CLAUDE_SMART_DEFER_SERVICES:-}" != "1" ] &&
   echo "[claude-smart] WARNING: failed to set ~/.reflexio/plugin-root symlink — slash commands may not resolve" >&2
 fi
 
-record_standalone_git
+record_standalone_tools
 start_backend_service
 
 write_success_marker

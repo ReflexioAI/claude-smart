@@ -1458,28 +1458,32 @@ def test_in_place_claude_install_refreshes_dashboard_tools(tmp_path: Path) -> No
     receipt.write_bytes(os.fsencode(tmp_path / "stale") + b"\0")
     node_tools = tmp_path / "node-tools"
     npm_tools = tmp_path / "npm-tools"
-    node_tools.mkdir()
-    npm_tools.mkdir()
-    _write_executable(node_tools / "node", "#!/bin/sh\nexit 0\n")
+    uv_tools = tmp_path / "uv-tools"
+    native_tools = tmp_path / "native-tools"
+    for directory in (node_tools, npm_tools, uv_tools, native_tools):
+        directory.mkdir()
+    _write_executable(node_tools / "node", "#!/bin/sh\nprintf 'setup-node\\n'\n")
+    _write_executable(npm_tools / "node", "#!/bin/sh\nexit 127\n")
     _write_executable(npm_tools / "npm", "#!/bin/sh\nnode --version\n")
+    _write_executable(uv_tools / "uv", "#!/bin/sh\nexit 0\n")
+    _write_executable(native_tools / "codex", "#!/bin/sh\nexit 0\n")
+    setup_path = (
+        tmp_path / "fake-bin",
+        node_tools,
+        npm_tools,
+        uv_tools,
+        native_tools,
+    )
     result = _run_fake_claude_code_install(
         tmp_path,
         stable_package,
-        {
-            "PATH": os.pathsep.join(
-                (
-                    str(tmp_path / "fake-bin"),
-                    str(node_tools),
-                    str(npm_tools),
-                    os.environ["PATH"],
-                )
-            )
-        },
+        {"PATH": os.pathsep.join([*map(str, setup_path), os.environ["PATH"]])},
     )
     assert result.returncode == 0, result.stderr
     fallback_paths = receipt.read_bytes().split(b"\0")
-    assert os.fsencode(node_tools) in fallback_paths
-    assert os.fsencode(npm_tools) in fallback_paths
+    assert fallback_paths[: len(setup_path)] == [
+        os.fsencode(directory) for directory in setup_path
+    ]
     assert os.fsencode(tmp_path / "stale") not in fallback_paths
 
     scripts = plugin / "scripts"
@@ -1505,10 +1509,9 @@ def test_in_place_claude_install_refreshes_dashboard_tools(tmp_path: Path) -> No
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert (
-        "dashboard build: complete"
-        in (tmp_path / ".claude-smart/dashboard.log").read_text()
-    )
+    log = (tmp_path / ".claude-smart/dashboard.log").read_text()
+    assert "setup-node" in log
+    assert "dashboard build: complete" in log
 
 
 @pytest.mark.parametrize("managed", [True, False])
@@ -3595,7 +3598,7 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert (
         "if (claude_smart_source_reflexio_env; install_complete); then\n"
         "  claude_smart_source_reflexio_env\n"
-        "  record_standalone_git\n"
+        "  record_standalone_tools\n"
         "  verify_windows_local_embedding_runtime\n"
         "  start_backend_service"
     ) in smart_install
@@ -4508,18 +4511,27 @@ def test_smart_install_refreshes_stale_lock_before_retrying_sync(
     ]
 
 
-@pytest.mark.parametrize("stale_git", [False, True])
+@pytest.mark.parametrize("prior_git", ["none", "moved", "broken", "working"])
 def test_smart_install_locked_sync_success_does_not_refresh_lock(
     tmp_path: Path,
-    stale_git: bool,
+    prior_git: str,
 ) -> None:
     plugin_root, smart_install, env = _prepare_smart_install_sync_fixture(
         tmp_path, mode="fresh"
     )
     git = tmp_path / "bin/git"
     _write_executable(git, "#!/bin/sh\nexit 0\n")
-    if stale_git:
-        (plugin_root / "guide-git").write_text(json.dumps(str(tmp_path / "old/git")))
+    old_git = tmp_path / "old/git"
+    if prior_git != "none":
+        (plugin_root / "guide-git").write_text(json.dumps(str(old_git)))
+    if prior_git in {"broken", "working"}:
+        old_git.parent.mkdir()
+        status = 127 if prior_git == "broken" else 0
+        _write_executable(old_git, f"#!/bin/sh\nexit {status}\n")
+    native_tools = tmp_path / "native-tools"
+    native_tools.mkdir()
+    _write_executable(native_tools / "codex", "#!/bin/sh\nexit 0\n")
+    env["PATH"] = str(native_tools) + os.pathsep + env["PATH"]
     login_probe = _trace_login_shell(tmp_path, env)
 
     result = subprocess.run(
@@ -4535,7 +4547,11 @@ def test_smart_install_locked_sync_success_does_not_refresh_lock(
     assert not (tmp_path / ".claude-smart" / "install-failed").exists()
     assert (tmp_path / ".claude-smart" / "install-complete").exists()
     assert (plugin_root / "uv.lock").read_text() == "locked\n"
-    assert Path(json.loads((plugin_root / "guide-git").read_text())) == git
+    assert Path(json.loads((plugin_root / "guide-git").read_text())) == (
+        old_git if prior_git == "working" else git
+    )
+    stored_paths = (plugin_root / "guide-service-paths").read_bytes().split(b"\0")
+    assert os.fsencode(native_tools) in stored_paths
     assert not login_probe.exists()
     assert (tmp_path / "uv.log").read_text().splitlines()[:1] == [
         "uv sync --locked --python 3.12 --quiet",

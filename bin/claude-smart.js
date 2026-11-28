@@ -4265,20 +4265,26 @@ function recordRuntimeTools(pluginRoot) {
       mode: 0o600,
     });
   }
-  // Shell setup can use Node and npm from the setup terminal. Keep their
-  // directories available when the host later launches with a smaller PATH.
+  // Keep the setup terminal's service and repair tools available when the
+  // host later launches with a smaller PATH. Inherited PATH still wins.
   const servicePaths = new Set();
-  const npm = resolveCommand(isWindows() ? ["npm.cmd", "npm.exe", "npm"] : ["npm"]);
-  if (npm) servicePaths.add(dirname(resolve(npm)));
-  for (const name of ["node", "curl", "lsof", "ps", "open", "xdg-open", "powershell",
-                      "pwsh", "taskkill", "tasklist", "netstat"]) {
-    const executable = resolveCommand(isWindows() ? [`${name}.exe`, name] : [name]);
-    if (executable) servicePaths.add(dirname(resolve(executable)));
+  for (const name of ["node", "npm", "uv", "claude", "codex", "opencode", "curl", "lsof",
+                      "ps", "open", "xdg-open", "powershell", "pwsh", "taskkill", "tasklist",
+                      "netstat"]) {
+    const executable = resolveCommand(
+      isWindows() ? [name + ".exe", name + ".cmd", name + ".bat", name] : [name],
+    );
+    if (executable && isAbsolute(executable)) servicePaths.add(dirname(resolve(executable)));
   }
+  const pathOrder = new Set(
+    (process.env.PATH || "").split(isWindows() ? ";" : ":")
+      .filter((directory) => isAbsolute(directory) && servicePaths.has(resolve(directory)))
+      .map((directory) => resolve(directory)),
+  );
   const stage = mkdtempSync(join(pluginRoot, ".service-paths-"));
   try {
     const receipt = join(stage, "guide-service-paths");
-    writeFileSync(receipt, [...servicePaths].map((directory) => directory + "\0").join(""), {
+    writeFileSync(receipt, [...pathOrder].map((directory) => directory + "\0").join(""), {
       mode: 0o600,
     });
     renameSync(receipt, join(pluginRoot, "guide-service-paths"));
