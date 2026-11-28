@@ -170,16 +170,17 @@ function resolveWindowsOpenCodePath(value, searchPath = process.env.PATH || "") 
   return match ? resolvePath(match) : null;
 }
 
-function configuredExecutable(value) {
-  if (process.platform === "win32") return resolveWindowsOpenCodePath(value);
-  return executableFile(value) ? value : value.trim();
-}
-
 function runOpenCode({ prompt, model, workDir }) {
-  const configured = process.env.CLAUDE_SMART_OPENCODE_PATH || "";
-  const opencodePath = configured.trim()
-    ? configuredExecutable(configured)
-    : commandPath(opencodeNames());
+  // The backend binds the actual executable before selecting this adapter
+  // for a Windows batch launcher. It is neither discovered nor saved here.
+  const bound = process.platform === "win32"
+    ? process.env._CLAUDE_SMART_NATIVE_OPENCODE_EXECUTABLE
+    : undefined;
+  if (bound && (!path.win32.isAbsolute(bound) ||
+      path.win32.parse(bound).root.length < 2 || !executableFile(bound))) {
+    throw new Error("The prepared OpenCode executable is unavailable");
+  }
+  const opencodePath = bound || commandPath(opencodeNames());
   if (!opencodePath) {
     throw new Error("opencode CLI not found on PATH");
   }
