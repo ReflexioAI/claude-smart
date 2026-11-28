@@ -380,15 +380,7 @@ def test_opencode_cli_bridge_translates_claude_contract(
     if shutil_which_node() is None:
         pytest.skip("node is not installed")
     bridge = REPO_ROOT / "plugin" / "scripts" / "opencode-claude-compat.js"
-    literal_path = modern and saved_model == "#high"
-    if literal_path and os.name == "nt":
-        pytest.skip("POSIX permits a filename with trailing whitespace")
-    if literal_path:
-        fake_opencode = tmp_path / "selected-open-code "
-    elif modern:
-        fake_opencode = tmp_path / "selected-open-code"
-    else:
-        fake_opencode = tmp_path / "opencode"
+    fake_opencode = tmp_path / "opencode"
     call_log = tmp_path / "calls.json"
     fake_opencode.write_text(
         f"""#!/usr/bin/env node
@@ -430,12 +422,6 @@ process.stdout.write(JSON.stringify({{
         **os.environ,
         "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
     }
-    if modern:
-        env["CLAUDE_SMART_OPENCODE_PATH"] = (
-            str(fake_opencode) if literal_path else f" {fake_opencode} "
-        )
-    else:
-        env.pop("CLAUDE_SMART_OPENCODE_PATH", None)
     for key, value in (
         ("CLAUDE_SMART_LEARNING_MODEL", saved_model),
         (
@@ -550,7 +536,7 @@ Object.defineProperty(process, "platform", { value: "win32" });
 process.cwd = () => "C:\\bridge-cwd";
 require("node:os").tmpdir = () => process.env.TEST_DIRECTORY;
 const fs = require("node:fs");
-const isFixture = (file) => file === process.env.CLAUDE_SMART_OPENCODE_PATH
+const isFixture = (file) => file === process.env.TEST_SELECTED_PATH
   || file === process.env.TEST_EXPECTED_PATH
   || file === require("node:path").join(process.env.TEST_SEARCH_ROOT, "opencode.exe");
 const exists = fs.existsSync;
@@ -564,7 +550,7 @@ fs.statSync = (file, ...args) => {
 };
 fs.accessSync = (file, ...args) => { if (!isFixture(file)) access(file, ...args); };
 require("node:child_process").spawnSync = (command, args, options) => {
-  if (probedPath !== (process.env.CLAUDE_SMART_OPENCODE_PATH === "opencode")) {
+  if (probedPath !== (process.env.TEST_SELECTED_PATH === "opencode")) {
     throw new Error("Only the bare extensionless command should probe PATH in this fixture");
   }
   const shell = process.env.TEST_SHELL === "1";
@@ -578,6 +564,13 @@ require("node:child_process").spawnSync = (command, args, options) => {
     stderr: "",
   };
 };
+const bridge = process.argv[1];
+const resolved = require(bridge).resolveWindowsOpenCodePath(process.env.TEST_SELECTED_PATH);
+if (resolved !== process.env.TEST_EXPECTED_PATH) {
+  throw new Error("OpenCode selection resolved to another executable");
+}
+process.env._CLAUDE_SMART_NATIVE_OPENCODE_EXECUTABLE = resolved;
+delete require.cache[require.resolve(bridge)];
 """
     )
     result = subprocess.run(
@@ -587,7 +580,7 @@ require("node:child_process").spawnSync = (command, args, options) => {
             "TEST_DIRECTORY": str(tmp_path),
             "TEST_SEARCH_ROOT": r"C:\selected-bin",
             "PATH": r"C:\selected-bin",
-            "CLAUDE_SMART_OPENCODE_PATH": selected_path,
+            "TEST_SELECTED_PATH": selected_path,
             "TEST_EXPECTED_PATH": expected_path,
             "TEST_SHELL": "1" if use_shell else "0",
             "CLAUDE_SMART_LEARNING_MODEL": "",
@@ -825,8 +818,7 @@ def test_node_installer_accepts_explicit_opencode_extraction_provider(
     script = (
         f"process.env.PATH = {json.dumps(str(tmp_path / 'empty'))};"
         "delete process.env.REFLEXIO_API_KEY;"
-        "delete process.env.CLAUDE_SMART_CLI_PATH;"
-        f"process.env.CLAUDE_SMART_OPENCODE_PATH = {json.dumps(str(fake_opencode))};"
+        f"process.env.CLAUDE_SMART_CLI_PATH = {json.dumps(str(fake_opencode))};"
         f"const installer = require({json.dumps(str(REPO_ROOT / 'bin' / 'claude-smart.js'))});"
         "process.stdout.write(String(installer.hasExtractionProvider()));"
     )
@@ -842,40 +834,188 @@ def test_node_installer_accepts_explicit_opencode_extraction_provider(
     assert result.stdout == "true"
 
 
-@pytest.mark.parametrize("saved", [False, True])
-def test_public_confirmation_preserves_or_discovers_opencode_path(
-    tmp_path: Path, saved: bool
+@pytest.mark.parametrize("alternate", ["managed", "custom-local"])
+def test_public_confirmation_adopts_the_saved_opencode_executable(
+    tmp_path: Path,
+    alternate: str,
 ) -> None:
     from tests.test_install_scripts import _run_public_setup
 
     executable = _fake_opencode_path(tmp_path)
     selected = tmp_path / ".claude-smart/.env"
-    if saved:
-        selected.parent.mkdir()
-        selected.write_text(
-            'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\n'
-            + f'CLAUDE_SMART_OPENCODE_PATH="{executable}"\nCLAUDE_SMART_OPENCODE_PATH="/stale/other"\n'
-        )
+    selected.parent.mkdir()
+    selected.write_text(
+        'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\n'
+        + f'CLAUDE_SMART_OPENCODE_PATH="{executable}"\nCLAUDE_SMART_OPENCODE_PATH="/stale/other"\n'
+    )
     result = _run_public_setup(
         tmp_path,
         "--backend",
         "local",
         "--provider",
         "opencode",
-        env_extra={} if saved else {"CLAUDE_SMART_OPENCODE_PATH": str(executable)},
     )
     assert result.returncode == 0, result.stderr
-    if saved:
-        # Existing caller-first duplicate rows retain their exact bytes/order.
-        assert (
-            f'CLAUDE_SMART_OPENCODE_PATH="{executable}"\n'
-            'CLAUDE_SMART_OPENCODE_PATH="/stale/other"\n'
-        ) in selected.read_text()
-    else:
-        assert dotenv_values(selected, interpolate=False)[
-            "CLAUDE_SMART_OPENCODE_PATH"
-        ] == str(executable)
+    values = dotenv_values(selected, interpolate=False)
+    assert values["CLAUDE_SMART_CLI_PATH"] == str(executable)
+    assert "CLAUDE_SMART_OPENCODE_PATH" not in values
     assert not (tmp_path / ".reflexio/.env").exists()
+
+    decoy = tmp_path / "alternate"
+    decoy.mkdir()
+    _fake_opencode_path(decoy)
+    repeated = _run_public_setup(
+        tmp_path,
+        "--backend",
+        "local",
+        "--provider",
+        "opencode",
+        env_extra={
+            "PATH": os.pathsep.join(
+                [str(tmp_path / "fake-bin"), str(decoy), os.environ["PATH"]]
+            )
+        },
+    )
+    assert repeated.returncode == 0, repeated.stderr
+    assert dotenv_values(selected, interpolate=False)["CLAUDE_SMART_CLI_PATH"] == str(
+        executable
+    )
+
+    def current_runtime() -> Path:
+        runtimes = tmp_path / ".claude-smart/guided-runtimes"
+        return runtimes / (runtimes / "selected").read_text().strip() / "plugin"
+
+    original = json.loads((current_runtime() / "guide-native-launcher").read_text())
+    if alternate == "managed":
+        switched = _run_public_setup(
+            tmp_path,
+            "--backend",
+            "managed",
+            "--api-key-env",
+            "MANAGED_FIXTURE_KEY",
+            env_extra={"MANAGED_FIXTURE_KEY": "test-only"},
+        )
+    else:
+        switched = _run_public_setup(
+            tmp_path,
+            "--backend",
+            "local",
+            "--url",
+            "http://localhost:18071/",
+        )
+    assert switched.returncode == 0, switched.stderr
+    assert not (current_runtime() / "guide-native-launcher").exists()
+    assert (
+        json.loads((current_runtime() / "guide-local-opencode-launcher").read_text())
+        == original
+    )
+
+    local = _run_public_setup(
+        tmp_path,
+        "--backend",
+        "local",
+        "--url",
+        "http://localhost:8071/",
+    )
+    assert local.returncode == 0, local.stderr
+    assert (
+        json.loads((current_runtime() / "guide-native-launcher").read_text())
+        == original
+    )
+
+
+@pytest.mark.parametrize("selection", ["default", "exported", "inconclusive-probe"])
+def test_setup_binds_opencode_without_a_model_variant(tmp_path: Path, selection: str):
+    from tests.test_install_scripts import _run_public_setup
+
+    tools = tmp_path / "relative-tools"
+    tools.mkdir()
+    executable = _fake_opencode_path(tools)
+    env = {
+        "PATH": os.pathsep.join(
+            ["relative-tools", str(tmp_path / "fake-bin"), os.environ["PATH"]]
+        )
+    }
+    if selection != "default":
+        env["CLAUDE_SMART_CLI_PATH"] = str(executable)
+    if selection == "inconclusive-probe":
+        executable.write_text("#!/bin/sh\nexit 1\n")
+    result = _run_public_setup(
+        tmp_path,
+        "--backend",
+        "local",
+        "--provider",
+        "opencode",
+        env_extra=env,
+    )
+    assert result.returncode == 0, result.stderr
+    values = dotenv_values(tmp_path / ".claude-smart/.env", interpolate=False)
+    assert values["CLAUDE_SMART_CLI_PATH"] == str(executable)
+    runtimes = tmp_path / ".claude-smart/guided-runtimes"
+    runtime = runtimes / (runtimes / "selected").read_text().strip() / "plugin"
+    receipt = runtime / "guide-native-launcher"
+    if selection == "inconclusive-probe":
+        assert not receipt.exists()
+    else:
+        assert json.loads(receipt.read_text()) == {
+            "host": "opencode",
+            "selection": str(executable),
+            "executable": str(executable),
+        }
+
+
+def test_prepared_open_code_binding_uses_the_adopted_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("reflexio.opencode_executable")
+    from claude_smart import native_selection
+    from reflexio.server.llm._native_model_ref import PLUGIN_OPENCODE_EXECUTABLE_ENV
+
+    if os.name == "nt":
+        pytest.skip("The package Windows executable parser has separate fixtures.")
+    selection = _fake_opencode_path(tmp_path)
+    monkeypatch.setattr(native_selection.sys, "prefix", str(tmp_path / ".venv"))
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(selection))
+    (tmp_path / "guide-prepared-runtime").write_text("test")
+
+    native_selection.record_adopted_opencode_launcher(str(selection))
+    native_selection.configure_opencode_launcher(tmp_path)
+    assert os.environ[PLUGIN_OPENCODE_EXECUTABLE_ENV] == str(selection)
+
+    receipt = tmp_path / "guide-native-launcher"
+    broken = json.loads(receipt.read_text())
+    broken["executable"] = str(tmp_path / "alternate")
+    receipt.write_text(json.dumps(broken))
+    with pytest.raises(
+        native_selection.LearningSelectionError, match="prepared OpenCode executable"
+    ):
+        native_selection.configure_opencode_launcher(tmp_path)
+
+
+def test_opencode_setup_preserves_saved_path_if_exported_replacement_is_invalid(
+    tmp_path: Path,
+) -> None:
+    from tests.test_install_scripts import _run_public_setup
+
+    executable = _fake_opencode_path(tmp_path)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = (
+        'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\n'
+        f'CLAUDE_SMART_OPENCODE_PATH="{executable}"\n'
+    )
+    selected.write_text(original)
+    result = _run_public_setup(
+        tmp_path,
+        "--backend",
+        "local",
+        "--provider",
+        "opencode",
+        env_extra={"CLAUDE_SMART_CLI_PATH": str(tmp_path / "missing")},
+    )
+    assert result.returncode != 0
+    assert "CLAUDE_SMART_CLI_PATH cannot be executed" in result.stderr
+    assert selected.read_text() == original
 
 
 @pytest.mark.parametrize(
@@ -900,12 +1040,13 @@ def test_public_confirmation_preserves_or_discovers_opencode_path(
         ("named-executable", ""),
         ("empty-path-entry", ""),
         ("blank-opencode-path", ""),
-        ("session-opencode-override", ""),
+        ("saved-bare-opencode-path", ""),
+        ("session-opencode-override", "Move the exported CLAUDE_SMART_OPENCODE_PATH"),
         ("symlink-parent", ""),
-        ("known-bridge", ""),
-        ("missing-bridge", "cannot be executed"),
+        ("known-bridge", "before replacing the custom bridge"),
+        ("missing-bridge", "before replacing the custom bridge"),
         ("relative-cli", "absolute CLAUDE_SMART_CLI_PATH"),
-        ("relative-opencode", "absolute CLAUDE_SMART_OPENCODE_PATH"),
+        ("relative-opencode", "absolute OpenCode executable path"),
     ],
 )
 def test_public_setup_checks_opencode_variant_before_publication(
@@ -957,6 +1098,10 @@ def test_public_setup_checks_opencode_variant_before_publication(
         saved += 'CLAUDE_SMART_OPENCODE_VARIANT="" # use provider default\n'
     if case == "blank-opencode-path":
         saved += 'CLAUDE_SMART_OPENCODE_PATH=""\n'
+    if case == "saved-bare-opencode-path":
+        saved += "CLAUDE_SMART_OPENCODE_PATH=opencode\n"
+    if case == "relative-opencode":
+        saved += 'CLAUDE_SMART_OPENCODE_PATH="./opencode"\n'
     saved_executable = tmp_path / "account-opencode"
     if case == "session-opencode-override":
         saved += f"CLAUDE_SMART_OPENCODE_PATH={saved_executable}\n"
@@ -1005,25 +1150,26 @@ def test_public_setup_checks_opencode_variant_before_publication(
         )
     selected.write_text(saved)
     env = {
-        "CLAUDE_SMART_OPENCODE_PATH": (
-            "./opencode" if case == "relative-opencode" else str(executable)
+        "PATH": os.pathsep.join(
+            [str(tmp_path / "fake-bin"), str(tmp_path), os.environ["PATH"]]
         )
     }
+    if case == "session-opencode-override":
+        env["CLAUDE_SMART_OPENCODE_PATH"] = str(executable)
     if case == "retired-process":
         env["CLAUDE_SMART_OPENCODE_VARIANT"] = "high"
     if case == "named-executable":
         env["PATH"] = os.pathsep.join(
             [str(tmp_path / "fake-bin"), str(tmp_path), os.environ["PATH"]]
         )
-    if case in {"empty-path-entry", "blank-opencode-path"}:
-        decoy = tmp_path / "decoy"
-        decoy.mkdir()
-        _fake_opencode_path(decoy)
+    if case in {"empty-path-entry", "blank-opencode-path", "saved-bare-opencode-path"}:
+        intended = tmp_path / "intended"
+        intended.mkdir()
+        executable = executable.rename(intended / "opencode")
+        _fake_opencode_path(tmp_path)
         env["PATH"] = os.pathsep.join(
-            ["", str(decoy), str(tmp_path / "fake-bin"), os.environ["PATH"]]
+            ["", str(intended), str(tmp_path / "fake-bin"), os.environ["PATH"]]
         )
-        if case == "blank-opencode-path":
-            del env["CLAUDE_SMART_OPENCODE_PATH"]
     if case in {"worker-default", "worker-named"}:
         worker_bin = tmp_path / ".local/bin"
         worker_bin.mkdir(parents=True)
@@ -1031,14 +1177,12 @@ def test_public_setup_checks_opencode_variant_before_publication(
         executable = worker_bin / "opencode"
         executable.write_text('#!/bin/sh\nexec opencode-test-help "$@"\n')
         executable.chmod(0o755)
-        env["CLAUDE_SMART_OPENCODE_PATH"] = ""
         caller_path = [
             directory
             for directory in os.environ["PATH"].split(os.pathsep)
             if directory and shutil.which("opencode", path=directory) is None
         ]
         env["PATH"] = os.pathsep.join([str(tmp_path / "fake-bin"), *caller_path])
-    # The explicit provider choice resets a custom executable by design.
     provider_args = (
         [] if custom or case == "retired-whitespace" else ["--provider", "opencode"]
     )
@@ -1062,22 +1206,21 @@ def test_public_setup_checks_opencode_variant_before_publication(
         values = dotenv_values(selected, interpolate=False)
         assert values["REFLEXIO_NATIVE_CLI_MODEL"] == f"local-cli/opencode/{model}"
         assert "CLAUDE_SMART_LEARNING_MODEL" not in values
-        if case in {"named-executable", "worker-named", "empty-path-entry"}:
+        if case in {
+            "named-executable",
+            "worker-named",
+            "empty-path-entry",
+            "blank-opencode-path",
+            "saved-bare-opencode-path",
+        }:
             selected_cli = values["CLAUDE_SMART_CLI_PATH"]
             assert selected_cli is not None
             assert Path(selected_cli) == executable
         if case == "symlink-parent":
             assert values["CLAUDE_SMART_CLI_PATH"] == str(cli)
-        if case in {
-            "blank-opencode-path",
-            "worker-default",
-            "session-opencode-override",
-        }:
-            selected_opencode = values["CLAUDE_SMART_OPENCODE_PATH"]
-            assert selected_opencode is not None
-            assert Path(selected_opencode) == (
-                saved_executable if case == "session-opencode-override" else executable
-            )
+        if case == "worker-default":
+            assert values["CLAUDE_SMART_CLI_PATH"] == str(executable)
+        assert "CLAUDE_SMART_OPENCODE_PATH" not in values
 
 
 def _fake_opencode_path(tmp_path: Path) -> Path:
@@ -1251,42 +1394,39 @@ def test_node_opencode_loader_conflict_restores_the_previous_package(
     assert config.read_text() == config_text
 
 
-def test_node_opencode_install_requires_opencode_cli_even_with_api_key(
-    tmp_path: Path,
-) -> None:
+def test_explicit_opencode_registration_does_not_require_a_learning_executable() -> (
+    None
+):
     node = shutil_which_node()
     if node is None:
         pytest.skip("node is not installed")
     assert node is not None
-    package_root = tmp_path / "_npx" / "abc" / "node_modules" / "claude-smart"
-    _write_minimal_node_package_root(package_root)
-    project = tmp_path / "project"
-    project.mkdir()
-    env = _isolated_installer_env(tmp_path)
-    empty_bin = tmp_path / "empty-bin"
-    empty_bin.mkdir()
-    env["PATH"] = f"{empty_bin}{os.pathsep}/bin{os.pathsep}/usr/bin"
-    env["REFLEXIO_API_KEY"] = "rk-test"
-    _seed_private_node_and_uv(env)
-
+    script = f"""
+const guide = require({json.dumps(str(REPO_ROOT / "bin/install-guide.js"))});
+const inventory = [{{host: "opencode", available: false, installed: false}}];
+const saved = {{backend: "managed", url: "https://managed.example/", apiKey: "fixture"}};
+const managed = guide.parseOptions(["--host", "opencode", "--backend", "managed"]);
+const local = guide.parseOptions(["--host", "opencode", "--backend", "local", "--provider", "opencode"]);
+(async () => {{
+  const registration = await guide.configure(managed, inventory, saved, undefined, false);
+  if (registration.hosts.join() !== "opencode") throw new Error("Wrong loader scope");
+  try {{
+    await guide.configure(local, inventory, {{}}, undefined, false);
+  }} catch (error) {{
+    if (error.message.includes("Background learning provider OpenCode is not available")) return;
+    throw error;
+  }}
+  throw new Error("Unauthenticated native learning executable was accepted");
+}})().catch((error) => {{ console.error(error.message); process.exitCode = 1; }});
+"""
     result = subprocess.run(
-        [
-            node,
-            str(package_root / "bin" / "claude-smart.js"),
-            "install",
-            "--host",
-            "opencode",
-        ],
-        cwd=project,
-        env=env,
+        [node, "-e", script],
         text=True,
         capture_output=True,
         check=False,
     )
 
-    assert result.returncode == 1
-    assert "OpenCode CLI not found on PATH" in result.stderr
-    assert not (project / "opencode.json").exists()
+    assert result.returncode == 0, result.stderr
 
 
 def test_node_opencode_install_requires_bash_on_windows(

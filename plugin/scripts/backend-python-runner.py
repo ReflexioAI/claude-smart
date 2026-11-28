@@ -12,6 +12,7 @@ from pathlib import Path
 from claude_smart.native_selection import (
     LearningSelectionError,
     admit_native_learning_target,
+    configure_opencode_launcher,
     use_prepared_launcher,
 )
 
@@ -55,17 +56,8 @@ def prepare_native_sdk_environment() -> None:
     target = admit_native_learning_target()
     if target is not None and target.host in {"claude-code", "codex"}:
         use_prepared_launcher(Path(__file__).parent.parent, target.host)
-    if (
-        target is not None
-        and target.host == "opencode"
-        and not os.environ.get("CLAUDE_SMART_CLI_PATH", "").strip()
-    ):
-        adapter = Path(__file__).parent / (
-            "opencode-claude-compat.cmd"
-            if os.name == "nt"
-            else "opencode-claude-compat"
-        )
-        os.environ["CLAUDE_SMART_CLI_PATH"] = str(adapter)
+    if target is not None and target.host == "opencode":
+        configure_opencode_launcher(Path(__file__).parent.parent)
     os.environ["REFLEXIO_NATIVE_CLI_MODEL"] = target.reference if target else ""
     # The SDK reloads dotenv in workers; empty masks never modify the saved file.
     os.environ["CLAUDE_SMART_USE_LOCAL_CLI"] = ""

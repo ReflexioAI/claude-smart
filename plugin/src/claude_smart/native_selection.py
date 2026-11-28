@@ -26,22 +26,137 @@ class LearningSelectionError(ValueError):
 _PREPARED_LAUNCHER = "guide-native-launcher"
 
 
+def _write_prepared_launcher(values: dict[str, str]) -> None:
+    venv = Path(sys.prefix)
+    if venv.name != ".venv":
+        raise LearningSelectionError(
+            "A prepared native launcher requires the setup interpreter."
+        )
+    receipt = venv.parent / _PREPARED_LAUNCHER
+    fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(values, stream)
+
+
 def record_default_launcher(host: str) -> None:
     """Record the SDK's default executable in the runtime that owns this venv."""
     from reflexio.server.llm.providers.native_cli_provider import _resolve_cli_path
 
-    venv = Path(sys.prefix)
-    if host not in {"claude-code", "codex"} or venv.name != ".venv":
+    if host not in {"claude-code", "codex"}:
         raise LearningSelectionError(
-            "A prepared native launcher requires the setup interpreter."
+            "A prepared native launcher requires a known host."
         )
     executable = _resolve_cli_path(host)
     if executable is None:
         return
-    receipt = venv.parent / _PREPARED_LAUNCHER
-    fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        json.dump({"host": host, "executable": executable}, stream)
+    _write_prepared_launcher({"host": host, "executable": executable})
+
+
+def _resolve_opencode(selection: str | None = None) -> str:
+    from reflexio.opencode_executable import OpenCodeCLIError, resolve_executable
+
+    choices = (selection,) if selection is not None else ("opencode",)
+    if selection is None and os.name == "nt":
+        choices = (
+            str(Path(directory).absolute() / name)
+            for directory in os.get_exec_path()
+            if directory
+            for name in ("opencode.cmd", "opencode.exe", "opencode")
+            if (Path(directory) / name).is_file()
+        )
+    for choice in choices:
+        try:
+            executable = resolve_executable(choice)
+        except OpenCodeCLIError:
+            continue
+        if os.name == "nt" and executable.suffix.lower() not in {
+            ".exe",
+            ".cmd",
+            ".bat",
+        }:
+            raise LearningSelectionError(
+                "Select the OpenCode executable in Claude Smart setup."
+            )
+        if (
+            os.name == "nt"
+            and executable.suffix.lower() in {".cmd", ".bat"}
+            and any(character in str(executable) for character in '%!^&|<>"\r\n')
+        ):
+            raise LearningSelectionError(
+                "Select a Windows OpenCode batch launcher whose path can be quoted safely."
+            )
+        return str(executable)
+    raise LearningSelectionError(
+        "OpenCode could not be selected. Confirm its executable in Claude Smart setup."
+    )
+
+
+def record_adopted_opencode_launcher(
+    selection: str, expected_executable: str | None = None
+) -> None:
+    """Carry the old package transport contract for the exact admitted executable."""
+    if not Path(selection).is_absolute():
+        raise LearningSelectionError(
+            "Confirm the absolute OpenCode executable in Claude Smart setup."
+        )
+    executable = _resolve_opencode(selection)
+    if expected_executable is not None and expected_executable != executable:
+        raise LearningSelectionError(
+            "The selected OpenCode launcher changed. Confirm the executable in Claude Smart setup."
+        )
+    _write_prepared_launcher(
+        {
+            "host": "opencode",
+            "selection": selection,
+            "executable": executable,
+        }
+    )
+
+
+def configure_opencode_launcher(plugin_root: Path) -> None:
+    """Use the SDK launcher with the expected wire format for this installation."""
+    from reflexio.server.llm._native_model_ref import PLUGIN_OPENCODE_EXECUTABLE_ENV
+
+    os.environ.pop(PLUGIN_OPENCODE_EXECUTABLE_ENV, None)
+    selection = os.environ.get("CLAUDE_SMART_CLI_PATH", "")
+    receipt = plugin_root / _PREPARED_LAUNCHER
+    if selection.strip():
+        if (
+            not (plugin_root / "guide-prepared-runtime").is_file()
+            or not receipt.is_file()
+        ):
+            return
+        try:
+            binding = json.loads(receipt.read_text(encoding="utf-8"))
+            bound_selection = binding.get("selection")
+            if binding.get("host") != "opencode" or not isinstance(
+                bound_selection, str
+            ):
+                return
+            if selection != bound_selection and (
+                os.name != "nt" or Path(selection) != Path(bound_selection)
+            ):
+                return
+            executable = _resolve_opencode(bound_selection)
+            if binding["executable"] != executable:
+                raise ValueError
+        except (OSError, AttributeError, KeyError, ValueError) as exc:
+            raise LearningSelectionError(
+                "The prepared OpenCode executable has changed. Rerun Claude Smart setup."
+            ) from exc
+    else:
+        executable = _resolve_opencode()
+    os.environ[PLUGIN_OPENCODE_EXECUTABLE_ENV] = executable
+    launcher = executable
+    # An opaque Windows batch executable still requires the existing shell-
+    # quoting adapter. Known npm forwarding shims resolve directly to .exe.
+    if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
+        launcher = str(plugin_root / "scripts" / "opencode-claude-compat.cmd")
+        if not Path(launcher).is_file():
+            raise LearningSelectionError(
+                "Repair the bundled OpenCode launcher in Claude Smart setup."
+            )
+    os.environ["CLAUDE_SMART_CLI_PATH"] = launcher
 
 
 def use_prepared_launcher(plugin_root: Path, host: str) -> None:
@@ -184,6 +299,15 @@ def admit_native_learning_target() -> NativeModelRef | None:
             "local-cli/claude-code/sonnet target."
         )
     if target.host == "opencode":
+        old_path = "CLAUDE_SMART_OPENCODE_PATH"
+        if (
+            os.environ.get(old_path, "").strip()
+            or (sdk_saved.get(old_path) or "").strip()
+        ):
+            raise LearningSelectionError(
+                "CLAUDE_SMART_OPENCODE_PATH has been retired. "
+                "Confirm the existing executable in Claude Smart setup before restarting."
+            )
         for old_name in (
             "CLAUDE_SMART_OPENCODE_MODEL",
             "CLAUDE_SMART_OPENCODE_VARIANT",
@@ -218,6 +342,11 @@ def main() -> int:
     try:
         if len(sys.argv) == 3 and sys.argv[1] == "--record-default-launcher":
             record_default_launcher(sys.argv[2])
+        elif (
+            len(sys.argv) in {3, 4}
+            and sys.argv[1] == "--record-adopted-opencode-launcher"
+        ):
+            record_adopted_opencode_launcher(*sys.argv[2:])
         else:
             admit_native_learning_target()
     except LearningSelectionError as exc:

@@ -847,8 +847,7 @@ function hasOpenCodeCli() {
   return Boolean(resolveOpenCodePath());
 }
 
-function resolveOpenCodePath(fallbackPath = "") {
-  const explicitPath = process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] || "";
+function resolveOpenCodePath(fallbackPath = "", explicitPath = "", legacySelection = false) {
   if (isWindows()) {
     if (!explicitPath.trim()) {
       const match = resolveCommand(["opencode.cmd", "opencode.exe", "opencode"]);
@@ -856,20 +855,23 @@ function resolveOpenCodePath(fallbackPath = "") {
     }
     const { resolveWindowsOpenCodePath } = require("../plugin/scripts/opencode-claude-compat.js");
     const searchPath = [process.env.PATH, fallbackPath].filter(Boolean).join(";");
-    return resolveWindowsOpenCodePath(explicitPath, searchPath);
+    return resolveWindowsOpenCodePath(explicitPath, searchPath, legacySelection);
   }
   const opencodePath = isExecutableFile(explicitPath) ? explicitPath : explicitPath.trim();
-  if (opencodePath) return isExecutableFile(opencodePath) ? opencodePath : null;
+  if (opencodePath && (isAbsolute(opencodePath) || basename(opencodePath) !== opencodePath)) {
+    return isExecutableFile(opencodePath) ? opencodePath : null;
+  }
+  if (opencodePath) return resolvePosixOpenCodeCommand(opencodePath);
   return resolvePosixOpenCodeCommand("opencode");
 }
 
 function resolvePosixOpenCodeCommand(name) {
   // The path spelling reaches exec intact. Resolving '..' lexically would
   // change the target when a parent component is a symlink.
-  for (const directory of (process.env.PATH ?? "/bin:/usr/bin").split(":")) {
+  for (const directory of (process.env.PATH ?? "/bin:/usr/bin").split(":").filter(Boolean)) {
     const candidate = isAbsolute(directory)
       ? `${directory}/${name}`
-      : `${process.cwd()}/${directory || "."}/${name}`;
+      : `${process.cwd()}/${directory}/${name}`;
     if (isExecutableFile(candidate)) return candidate;
   }
   return null;
@@ -931,12 +933,6 @@ function resolveUsableBash() {
 }
 
 function opencodePrerequisiteError() {
-  if (!hasOpenCodeCli()) {
-    return (
-      "error: OpenCode CLI not found on PATH. Install OpenCode first, " +
-      "or set CLAUDE_SMART_OPENCODE_PATH to the OpenCode executable.\n"
-    );
-  }
   if (isWindows() && !resolveUsableBash()) {
     return (
       "error: Git Bash is required for claude-smart OpenCode support on Windows. " +
@@ -2131,7 +2127,7 @@ function savedInstallConfiguration(captured) {
   };
 }
 
-function planInstallSettings(config, captured) {
+function planInstallSettings(config, captured, saved) {
   const values = {
     REFLEXIO_URL: config.url || localBackendUrl(),
     REFLEXIO_API_KEY: config.apiKey || "",
@@ -2142,23 +2138,8 @@ function planInstallSettings(config, captured) {
   // Keep both dashboard connections when the runtime switches modes. Viewing
   // either source must not rewrite the active hook/learning configuration.
   const previous = installEnvironment(captured);
-  const previousProvider = previous.get(LEARNING_PROVIDER_ENV);
-  // Keep an independent account override. Bind a validated relative Windows
-  // selection to the file we checked so the relocated runtime uses it.
-  const savedOpenCodePath = previous.get(CLAUDE_SMART_OPENCODE_PATH_ENV);
-  const bindRelativeWindowsPath = isWindows() && savedOpenCodePath?.trim() &&
-    savedOpenCodePath === process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] &&
-    !isAbsolute(savedOpenCodePath.trim());
-  if (config.validatedOpenCodePath && (!savedOpenCodePath?.trim() || bindRelativeWindowsPath)) {
-    values[CLAUDE_SMART_OPENCODE_PATH_ENV] = config.validatedOpenCodePath;
-  } else if (
-    (config.hosts.includes(HOST_OPENCODE) ||
-      config.provider === HOST_OPENCODE ||
-      previousProvider === HOST_OPENCODE) &&
-    !previous.has(CLAUDE_SMART_OPENCODE_PATH_ENV)
-  ) {
-    const resolved = resolveOpenCodePath();
-    if (resolved) values[CLAUDE_SMART_OPENCODE_PATH_ENV] = resolved;
+  if (config.retireSavedOpenCodePath) {
+    values[CLAUDE_SMART_OPENCODE_PATH_ENV] = null;
   }
   const remember = (url, apiKey) => {
     if (!url) return;
@@ -2204,6 +2185,13 @@ function planInstallSettings(config, captured) {
   return {
     request,
     cliPath: config.backend === "local" ? config.cliPath : null,
+    inactiveOpenCodeLauncher: config.backend === "managed" && saved.provider === HOST_OPENCODE
+      ? savedOpenCodeLauncher(saved.cliPath)
+      : config.provider === HOST_OPENCODE && config.url && !isBundledBackendUrl(config.url)
+        ? savedOpenCodeLauncher(config.cliPath)
+        : undefined,
+    adoptedOpenCodePath: config.adoptedOpenCodePath,
+    expectedOpenCodeExecutable: config.expectedOpenCodeExecutable,
     migrated: Boolean(
       captured.legacy &&
         legacyManagedConnection(captured.runtime.values, captured.legacy.values).size,
@@ -2586,9 +2574,9 @@ async function runGuidedHost(command, host, options, label, settings, preparedRu
   }
 }
 
-function learningProviderVersion(config) {
+function learningProviderVersion(config, saved = {}) {
   // Custom executables need not implement --version. Do not run arbitrary probes.
-  if (config.cliPath) return undefined;
+  if (config.cliPath || (config.provider === HOST_OPENCODE && saved.opencodePath?.trim())) return undefined;
   const command =
     config.provider === HOST_OPENCODE
       ? resolveOpenCodePath()
@@ -2627,10 +2615,65 @@ function isOpenCodeBridgeLauncher(launcher) {
   return /^opencode-claude-compat(?:\.cmd|\.js)?$/i.test(basename(launcher || ""));
 }
 
+function savedOpenCodeLauncher(selection) {
+  const root = activePluginRoot();
+  if (!root || !existsSync(join(root, "guide-prepared-runtime"))) return undefined;
+  const receipt = ["guide-native-launcher", "guide-local-opencode-launcher"]
+    .map((name) => join(root, name)).find(existsSync);
+  if (!receipt) return undefined;
+  const binding = JSON.parse(readFileSync(receipt, "utf8"));
+  if (!binding?.selection || binding.host !== HOST_OPENCODE || binding.selection !== selection) return undefined;
+  if (typeof binding.executable !== "string" || !isAbsolute(binding.executable)) {
+    throw new Error("The previous OpenCode executable could not be verified.");
+  }
+  return binding;
+}
+
+function adoptSavedOpenCodePath(config, saved, withWorkerPath) {
+  if (process.env[CLAUDE_SMART_OPENCODE_PATH_ENV]?.trim()) {
+    throw new Error(
+      "Move the exported CLAUDE_SMART_OPENCODE_PATH selection to CLAUDE_SMART_CLI_PATH and remove the old export before setup.",
+    );
+  }
+  const previous = saved.opencodePath;
+  const bridge = isOpenCodeBridgeLauncher(config.cliPath);
+  if (bridge) {
+    const roots = [join(PACKAGE_ROOT, "plugin"), ...installedPluginRoots()];
+    if (!isAbsolute(config.cliPath) || !roots.some(
+      (root) => resolve(config.cliPath) === resolve(root, "scripts", basename(config.cliPath)),
+    )) {
+      throw new Error("Confirm the OpenCode executable directly in CLAUDE_SMART_CLI_PATH before replacing the custom bridge.");
+    }
+  }
+  config.retireSavedOpenCodePath = previous !== undefined;
+  if (!bridge && config.cliPath) {
+    const binding = savedOpenCodeLauncher(config.cliPath);
+    if (binding) {
+      config.adoptedOpenCodePath = binding.selection;
+      config.expectedOpenCodeExecutable = binding.executable;
+    }
+    return;
+  }
+  // An already direct learning launcher remains authoritative. The older
+  // setting only selected the executable reached by the package bridge.
+  if (!bridge && !previous?.trim()) return;
+  if (previous?.trim() && !isAbsolute(previous) && basename(previous) !== previous) {
+    throw new Error("Confirm the absolute OpenCode executable path in CLAUDE_SMART_CLI_PATH before setup.");
+  }
+  const lookup = () => resolveOpenCodePath(runtimeEnv().PATH, previous, true);
+  const selected = lookup() ?? withWorkerPath(lookup);
+  if (!selected || !isAbsolute(selected)) {
+    throw new Error("The previous OpenCode executable is unavailable. Confirm its path in CLAUDE_SMART_CLI_PATH before setup.");
+  }
+  config.cliPath = selected;
+  config.adoptedOpenCodePath = selected;
+}
+
 function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   if (config.backend !== "local" || config.provider !== HOST_OPENCODE ||
       !/^(?:1|true|yes|on)$/i.test(config.useLocalCli?.trim() || "") ||
       (config.url && !isBundledBackendUrl(config.url))) return;
+  adoptSavedOpenCodePath(config, saved, withWorkerPath);
   if (saved.retiredOpenCodeVariant || process.env.CLAUDE_SMART_OPENCODE_VARIANT?.trim()) {
     throw new Error(
       "CLAUDE_SMART_OPENCODE_VARIANT has been retired. Move the variant to " +
@@ -2641,19 +2684,16 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   const resolveOpenCodeForLaunch = () => resolveForLaunch(
     () => resolveOpenCodePath(runtimeEnv().PATH),
   );
-  if (!config.model?.includes("#")) {
-    if (isWindows() && (!config.cliPath || isOpenCodeBridgeLauncher(config.cliPath))) {
-      config.validatedOpenCodePath = resolveOpenCodeForLaunch();
-    }
-    return;
-  }
-  const hasExplicitModel = !config.model.startsWith("#");
+  const hasVariant = config.model?.includes("#");
   const selected = config.cliPath;
+  if (isWindows() && selected && selected === process.env.CLAUDE_SMART_CLI_PATH && !isAbsolute(selected)) {
+    throw new Error("Export CLAUDE_SMART_CLI_PATH as an absolute Windows OpenCode executable path.");
+  }
   let launcher;
   if (selected) {
     const absolute = isAbsolute(selected);
     if (!absolute && basename(selected) !== selected) {
-      throw new Error("Use an absolute CLAUDE_SMART_CLI_PATH to select an OpenCode variant.");
+      throw new Error("Use an absolute CLAUDE_SMART_CLI_PATH to select an OpenCode executable.");
     }
     const names = isWindows() && !extname(selected)
       ? [`${selected}.exe`, `${selected}.cmd`, `${selected}.bat`, selected]
@@ -2665,15 +2705,22 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
     }
     launcher = isWindows() ? resolve(match) : match;
   }
-  const bridge = isOpenCodeBridgeLauncher(launcher);
-  if (launcher && isWindows() && !bridge && !/\.exe$/i.test(launcher)) {
-    throw new Error("Select a native OpenCode .exe or the supported compatibility bridge on Windows.");
+  const compatibleWire = !launcher || Boolean(config.adoptedOpenCodePath) ||
+    (isWindows() && /\.(?:cmd|bat)$/i.test(launcher));
+  let command = launcher ?? resolveOpenCodeForLaunch();
+  if (!command || !isAbsolute(command)) {
+    throw new Error("OpenCode CLI not found. Select an executable with CLAUDE_SMART_CLI_PATH.");
   }
-  let command = launcher && !bridge ? launcher : resolveOpenCodeForLaunch();
-  if (command && !isAbsolute(command)) {
-    throw new Error("Use an absolute CLAUDE_SMART_OPENCODE_PATH to select an OpenCode variant.");
+  if (isWindows()) {
+    if (!/\.(?:exe|cmd|bat)$/i.test(command)) {
+      throw new Error("Select an .exe, .cmd, or .bat OpenCode launcher in CLAUDE_SMART_CLI_PATH.");
+    }
+    command = resolve(command);
   }
-  if (command && isWindows()) command = resolve(command);
+  config.cliPath = command;
+  if (compatibleWire) config.adoptedOpenCodePath = command;
+  if (!hasVariant && compatibleWire) return;
+  const hasExplicitModel = !config.model?.startsWith("#");
   const { prepareWorkDir, dispatchEnvironment, declaredRunOptions } =
     require("../plugin/scripts/opencode-claude-compat.js");
   const cwd = prepareWorkDir();
@@ -2688,6 +2735,12 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
     rmSync(cwd, { recursive: true, force: true });
   }
   const runOptions = declaredRunOptions(probe ? `${probe.stdout}\n${probe.stderr}` : "");
+  const nativeWire = ["--model", "--agent", "--format", "--title"].every((option) => runOptions.has(option)) &&
+    (runOptions.has("--standalone") || runOptions.has("--attach"));
+  if (!hasVariant) {
+    if (probe && !nativeWire) config.adoptedOpenCodePath = command;
+    return;
+  }
   if (!runOptions.has("--variant") && !(hasExplicitModel && runOptions.has("--standalone"))) {
     throw new Error(hasExplicitModel
       ? "The selected OpenCode CLI does not advertise --standalone or --variant."
@@ -2695,13 +2748,9 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   }
   // The pinned SDK's native OpenCode transport needs these options at dispatch.
   // The compatibility bridge has a separate command contract.
-  if (launcher && !bridge &&
-      (!["--model", "--agent", "--format", "--title"].every((option) => runOptions.has(option)) ||
-       !(runOptions.has("--standalone") || runOptions.has("--attach")))) {
+  if (!compatibleWire && !nativeWire) {
     throw new Error("The selected executable does not support the native OpenCode run options.");
   }
-  if (launcher) config.cliPath = launcher;
-  if (!launcher || bridge) config.validatedOpenCodePath = command;
 }
 
 function readGuidedRuntime(id) {
@@ -3074,7 +3123,19 @@ async function prepareGuidedRuntime(config, options, settings, baseline) {
       throw new Error("The guided runtime command launcher is missing");
     const tools = await bootstrapPluginRuntime(pluginRoot, { settings });
     const nativeHost = settings.request.updates[NATIVE_MODEL_ENV]?.split("/", 3)[1];
-    if (isBundledBackendUrl(settings.request.updates.REFLEXIO_URL) &&
+    if (nativeHost === HOST_OPENCODE && settings.adoptedOpenCodePath) {
+      const expected = settings.expectedOpenCodeExecutable ? [settings.expectedOpenCodeExecutable] : [];
+      const code = await runChecked(pluginPythonPath(pluginRoot), [
+        "-I", "-m", "claude_smart.native_selection",
+        "--record-adopted-opencode-launcher", settings.adoptedOpenCodePath, ...expected,
+      ], { env: runtimeEnv() });
+      if (code !== 0) throw new Error("Could not verify the previous OpenCode executable.");
+    } else if (settings.inactiveOpenCodeLauncher) {
+      writeFileSync(join(pluginRoot, "guide-local-opencode-launcher"), JSON.stringify(settings.inactiveOpenCodeLauncher), {
+        flag: "wx",
+        mode: 0o600,
+      });
+    } else if (isBundledBackendUrl(settings.request.updates.REFLEXIO_URL) &&
         [HOST_CLAUDE_CODE, HOST_CODEX].includes(nativeHost) && !settings.cliPath?.trim()) {
       const code = await runChecked(pluginPythonPath(pluginRoot), [
         "-I", "-m", "claude_smart.native_selection", "--record-default-launcher", nativeHost,
@@ -3130,10 +3191,6 @@ async function runGuidedCommand(command, args) {
   }
   const captured = command === "uninstall" ? null : captureInstallSnapshot();
   const saved = captured ? savedInstallConfiguration(captured) : {};
-  if (command !== "uninstall" && !process.env[CLAUDE_SMART_OPENCODE_PATH_ENV]) {
-    const savedPath = saved.opencodePath;
-    if (savedPath) process.env[CLAUDE_SMART_OPENCODE_PATH_ENV] = savedPath;
-  }
   ensureRollbackOnExit();
   process.stdout.write(
     `claude-smart ${JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version} · ${command}\n`,
@@ -3166,7 +3223,9 @@ async function runGuidedCommand(command, args) {
               if (!multipleHosts) throw new Error(codexPreflightFailure);
               config = { ...config, hosts: config.hosts.filter((host) => host !== HOST_CODEX) };
               const claudeAvailable = config.hosts.includes(HOST_CLAUDE_CODE) && hasClaudeCli();
-              const openCodeError = config.hosts.includes(HOST_OPENCODE) ? opencodePrerequisiteError() : null;
+              const openCodeError = config.hosts.includes(HOST_OPENCODE)
+                ? opencodePrerequisiteError()
+                : null;
               if (!claudeAvailable && (!config.hosts.includes(HOST_OPENCODE) || openCodeError))
                 throw new Error([codexPreflightFailure, openCodeError || "Claude Code is not available on PATH."].join(" ").trim());
             }
@@ -3174,7 +3233,7 @@ async function runGuidedCommand(command, args) {
         }
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
         const { baseline } = await resumeGuidedShutdown({ replaceUnready: true });
-        const settings = planInstallSettings(config, captured);
+        const settings = planInstallSettings(config, captured, saved);
         // Recovery keeps the previous generation intact until registration is
         // complete, even when the user retries with just one host.
         if (config.backend === "local" || multipleHosts || baseline || pathEntryExists(GUIDED_SELECTED_RUNTIME)) {
@@ -3191,7 +3250,7 @@ async function runGuidedCommand(command, args) {
       version: JSON.parse(
         readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8"),
       ).version,
-      providerVersion: learningProviderVersion,
+      providerVersion: (config) => learningProviderVersion(config, saved),
       learningModel: async (config) => {
         try {
           const response = await fetch(new URL("/api/get_config", config.url), {
@@ -5328,7 +5387,7 @@ async function runInstallOpenCode(args, settings, runtime, scopedPlan) {
   const readOnly = settings
     ? settings.request.updates[CLAUDE_SMART_READ_ONLY_ENV] === "1"
     : setup.readOnly;
-  if (!hasExtractionProvider()) {
+  if (!runtime && !settings && !hasExtractionProvider()) {
     process.stderr.write(extractionProviderError());
     process.exit(1);
   }

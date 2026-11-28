@@ -1,4 +1,4 @@
-"""Pinned SDK dispatch must reach the owned OpenCode adapter with one model."""
+"""Pinned SDK dispatch uses the resolved OpenCode executable and one model."""
 
 from __future__ import annotations
 
@@ -18,13 +18,13 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.parametrize(
     "model", [None, "opaque-model", "provider/model", "provider/model#high", "#high"]
 )
-def test_saved_opencode_target_reaches_adapter_through_pinned_sdk(tmp_path, model):
+def test_saved_opencode_target_reaches_executable_through_pinned_sdk(tmp_path, model):
     vendor = ROOT / "plugin/vendor/reflexio"
     assert (vendor / "reflexio/server/llm/_native_model_ref.py").is_file()
     node = shutil.which("node")
     assert node is not None
     record = tmp_path / "args.json"
-    executable = tmp_path / "owned-opencode"
+    executable = tmp_path / "opencode"
     executable.write_text(
         f"#!{node}\n"
         "const fs=require('fs');const args=process.argv.slice(2);\n"
@@ -44,7 +44,7 @@ def test_saved_opencode_target_reaches_adapter_through_pinned_sdk(tmp_path, mode
     env.update(
         HOME=str(tmp_path),
         REFLEXIO_ENV_FILE=str(selected),
-        CLAUDE_SMART_OPENCODE_PATH=str(executable),
+        PATH=str(tmp_path) + os.pathsep + env.get("PATH", ""),
         PYTHONPATH=os.pathsep.join((str(vendor), str(ROOT / "plugin/src"))),
         PYTHON_DOTENV_DISABLED="true",
         LITELLM_LOCAL_MODEL_COST_MAP="true",
@@ -58,6 +58,7 @@ root=Path(sys.argv[1])
 assert Path(native.__file__)==root/'plugin/vendor/reflexio/reflexio/server/llm/_native_model_ref.py'
 runner=runpy.run_path(str(root/'plugin/scripts/backend-python-runner.py'))
 runner['prepare_native_sdk_environment']()
+assert os.environ['CLAUDE_SMART_CLI_PATH'] == str(Path.cwd() / 'opencode')
 target=native.configured_native_model()
 result=_run_cli_stream(os.environ['CLAUDE_SMART_CLI_PATH'],'owned system','owned dialogue',10,target.host,target.model)
 assert result.success, result

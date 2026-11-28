@@ -181,6 +181,24 @@ test("updates retain custom local settings and cloud-provider opt-out", async ()
   }
 });
 
+test("reselecting OpenCode preserves its saved learning executable", async () => {
+  const saved = {
+    backend: "local",
+    provider: "opencode",
+    cliPath: "/tools/custom-opencode",
+    model: "provider/kept",
+  };
+  const config = await configure(
+    parseOptions(["--host", "codex", "--provider", "opencode"]),
+    inventory,
+    saved,
+    neverAsk,
+    false,
+  );
+  assert.equal(config.cliPath, saved.cliPath);
+  assert.equal(config.model, saved.model);
+});
+
 test("partial failures continue to the next integration and exit nonzero", () => {
   const script = `
     const {runGuide} = require('./bin/install-guide');
@@ -436,17 +454,17 @@ test("Windows OpenCode batch probe supports spaces", { skip: process.platform !=
   const path = require("node:path");
   const directory = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "claude smart version "));
   const executable = path.join(directory, "opencode.cmd");
-  const original = process.env.CLAUDE_SMART_OPENCODE_PATH;
+  const original = process.env.PATH;
   try {
     fs.writeFileSync(executable, "@echo off\r\necho 1.2.3\r\n");
-    process.env.CLAUDE_SMART_OPENCODE_PATH = executable;
+    process.env.PATH = [directory, original].filter(Boolean).join(path.delimiter);
     assert.equal(
       require("../bin/claude-smart").learningProviderVersion({ provider: "opencode" }),
       "1.2.3",
     );
   } finally {
-    if (original === undefined) delete process.env.CLAUDE_SMART_OPENCODE_PATH;
-    else process.env.CLAUDE_SMART_OPENCODE_PATH = original;
+    if (original === undefined) delete process.env.PATH;
+    else process.env.PATH = original;
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });

@@ -174,8 +174,10 @@ async function configure(
   interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY),
 ) {
   let hosts = options.hosts;
+  const canRegister = (agent) =>
+    agent.available || (agent.host === "opencode" && (agent.installed || options.hosts?.includes(agent.host)));
   if (!hosts) {
-    if (!inventory.some((agent) => agent.available))
+    if (!inventory.some(canRegister))
       throw new Error(
         "No supported coding agent found on PATH; install Claude Code, Codex, or OpenCode first",
       );
@@ -186,13 +188,13 @@ async function configure(
           "No saved integrations. Use --host claude-code,codex --backend local --provider codex, or run install in a terminal.",
         );
     } else {
-      const installed = inventory.filter((agent) => agent.installed && agent.available);
+      const installed = inventory.filter((agent) => agent.installed && canRegister(agent));
       hosts = await ask(
         "Which coding agents should use claude-smart?",
         inventory.map((agent) => ({
           value: agent.host,
           label: `${LABELS[agent.host]} · ${agent.available ? "detected" : "not found"}${agent.installed ? " · installed" : ""}`,
-          disabled: !agent.available,
+          disabled: !canRegister(agent),
         })),
         {
           multiple: true,
@@ -204,7 +206,7 @@ async function configure(
       );
     }
   }
-  if (!inventory.some((agent) => agent.available && hosts.includes(agent.host)))
+  if (!inventory.some((agent) => canRegister(agent) && hosts.includes(agent.host)))
     throw new Error("None of the selected coding agents is available on PATH");
   const backend =
     options.backend ||
@@ -260,7 +262,9 @@ async function configure(
       config.provider = keepCurrent ? saved.provider : selection;
     }
     if (!keepCurrent) {
-      config.cliPath = "";
+      if (config.provider !== "opencode" || config.provider !== saved.provider || saved.selectionConflict) {
+        config.cliPath = config.provider === "opencode" ? process.env.CLAUDE_SMART_CLI_PATH || "" : "";
+      }
       config.useLocalCli = "1";
     }
     config.model =
@@ -329,7 +333,8 @@ async function configure(
     if (config.useLocalCli !== "0" && !config.provider)
       throw new Error("Choose a background learning provider with --provider claude-code, codex, or opencode");
     if (!config.cliPath && config.useLocalCli !== "0") {
-      if (!providers.some((agent) => agent.host === config.provider))
+      if (!providers.some((agent) => agent.host === config.provider) &&
+          !(config.provider === "opencode" && saved.opencodePath?.trim()))
         throw new Error(`Background learning provider ${LABELS[config.provider]} is not available`);
     }
     // Preserve explicitly configured custom local Reflexio endpoints and cloud providers.

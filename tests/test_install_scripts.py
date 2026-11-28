@@ -149,7 +149,7 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         f"  cat > \"$python_root/bin/python\" <<'PYSH'\n"
         "#!/bin/sh\n"
         'if [ "$1" = "-P" ]; then shift; fi\n'
-        'fixture_prefix="$(cd "$(dirname "$0")/.." && pwd)"\n'
+        'fixture_prefix="$(cd "${0%/*}/.." && pwd)"\n'
         'fixture_plugin="$(cd "$fixture_prefix/.." && pwd)"\n'
         'if [ "$1" = "-I" ] && [ "${2:-}" = "-" ]; then\n'
         f'exec {shlex.quote(sys.executable)} "$@"\n'

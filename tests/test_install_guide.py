@@ -472,12 +472,16 @@ def test_guided_install_reports_old_codex_and_installs_other_hosts(tmp_path: Pat
     assert not (tmp_path / ".codex/claude-smart/marketplace").exists()
 
 
-def test_guided_install_with_old_codex_and_missing_opencode_keeps_settings(
+def test_guided_install_registers_opencode_when_codex_is_too_old(
     tmp_path: Path,
 ):
     installer, env = fake_guide(tmp_path)
     env["CODEX_FIXTURE_VERSION"] = "0.147.0"
-    env["CLAUDE_SMART_OPENCODE_PATH"] = str(tmp_path / "missing" / "opencode")
+    shutil.copytree(
+        REPO_ROOT / "plugin/opencode", installer.parent.parent / "plugin/opencode"
+    )
+    workdir = tmp_path / "project"
+    workdir.mkdir()
 
     result = subprocess.run(
         [
@@ -491,6 +495,7 @@ def test_guided_install_with_old_codex_and_missing_opencode_keeps_settings(
             "--provider",
             "codex",
         ],
+        cwd=workdir,
         env=env,
         text=True,
         capture_output=True,
@@ -499,9 +504,12 @@ def test_guided_install_with_old_codex_and_missing_opencode_keeps_settings(
     )
 
     assert result.returncode == 1, result.stderr
-    assert "OpenCode CLI not found" in result.stderr
-    assert "Codex CLI 0.148 or newer is required" in result.stderr
-    assert not (tmp_path / ".claude-smart/.env").exists()
+    assert "OpenCode: installed" in result.stdout, result.stderr
+    assert "Codex CLI 0.148 or newer is required" in result.stdout
+    assert (workdir / ".opencode/plugins/claude-smart.js").is_file()
+    assert dotenv_values(tmp_path / ".claude-smart/.env")[
+        "REFLEXIO_NATIVE_CLI_MODEL"
+    ].startswith("local-cli/codex")
 
 
 def test_guided_install_progress_is_visible_while_worker_is_waiting(

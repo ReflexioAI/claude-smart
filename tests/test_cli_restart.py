@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from claude_smart import cli
 
 
@@ -353,15 +352,15 @@ def test_windows_installer_resolves_configured_opencode_name(
         [
             node,
             "-e",
-            "console.log(require(process.argv[1]).resolveOpenCodePath(process.argv[2]))",
+            "console.log(require(process.argv[1]).resolveOpenCodePath(process.argv[2], process.argv[3]))",
             str(installer),
             search_dir.name if worker_path else "",
+            configured,
         ],
         cwd=tmp_path,
         env={
             **os.environ,
             "CLAUDE_SMART_TEST_PLATFORM": "win32",
-            "CLAUDE_SMART_OPENCODE_PATH": configured,
             "PATH": "" if worker_path else search_dir.name,
         },
         text=True,
@@ -371,6 +370,36 @@ def test_windows_installer_resolves_configured_opencode_name(
     )
     assert result.returncode == 0, result.stderr
     assert Path(result.stdout.strip()).resolve() == executable.resolve()
+
+
+@pytest.mark.parametrize("on_path", [True, False])
+def test_windows_saved_opencode_command_ignores_the_project_copy(tmp_path, on_path):
+    node = shutil.which("node")
+    assert node is not None
+    installer = Path(__file__).resolve().parents[1] / "bin/claude-smart.js"
+    tools = tmp_path / "actual tools"
+    tools.mkdir()
+    filename = "opencode.cmd"
+    (tmp_path / filename).touch(mode=0o755)
+    expected = tools / filename
+    if on_path:
+        expected.touch(mode=0o755)
+    result = subprocess.check_output(
+        [
+            node,
+            "-e",
+            "console.log(require(process.argv[1]).resolveOpenCodePath('', 'opencode.cmd', true))",
+            str(installer),
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "CLAUDE_SMART_TEST_PLATFORM": "win32", "PATH": str(tools)},
+        text=True,
+        timeout=10,
+    ).strip()
+    if on_path:
+        assert Path(result) == expected
+    else:
+        assert result == "null"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires the native Windows shell")
@@ -391,9 +420,22 @@ def test_windows_opencode_batch_launcher_quotes_resolved_path(
     executable.write_text(
         '@echo {"type":"text","part":{"type":"text","text":"batch launched"}}\n'
     )
-    monkeypatch.setenv("CLAUDE_SMART_OPENCODE_PATH", configured)
     if configured == "opencode":
         monkeypatch.setenv("PATH", "tools", prepend=os.pathsep)
+    binding = subprocess.check_output(
+        [
+            node,
+            "-e",
+            "console.log(require(process.argv[1]).resolveWindowsOpenCodePath(process.argv[2]))",
+            str(bridge),
+            configured,
+        ],
+        cwd=working_dir,
+        text=True,
+        timeout=10,
+    ).strip()
+    assert Path(binding) == executable
+    monkeypatch.setenv("_CLAUDE_SMART_NATIVE_OPENCODE_EXECUTABLE", binding)
     for name in (
         "CLAUDE_SMART_OPENCODE_MODEL",
         "CLAUDE_SMART_OPENCODE_VARIANT",
