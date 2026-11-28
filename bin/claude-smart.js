@@ -2187,7 +2187,9 @@ function planInstallSettings(config, captured, saved) {
     cliPath: config.backend === "local" ? config.cliPath : null,
     inactiveOpenCodeLauncher: config.backend === "managed" && saved.provider === HOST_OPENCODE
       ? savedOpenCodeLauncher(saved.cliPath)
-      : undefined,
+      : config.provider === HOST_OPENCODE && config.url && !isBundledBackendUrl(config.url)
+        ? savedOpenCodeLauncher(config.cliPath)
+        : undefined,
     adoptedOpenCodePath: config.adoptedOpenCodePath,
     expectedOpenCodeExecutable: config.expectedOpenCodeExecutable,
     migrated: Boolean(

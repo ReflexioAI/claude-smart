@@ -834,8 +834,10 @@ def test_node_installer_accepts_explicit_opencode_extraction_provider(
     assert result.stdout == "true"
 
 
+@pytest.mark.parametrize("alternate", ["managed", "custom-local"])
 def test_public_confirmation_adopts_the_saved_opencode_executable(
     tmp_path: Path,
+    alternate: str,
 ) -> None:
     from tests.test_install_scripts import _run_public_setup
 
@@ -884,22 +886,37 @@ def test_public_confirmation_adopts_the_saved_opencode_executable(
         return runtimes / (runtimes / "selected").read_text().strip() / "plugin"
 
     original = json.loads((current_runtime() / "guide-native-launcher").read_text())
-    managed = _run_public_setup(
-        tmp_path,
-        "--backend",
-        "managed",
-        "--api-key-env",
-        "MANAGED_FIXTURE_KEY",
-        env_extra={"MANAGED_FIXTURE_KEY": "test-only"},
-    )
-    assert managed.returncode == 0, managed.stderr
+    if alternate == "managed":
+        switched = _run_public_setup(
+            tmp_path,
+            "--backend",
+            "managed",
+            "--api-key-env",
+            "MANAGED_FIXTURE_KEY",
+            env_extra={"MANAGED_FIXTURE_KEY": "test-only"},
+        )
+    else:
+        switched = _run_public_setup(
+            tmp_path,
+            "--backend",
+            "local",
+            "--url",
+            "http://localhost:18071/",
+        )
+    assert switched.returncode == 0, switched.stderr
     assert not (current_runtime() / "guide-native-launcher").exists()
     assert (
         json.loads((current_runtime() / "guide-local-opencode-launcher").read_text())
         == original
     )
 
-    local = _run_public_setup(tmp_path, "--backend", "local")
+    local = _run_public_setup(
+        tmp_path,
+        "--backend",
+        "local",
+        "--url",
+        "http://localhost:8071/",
+    )
     assert local.returncode == 0, local.stderr
     assert (
         json.loads((current_runtime() / "guide-native-launcher").read_text())

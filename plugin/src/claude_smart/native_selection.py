@@ -128,12 +128,16 @@ def configure_opencode_launcher(plugin_root: Path) -> None:
             return
         try:
             binding = json.loads(receipt.read_text(encoding="utf-8"))
-            if (
-                binding.get("host") != "opencode"
-                or binding.get("selection") != selection
+            bound_selection = binding.get("selection")
+            if binding.get("host") != "opencode" or not isinstance(
+                bound_selection, str
             ):
                 return
-            executable = _resolve_opencode(selection)
+            if selection != bound_selection and (
+                os.name != "nt" or Path(selection) != Path(bound_selection)
+            ):
+                return
+            executable = _resolve_opencode(bound_selection)
             if binding["executable"] != executable:
                 raise ValueError
         except (OSError, AttributeError, KeyError, ValueError) as exc:
