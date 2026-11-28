@@ -232,19 +232,20 @@ case "$CMD" in
     else
       NPM_BIN=$(claude_smart_resolve_npm || true)
       if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
+        reason="npm is not on PATH; installer recovery scheduled; dashboard cannot start yet"
+        echo "[claude-smart] dashboard: $reason; skipping" >>"$LOG_FILE"
+        claude_smart_write_dashboard_unavailable "$reason"
         if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
           echo "[claude-smart] dashboard: npm is not on PATH; starting installer in background" >>"$LOG_FILE"
+          # The continuation takes the same dashboard lock after Node repair.
+          claude_smart_service_unlock "dashboard"
+          trap - EXIT
           CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
-            CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY=1 \
-            bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
+            bash -c 'CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY=1 bash "$1/smart-install.sh" &&
+              exec bash "$1/dashboard-service.sh" start' _ "$HERE" \
             >>"$STATE_DIR/install.log" 2>&1 || true
         fi
-        if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
-          reason="npm is not on PATH; installer recovery scheduled; dashboard cannot start yet"
-          echo "[claude-smart] dashboard: $reason; skipping" >>"$LOG_FILE"
-          claude_smart_write_dashboard_unavailable "$reason"
-          emit_ok; exit 0
-        fi
+        emit_ok; exit 0
       fi
 
       # `npm run start` requires a prior `next build`. Do NOT build in the

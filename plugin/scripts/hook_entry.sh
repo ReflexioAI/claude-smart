@@ -35,6 +35,7 @@ if claude_smart_is_internal_invocation_env; then
 fi
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "hook_entry.sh" "$@"
+claude_smart_append_service_paths "$PLUGIN_ROOT"
 # Explicit fallback for the astral.sh installer's default paths, in case
 # the user's login-shell rc hasn't yet been re-sourced to pick them up.
 claude_smart_prepend_astral_bins

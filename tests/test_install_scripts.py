@@ -6777,6 +6777,64 @@ def test_hook_entry_failure_marker_uses_resolved_python_on_windows(
     assert not (tmp_path / "python3-called").exists()
 
 
+def test_hook_preserves_failure_fingerprinted_with_setup_uv(tmp_path: Path) -> None:
+    root = tmp_path / "plugin"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    for source in (LIB, HOOK_ENTRY):
+        shutil.copy2(source, scripts)
+    (root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    (root / "uv.lock").touch()
+    setup_bin = tmp_path / "setup-bin"
+    setup_bin.mkdir()
+    _write_executable(setup_bin / "uv", "#!/bin/sh\nprintf '/setup/python-3.12\\n'\n")
+    (root / "guide-service-paths").write_bytes(os.fsencode(setup_bin) + b"\0")
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(
+        tmp_path,
+        "dirname",
+        "mkdir",
+        "cat",
+        "uname",
+        "awk",
+        "sed",
+        "shasum",
+        "sha256sum",
+        "cksum",
+        "python3",
+        "mktemp",
+        "rm",
+    )
+    fingerprint = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            '. "$1/_lib.sh"; claude_smart_install_fingerprint_hash "$2" "$1"',
+            "_",
+            str(scripts),
+            str(root),
+        ],
+        env={**env, "PATH": str(setup_bin) + os.pathsep + env["PATH"]},
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    marker = tmp_path / ".claude-smart/install-failed"
+    marker.parent.mkdir()
+    marker.write_text(f"setup dependency failure\nfingerprint={fingerprint}\n")
+
+    result = subprocess.run(
+        ["/bin/bash", str(scripts / "hook_entry.sh"), "claude-code", "session-start"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "setup dependency failure" in result.stdout
+    assert marker.exists()
+
+
 @pytest.mark.parametrize(
     ("host", "inherited", "expected"),
     [
@@ -8809,6 +8867,62 @@ def test_dashboard_build_writes_marker_when_npm_missing(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert marker.is_file()
     assert "npm is not on PATH" in marker.read_text()
+
+
+def test_dashboard_resumes_startup_after_node_only_repair(tmp_path: Path) -> None:
+    root = tmp_path / "plugin"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    (root / "dashboard").mkdir()
+    for name in ("_lib.sh", "dashboard-service.sh"):
+        shutil.copy2(LIB.parent / name, scripts)
+    private_node = tmp_path / ".claude-smart/node/current/bin"
+    private_node.mkdir(parents=True)
+    _write_executable(tmp_path / "npm-ready", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        scripts / "smart-install.sh",
+        "#!/bin/sh\n"
+        '[ "$CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY" = 1 ] || exit 1\n'
+        'mv "$HOME/npm-ready" "$HOME/.claude-smart/node/current/bin/npm"\n',
+    )
+    _write_executable(
+        scripts / "dashboard-build.sh",
+        '#!/bin/sh\nprintf "%s\\n" "build resumed" > "$HOME/dashboard-resumed"\n',
+    )
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_DASHBOARD_AUTOSTART"] = "1"
+    env["DASHBOARD_PORT"] = str(_free_port())
+    env["PATH"] = _minimal_path(
+        tmp_path,
+        "awk",
+        "bash",
+        "cat",
+        "date",
+        "dirname",
+        "env",
+        "mkdir",
+        "mv",
+        "nohup",
+        "ps",
+        "python3",
+        "rm",
+        "rmdir",
+        "setsid",
+        "sleep",
+        "stat",
+        "uname",
+    )
+
+    result = subprocess.run(
+        ["/bin/bash", str(scripts / "dashboard-service.sh"), "start"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert result.returncode == 0
+    _wait_for_file_text(tmp_path / "dashboard-resumed", "build resumed")
 
 
 def test_codex_hook_ensure_root_tracks_active_plugin_root(tmp_path: Path) -> None:

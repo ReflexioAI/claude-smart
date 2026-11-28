@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess  # noqa: S404 — git invocation with a fixed flag set.
 import sys
 from pathlib import Path, PureWindowsPath
@@ -42,7 +43,7 @@ def _git_lines(base: Path, *args: str) -> list[str] | None:
     """Return the output lines of ``git <args>`` run in ``base``, or None on failure."""
     venv = Path(sys.prefix)
     root = venv.parent
-    git = "git"
+    candidates = ["git"]
     if venv.name == ".venv":
         try:
             selected = json.loads((root / "guide-git").read_text(encoding="utf-8"))
@@ -52,21 +53,29 @@ def _git_lines(base: Path, *args: str) -> list[str] | None:
                 and Path(selected).is_file()
                 and os.access(selected, os.X_OK)
             ):
-                git = selected
+                fallback = shutil.which("git")
+                candidates = [selected]
+                if fallback and fallback != selected:
+                    candidates.append(fallback)
         except (OSError, ValueError):
             # A moved executable can still be reached through the host's PATH.
             pass
-    result = subprocess.run(  # noqa: S603 — fixed argv, cwd is a Path.
-        [git, *args],
-        cwd=base,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=5,
-    )
-    if result.returncode != 0:
-        return None
-    return [line.strip() for line in result.stdout.strip().splitlines()]
+    for git in candidates:
+        try:
+            result = subprocess.run(  # noqa: S603 — fixed argv, cwd is a Path.
+                [git, *args],
+                cwd=base,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _LOGGER.debug("git lookup failed for %s: %s", git, exc)
+            continue
+        if result.returncode == 0:
+            return [line.strip() for line in result.stdout.strip().splitlines()]
+    return None
 
 
 def _linked_worktree_main_basename(base: Path) -> str | None:

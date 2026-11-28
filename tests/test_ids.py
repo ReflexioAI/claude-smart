@@ -98,6 +98,26 @@ def test_prepared_hook_uses_setup_git_to_keep_the_parent_project_id(
     assert ids.resolve_project_id(worktree) == "parent-project"
 
 
+def test_broken_standalone_git_binding_preserves_linked_worktree_id(
+    tmp_path, monkeypatch
+) -> None:
+    _isolate_git_env(monkeypatch)
+    parent = tmp_path / "parent-project"
+    _repo(parent)
+    worktree = tmp_path / "linked-worktree"
+    _git("-C", str(parent), "worktree", "add", "-q", str(worktree))
+
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    broken_git = tmp_path / "broken-git"
+    broken_git.write_text("#!/bin/sh\nexit 127\n")
+    broken_git.chmod(0o700)
+    (plugin / "guide-git").write_text(json.dumps(str(broken_git)))
+    monkeypatch.setattr(sys, "prefix", str(plugin / ".venv"))
+
+    assert ids.resolve_project_id(worktree) == "parent-project"
+
+
 def test_resolve_keeps_separate_git_dir_checkout_on_its_toplevel(
     tmp_path, monkeypatch
 ) -> None:
