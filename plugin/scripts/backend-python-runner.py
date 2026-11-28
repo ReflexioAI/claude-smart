@@ -60,12 +60,16 @@ def prepare_native_sdk_environment() -> None:
         and target.host == "opencode"
         and not os.environ.get("CLAUDE_SMART_CLI_PATH", "").strip()
     ):
-        adapter = Path(__file__).parent / (
-            "opencode-claude-compat.cmd"
-            if os.name == "nt"
-            else "opencode-claude-compat"
+        from reflexio.opencode_executable import resolve_executable
+        from reflexio.server.llm._native_model_ref import (
+            PLUGIN_OPENCODE_EXECUTABLE_ENV,
         )
-        os.environ["CLAUDE_SMART_CLI_PATH"] = str(adapter)
+
+        executable = resolve_executable(
+            os.environ.get("CLAUDE_SMART_OPENCODE_PATH", "").strip() or "opencode"
+        )
+        os.environ["CLAUDE_SMART_CLI_PATH"] = str(executable)
+        os.environ[PLUGIN_OPENCODE_EXECUTABLE_ENV] = str(executable)
     os.environ["REFLEXIO_NATIVE_CLI_MODEL"] = target.reference if target else ""
     # The SDK reloads dotenv in workers; empty masks never modify the saved file.
     os.environ["CLAUDE_SMART_USE_LOCAL_CLI"] = ""
