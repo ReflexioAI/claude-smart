@@ -1070,13 +1070,15 @@ def test_desktop_current_profile_input_refuses_the_retired_manual_switch(
             sys.executable,
             "-P",
             "-c",
-            "from reflexio.models.config_schema import ProfileExtractorConfig\n"
-            "try:\n"
-            " ProfileExtractorConfig(extraction_definition_prompt='Extract preferences.',manual_trigger=True)\n"
-            "except ValueError:\n"
-            " print('retired input refused')\n"
-            "else:\n"
-            " raise AssertionError('The desktop SDK still accepts manual_trigger')\n",
+            (
+                "from reflexio.models.config_schema import ProfileExtractorConfig\n"
+                "try:\n"
+                " ProfileExtractorConfig(extraction_definition_prompt='Extract preferences.',manual_trigger=True)\n"
+                "except ValueError:\n"
+                " print('retired input refused')\n"
+                "else:\n"
+                " raise AssertionError('The desktop SDK still accepts manual_trigger')\n"
+            ),
         ],
         env=_env(tmp_path),
         cwd=tmp_path,
@@ -1284,3 +1286,69 @@ def test_modern_launcher_holds_and_reopens_the_qualified_historical_dataset(
         assert connection.execute("SELECT count(*) FROM interactions").fetchone() == (
             10,
         )
+
+
+@pytest.mark.parametrize(
+    ("setting", "name"),
+    [
+        ("OPENCLAW_BIN=private-executable-path", "OPENCLAW_BIN"),
+        ("OPENCLAW_SMART_USE_LOCAL_CLI=", "OPENCLAW_SMART_USE_LOCAL_CLI"),
+        (
+            "REFLEXIO_OPENCLAW_EXECUTABLE=private-executable-path",
+            "REFLEXIO_OPENCLAW_EXECUTABLE",
+        ),
+    ],
+)
+@requires_vendor
+def test_backend_preflight_checks_the_selected_openclaw_config_before_replacing_service(
+    tmp_path: Path, setting: str, name: str
+):
+    if not (VENDOR / "reflexio/server/llm/_openclaw_config.py").is_file():
+        pytest.skip("The historical SDK lacks executable binding admission")
+    dotenv = tmp_path / "selected.env"
+    original = (setting + "\n").encode()
+    dotenv.write_bytes(original)
+    env = _env(tmp_path)
+    env["REFLEXIO_ENV_FILE"] = str(dotenv)
+    env["REFLEXIO_NATIVE_CLI_MODEL"] = ""
+    result = subprocess.run(
+        [sys.executable, "-P", str(RUNNER), "--check-learning-model"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+    assert result.returncode == 3, result.stderr
+    assert name in result.stdout
+    assert "private-executable-path" not in result.stdout
+    assert dotenv.read_bytes() == original
+
+
+@requires_vendor
+def test_openclaw_preflight_uses_saved_instance_and_expanded_path(tmp_path: Path):
+    if not (VENDOR / "reflexio/server/llm/_openclaw_config.py").is_file():
+        pytest.skip("The historical SDK lacks executable binding admission")
+    executable = tmp_path / "openclaw"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    dotenv = tmp_path / "selected.env"
+    dotenv.write_text("REFLEXIO_OPENCLAW_EXECUTABLE=${REFLEXIO_LOG_DIR}/openclaw\n")
+    env = _env(tmp_path)
+    env.update(
+        REFLEXIO_ENV_FILE=str(dotenv),
+        REFLEXIO_NATIVE_CLI_MODEL="",
+        REFLEXIO_DEFAULT_ORG_ID="pre-migration-org",
+        REFLEXIO_LOG_DIR=str(tmp_path),
+    )
+    result = subprocess.run(
+        [sys.executable, "-P", str(RUNNER), "--check-learning-model"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

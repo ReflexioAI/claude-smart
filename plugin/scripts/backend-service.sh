@@ -578,6 +578,19 @@ prepare_backend_import_context() {
   claude_smart_prepare_backend_import_context "$PLUGIN_ROOT"
 }
 
+# The preflight subprocess and actual launch use the same dotenv defaults,
+# process identity and working directory.
+prepare_backend_launch_environment() {
+  cd "$PLUGIN_ROOT" || return 1
+  export REFLEXIO_LOG_DIR="${REFLEXIO_LOG_DIR:-$HOME}"
+  # The vendored OSS backend only registers SQLite storage.
+  export REFLEXIO_STORAGE="sqlite"
+  export CLAUDE_SMART_BACKEND=1
+  export CLAUDE_SMART_PLUGIN_ROOT="$PLUGIN_ROOT_CANONICAL"
+  export CLAUDE_SMART_VERSION="$PLUGIN_VERSION"
+  export CLAUDE_SMART_REFLEXIO_VENDOR_ROOT="$VENDORED_REFLEXIO_FOR_PYTHON"
+}
+
 # Repair the vendored install if its version drifted, then prove this plugin
 # can import its own bundled Reflexio. Callers run this before any action that
 # would stop or replace a running service.
@@ -587,7 +600,7 @@ preflight_bundled_reflexio_runtime() {
   ensure_vendored_reflexio_active || return 1
   prepare_backend_import_context
   verify_bundled_reflexio_import "$backend_python" "$backend_pythonpath" "$VENDORED_REFLEXIO_FOR_PYTHON" || return 1
-  if selection_error=$(PYTHONPATH="$backend_pythonpath" "$backend_python" "$HERE/backend-python-runner.py" --check-learning-model 2>/dev/null); then
+  if selection_error=$(prepare_backend_launch_environment && PYTHONPATH="$backend_pythonpath" "$backend_python" "$HERE/backend-python-runner.py" --check-learning-model 2>/dev/null); then
     return 0
   else
     if [ "$?" -eq 3 ]; then
@@ -942,25 +955,7 @@ case "$CMD" in
       echo "Free port $PORT (or stop the process above) and run /claude-smart:restart again." >&2
       emit_ok; exit 0
     fi
-    cd "$PLUGIN_ROOT"
-
-    # Retention policy comes from the selected SDK environment. The installer
-    # records the plugin's local budget there using its canonical setting.
-
-    # Keep plugin runtime data in ~/.reflexio even when the backend imports
-    # Reflexio from an editable checkout inside a larger repo with its own
-    # .env. python-dotenv respects pre-existing env vars, so this prevents a
-    # parent REFLEXIO_LOG_DIR from sending claude-smart to unrelated configs.
-    export REFLEXIO_LOG_DIR="${REFLEXIO_LOG_DIR:-$HOME}"
-
-    # Force sqlite: the plugin venv ships only the open-source reflexio
-    # package, which doesn't register the Supabase/Postgres storage
-    # factories. If the user's ~/.reflexio/.env sets REFLEXIO_STORAGE to
-    # something else (common when sharing the file with reflexio_ext),
-    # the backend boots but crashes every request. load_dotenv() inside
-    # the CLI respects pre-existing env vars, so exporting here wins
-    # without touching the file on disk.
-    export REFLEXIO_STORAGE="sqlite"
+    prepare_backend_launch_environment
 
     # (nohup; no process groups). backend-log-runner.sh owns stdout/stderr
     # capture so process output cannot grow backend.log past its cap.
@@ -990,10 +985,6 @@ case "$CMD" in
       "$LOG_FILE" "$LOG_MAX_BYTES" -- \
       env PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
       PYTHONPATH="$backend_pythonpath" \
-      CLAUDE_SMART_BACKEND=1 \
-      CLAUDE_SMART_PLUGIN_ROOT="$PLUGIN_ROOT_CANONICAL" \
-      CLAUDE_SMART_VERSION="$PLUGIN_VERSION" \
-      CLAUDE_SMART_REFLEXIO_VENDOR_ROOT="$VENDORED_REFLEXIO_FOR_PYTHON" \
       "$backend_python" "$HERE/backend-python-runner.py" \
       --claude-smart-backend=1 \
       "--claude-smart-plugin-root=$PLUGIN_ROOT_CANONICAL" \
