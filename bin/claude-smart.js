@@ -847,7 +847,7 @@ function hasOpenCodeCli() {
   return Boolean(resolveOpenCodePath());
 }
 
-function resolveOpenCodePath(fallbackPath = "", explicitPath = "") {
+function resolveOpenCodePath(fallbackPath = "", explicitPath = "", legacySelection = false) {
   if (isWindows()) {
     if (!explicitPath.trim()) {
       const match = resolveCommand(["opencode.cmd", "opencode.exe", "opencode"]);
@@ -855,7 +855,7 @@ function resolveOpenCodePath(fallbackPath = "", explicitPath = "") {
     }
     const { resolveWindowsOpenCodePath } = require("../plugin/scripts/opencode-claude-compat.js");
     const searchPath = [process.env.PATH, fallbackPath].filter(Boolean).join(";");
-    return resolveWindowsOpenCodePath(explicitPath, searchPath);
+    return resolveWindowsOpenCodePath(explicitPath, searchPath, legacySelection);
   }
   const opencodePath = isExecutableFile(explicitPath) ? explicitPath : explicitPath.trim();
   if (opencodePath && (isAbsolute(opencodePath) || basename(opencodePath) !== opencodePath)) {
@@ -2574,9 +2574,9 @@ async function runGuidedHost(command, host, options, label, settings, preparedRu
   }
 }
 
-function learningProviderVersion(config) {
+function learningProviderVersion(config, saved = {}) {
   // Custom executables need not implement --version. Do not run arbitrary probes.
-  if (config.cliPath) return undefined;
+  if (config.cliPath || (config.provider === HOST_OPENCODE && saved.opencodePath?.trim())) return undefined;
   const command =
     config.provider === HOST_OPENCODE
       ? resolveOpenCodePath()
@@ -2660,7 +2660,7 @@ function adoptSavedOpenCodePath(config, saved, withWorkerPath) {
   if (previous?.trim() && !isAbsolute(previous) && basename(previous) !== previous) {
     throw new Error("Confirm the absolute OpenCode executable path in CLAUDE_SMART_CLI_PATH before setup.");
   }
-  const lookup = () => resolveOpenCodePath(runtimeEnv().PATH, previous);
+  const lookup = () => resolveOpenCodePath(runtimeEnv().PATH, previous, true);
   const selected = lookup() ?? withWorkerPath(lookup);
   if (!selected || !isAbsolute(selected)) {
     throw new Error("The previous OpenCode executable is unavailable. Confirm its path in CLAUDE_SMART_CLI_PATH before setup.");
@@ -2686,6 +2686,9 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   );
   const hasVariant = config.model?.includes("#");
   const selected = config.cliPath;
+  if (isWindows() && selected && selected === process.env.CLAUDE_SMART_CLI_PATH && !isAbsolute(selected)) {
+    throw new Error("Export CLAUDE_SMART_CLI_PATH as an absolute Windows OpenCode executable path.");
+  }
   let launcher;
   if (selected) {
     const absolute = isAbsolute(selected);
@@ -2708,7 +2711,12 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   if (!command || !isAbsolute(command)) {
     throw new Error("OpenCode CLI not found. Select an executable with CLAUDE_SMART_CLI_PATH.");
   }
-  if (command && isWindows()) command = resolve(command);
+  if (isWindows()) {
+    if (!/\.(?:exe|cmd|bat)$/i.test(command)) {
+      throw new Error("Select an .exe, .cmd, or .bat OpenCode launcher in CLAUDE_SMART_CLI_PATH.");
+    }
+    command = resolve(command);
+  }
   config.cliPath = command;
   if (compatibleWire) config.adoptedOpenCodePath = command;
   if (!hasVariant && compatibleWire) return;
@@ -3242,7 +3250,7 @@ async function runGuidedCommand(command, args) {
       version: JSON.parse(
         readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8"),
       ).version,
-      providerVersion: learningProviderVersion,
+      providerVersion: (config) => learningProviderVersion(config, saved),
       learningModel: async (config) => {
         try {
           const response = await fetch(new URL("/api/get_config", config.url), {

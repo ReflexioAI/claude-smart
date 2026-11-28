@@ -372,6 +372,36 @@ def test_windows_installer_resolves_configured_opencode_name(
     assert Path(result.stdout.strip()).resolve() == executable.resolve()
 
 
+@pytest.mark.parametrize("on_path", [True, False])
+def test_windows_saved_opencode_command_ignores_the_project_copy(tmp_path, on_path):
+    node = shutil.which("node")
+    assert node is not None
+    installer = Path(__file__).resolve().parents[1] / "bin/claude-smart.js"
+    tools = tmp_path / "actual tools"
+    tools.mkdir()
+    filename = "opencode.cmd"
+    (tmp_path / filename).touch(mode=0o755)
+    expected = tools / filename
+    if on_path:
+        expected.touch(mode=0o755)
+    result = subprocess.check_output(
+        [
+            node,
+            "-e",
+            "console.log(require(process.argv[1]).resolveOpenCodePath('', 'opencode.cmd', true))",
+            str(installer),
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "CLAUDE_SMART_TEST_PLATFORM": "win32", "PATH": str(tools)},
+        text=True,
+        timeout=10,
+    ).strip()
+    if on_path:
+        assert Path(result) == expected
+    else:
+        assert result == "null"
+
+
 @pytest.mark.skipif(os.name != "nt", reason="requires the native Windows shell")
 @pytest.mark.parametrize(
     "configured", [r"tools\opencode.cmd", r"tools\opencode", "opencode"]

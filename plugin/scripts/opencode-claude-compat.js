@@ -149,7 +149,7 @@ function executableFile(candidate) {
   }
 }
 
-function resolveWindowsOpenCodePath(value, searchPath = process.env.PATH || "") {
+function resolveWindowsOpenCodePath(value, searchPath = process.env.PATH || "", legacySelection = false) {
   const resolvePath = process.platform === "win32" ? path.win32.resolve : path.resolve;
   const name = value.trim();
   const extension = path.extname(name);
@@ -157,6 +157,13 @@ function resolveWindowsOpenCodePath(value, searchPath = process.env.PATH || "") 
     `${name}.exe`, `${name}.cmd`, `${name}.bat`, name,
   ];
   const pathQualified = /^[A-Za-z]:|[\\/]/.test(name);
+  if (legacySelection && !pathQualified) {
+    // A saved command ran from a private work directory. The project
+    // directory (including relative PATH entries) cannot identify it.
+    const absolutePath = searchPath.split(";").filter(path.isAbsolute).join(";");
+    const match = commandPath(names, absolutePath, ";");
+    return match ? resolvePath(match) : null;
+  }
   const candidate = /\.(?:cmd|bat)$/i.test(value.trimEnd()) ? value.trimEnd() : value;
   const searchFirst = !pathQualified && !extension && candidate === name;
   // Explicit files retain their existing lookup, even if PATH has a slow entry.
