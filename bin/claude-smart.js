@@ -4265,19 +4265,25 @@ function recordRuntimeTools(pluginRoot) {
       mode: 0o600,
     });
   }
-  // Record only directories that resolved service utilities during setup.
-  // The hook host's own PATH still takes precedence over these fallbacks.
+  // Shell setup can use Node and npm from the setup terminal. Keep their
+  // directories available when the host later launches with a smaller PATH.
   const servicePaths = new Set();
-  for (const name of ["curl", "lsof", "ps", "open", "xdg-open", "powershell", "pwsh",
-                      "taskkill", "tasklist", "netstat"]) {
+  const npm = resolveCommand(isWindows() ? ["npm.cmd", "npm.exe", "npm"] : ["npm"]);
+  if (npm) servicePaths.add(dirname(resolve(npm)));
+  for (const name of ["node", "curl", "lsof", "ps", "open", "xdg-open", "powershell",
+                      "pwsh", "taskkill", "tasklist", "netstat"]) {
     const executable = resolveCommand(isWindows() ? [`${name}.exe`, name] : [name]);
     if (executable) servicePaths.add(dirname(resolve(executable)));
   }
-  if (servicePaths.size) {
-    writeFileSync(join(pluginRoot, "guide-service-paths"), [...servicePaths].join("\0") + "\0", {
-      flag: "wx",
+  const stage = mkdtempSync(join(pluginRoot, ".service-paths-"));
+  try {
+    const receipt = join(stage, "guide-service-paths");
+    writeFileSync(receipt, [...servicePaths].map((directory) => directory + "\0").join(""), {
       mode: 0o600,
     });
+    renameSync(receipt, join(pluginRoot, "guide-service-paths"));
+  } finally {
+    rmSync(stage, { recursive: true, force: true });
   }
 }
 

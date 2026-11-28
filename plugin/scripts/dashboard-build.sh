@@ -29,6 +29,7 @@ if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
   echo "claude-smart: the guide prepares this dashboard. Rerun npx claude-smart setup to repair it." >&2
   exit 1
 fi
+claude_smart_append_service_paths "$PLUGIN_ROOT"
 claude_smart_prepend_node_bins
 DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
 
@@ -53,8 +54,8 @@ if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
 fi
 
 # Collapse the PATH before invoking npm. In the detached SessionStart hook the
-# PATH is ~7-9KB: prepend_node_bins pushes a (nonexistent) private-node dir to
-# the front and repeated login-shell sourcing duplicates the whole list 3-4x.
+# Git Bash's inherited PATH can already have duplicate entries and setup may
+# add private Node and recorded tool directories.
 # When npm's node process spawns a cmd.exe grandchild for a lifecycle/run script
 # (`node -e ...`, `next build`), that oversized environment is truncated for the
 # child, dropping the entries the script needs — nodejs and npm-appended

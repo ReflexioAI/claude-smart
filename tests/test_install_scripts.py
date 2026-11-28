@@ -1448,6 +1448,69 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+def test_in_place_claude_install_refreshes_dashboard_tools(tmp_path: Path) -> None:
+    package = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    stable_package = tmp_path / ".claude-smart/claude-code/claude-smart"
+    stable_package.parent.mkdir(parents=True)
+    package.rename(stable_package)
+    plugin = stable_package / "plugin"
+    receipt = plugin / "guide-service-paths"
+    receipt.write_bytes(os.fsencode(tmp_path / "stale") + b"\0")
+    node_tools = tmp_path / "node-tools"
+    npm_tools = tmp_path / "npm-tools"
+    node_tools.mkdir()
+    npm_tools.mkdir()
+    _write_executable(node_tools / "node", "#!/bin/sh\nexit 0\n")
+    _write_executable(npm_tools / "npm", "#!/bin/sh\nnode --version\n")
+    result = _run_fake_claude_code_install(
+        tmp_path,
+        stable_package,
+        {
+            "PATH": os.pathsep.join(
+                (
+                    str(tmp_path / "fake-bin"),
+                    str(node_tools),
+                    str(npm_tools),
+                    os.environ["PATH"],
+                )
+            )
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    fallback_paths = receipt.read_bytes().split(b"\0")
+    assert os.fsencode(node_tools) in fallback_paths
+    assert os.fsencode(npm_tools) in fallback_paths
+    assert os.fsencode(tmp_path / "stale") not in fallback_paths
+
+    scripts = plugin / "scripts"
+    for name in ("_lib.sh", "dashboard-build.sh"):
+        shutil.copy2(LIB.parent / name, scripts)
+    (plugin / "dashboard").mkdir()
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(
+        tmp_path,
+        "dirname",
+        "mkdir",
+        "rmdir",
+        "rm",
+        "awk",
+        "uname",
+        "bash",
+    )
+    result = subprocess.run(
+        ["/bin/bash", str(scripts / "dashboard-build.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        "dashboard build: complete"
+        in (tmp_path / ".claude-smart/dashboard.log").read_text()
+    )
+
+
 @pytest.mark.parametrize("managed", [True, False])
 def test_node_install_summary_claims_a_backend_only_when_one_runs(
     tmp_path: Path, managed: bool
@@ -4445,14 +4508,18 @@ def test_smart_install_refreshes_stale_lock_before_retrying_sync(
     ]
 
 
+@pytest.mark.parametrize("stale_git", [False, True])
 def test_smart_install_locked_sync_success_does_not_refresh_lock(
     tmp_path: Path,
+    stale_git: bool,
 ) -> None:
     plugin_root, smart_install, env = _prepare_smart_install_sync_fixture(
         tmp_path, mode="fresh"
     )
     git = tmp_path / "bin/git"
     _write_executable(git, "#!/bin/sh\nexit 0\n")
+    if stale_git:
+        (plugin_root / "guide-git").write_text(json.dumps(str(tmp_path / "old/git")))
     login_probe = _trace_login_shell(tmp_path, env)
 
     result = subprocess.run(
@@ -7666,6 +7733,35 @@ def test_package_tarball_ships_generated_marketplace_manifest(tmp_path: Path) ->
     assert manifest["plugins"][0]["source"] == "./plugin"
 
 
+def test_package_excludes_local_tool_receipts(tmp_path: Path) -> None:
+    npm = shutil.which("npm")
+    if not npm:
+        pytest.skip("npm is required for package smoke tests")
+    shutil.copy2(REPO_ROOT / "package.json", tmp_path)
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    shutil.copy2(REPO_ROOT / "plugin/.npmignore", plugin)
+    (plugin / "pyproject.toml").touch()
+    (plugin / "guide-git").write_text("/local/git")
+    (plugin / "guide-service-paths").write_text("/local/bin")
+    stage = plugin / ".service-paths-crashed"
+    stage.mkdir()
+    (stage / "private").write_text("/local/private")
+
+    result = subprocess.run(
+        [npm, "pack", "--ignore-scripts", "--dry-run", "--json"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    files = {entry["path"] for entry in json.loads(result.stdout)[0]["files"]}
+    assert {name for name in files if name.startswith("plugin/")} == {
+        "plugin/pyproject.toml"
+    }
+
+
 def test_package_tarball_ships_fresh_uv_lock(tmp_path: Path) -> None:
     uv = shutil.which("uv")
     if not uv:
@@ -9023,6 +9119,19 @@ def test_install_private_node_installs_from_verified_archive(tmp_path: Path) -> 
     assert (current / "bin" / "node").exists()
     assert not (tmp_path / ".claude-smart" / "dashboard-unavailable").exists()
     assert not (tmp_path / ".claude-smart" / "install-failed").exists()
+
+
+def test_node_only_repair_preserves_python_install_failure(tmp_path: Path) -> None:
+    failure = tmp_path / ".claude-smart" / "install-failed"
+    failure.parent.mkdir()
+    diagnostic = "Python dependencies failed to install\nfingerprint=previous\n"
+    failure.write_text(diagnostic)
+    dist = _fake_node_dist(tmp_path)
+
+    result = _run_private_node_install(tmp_path, f"file://{dist}")
+
+    assert result.returncode == 0, result.stderr
+    assert failure.read_text() == diagnostic
 
 
 def test_install_private_node_checksum_failure_is_dashboard_only(

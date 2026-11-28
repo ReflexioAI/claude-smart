@@ -80,7 +80,9 @@ acquire_install_lock() {
 # the first install has finished and report a false missing-dependency error.
 acquire_install_lock
 
-rm -f "$FAILURE_MARKER"
+if [ "${CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY:-}" != "1" ]; then
+  rm -f "$FAILURE_MARKER"
+fi
 
 write_failure() {
   local reason fp_hash
@@ -507,7 +509,6 @@ preflight_supported_runtime_platform
 record_standalone_git() {
   local executable python receipt
   receipt="$PLUGIN_ROOT/guide-git"
-  [ ! -e "$receipt" ] || return 0
   executable="$(command -v git)" || return 0
   python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
   if claude_smart_is_windows; then
@@ -517,21 +518,41 @@ record_standalone_git() {
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 receipt, executable = sys.argv[1:]
 executable_path = Path(executable).absolute()
 if os.name == "nt" and not executable_path.is_file():
     executable_path = executable_path.with_suffix(".exe")
-if not executable_path.is_file() or not os.access(executable_path, os.X_OK):
+
+
+def usable(path: object) -> bool:
+    return (
+        isinstance(path, str)
+        and Path(path).is_absolute()
+        and Path(path).is_file()
+        and os.access(path, os.X_OK)
+    )
+
+
+if not usable(str(executable_path)):
     raise SystemExit(0)
+receipt_path = Path(receipt)
 try:
-    fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-except OSError:
+    if usable(json.loads(receipt_path.read_text(encoding="utf-8"))):
+        raise SystemExit(0)
+except (OSError, ValueError):
     pass
-else:
-    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        json.dump(str(executable_path), stream)
+try:
+    with tempfile.TemporaryDirectory(prefix=".service-paths-", dir=receipt_path.parent) as stage:
+        staged_receipt = Path(stage) / receipt_path.name
+        staged_receipt.write_text(json.dumps(str(executable_path)), encoding="utf-8")
+        staged_receipt.chmod(0o600)
+        staged_receipt.replace(receipt_path)
+except OSError:
+    # Some standalone installs run from a read-only package directory.
+    pass
 PY
 }
 

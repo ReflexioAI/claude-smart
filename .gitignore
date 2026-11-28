@@ -46,6 +46,9 @@ benchmarks/memory_comparison/results
 
 # Generated release vendor bundle
 /plugin/vendor/
+/plugin/guide-git
+/plugin/guide-service-paths
+/plugin/.service-paths-*/
 
 # Generated at pack time from .claude-plugin/marketplace.template.json.
 # Deliberately not committed: it is what makes this repo installable as a Claude
