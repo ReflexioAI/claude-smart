@@ -360,12 +360,20 @@ Hooks and slash commands use it to keep project IDs stable in linked worktrees
 when the host starts them with a smaller PATH. If Git moves to a location
 available only from your login profile, rerun setup to discover it. Standalone
 hooks and slash commands request installation repair when their Python module
-cannot load.
+cannot load. Standalone repair refreshes unusable Git bindings and records the
+service tools it resolves, including Node, npm, uv, and native host launchers.
 
 For the bundled backend, setup also records the default Claude Code or Codex
 launcher it resolves. The backend uses that executable for the matching native
 host and checks that it is still available before replacing a running service.
 Explicit launcher overrides take precedence.
+
+Hooks, slash commands, and services inherit the host's PATH. The npm installer
+records fallback directories for service tools it finds during setup. If your
+tools are available through a shell-specific shim, run setup from a terminal
+that can resolve them. Standalone shell repair can install `uv` and Node in
+their existing per-user locations. The old
+`CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS` assignment has no effect.
 
 ### Claude Code
 
@@ -1058,6 +1066,10 @@ fails the vendored Reflexio check. Standalone installs can still repair their
 vendored package with `uv` before starting the backend.
 
 ### Dashboard sources in packaged installs
+
+Dashboard status in a prepared runtime uses its private Node executable to
+check the ownership header on loopback. The same check recognizes a running
+dashboard even when the host omits `curl` from PATH.
 
 `npm run build` first runs `scripts/prepare-tailwind-sources.cjs`. It prepends
 `!**` to the dashboard's own `.gitignore` so ancestor dotfiles repositories do

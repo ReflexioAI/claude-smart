@@ -98,6 +98,56 @@ def test_prepared_hook_uses_setup_git_to_keep_the_parent_project_id(
     assert ids.resolve_project_id(worktree) == "parent-project"
 
 
+def test_broken_standalone_git_binding_preserves_linked_worktree_id(
+    tmp_path, monkeypatch
+) -> None:
+    _isolate_git_env(monkeypatch)
+    parent = tmp_path / "parent-project"
+    _repo(parent)
+    worktree = tmp_path / "linked-worktree"
+    _git("-C", str(parent), "worktree", "add", "-q", str(worktree))
+
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    broken_git = tmp_path / "broken-git"
+    broken_git.write_text("#!/bin/sh\nexit 127\n")
+    broken_git.chmod(0o700)
+    (plugin / "guide-git").write_text(json.dumps(str(broken_git)))
+    monkeypatch.setattr(sys, "prefix", str(plugin / ".venv"))
+
+    assert ids.resolve_project_id(worktree) == "parent-project"
+
+
+def test_timed_out_git_binding_is_tried_once_for_the_hook(
+    tmp_path, monkeypatch
+) -> None:
+    _isolate_git_env(monkeypatch)
+    parent = tmp_path / "parent-project"
+    _repo(parent)
+    worktree = tmp_path / "linked-worktree"
+    _git("-C", str(parent), "worktree", "add", "-q", str(worktree))
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    saved_git = tmp_path / "saved-git"
+    saved_git.touch(mode=0o700)
+    (plugin / "guide-git").write_text(json.dumps(str(saved_git)))
+    monkeypatch.setattr(sys, "prefix", str(plugin / ".venv"))
+    monkeypatch.setattr(ids, "_TIMED_OUT_GIT_BINDINGS", set())
+    original_run = subprocess.run
+    attempts = []
+
+    def run_git(argv, **kwargs):
+        if argv[0] == str(saved_git):
+            attempts.append(argv[1])
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_git)
+    assert ids.resolve_project_id(worktree) == "parent-project"
+    assert ids.resolve_project_id(worktree) == "parent-project"
+    assert attempts == ["rev-parse"]
+
+
 def test_resolve_keeps_separate_git_dir_checkout_on_its_toplevel(
     tmp_path, monkeypatch
 ) -> None:

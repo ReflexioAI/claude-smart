@@ -151,6 +151,9 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         'if [ "$1" = "-P" ]; then shift; fi\n'
         'fixture_prefix="$(cd "$(dirname "$0")/.." && pwd)"\n'
         'fixture_plugin="$(cd "$fixture_prefix/.." && pwd)"\n'
+        'if [ "$1" = "-I" ] && [ "${2:-}" = "-" ]; then\n'
+        f'exec {shlex.quote(sys.executable)} "$@"\n'
+        "fi\n"
         'if [ "$1" = "-I" ] && [ "${2:-}" = "-m" ] && { [ "${3:-}" = "claude_smart.env_config" ] || [ "${3:-}" = "claude_smart.native_selection" ]; }; then\n'
         '  fixture_module="$3"; shift 3\n'
         '  fixture_sdk="$fixture_prefix/fixture-site-packages"\n'
@@ -329,7 +332,6 @@ def _backend_service_env(
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
             "BACKEND_TEST_PORT": str(port),
             "CLAUDE_SMART_HOST": "codex",
-            "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
             "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "0",
             "REFLEXIO_URL": "",
         }
@@ -404,7 +406,6 @@ def _run_private_node_install(
     env = _isolated_env(tmp_path)
     env["CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY"] = "1"
     env["CLAUDE_SMART_NODE_BASE_URL"] = base_url
-    env["CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS"] = "0"
     env["PATH"] = _minimal_path(
         tmp_path,
         "dirname",
@@ -593,37 +594,6 @@ def test_windows_detached_spawn_closes_hook_output_pipes() -> None:
     assert 'nohup "$@" < /dev/null &' in lib
 
 
-def test_login_shell_path_lookup_is_bounded(tmp_path: Path) -> None:
-    slow_shell = tmp_path / "slow-shell"
-    slow_shell.write_text("#!/bin/sh\nsleep 5\nprintf '%s' '/too-late/bin'\n")
-    slow_shell.chmod(slow_shell.stat().st_mode | stat.S_IXUSR)
-
-    env = _isolated_env(tmp_path)
-    env["SHELL"] = str(slow_shell)
-    env["CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS"] = "1"
-    env["PATH"] = _minimal_path(tmp_path, "cat", "rm", "sleep")
-
-    started = time.monotonic()
-    result = subprocess.run(
-        [
-            "/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            f'. "{LIB}"; claude_smart_source_login_path; printf "%s" "$PATH"',
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=3,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert time.monotonic() - started < 3
-    assert "/too-late/bin" not in result.stdout
-
-
 def test_detached_spawns_with_log_redirection_preserve_output_on_windows() -> None:
     hook_entry = HOOK_ENTRY.read_text()
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
@@ -742,6 +712,7 @@ def test_service_start_scripts_recover_missing_dependencies_without_cli_command(
         in dashboard
     )
     assert "claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1" in dashboard
+    assert "CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY=1" in dashboard
     assert (
         "npm is not on PATH; installer recovery scheduled; dashboard cannot start yet"
         in dashboard
@@ -784,7 +755,6 @@ def test_backend_service_never_starts_the_bundled_backend_for_a_custom_local_ser
         "HOME": str(tmp_path),
         "PATH": "/usr/bin:/bin",
         "SHELL": "/bin/sh",
-        "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
         # Never start a real backend from the bundled-endpoint rows.
         "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
     }
@@ -1476,6 +1446,72 @@ def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+def test_in_place_claude_install_refreshes_dashboard_tools(tmp_path: Path) -> None:
+    package = _fake_claude_code_package(tmp_path, "#!/bin/sh\nexit 0\n")
+    stable_package = tmp_path / ".claude-smart/claude-code/claude-smart"
+    stable_package.parent.mkdir(parents=True)
+    package.rename(stable_package)
+    plugin = stable_package / "plugin"
+    receipt = plugin / "guide-service-paths"
+    receipt.write_bytes(os.fsencode(tmp_path / "stale") + b"\0")
+    node_tools = tmp_path / "node-tools"
+    npm_tools = tmp_path / "npm-tools"
+    uv_tools = tmp_path / "uv-tools"
+    native_tools = tmp_path / "native-tools"
+    for directory in (node_tools, npm_tools, uv_tools, native_tools):
+        directory.mkdir()
+    _write_executable(node_tools / "node", "#!/bin/sh\nprintf 'setup-node\\n'\n")
+    _write_executable(npm_tools / "node", "#!/bin/sh\nexit 127\n")
+    _write_executable(npm_tools / "npm", "#!/bin/sh\nnode --version\n")
+    _write_executable(uv_tools / "uv", "#!/bin/sh\nexit 0\n")
+    _write_executable(native_tools / "codex", "#!/bin/sh\nexit 0\n")
+    setup_path = (
+        tmp_path / "fake-bin",
+        node_tools,
+        npm_tools,
+        uv_tools,
+        native_tools,
+    )
+    result = _run_fake_claude_code_install(
+        tmp_path,
+        stable_package,
+        {"PATH": os.pathsep.join([*map(str, setup_path), os.environ["PATH"]])},
+    )
+    assert result.returncode == 0, result.stderr
+    fallback_paths = receipt.read_bytes().split(b"\0")
+    assert fallback_paths[: len(setup_path)] == [
+        os.fsencode(directory) for directory in setup_path
+    ]
+    assert os.fsencode(tmp_path / "stale") not in fallback_paths
+
+    scripts = plugin / "scripts"
+    for name in ("_lib.sh", "dashboard-build.sh"):
+        shutil.copy2(LIB.parent / name, scripts)
+    (plugin / "dashboard").mkdir()
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(
+        tmp_path,
+        "dirname",
+        "mkdir",
+        "rmdir",
+        "rm",
+        "awk",
+        "uname",
+        "bash",
+    )
+    result = subprocess.run(
+        ["/bin/bash", str(scripts / "dashboard-build.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    log = (tmp_path / ".claude-smart/dashboard.log").read_text()
+    assert "setup-node" in log
+    assert "dashboard build: complete" in log
 
 
 @pytest.mark.parametrize("managed", [True, False])
@@ -3340,6 +3376,81 @@ def test_dashboard_service_accepts_healthy_shared_dashboard_marker() -> None:
     assert "foreign listener" in dashboard
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Uses a POSIX shell and Node symlink")
+@pytest.mark.parametrize(
+    ("status", "owned", "node_works"),
+    [
+        (200, True, True),
+        (200, False, True),
+        (404, True, True),
+        (None, True, True),
+        (200, True, False),
+    ],
+)
+def test_prepared_dashboard_status_uses_private_node_without_profile(
+    tmp_path: Path, status: int | None, owned: bool, node_works: bool
+) -> None:
+    class Listener(http.server.BaseHTTPRequestHandler):
+        def do_HEAD(self) -> None:
+            assert self.path == "/api/health"
+            if status is None:
+                # Keep the connection open beyond the probe's total deadline.
+                release_request.wait(5)
+                return
+            self.send_response(status)
+            if owned:
+                self.send_header("x-claude-smart-dashboard", "1")
+            self.end_headers()
+
+        def log_message(self, format: str, *_args: object) -> None:
+            pass
+
+    release_request = threading.Event()
+    scripts = tmp_path / "runtime/plugin/scripts"
+    scripts.mkdir(parents=True)
+    (scripts.parent / "guide-prepared-runtime").touch()
+    for name in ("_lib.sh", "dashboard-service.sh"):
+        shutil.copy2(LIB.with_name(name), scripts / name)
+    private_node = tmp_path / ".claude-smart/node/current/bin"
+    private_node.mkdir(parents=True)
+    tools = ["dirname", "mkdir", "uname"]
+    if node_works:
+        (private_node / "node").symlink_to(node_bin())
+    else:
+        _write_executable(private_node / "node", "#!/bin/sh\nexit 127\n")
+        tools.extend(["curl", "grep"])
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(tmp_path, *tools)
+    env["NODE_OPTIONS"] = "--require=missing-profile-preload"
+    login_probe = _trace_login_shell(tmp_path, env)
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Listener) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        env["DASHBOARD_PORT"] = str(port)
+        try:
+            result = subprocess.run(
+                ["/bin/bash", str(scripts / "dashboard-service.sh"), "status"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=True,
+                timeout=4,
+            )
+        finally:
+            release_request.set()
+            server.shutdown()
+            thread.join()
+
+    expected = (
+        f"running on http://localhost:{port}"
+        if owned and status == 200
+        else "not running"
+    )
+    assert result.stdout.splitlines() == [expected]
+    assert not login_probe.exists()
+
+
 def test_backend_service_verifies_bundled_reflexio_runtime_identity() -> None:
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
@@ -3487,6 +3598,7 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert (
         "if (claude_smart_source_reflexio_env; install_complete); then\n"
         "  claude_smart_source_reflexio_env\n"
+        "  record_standalone_tools\n"
         "  verify_windows_local_embedding_runtime\n"
         "  start_backend_service"
     ) in smart_install
@@ -4399,12 +4511,28 @@ def test_smart_install_refreshes_stale_lock_before_retrying_sync(
     ]
 
 
+@pytest.mark.parametrize("prior_git", ["none", "moved", "broken", "working"])
 def test_smart_install_locked_sync_success_does_not_refresh_lock(
     tmp_path: Path,
+    prior_git: str,
 ) -> None:
     plugin_root, smart_install, env = _prepare_smart_install_sync_fixture(
         tmp_path, mode="fresh"
     )
+    git = tmp_path / "bin/git"
+    _write_executable(git, "#!/bin/sh\nexit 0\n")
+    old_git = tmp_path / "old/git"
+    if prior_git != "none":
+        (plugin_root / "guide-git").write_text(json.dumps(str(old_git)))
+    if prior_git in {"broken", "working"}:
+        old_git.parent.mkdir()
+        status = 127 if prior_git == "broken" else 0
+        _write_executable(old_git, f"#!/bin/sh\nexit {status}\n")
+    native_tools = tmp_path / "native-tools"
+    native_tools.mkdir()
+    _write_executable(native_tools / "codex", "#!/bin/sh\nexit 0\n")
+    env["PATH"] = str(native_tools) + os.pathsep + env["PATH"]
+    login_probe = _trace_login_shell(tmp_path, env)
 
     result = subprocess.run(
         ["/bin/bash", "--noprofile", "--norc", str(smart_install)],
@@ -4419,6 +4547,12 @@ def test_smart_install_locked_sync_success_does_not_refresh_lock(
     assert not (tmp_path / ".claude-smart" / "install-failed").exists()
     assert (tmp_path / ".claude-smart" / "install-complete").exists()
     assert (plugin_root / "uv.lock").read_text() == "locked\n"
+    assert Path(json.loads((plugin_root / "guide-git").read_text())) == (
+        old_git if prior_git == "working" else git
+    )
+    stored_paths = (plugin_root / "guide-service-paths").read_bytes().split(b"\0")
+    assert os.fsencode(native_tools) in stored_paths
+    assert not login_probe.exists()
     assert (tmp_path / "uv.log").read_text().splitlines()[:1] == [
         "uv sync --locked --python 3.12 --quiet",
     ]
@@ -4806,7 +4940,6 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
         {
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
             "CLAUDE_SMART_HOST": "codex",
-            "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
             "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "1",
         }
     )
@@ -5488,7 +5621,6 @@ def test_backend_stop_reaps_legacy_same_root_shared_pid(
                 "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
                 "BACKEND_TEST_PORT": str(port),
                 "CLAUDE_SMART_HOST": "codex",
-                "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
                 "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "0",
                 "LEGACY_PID": str(legacy.pid),
                 "REFLEXIO_URL": "",
@@ -5704,7 +5836,6 @@ def test_backend_service_does_not_kill_foreign_listener(tmp_path: Path) -> None:
                 "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
                 "BACKEND_TEST_PORT": str(port),
                 "CLAUDE_SMART_HOST": "codex",
-                "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
                 "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "0",
                 "FOREIGN_PID": str(foreign.pid),
                 "REFLEXIO_URL": "",
@@ -5772,7 +5903,6 @@ def test_backend_service_preflight_rejects_non_bundled_reflexio(
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
             "BACKEND_TEST_PORT": str(port),
             "CLAUDE_SMART_HOST": "codex",
-            "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
             "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "0",
             "REFLEXIO_URL": "",
         }
@@ -6431,14 +6561,56 @@ def _trace_login_shell(tmp_path: Path, env: dict[str, str]) -> Path:
         login_shell,
         '#!/bin/sh\nprintf called > "$HOME/login-probed"\nprintf %s "$PATH"\n',
     )
-    env.update(SHELL=str(login_shell), CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS="2")
+    env["SHELL"] = str(login_shell)
     return tmp_path / "login-probed"
 
 
+def test_services_reuse_setup_tools_without_overriding_host_path(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "plugin"
+    primary = tmp_path / "host-tools"
+    fallback = tmp_path / "setup utilities"
+    for directory in (root, primary, fallback):
+        directory.mkdir()
+    for directory, name in ((primary, "ps"), (fallback, "ps"), (fallback, "lsof")):
+        _write_executable(directory / name, "#!/bin/sh\nexit 0\n")
+    (root / "guide-service-paths").write_bytes(
+        b"\0".join(
+            os.fsencode(directory) for directory in (primary, fallback, fallback)
+        )
+        + b"\0"
+    )
+    env = _isolated_env(tmp_path)
+    env["PATH"] = str(primary)
+    login_probe = _trace_login_shell(tmp_path, env)
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            '. "$1"; claude_smart_append_service_paths "$2"; command -v ps; command -v lsof; printf "%s\\n" "$PATH"',
+            "bash",
+            str(LIB),
+            str(root),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=5,
+    )
+    assert result.stdout.splitlines() == [
+        str(primary / "ps"),
+        str(fallback / "lsof"),
+        f"{primary}:{fallback}",
+    ]
+    assert not login_probe.exists()
+
+
 @pytest.mark.parametrize("entrypoint", [HOOK_ENTRY, CLI_SH])
-@pytest.mark.parametrize("has_git_binding", [False, True])
-def test_prepared_commands_skip_login_shell_with_setup_git_binding(
-    tmp_path: Path, entrypoint: Path, has_git_binding: bool
+@pytest.mark.parametrize("prepared", [False, True])
+def test_runtime_commands_never_start_a_login_shell(
+    tmp_path: Path, entrypoint: Path, prepared: bool
 ) -> None:
     root = tmp_path / "plugin"
     scripts = root / "scripts"
@@ -6446,8 +6618,8 @@ def test_prepared_commands_skip_login_shell_with_setup_git_binding(
     shutil.copy2(LIB, scripts / "_lib.sh")
     script = scripts / entrypoint.name
     shutil.copy2(entrypoint, script)
-    (root / "guide-prepared-runtime").write_text("runtime-AbCd12")
-    if has_git_binding:
+    if prepared:
+        (root / "guide-prepared-runtime").write_text("runtime-AbCd12")
         (root / "guide-git").write_text(json.dumps(shutil.which("git")))
     _write_fake_plugin_python(
         root, '#!/bin/sh\n[ "$1" = -P ] || printf \'{"continue":true}\\n\'\n'
@@ -6466,7 +6638,7 @@ def test_prepared_commands_skip_login_shell_with_setup_git_binding(
     )
 
     assert json.loads(result.stdout) == {"continue": True}
-    assert login_probe.exists() is not has_git_binding
+    assert not login_probe.exists()
 
 
 def test_install_complete_requires_importable_hook_package() -> None:
@@ -6568,7 +6740,6 @@ def test_hook_entry_failure_marker_uses_resolved_python_on_windows(
     _write_executable(bin_dir / "uv", "#!/bin/sh\nprintf '/fixture/python-3.12\\n'\n")
     env = _isolated_env(tmp_path)
     # Keep the simulated Windows uname/python ahead of this Mac's login PATH.
-    env["CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS"] = "0"
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     fingerprint = subprocess.run(
         [
@@ -6604,6 +6775,64 @@ def test_hook_entry_failure_marker_uses_resolved_python_on_windows(
     assert result.returncode == 0, result.stderr
     assert "claude-smart is not installed correctly" in result.stdout
     assert not (tmp_path / "python3-called").exists()
+
+
+def test_hook_preserves_failure_fingerprinted_with_setup_uv(tmp_path: Path) -> None:
+    root = tmp_path / "plugin"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    for source in (LIB, HOOK_ENTRY):
+        shutil.copy2(source, scripts)
+    (root / "pyproject.toml").write_text("[project]\nname='claude-smart'\n")
+    (root / "uv.lock").touch()
+    setup_bin = tmp_path / "setup-bin"
+    setup_bin.mkdir()
+    _write_executable(setup_bin / "uv", "#!/bin/sh\nprintf '/setup/python-3.12\\n'\n")
+    (root / "guide-service-paths").write_bytes(os.fsencode(setup_bin) + b"\0")
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(
+        tmp_path,
+        "dirname",
+        "mkdir",
+        "cat",
+        "uname",
+        "awk",
+        "sed",
+        "shasum",
+        "sha256sum",
+        "cksum",
+        "python3",
+        "mktemp",
+        "rm",
+    )
+    fingerprint = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            '. "$1/_lib.sh"; claude_smart_install_fingerprint_hash "$2" "$1"',
+            "_",
+            str(scripts),
+            str(root),
+        ],
+        env={**env, "PATH": str(setup_bin) + os.pathsep + env["PATH"]},
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    marker = tmp_path / ".claude-smart/install-failed"
+    marker.parent.mkdir()
+    marker.write_text(f"setup dependency failure\nfingerprint={fingerprint}\n")
+
+    result = subprocess.run(
+        ["/bin/bash", str(scripts / "hook_entry.sh"), "claude-code", "session-start"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "setup dependency failure" in result.stdout
+    assert marker.exists()
 
 
 @pytest.mark.parametrize(
@@ -7576,6 +7805,35 @@ def test_package_tarball_ships_generated_marketplace_manifest(tmp_path: Path) ->
     expected = json.loads((REPO_ROOT / "package.json").read_text())["version"]
     assert [plugin["version"] for plugin in manifest["plugins"]] == [expected]
     assert manifest["plugins"][0]["source"] == "./plugin"
+
+
+def test_package_excludes_local_tool_receipts(tmp_path: Path) -> None:
+    npm = shutil.which("npm")
+    if not npm:
+        pytest.skip("npm is required for package smoke tests")
+    shutil.copy2(REPO_ROOT / "package.json", tmp_path)
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    shutil.copy2(REPO_ROOT / "plugin/.npmignore", plugin)
+    (plugin / "pyproject.toml").touch()
+    (plugin / "guide-git").write_text("/local/git")
+    (plugin / "guide-service-paths").write_text("/local/bin")
+    stage = plugin / ".service-paths-crashed"
+    stage.mkdir()
+    (stage / "private").write_text("/local/private")
+
+    result = subprocess.run(
+        [npm, "pack", "--ignore-scripts", "--dry-run", "--json"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    files = {entry["path"] for entry in json.loads(result.stdout)[0]["files"]}
+    assert {name for name in files if name.startswith("plugin/")} == {
+        "plugin/pyproject.toml"
+    }
 
 
 def test_package_tarball_ships_fresh_uv_lock(tmp_path: Path) -> None:
@@ -8611,6 +8869,62 @@ def test_dashboard_build_writes_marker_when_npm_missing(tmp_path: Path) -> None:
     assert "npm is not on PATH" in marker.read_text()
 
 
+def test_dashboard_resumes_startup_after_node_only_repair(tmp_path: Path) -> None:
+    root = tmp_path / "plugin"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    (root / "dashboard").mkdir()
+    for name in ("_lib.sh", "dashboard-service.sh"):
+        shutil.copy2(LIB.parent / name, scripts)
+    private_node = tmp_path / ".claude-smart/node/current/bin"
+    private_node.mkdir(parents=True)
+    _write_executable(tmp_path / "npm-ready", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        scripts / "smart-install.sh",
+        "#!/bin/sh\n"
+        '[ "$CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY" = 1 ] || exit 1\n'
+        'mv "$HOME/npm-ready" "$HOME/.claude-smart/node/current/bin/npm"\n',
+    )
+    _write_executable(
+        scripts / "dashboard-build.sh",
+        '#!/bin/sh\nprintf "%s\\n" "build resumed" > "$HOME/dashboard-resumed"\n',
+    )
+    env = _isolated_env(tmp_path)
+    env["CLAUDE_SMART_DASHBOARD_AUTOSTART"] = "1"
+    env["DASHBOARD_PORT"] = str(_free_port())
+    env["PATH"] = _minimal_path(
+        tmp_path,
+        "awk",
+        "bash",
+        "cat",
+        "date",
+        "dirname",
+        "env",
+        "mkdir",
+        "mv",
+        "nohup",
+        "ps",
+        "python3",
+        "rm",
+        "rmdir",
+        "setsid",
+        "sleep",
+        "stat",
+        "uname",
+    )
+
+    result = subprocess.run(
+        ["/bin/bash", str(scripts / "dashboard-service.sh"), "start"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert result.returncode == 0
+    _wait_for_file_text(tmp_path / "dashboard-resumed", "build resumed")
+
+
 def test_codex_hook_ensure_root_tracks_active_plugin_root(tmp_path: Path) -> None:
     node = shutil.which("node")
     if not node:
@@ -8935,6 +9249,19 @@ def test_install_private_node_installs_from_verified_archive(tmp_path: Path) -> 
     assert (current / "bin" / "node").exists()
     assert not (tmp_path / ".claude-smart" / "dashboard-unavailable").exists()
     assert not (tmp_path / ".claude-smart" / "install-failed").exists()
+
+
+def test_node_only_repair_preserves_python_install_failure(tmp_path: Path) -> None:
+    failure = tmp_path / ".claude-smart" / "install-failed"
+    failure.parent.mkdir()
+    diagnostic = "Python dependencies failed to install\nfingerprint=previous\n"
+    failure.write_text(diagnostic)
+    dist = _fake_node_dist(tmp_path)
+
+    result = _run_private_node_install(tmp_path, f"file://{dist}")
+
+    assert result.returncode == 0, result.stderr
+    assert failure.read_text() == diagnostic
 
 
 def test_install_private_node_checksum_failure_is_dashboard_only(

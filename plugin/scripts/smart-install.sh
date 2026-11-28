@@ -17,7 +17,7 @@ if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
   exit 1
 fi
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "smart-install.sh" "$@"
-claude_smart_source_login_path
+claude_smart_append_service_paths "$PLUGIN_ROOT"
 claude_smart_prepend_astral_bins
 claude_smart_prepend_node_bins
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
@@ -81,7 +81,9 @@ acquire_install_lock() {
 # the first install has finished and report a false missing-dependency error.
 acquire_install_lock
 
-rm -f "$FAILURE_MARKER"
+if [ "${CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY:-}" != "1" ]; then
+  rm -f "$FAILURE_MARKER"
+fi
 
 write_failure() {
   local reason fp_hash
@@ -505,8 +507,83 @@ fi
 
 preflight_supported_runtime_platform
 
+record_standalone_tools() {
+  local python runtime_root
+  python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
+  runtime_root="$PLUGIN_ROOT"
+  if claude_smart_is_windows; then
+    runtime_root="$(claude_smart_to_windows_path "$runtime_root")"
+  fi
+  "$python" -I - "$runtime_root" <<'PY'
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path(sys.argv[1])
+git_receipt = root / "guide-git"
+service_receipt = root / "guide-service-paths"
+
+
+def working_git(path: object) -> bool:
+    if not isinstance(path, str) or not Path(path).is_absolute():
+        return False
+    try:
+        result = subprocess.run(
+            [path, "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=3, check=False,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def record(receipt: Path, content: bytes, stage: Path) -> None:
+    candidate = stage / receipt.name
+    candidate.write_bytes(content)
+    candidate.chmod(0o600)
+    candidate.replace(receipt)
+
+
+# Inherited PATH keeps precedence over these standalone setup fallbacks.
+tools = ("node", "npm", "uv", "claude", "codex", "opencode", "curl", "lsof",
+         "ps", "open", "xdg-open", "powershell", "pwsh", "taskkill", "tasklist", "netstat")
+selected = set()
+for tool in tools:
+    executable = shutil.which(tool)
+    if executable and Path(executable).is_absolute():
+        selected.add(Path(executable).parent)
+directories = dict.fromkeys(
+    str(Path(directory))
+    for directory in os.get_exec_path()
+    if Path(directory) in selected
+)
+
+git = shutil.which("git")
+try:
+    previous_git = json.loads(git_receipt.read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    previous_git = None
+
+try:
+    with tempfile.TemporaryDirectory(prefix=".service-paths-", dir=root) as work:
+        stage = Path(work)
+        content = b"".join(os.fsencode(directory) + b"\0" for directory in directories)
+        record(service_receipt, content, stage)
+        if git != previous_git and not working_git(previous_git) and working_git(git):
+            record(git_receipt, json.dumps(git).encode("utf-8"), stage)
+except OSError:
+    # Some standalone installs run from a read-only package directory.
+    pass
+PY
+}
+
 if (claude_smart_source_reflexio_env; install_complete); then
   claude_smart_source_reflexio_env
+  record_standalone_tools
   verify_windows_local_embedding_runtime
   start_backend_service
   claude_smart_emit_continue
@@ -711,6 +788,7 @@ if [ "${CLAUDE_SMART_DEFER_SERVICES:-}" != "1" ] &&
   echo "[claude-smart] WARNING: failed to set ~/.reflexio/plugin-root symlink — slash commands may not resolve" >&2
 fi
 
+record_standalone_tools
 start_backend_service
 
 write_success_marker

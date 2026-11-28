@@ -29,7 +29,7 @@ if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
   echo "claude-smart: the guide prepares this dashboard. Rerun npx claude-smart setup to repair it." >&2
   exit 1
 fi
-claude_smart_source_login_path
+claude_smart_append_service_paths "$PLUGIN_ROOT"
 claude_smart_prepend_node_bins
 DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
 
@@ -54,17 +54,22 @@ if [ -z "$NPM_BIN" ] || ! "$NPM_BIN" --version >/dev/null 2>&1; then
 fi
 
 # Collapse the PATH before invoking npm. In the detached SessionStart hook the
-# PATH is ~7-9KB: prepend_node_bins pushes a (nonexistent) private-node dir to
-# the front and repeated login-shell sourcing duplicates the whole list 3-4x.
+# Git Bash's inherited PATH can already have duplicate entries and setup may
+# add private Node and recorded tool directories.
 # When npm's node process spawns a cmd.exe grandchild for a lifecycle/run script
 # (`node -e ...`, `next build`), that oversized environment is truncated for the
 # child, dropping the entries the script needs — nodejs and npm-appended
 # node_modules/.bin — so bare `node`/`next` resolve to "not found" and the build
 # aborts. Deduplicating (order-preserving) shrinks it back under the threshold;
-# an identical small PATH is what makes an interactive build succeed. Anchor
-# nodejs at the front too, so node survives even a residual truncation.
+# an identical small PATH is what makes an interactive build succeed. Keep the
+# selected Node ahead of npm's directory when setup found them separately.
 NPM_DIR=$(CDPATH= cd -- "$(dirname -- "$NPM_BIN")" && pwd)
-PATH=$(printf '%s' "$NPM_DIR:$PATH" | awk -v RS=: -v ORS=: '!seen[$0]++')
+NODE_BIN=$(command -v node || true)
+NODE_DIR="$NPM_DIR"
+if [ -n "$NODE_BIN" ]; then
+  NODE_DIR=$(CDPATH= cd -- "$(dirname -- "$NODE_BIN")" && pwd)
+fi
+PATH=$(printf '%s' "$NODE_DIR:$NPM_DIR:$PATH" | awk -v RS=: -v ORS=: '!seen[$0]++')
 export PATH="${PATH%:}"
 
 # Atomic single-flight: mkdir is a single atomic syscall, so two concurrent

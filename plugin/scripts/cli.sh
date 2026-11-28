@@ -16,9 +16,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_lib.sh"
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "cli.sh" "$@"
-if [ ! -f "$PLUGIN_ROOT/guide-prepared-runtime" ] || [ ! -f "$PLUGIN_ROOT/guide-git" ]; then
-  claude_smart_source_login_path
-fi
+claude_smart_append_service_paths "$PLUGIN_ROOT"
 claude_smart_prepend_astral_bins
 claude_smart_prepend_node_bins
 claude_smart_source_reflexio_env

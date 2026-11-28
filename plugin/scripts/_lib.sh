@@ -1,58 +1,24 @@
 # Shared helpers for claude-smart plugin scripts. Source, do not execute.
 
-# Claude Code hooks run with a minimal non-interactive PATH that often omits
-# nvm/asdf/brew shims where `npm`, `uv`, etc. live. Pull the user's login-shell
-# PATH the same way claude-mem does so hook-spawned scripts find them without
-# the user having to mutate their global PATH. Best-effort and bounded: shell
-# profile startup can be slow or stuck on Windows, so this must never outlive a
-# hook's timeout budget.
-claude_smart_login_path_timeout_seconds() {
-  local _VALUE
-  _VALUE="${CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS:-2}"
-  case "$_VALUE" in
-    ''|*[!0-9]*) printf '%s\n' "2" ;;
-    *) printf '%s\n' "$_VALUE" ;;
-  esac
-}
-
-claude_smart_capture_login_path() {
-  local _TIMEOUT _TMP _PID _WAITED _LINE
-  _TIMEOUT="$(claude_smart_login_path_timeout_seconds)"
-  [ "$_TIMEOUT" -gt 0 ] || return 1
-
-  _TMP="${TMPDIR:-/tmp}/claude-smart-login-path.$$"
-  rm -f "$_TMP" 2>/dev/null || true
-  "$SHELL" -lc 'printf %s "$PATH"' >"$_TMP" 2>/dev/null &
-  _PID=$!
-  _WAITED=0
-  while kill -0 "$_PID" 2>/dev/null; do
-    if [ "$_WAITED" -ge "$_TIMEOUT" ]; then
-      kill "$_PID" 2>/dev/null || true
-      wait "$_PID" 2>/dev/null || true
-      rm -f "$_TMP" 2>/dev/null || true
-      return 1
+# Setup records directories for the service utilities it resolved. Append
+# them so a host's own working utilities keep their original precedence.
+claude_smart_append_service_paths() {
+  local plugin_root="$1" directory
+  [ -f "$plugin_root/guide-service-paths" ] || return 0
+  while IFS= read -r -d '' directory; do
+    if claude_smart_is_windows; then
+      directory="$(cygpath -u -- "$directory" 2>/dev/null)" || continue
     fi
-    sleep 1
-    _WAITED=$((_WAITED + 1))
-  done
-  if wait "$_PID" 2>/dev/null; then
-    while IFS= read -r _LINE || [ -n "$_LINE" ]; do
-      printf '%s' "$_LINE"
-    done <"$_TMP"
-    rm -f "$_TMP" 2>/dev/null || true
-    return 0
-  fi
-  rm -f "$_TMP" 2>/dev/null || true
-  return 1
-}
-
-claude_smart_source_login_path() {
-  local _SHELL_PATH
-  if [ -n "${SHELL:-}" ] && [ -x "$SHELL" ]; then
-    if _SHELL_PATH="$(claude_smart_capture_login_path)"; then
-      [ -n "$_SHELL_PATH" ] && export PATH="$_SHELL_PATH:$PATH"
-    fi
-  fi
+    case "$directory" in
+      /*) ;;
+      *) continue ;;
+    esac
+    [ -d "$directory" ] || continue
+    case ":${PATH:-}:" in
+      *":$directory:"*) ;;
+      *) export PATH="${PATH:+$PATH:}$directory" ;;
+    esac
+  done < "$plugin_root/guide-service-paths"
 }
 
 # Prepend the astral.sh installer's default bin directories to PATH so a

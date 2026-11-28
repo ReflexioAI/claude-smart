@@ -35,11 +35,7 @@ if claude_smart_is_internal_invocation_env; then
 fi
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "hook_entry.sh" "$@"
-# A guided hook uses its prepared Python and the Git binding from setup.
-# Standalone and older guided installs can still discover tools in the profile.
-if [ ! -f "$PLUGIN_ROOT/guide-prepared-runtime" ] || [ ! -f "$PLUGIN_ROOT/guide-git" ]; then
-  claude_smart_source_login_path
-fi
+claude_smart_append_service_paths "$PLUGIN_ROOT"
 # Explicit fallback for the astral.sh installer's default paths, in case
 # the user's login-shell rc hasn't yet been re-sourced to pick them up.
 claude_smart_prepend_astral_bins
