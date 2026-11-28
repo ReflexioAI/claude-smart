@@ -262,7 +262,7 @@ async function configure(
       config.provider = keepCurrent ? saved.provider : selection;
     }
     if (!keepCurrent) {
-      config.cliPath = "";
+      config.cliPath = config.provider === "opencode" ? process.env.CLAUDE_SMART_CLI_PATH || "" : "";
       config.useLocalCli = "1";
     }
     config.model =

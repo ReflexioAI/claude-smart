@@ -2671,14 +2671,14 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   const resolveOpenCodeForLaunch = () => resolveForLaunch(
     () => resolveOpenCodePath(runtimeEnv().PATH),
   );
-  if (!config.model?.includes("#")) return;
-  const hasExplicitModel = !config.model.startsWith("#");
+  const hasVariant = config.model?.includes("#");
+  if (!config.cliPath && !hasVariant) return;
   const selected = config.cliPath;
   let launcher;
   if (selected) {
     const absolute = isAbsolute(selected);
     if (!absolute && basename(selected) !== selected) {
-      throw new Error("Use an absolute CLAUDE_SMART_CLI_PATH to select an OpenCode variant.");
+      throw new Error("Use an absolute CLAUDE_SMART_CLI_PATH to select an OpenCode executable.");
     }
     const names = isWindows() && !extname(selected)
       ? [`${selected}.exe`, `${selected}.cmd`, `${selected}.bat`, selected]
@@ -2690,15 +2690,17 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
     }
     launcher = isWindows() ? resolve(match) : match;
   }
-  const bridge = Boolean(config.adoptedOpenCodePath);
-  if (launcher && isWindows() && !bridge && !/\.exe$/i.test(launcher)) {
-    throw new Error("Select a native OpenCode .exe or the supported compatibility bridge on Windows.");
-  }
+  const compatibleWire = !launcher || Boolean(config.adoptedOpenCodePath) ||
+    (isWindows() && /\.(?:cmd|bat)$/i.test(launcher));
   let command = launcher ?? resolveOpenCodeForLaunch();
-  if (command && !isAbsolute(command)) {
+  if (!command || !isAbsolute(command)) {
     throw new Error("Use an absolute CLAUDE_SMART_CLI_PATH to select an OpenCode variant.");
   }
   if (command && isWindows()) command = resolve(command);
+  config.cliPath = command;
+  if (compatibleWire) config.adoptedOpenCodePath = command;
+  if (!hasVariant) return;
+  const hasExplicitModel = !config.model.startsWith("#");
   const { prepareWorkDir, dispatchEnvironment, declaredRunOptions } =
     require("../plugin/scripts/opencode-claude-compat.js");
   const cwd = prepareWorkDir();
@@ -2720,13 +2722,11 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   }
   // The pinned SDK's native OpenCode transport needs these options at dispatch.
   // The compatibility bridge has a separate command contract.
-  if (launcher && !bridge &&
+  if (!compatibleWire &&
       (!["--model", "--agent", "--format", "--title"].every((option) => runOptions.has(option)) ||
        !(runOptions.has("--standalone") || runOptions.has("--attach")))) {
     throw new Error("The selected executable does not support the native OpenCode run options.");
   }
-  if (launcher) config.cliPath = launcher;
-  if (bridge) config.adoptedOpenCodePath = config.cliPath;
 }
 
 function readGuidedRuntime(id) {

@@ -888,6 +888,32 @@ def test_prepared_open_code_binding_uses_the_adopted_executable(
         native_selection.configure_opencode_launcher(tmp_path)
 
 
+def test_opencode_setup_preserves_saved_path_if_exported_replacement_is_invalid(
+    tmp_path: Path,
+) -> None:
+    from tests.test_install_scripts import _run_public_setup
+
+    executable = _fake_opencode_path(tmp_path)
+    selected = tmp_path / ".claude-smart/.env"
+    selected.parent.mkdir()
+    original = (
+        'REFLEXIO_URL="http://localhost:8071/"\nREFLEXIO_API_KEY=""\n'
+        f'CLAUDE_SMART_OPENCODE_PATH="{executable}"\n'
+    )
+    selected.write_text(original)
+    result = _run_public_setup(
+        tmp_path,
+        "--backend",
+        "local",
+        "--provider",
+        "opencode",
+        env_extra={"CLAUDE_SMART_CLI_PATH": str(tmp_path / "missing")},
+    )
+    assert result.returncode != 0
+    assert "CLAUDE_SMART_CLI_PATH cannot be executed" in result.stderr
+    assert selected.read_text() == original
+
+
 @pytest.mark.parametrize(
     ("case", "expected"),
     [
@@ -1079,6 +1105,8 @@ def test_public_setup_checks_opencode_variant_before_publication(
             assert Path(selected_cli) == executable
         if case == "symlink-parent":
             assert values["CLAUDE_SMART_CLI_PATH"] == str(cli)
+        if case == "worker-default":
+            assert values["CLAUDE_SMART_CLI_PATH"] == str(executable)
         assert "CLAUDE_SMART_OPENCODE_PATH" not in values
 
 
