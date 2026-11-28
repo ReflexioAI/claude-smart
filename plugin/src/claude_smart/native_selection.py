@@ -77,6 +77,14 @@ def _resolve_opencode(selection: str | None = None) -> str:
             raise LearningSelectionError(
                 "Select the OpenCode executable in Claude Smart setup."
             )
+        if (
+            os.name == "nt"
+            and executable.suffix.lower() in {".cmd", ".bat"}
+            and any(character in str(executable) for character in '%!^&|<>"\r\n')
+        ):
+            raise LearningSelectionError(
+                "Select a Windows OpenCode batch launcher whose path can be quoted safely."
+            )
         return str(executable)
     raise LearningSelectionError(
         "OpenCode could not be selected. Confirm its executable in Claude Smart setup."

@@ -907,6 +907,40 @@ def test_public_confirmation_adopts_the_saved_opencode_executable(
     )
 
 
+@pytest.mark.parametrize("exported", [False, True])
+def test_setup_binds_opencode_without_a_model_variant(tmp_path: Path, exported: bool):
+    from tests.test_install_scripts import _run_public_setup
+
+    tools = tmp_path / "relative-tools"
+    tools.mkdir()
+    executable = _fake_opencode_path(tools)
+    env = {
+        "PATH": os.pathsep.join(
+            ["relative-tools", str(tmp_path / "fake-bin"), os.environ["PATH"]]
+        )
+    }
+    if exported:
+        env["CLAUDE_SMART_CLI_PATH"] = str(executable)
+    result = _run_public_setup(
+        tmp_path,
+        "--backend",
+        "local",
+        "--provider",
+        "opencode",
+        env_extra=env,
+    )
+    assert result.returncode == 0, result.stderr
+    values = dotenv_values(tmp_path / ".claude-smart/.env", interpolate=False)
+    assert values["CLAUDE_SMART_CLI_PATH"] == str(executable)
+    runtimes = tmp_path / ".claude-smart/guided-runtimes"
+    runtime = runtimes / (runtimes / "selected").read_text().strip() / "plugin"
+    assert json.loads((runtime / "guide-native-launcher").read_text()) == {
+        "host": "opencode",
+        "selection": str(executable),
+        "executable": str(executable),
+    }
+
+
 def test_prepared_open_code_binding_uses_the_adopted_executable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

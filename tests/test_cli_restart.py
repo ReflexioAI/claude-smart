@@ -390,9 +390,22 @@ def test_windows_opencode_batch_launcher_quotes_resolved_path(
     executable.write_text(
         '@echo {"type":"text","part":{"type":"text","text":"batch launched"}}\n'
     )
-    monkeypatch.setenv("CLAUDE_SMART_OPENCODE_PATH", configured)
     if configured == "opencode":
         monkeypatch.setenv("PATH", "tools", prepend=os.pathsep)
+    binding = subprocess.check_output(
+        [
+            node,
+            "-e",
+            "console.log(require(process.argv[1]).resolveWindowsOpenCodePath(process.argv[2]))",
+            str(bridge),
+            configured,
+        ],
+        cwd=working_dir,
+        text=True,
+        timeout=10,
+    ).strip()
+    assert Path(binding) == executable
+    monkeypatch.setenv("_CLAUDE_SMART_NATIVE_OPENCODE_EXECUTABLE", binding)
     for name in (
         "CLAUDE_SMART_OPENCODE_MODEL",
         "CLAUDE_SMART_OPENCODE_VARIANT",

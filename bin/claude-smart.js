@@ -2683,7 +2683,6 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
     () => resolveOpenCodePath(runtimeEnv().PATH),
   );
   const hasVariant = config.model?.includes("#");
-  if (!config.cliPath && !hasVariant) return;
   const selected = config.cliPath;
   let launcher;
   if (selected) {
@@ -2705,13 +2704,13 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
     (isWindows() && /\.(?:cmd|bat)$/i.test(launcher));
   let command = launcher ?? resolveOpenCodeForLaunch();
   if (!command || !isAbsolute(command)) {
-    throw new Error("Use an absolute CLAUDE_SMART_CLI_PATH to select an OpenCode variant.");
+    throw new Error("OpenCode CLI not found. Select an executable with CLAUDE_SMART_CLI_PATH.");
   }
   if (command && isWindows()) command = resolve(command);
   config.cliPath = command;
   if (compatibleWire) config.adoptedOpenCodePath = command;
-  if (!hasVariant) return;
-  const hasExplicitModel = !config.model.startsWith("#");
+  if (!hasVariant && compatibleWire) return;
+  const hasExplicitModel = !config.model?.startsWith("#");
   const { prepareWorkDir, dispatchEnvironment, declaredRunOptions } =
     require("../plugin/scripts/opencode-claude-compat.js");
   const cwd = prepareWorkDir();
@@ -2726,6 +2725,12 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
     rmSync(cwd, { recursive: true, force: true });
   }
   const runOptions = declaredRunOptions(probe ? `${probe.stdout}\n${probe.stderr}` : "");
+  const nativeWire = ["--model", "--agent", "--format", "--title"].every((option) => runOptions.has(option)) &&
+    (runOptions.has("--standalone") || runOptions.has("--attach"));
+  if (!hasVariant) {
+    if (!nativeWire) config.adoptedOpenCodePath = command;
+    return;
+  }
   if (!runOptions.has("--variant") && !(hasExplicitModel && runOptions.has("--standalone"))) {
     throw new Error(hasExplicitModel
       ? "The selected OpenCode CLI does not advertise --standalone or --variant."
@@ -2733,9 +2738,7 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   }
   // The pinned SDK's native OpenCode transport needs these options at dispatch.
   // The compatibility bridge has a separate command contract.
-  if (!compatibleWire &&
-      (!["--model", "--agent", "--format", "--title"].every((option) => runOptions.has(option)) ||
-       !(runOptions.has("--standalone") || runOptions.has("--attach")))) {
+  if (!compatibleWire && !nativeWire) {
     throw new Error("The selected executable does not support the native OpenCode run options.");
   }
 }
