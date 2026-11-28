@@ -1897,6 +1897,11 @@ def test_first_local_activation_uses_explicit_provider_without_inventing_saved_h
         "host": "codex",
         "executable": str(tmp_path / "fake-bin/codex"),
     }
+    ps = shutil.which("ps", path=env["PATH"])
+    assert ps
+    assert os.fsencode(Path(ps).parent) in (
+        runtime / "guide-service-paths"
+    ).read_bytes().split(b"\0")
 
 
 @pytest.mark.parametrize(

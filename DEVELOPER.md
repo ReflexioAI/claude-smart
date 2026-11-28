@@ -367,6 +367,13 @@ launcher it resolves. The backend uses that executable for the matching native
 host and checks that it is still available before replacing a running service.
 Explicit launcher overrides take precedence.
 
+Hooks, slash commands, and services inherit the host's PATH. The npm installer
+records fallback directories for service tools it finds during setup. If your
+tools are available through a shell-specific shim, run setup from a terminal
+that can resolve them. Standalone shell repair can install `uv` and Node in
+their existing per-user locations. The old
+`CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS` assignment has no effect.
+
 ### Claude Code
 
 `npx claude-smart install` copies the npm package to

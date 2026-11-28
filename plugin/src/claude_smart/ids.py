@@ -43,7 +43,7 @@ def _git_lines(base: Path, *args: str) -> list[str] | None:
     venv = Path(sys.prefix)
     root = venv.parent
     git = "git"
-    if venv.name == ".venv" and (root / "guide-prepared-runtime").is_file():
+    if venv.name == ".venv":
         try:
             selected = json.loads((root / "guide-git").read_text(encoding="utf-8"))
             if (

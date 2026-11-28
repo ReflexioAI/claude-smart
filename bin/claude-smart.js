@@ -158,6 +158,7 @@ const COPYTREE_IGNORE_NAMES = new Set([
   ".next",
   "guide-git",
   "guide-native-launcher",
+  "guide-service-paths",
 ]);
 function shouldCopyPath(src) {
   const base = src.split(/[\\/]/).pop() || "";
@@ -3080,13 +3081,6 @@ async function prepareGuidedRuntime(config, options, settings, baseline) {
       ], { env: { ...runtimeEnv(), CLAUDE_SMART_CLI_PATH: "" } });
       if (code !== 0) throw new Error("Could not record the prepared native launcher.");
     }
-    const git = resolveCommand(isWindows() ? ["git.exe", "git"] : ["git"]);
-    if (git) {
-      writeFileSync(join(pluginRoot, "guide-git"), JSON.stringify(resolve(git)), {
-        flag: "wx",
-        mode: 0o600,
-      });
-    }
     // Only the guide may replace the dependencies of a prepared generation.
     writeFileSync(join(pluginRoot, "guide-prepared-runtime"), id, { flag: "wx", mode: 0o600 });
     const readOnly = settings.request.updates[CLAUDE_SMART_READ_ONLY_ENV] === "1";
@@ -4263,6 +4257,30 @@ async function preparePluginDashboard(pluginRoot, nodeRuntime, env, settings) {
   }
 }
 
+function recordRuntimeTools(pluginRoot) {
+  const git = resolveCommand(isWindows() ? ["git.exe", "git"] : ["git"]);
+  if (git) {
+    writeFileSync(join(pluginRoot, "guide-git"), JSON.stringify(resolve(git)), {
+      flag: "wx",
+      mode: 0o600,
+    });
+  }
+  // Record only directories that resolved service utilities during setup.
+  // The hook host's own PATH still takes precedence over these fallbacks.
+  const servicePaths = new Set();
+  for (const name of ["curl", "lsof", "ps", "open", "xdg-open", "powershell", "pwsh",
+                      "taskkill", "tasklist", "netstat"]) {
+    const executable = resolveCommand(isWindows() ? [`${name}.exe`, name] : [name]);
+    if (executable) servicePaths.add(dirname(resolve(executable)));
+  }
+  if (servicePaths.size) {
+    writeFileSync(join(pluginRoot, "guide-service-paths"), [...servicePaths].join("\0") + "\0", {
+      flag: "wx",
+      mode: 0o600,
+    });
+  }
+}
+
 async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   assertSupportedRuntimePlatform();
   reportRuntimePhase("Preparing Python and runtime dependencies…", options.settings);
@@ -4273,6 +4291,7 @@ async function bootstrapPluginRuntime(pluginRoot, options = {}) {
   const toolPaths = [dirname(uv), ...privateNodeBinDirs()];
   const env = runtimeEnv(toolPaths);
   await preparePluginPython(pluginRoot, uv, env);
+  recordRuntimeTools(pluginRoot);
   if (options.settings) {
     await preparePluginDashboard(pluginRoot, nodeRuntime, env, options.settings);
     return nodeRuntime;
@@ -4986,6 +5005,7 @@ async function runInstall(args, options = {}) {
 
     } else {
       pluginRoot = await bootstrapClaudeCodeInstall(join(source, "plugin"));
+      recordRuntimeTools(pluginRoot);
       restorePublishHooksFromSource(pluginRoot);
       if (readOnly && prunePublishHooksForReadOnly(pluginRoot)) {
         process.stdout.write(

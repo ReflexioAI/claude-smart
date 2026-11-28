@@ -17,7 +17,6 @@ if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
   exit 1
 fi
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "smart-install.sh" "$@"
-claude_smart_source_login_path
 claude_smart_prepend_astral_bins
 claude_smart_prepend_node_bins
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"

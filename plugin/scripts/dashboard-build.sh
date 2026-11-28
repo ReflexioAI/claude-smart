@@ -29,7 +29,6 @@ if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
   echo "claude-smart: the guide prepares this dashboard. Rerun npx claude-smart setup to repair it." >&2
   exit 1
 fi
-claude_smart_source_login_path
 claude_smart_prepend_node_bins
 DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
 

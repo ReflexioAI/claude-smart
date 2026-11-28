@@ -329,7 +329,6 @@ def _backend_service_env(
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
             "BACKEND_TEST_PORT": str(port),
             "CLAUDE_SMART_HOST": "codex",
-            "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
             "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "0",
             "REFLEXIO_URL": "",
         }
@@ -404,7 +403,6 @@ def _run_private_node_install(
     env = _isolated_env(tmp_path)
     env["CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY"] = "1"
     env["CLAUDE_SMART_NODE_BASE_URL"] = base_url
-    env["CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS"] = "0"
     env["PATH"] = _minimal_path(
         tmp_path,
         "dirname",
@@ -593,37 +591,6 @@ def test_windows_detached_spawn_closes_hook_output_pipes() -> None:
     assert 'nohup "$@" < /dev/null &' in lib
 
 
-def test_login_shell_path_lookup_is_bounded(tmp_path: Path) -> None:
-    slow_shell = tmp_path / "slow-shell"
-    slow_shell.write_text("#!/bin/sh\nsleep 5\nprintf '%s' '/too-late/bin'\n")
-    slow_shell.chmod(slow_shell.stat().st_mode | stat.S_IXUSR)
-
-    env = _isolated_env(tmp_path)
-    env["SHELL"] = str(slow_shell)
-    env["CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS"] = "1"
-    env["PATH"] = _minimal_path(tmp_path, "cat", "rm", "sleep")
-
-    started = time.monotonic()
-    result = subprocess.run(
-        [
-            "/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            f'. "{LIB}"; claude_smart_source_login_path; printf "%s" "$PATH"',
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=3,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert time.monotonic() - started < 3
-    assert "/too-late/bin" not in result.stdout
-
-
 def test_detached_spawns_with_log_redirection_preserve_output_on_windows() -> None:
     hook_entry = HOOK_ENTRY.read_text()
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
@@ -784,7 +751,6 @@ def test_backend_service_never_starts_the_bundled_backend_for_a_custom_local_ser
         "HOME": str(tmp_path),
         "PATH": "/usr/bin:/bin",
         "SHELL": "/bin/sh",
-        "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
         # Never start a real backend from the bundled-endpoint rows.
         "CLAUDE_SMART_BACKEND_AUTOSTART": "0",
     }
@@ -3359,7 +3325,7 @@ def test_prepared_dashboard_status_uses_private_node_without_profile(
                 self.send_header("x-claude-smart-dashboard", "1")
             self.end_headers()
 
-        def log_message(self, *_args: object) -> None:
+        def log_message(self, format: str, *_args: object) -> None:
             pass
 
     release_request = threading.Event()
@@ -4869,7 +4835,6 @@ def test_backend_service_reports_local_embedding_degradation_without_cache_repai
         {
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
             "CLAUDE_SMART_HOST": "codex",
-            "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
             "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "1",
         }
     )
@@ -5551,7 +5516,6 @@ def test_backend_stop_reaps_legacy_same_root_shared_pid(
                 "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
                 "BACKEND_TEST_PORT": str(port),
                 "CLAUDE_SMART_HOST": "codex",
-                "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
                 "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "0",
                 "LEGACY_PID": str(legacy.pid),
                 "REFLEXIO_URL": "",
@@ -5767,7 +5731,6 @@ def test_backend_service_does_not_kill_foreign_listener(tmp_path: Path) -> None:
                 "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
                 "BACKEND_TEST_PORT": str(port),
                 "CLAUDE_SMART_HOST": "codex",
-                "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
                 "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "0",
                 "FOREIGN_PID": str(foreign.pid),
                 "REFLEXIO_URL": "",
@@ -5835,7 +5798,6 @@ def test_backend_service_preflight_rejects_non_bundled_reflexio(
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
             "BACKEND_TEST_PORT": str(port),
             "CLAUDE_SMART_HOST": "codex",
-            "CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS": "0",
             "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "0",
             "REFLEXIO_URL": "",
         }
@@ -6494,14 +6456,56 @@ def _trace_login_shell(tmp_path: Path, env: dict[str, str]) -> Path:
         login_shell,
         '#!/bin/sh\nprintf called > "$HOME/login-probed"\nprintf %s "$PATH"\n',
     )
-    env.update(SHELL=str(login_shell), CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS="2")
+    env["SHELL"] = str(login_shell)
     return tmp_path / "login-probed"
 
 
+def test_services_reuse_setup_tools_without_overriding_host_path(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "plugin"
+    primary = tmp_path / "host-tools"
+    fallback = tmp_path / "setup utilities"
+    for directory in (root, primary, fallback):
+        directory.mkdir()
+    for directory, name in ((primary, "ps"), (fallback, "ps"), (fallback, "lsof")):
+        _write_executable(directory / name, "#!/bin/sh\nexit 0\n")
+    (root / "guide-service-paths").write_bytes(
+        b"\0".join(
+            os.fsencode(directory) for directory in (primary, fallback, fallback)
+        )
+        + b"\0"
+    )
+    env = _isolated_env(tmp_path)
+    env["PATH"] = str(primary)
+    login_probe = _trace_login_shell(tmp_path, env)
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            '. "$1"; claude_smart_append_service_paths "$2"; command -v ps; command -v lsof; printf "%s\\n" "$PATH"',
+            "bash",
+            str(LIB),
+            str(root),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=5,
+    )
+    assert result.stdout.splitlines() == [
+        str(primary / "ps"),
+        str(fallback / "lsof"),
+        f"{primary}:{fallback}",
+    ]
+    assert not login_probe.exists()
+
+
 @pytest.mark.parametrize("entrypoint", [HOOK_ENTRY, CLI_SH])
-@pytest.mark.parametrize("has_git_binding", [False, True])
-def test_prepared_commands_skip_login_shell_with_setup_git_binding(
-    tmp_path: Path, entrypoint: Path, has_git_binding: bool
+@pytest.mark.parametrize("prepared", [False, True])
+def test_runtime_commands_never_start_a_login_shell(
+    tmp_path: Path, entrypoint: Path, prepared: bool
 ) -> None:
     root = tmp_path / "plugin"
     scripts = root / "scripts"
@@ -6509,8 +6513,8 @@ def test_prepared_commands_skip_login_shell_with_setup_git_binding(
     shutil.copy2(LIB, scripts / "_lib.sh")
     script = scripts / entrypoint.name
     shutil.copy2(entrypoint, script)
-    (root / "guide-prepared-runtime").write_text("runtime-AbCd12")
-    if has_git_binding:
+    if prepared:
+        (root / "guide-prepared-runtime").write_text("runtime-AbCd12")
         (root / "guide-git").write_text(json.dumps(shutil.which("git")))
     _write_fake_plugin_python(
         root, '#!/bin/sh\n[ "$1" = -P ] || printf \'{"continue":true}\\n\'\n'
@@ -6529,7 +6533,7 @@ def test_prepared_commands_skip_login_shell_with_setup_git_binding(
     )
 
     assert json.loads(result.stdout) == {"continue": True}
-    assert login_probe.exists() is not has_git_binding
+    assert not login_probe.exists()
 
 
 def test_install_complete_requires_importable_hook_package() -> None:
@@ -6631,7 +6635,6 @@ def test_hook_entry_failure_marker_uses_resolved_python_on_windows(
     _write_executable(bin_dir / "uv", "#!/bin/sh\nprintf '/fixture/python-3.12\\n'\n")
     env = _isolated_env(tmp_path)
     # Keep the simulated Windows uname/python ahead of this Mac's login PATH.
-    env["CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS"] = "0"
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     fingerprint = subprocess.run(
         [

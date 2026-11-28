@@ -11,7 +11,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$HERE"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
-claude_smart_source_login_path
+claude_smart_append_service_paths "$(cd "$HERE/.." && pwd)"
 claude_smart_prepend_node_bins
 
 STATE_DIR="$HOME/.claude-smart"

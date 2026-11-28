@@ -27,7 +27,6 @@ if [ "$CMD" = "session-end" ]; then
   claude_smart_emit_continue
   exit 0
 fi
-claude_smart_source_login_path
 claude_smart_prepend_astral_bins
 claude_smart_source_reflexio_env
 
@@ -52,6 +51,7 @@ export REFLEXIO_RERANK_ENABLED=false
 
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "backend-service.sh" "$@"
+claude_smart_append_service_paths "$PLUGIN_ROOT"
 PLUGIN_ROOT_CANONICAL="$(cd "$PLUGIN_ROOT" 2>/dev/null && pwd -P || printf '%s\n' "$PLUGIN_ROOT")"
 VENDORED_REFLEXIO="$PLUGIN_ROOT_CANONICAL/vendor/reflexio"
 VENDORED_REFLEXIO_FOR_PYTHON="$VENDORED_REFLEXIO"

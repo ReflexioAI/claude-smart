@@ -28,6 +28,7 @@ if [ "$CMD" = "session-end" ]; then
 fi
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "dashboard-service.sh" "$@"
+claude_smart_append_service_paths "$PLUGIN_ROOT"
 prepared_node=""
 if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
   node_root="$HOME/.claude-smart/node/current"
@@ -39,9 +40,6 @@ if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
   if [ -x "$node_candidate" ]; then
     prepared_node="$node_candidate"
   fi
-fi
-if [ "$CMD" != "status" ] || [ -z "$prepared_node" ]; then
-  claude_smart_source_login_path
 fi
 claude_smart_prepend_node_bins
 claude_smart_source_reflexio_env
