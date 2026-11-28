@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import shutil
 import subprocess
+import sys
 
 from claude_smart import ids
-
 
 _GIT_ENV_VARS = (
     "GIT_DIR",
@@ -72,6 +74,28 @@ def test_resolve_maps_worktree_outside_main_repo(tmp_path, monkeypatch) -> None:
     worktree = tmp_path / "elsewhere" / "repo-feature"
     _git("-C", str(main), "worktree", "add", "-q", str(worktree))
     assert ids.resolve_project_id(worktree) == "repo"
+
+
+def test_prepared_hook_uses_setup_git_to_keep_the_parent_project_id(
+    tmp_path, monkeypatch
+) -> None:
+    _isolate_git_env(monkeypatch)
+    parent = tmp_path / "parent-project"
+    _repo(parent)
+    worktree = tmp_path / "linked-worktree"
+    _git("-C", str(parent), "worktree", "add", "-q", str(worktree))
+    git = shutil.which("git")
+    assert git
+
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    (plugin / "guide-prepared-runtime").write_text("runtime-AbCd12")
+    monkeypatch.setattr(sys, "prefix", str(plugin / ".venv"))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+    assert ids.resolve_project_id(worktree) == "linked-worktree"
+
+    (plugin / "guide-git").write_text(json.dumps(git))
+    assert ids.resolve_project_id(worktree) == "parent-project"
 
 
 def test_resolve_keeps_separate_git_dir_checkout_on_its_toplevel(

@@ -110,17 +110,23 @@ emit_ok() { claude_smart_emit_continue; }
 # Reason string for a failed bundled-Reflexio preflight. Shared by every site
 # that reports it so the remedy text in emit_start_failure stays in sync.
 VENDOR_PREFLIGHT_FAILURE="bundled Reflexio import preflight failed"
+VENDOR_REPAIR_ACTION=update
+if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
+  VENDOR_REPAIR_ACTION=setup
+fi
 
 emit_start_failure() {
   reason="$1"
   if py=$(claude_smart_resolve_python 2>/dev/null); then
-    "$py" - "$reason" "$VENDOR_PREFLIGHT_FAILURE" "${2:-0}" <<'PY'
+    "$py" - "$reason" "$VENDOR_PREFLIGHT_FAILURE" "${2:-0}" "$VENDOR_REPAIR_ACTION" <<'PY'
 import json
 import sys
 
 reason = sys.argv[1].strip()
 vendor_preflight_failure = sys.argv[2]
 model_preflight_failure = sys.argv[3] == "1"
+repair_action = sys.argv[4]
+repair_command = f"npx claude-smart {repair_action}"
 message = (
     "> **claude-smart learning backend is not running.** "
     "Interactions are being buffered locally, but learning will not publish "
@@ -131,12 +137,21 @@ if reason:
 if reason == vendor_preflight_failure:
     # /claude-smart:restart cannot repair this: the bundled Reflexio runtime
     # only ships in the npm artifact, so the cache has to be replaced.
+    if repair_action == "setup":
+        message += (
+            f">\n> Repair the prepared runtime with `{repair_command}` "
+            "and select the affected integrations."
+        )
+    else:
+        message += (
+            ">\n> The bundled Reflexio runtime is missing or unusable. Repair it "
+            f"with `{repair_command}` for Claude Code or "
+            f"`{repair_command} --host codex` for Codex "
+            "(`--host opencode` for OpenCode)."
+        )
     message += (
-        ">\n> The bundled Reflexio runtime is missing or unusable. Repair it "
-        "with `npx claude-smart update` for Claude Code or "
-        "`npx claude-smart update --host codex` for Codex "
-        "(`--host opencode` for OpenCode). Then run `/reload-plugins` in "
-        "Claude Code, start a new Codex session, or restart OpenCode."
+        " Then run `/reload-plugins` in Claude Code, start a new Codex session, "
+        "or restart OpenCode."
     )
 elif not model_preflight_failure:
     message += (
@@ -853,7 +868,7 @@ case "$CMD" in
       echo "claude-smart backend preflight failed ($preflight_failure);" \
         "existing services were not changed" >&2
       if [ "$preflight_failure" = "$VENDOR_PREFLIGHT_FAILURE" ]; then
-        echo "Repair the bundled runtime with: npx claude-smart update" >&2
+        echo "Run npx claude-smart $VENDOR_REPAIR_ACTION to repair the bundled runtime." >&2
       fi
       exit 1
     fi

@@ -16,9 +16,11 @@ Two identifiers matter to reflexio:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess  # noqa: S404 — git invocation with a fixed flag set.
+import sys
 from pathlib import Path, PureWindowsPath
 
 from claude_smart import env_config
@@ -38,8 +40,24 @@ def _basename(path: str | os.PathLike[str]) -> str:
 
 def _git_lines(base: Path, *args: str) -> list[str] | None:
     """Return the output lines of ``git <args>`` run in ``base``, or None on failure."""
+    venv = Path(sys.prefix)
+    root = venv.parent
+    git = "git"
+    if venv.name == ".venv" and (root / "guide-prepared-runtime").is_file():
+        try:
+            selected = json.loads((root / "guide-git").read_text(encoding="utf-8"))
+            if (
+                isinstance(selected, str)
+                and Path(selected).is_absolute()
+                and Path(selected).is_file()
+                and os.access(selected, os.X_OK)
+            ):
+                git = selected
+        except (OSError, ValueError):
+            # A moved executable can still be reached through the host's PATH.
+            pass
     result = subprocess.run(  # noqa: S603 — fixed argv, cwd is a Path.
-        ["git", *args],  # noqa: S607
+        [git, *args],
         cwd=base,
         capture_output=True,
         text=True,

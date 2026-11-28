@@ -5895,6 +5895,21 @@ def test_prepared_backend_only_setup_can_repair_the_vendored_package(
             "rerun npx claude-smart setup"
             in (tmp_path / ".claude-smart/backend.log").read_text()
         )
+        hook_message = json.loads(result.stdout)["hookSpecificOutput"]
+        assert "`npx claude-smart setup`" in hook_message["additionalContext"]
+        preflight = subprocess.run(
+            ["/bin/bash", str(plugin / "scripts/backend-service.sh"), "preflight"],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert preflight.returncode == 1
+        assert (
+            "Run npx claude-smart setup to repair the bundled runtime."
+            in preflight.stderr
+        )
 
 
 @pytest.mark.parametrize("command", ["preflight", "start"])
@@ -6389,6 +6404,42 @@ def test_prepared_runtime_refuses_direct_dependency_install(tmp_path: Path) -> N
     assert result.returncode == 1
     assert "Rerun npx claude-smart setup" in result.stderr
     assert not (tmp_path / ".claude-smart").exists()
+
+
+@pytest.mark.parametrize("has_git_binding", [False, True])
+def test_prepared_hook_skips_login_shell_with_setup_git_binding(
+    tmp_path: Path, has_git_binding: bool
+) -> None:
+    root = tmp_path / "plugin"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(LIB, scripts / "_lib.sh")
+    shutil.copy2(HOOK_ENTRY, scripts / "hook_entry.sh")
+    (root / "guide-prepared-runtime").write_text("runtime-AbCd12")
+    if has_git_binding:
+        (root / "guide-git").write_text(json.dumps(shutil.which("git")))
+    _write_fake_plugin_python(
+        root, '#!/bin/sh\n[ "$1" = -P ] || printf \'{"continue":true}\\n\'\n'
+    )
+    login_shell = tmp_path / "login-shell"
+    _write_executable(
+        login_shell,
+        '#!/bin/sh\nprintf called > "$HOME/login-probed"\nprintf %s "$PATH"\n',
+    )
+    env = _isolated_env(tmp_path)
+    env.update(SHELL=str(login_shell), CLAUDE_SMART_LOGIN_PATH_TIMEOUT_SECONDS="2")
+
+    result = subprocess.run(
+        ["/bin/bash", str(scripts / "hook_entry.sh"), "codex", "stop"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+
+    assert json.loads(result.stdout) == {"continue": True}
+    assert (tmp_path / "login-probed").exists() is not has_git_binding
 
 
 def test_install_complete_requires_importable_hook_package() -> None:

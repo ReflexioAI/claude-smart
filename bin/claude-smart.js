@@ -156,6 +156,7 @@ const COPYTREE_IGNORE_NAMES = new Set([
   ".git",
   "node_modules",
   ".next",
+  "guide-git",
 ]);
 function shouldCopyPath(src) {
   const base = src.split(/[\\/]/).pop() || "";
@@ -3055,6 +3056,13 @@ async function prepareGuidedRuntime(config, options, settings, baseline) {
     if (!existsSync(join(pluginRoot, "scripts", "guided-command.sh")))
       throw new Error("The guided runtime command launcher is missing");
     const tools = await bootstrapPluginRuntime(pluginRoot, { settings });
+    const git = resolveCommand(isWindows() ? ["git.exe", "git"] : ["git"]);
+    if (git) {
+      writeFileSync(join(pluginRoot, "guide-git"), JSON.stringify(resolve(git)), {
+        flag: "wx",
+        mode: 0o600,
+      });
+    }
     // Only the guide may replace the dependencies of a prepared generation.
     writeFileSync(join(pluginRoot, "guide-prepared-runtime"), id, { flag: "wx", mode: 0o600 });
     const readOnly = settings.request.updates[CLAUDE_SMART_READ_ONLY_ENV] === "1";

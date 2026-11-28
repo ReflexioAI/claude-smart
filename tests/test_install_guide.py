@@ -1029,6 +1029,9 @@ def test_packaged_guide_installs_multiple_agents_and_reuses_saved_provider(
     assert not (cache / ".venv").exists()
     (runtime,) = list((home / ".claude-smart/guided-runtimes").glob("runtime-*/plugin"))
     assert (runtime / ".venv/bin/python").is_file()
+    assert json.loads((runtime / "guide-git").read_text()) == shutil.which(
+        "git", path=env["PATH"]
+    )
     assert (home / ".reflexio/plugin-root").resolve() == runtime.resolve()
     adapter = home / ".claude-smart/claude-code/claude-smart/plugin"
     assert not (adapter / ".venv").exists()
