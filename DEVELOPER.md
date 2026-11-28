@@ -1059,6 +1059,10 @@ vendored package with `uv` before starting the backend.
 
 ### Dashboard sources in packaged installs
 
+Dashboard status in a prepared runtime uses its private Node executable to
+check the ownership header on loopback. The same check recognizes a running
+dashboard even when the host omits `curl` from PATH.
+
 `npm run build` first runs `scripts/prepare-tailwind-sources.cjs`. It prepends
 `!**` to the dashboard's own `.gitignore` so ancestor dotfiles repositories do
 not hide its source files from Tailwind, and retains local exclusions. npm omits

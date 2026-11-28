@@ -26,7 +26,23 @@ if [ "$CMD" = "session-end" ]; then
   claude_smart_emit_continue
   exit 0
 fi
-claude_smart_source_login_path
+PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
+claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "dashboard-service.sh" "$@"
+prepared_node=""
+if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
+  node_root="$HOME/.claude-smart/node/current"
+  if claude_smart_is_windows; then
+    node_candidate="$node_root/node.exe"
+  else
+    node_candidate="$node_root/bin/node"
+  fi
+  if [ -x "$node_candidate" ]; then
+    prepared_node="$node_candidate"
+  fi
+fi
+if [ "$CMD" != "status" ] || [ -z "$prepared_node" ]; then
+  claude_smart_source_login_path
+fi
 claude_smart_prepend_node_bins
 claude_smart_source_reflexio_env
 
@@ -35,8 +51,6 @@ dashboard_port="$(claude_smart_dashboard_port)"
 export BACKEND_PORT
 claude_smart_derive_reflexio_url_from_backend_port
 
-PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
-claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "dashboard-service.sh" "$@"
 DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
 STATE_DIR="$HOME/.claude-smart"
 PID_FILE="$STATE_DIR/dashboard.pid"
@@ -72,10 +86,32 @@ kill_recorded_dashboard() {
 }
 
 # True if the marker header served by app/api/health is present on the
-# port. Requires curl — absence is reported as false. This deliberately
+# port. A prepared runtime probes with its own Node. This deliberately
 # accepts any claude-smart dashboard, including stale cache versions, so
 # stop/uninstall can safely reap them without touching foreign listeners.
 marker_responds() {
+  if [ -n "$prepared_node" ]; then
+    NODE_OPTIONS= "$prepared_node" - "$dashboard_port" 2>/dev/null <<'JS'
+const http = require("node:http");
+process.exitCode = 1;
+const request = http.request({
+  hostname: "127.0.0.1",
+  port: Number(process.argv[2]),
+  method: "HEAD",
+  path: "/api/health",
+  agent: false,
+  signal: AbortSignal.timeout(2000),
+}, (response) => {
+  if (response.statusCode < 400 && "x-claude-smart-dashboard" in response.headers) {
+    process.exitCode = 0;
+  }
+  response.resume();
+});
+request.on("error", () => { process.exitCode = 1; });
+request.end();
+JS
+    return $?
+  fi
   command -v curl >/dev/null 2>&1 || return 1
   curl -sfI --connect-timeout 1 --max-time 2 "http://127.0.0.1:$dashboard_port/api/health" 2>/dev/null \
     | grep -qi '^x-claude-smart-dashboard:'

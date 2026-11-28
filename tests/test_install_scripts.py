@@ -3340,6 +3340,69 @@ def test_dashboard_service_accepts_healthy_shared_dashboard_marker() -> None:
     assert "foreign listener" in dashboard
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Uses a POSIX shell and Node symlink")
+@pytest.mark.parametrize(
+    ("status", "owned"), [(200, True), (200, False), (404, True), (None, True)]
+)
+def test_prepared_dashboard_status_uses_private_node_without_profile(
+    tmp_path: Path, status: int | None, owned: bool
+) -> None:
+    class Listener(http.server.BaseHTTPRequestHandler):
+        def do_HEAD(self) -> None:
+            assert self.path == "/api/health"
+            if status is None:
+                # Keep the connection open beyond the probe's total deadline.
+                release_request.wait(5)
+                return
+            self.send_response(status)
+            if owned:
+                self.send_header("x-claude-smart-dashboard", "1")
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    release_request = threading.Event()
+    scripts = tmp_path / "runtime/plugin/scripts"
+    scripts.mkdir(parents=True)
+    (scripts.parent / "guide-prepared-runtime").touch()
+    for name in ("_lib.sh", "dashboard-service.sh"):
+        shutil.copy2(LIB.with_name(name), scripts / name)
+    private_node = tmp_path / ".claude-smart/node/current/bin"
+    private_node.mkdir(parents=True)
+    (private_node / "node").symlink_to(node_bin())
+    env = _isolated_env(tmp_path)
+    env["PATH"] = _minimal_path(tmp_path, "dirname", "mkdir", "uname")
+    env["NODE_OPTIONS"] = "--require=missing-profile-preload"
+    login_probe = _trace_login_shell(tmp_path, env)
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Listener) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        env["DASHBOARD_PORT"] = str(port)
+        try:
+            result = subprocess.run(
+                ["/bin/bash", str(scripts / "dashboard-service.sh"), "status"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=True,
+                timeout=4,
+            )
+        finally:
+            release_request.set()
+            server.shutdown()
+            thread.join()
+
+    expected = (
+        f"running on http://localhost:{port}"
+        if owned and status == 200
+        else "not running"
+    )
+    assert result.stdout.splitlines() == [expected]
+    assert not login_probe.exists()
+
+
 def test_backend_service_verifies_bundled_reflexio_runtime_identity() -> None:
     backend = (REPO_ROOT / "plugin" / "scripts" / "backend-service.sh").read_text()
 
