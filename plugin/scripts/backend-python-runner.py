@@ -12,6 +12,7 @@ from pathlib import Path
 from claude_smart.native_selection import (
     LearningSelectionError,
     admit_native_learning_target,
+    use_prepared_launcher,
 )
 
 # The one file every claude-smart release up to 0.2.x stored memory in.
@@ -52,6 +53,8 @@ def check_openclaw_configuration() -> None:
 def prepare_native_sdk_environment() -> None:
     """Publish admitted intent only in the backend child and its workers."""
     target = admit_native_learning_target()
+    if target is not None and target.host in {"claude-code", "codex"}:
+        use_prepared_launcher(Path(__file__).parent.parent, target.host)
     if (
         target is not None
         and target.host == "opencode"

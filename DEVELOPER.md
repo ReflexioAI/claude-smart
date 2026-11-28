@@ -355,6 +355,18 @@ legacy target fallback for the pinned SDK, not the identity of the last installe
 integration. No guided-config marker is required. Removal can complete with broken
 settings and report that shared-service refresh needs repair instead of guessing.
 
+The guide records the Git executable it discovers for each prepared runtime.
+Hooks and slash commands use it to keep project IDs stable in linked worktrees
+when the host starts them with a smaller PATH. If Git moves to a location
+available only from your login profile, rerun setup to discover it. Standalone
+hooks and slash commands request installation repair when their Python module
+cannot load.
+
+For the bundled backend, setup also records the default Claude Code or Codex
+launcher it resolves. The backend uses that executable for the matching native
+host and checks that it is still available before replacing a running service.
+Explicit launcher overrides take precedence.
+
 ### Claude Code
 
 `npx claude-smart install` copies the npm package to

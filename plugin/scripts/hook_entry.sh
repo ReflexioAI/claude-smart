@@ -33,10 +33,13 @@ if claude_smart_is_internal_invocation_env; then
   claude_smart_emit_continue "$HOST"
   exit 0
 fi
-# Pick up uv from the user's login-shell PATH (covers ~/.local/bin populated
-# by the astral.sh installer) so a fresh install works before the user
-# restarts their terminal. Matches the pattern used by smart-install.sh.
-claude_smart_source_login_path
+PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
+claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "hook_entry.sh" "$@"
+# A guided hook uses its prepared Python and the Git binding from setup.
+# Standalone and older guided installs can still discover tools in the profile.
+if [ ! -f "$PLUGIN_ROOT/guide-prepared-runtime" ] || [ ! -f "$PLUGIN_ROOT/guide-git" ]; then
+  claude_smart_source_login_path
+fi
 # Explicit fallback for the astral.sh installer's default paths, in case
 # the user's login-shell rc hasn't yet been re-sourced to pick them up.
 claude_smart_prepend_astral_bins
@@ -44,8 +47,6 @@ BACKEND_PORT="${BACKEND_PORT:-8071}"
 export BACKEND_PORT
 claude_smart_source_reflexio_env
 
-PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
-claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "hook_entry.sh" "$@"
 claude_smart_derive_reflexio_url_from_backend_port
 
 FAILURE_MARKER="$HOME/.claude-smart/install-failed"
@@ -81,26 +82,6 @@ PY
     else
       claude_smart_emit_continue "$HOST"
     fi
-    exit 0
-  fi
-fi
-
-if [ ! -f "$PLUGIN_ROOT/guide-prepared-runtime" ] && ! command -v uv >/dev/null 2>&1; then
-  # Self-heal from skipped setup without blocking the first prompt. The
-  # installer and Setup hook own dependency bootstrap; hooks only schedule
-  # recovery and return so SessionStart stays lightweight.
-  if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" = "1" ]; then
-    claude_smart_emit_continue "$HOST"
-    exit 0
-  fi
-  if [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
-    mkdir -p "$STATE_DIR"
-    CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
-      bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
-      >>"$STATE_DIR/install.log" 2>&1 || true
-  fi
-  if ! command -v uv >/dev/null 2>&1; then
-    claude_smart_emit_continue "$HOST"
     exit 0
   fi
 fi

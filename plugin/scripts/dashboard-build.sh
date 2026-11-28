@@ -23,15 +23,14 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
-claude_smart_source_login_path
-claude_smart_prepend_node_bins
-
 PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "dashboard-build.sh" "$@"
 if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
   echo "claude-smart: the guide prepares this dashboard. Rerun npx claude-smart setup to repair it." >&2
   exit 1
 fi
+claude_smart_source_login_path
+claude_smart_prepend_node_bins
 DASHBOARD_DIR="$PLUGIN_ROOT/dashboard"
 
 STATE_DIR="$HOME/.claude-smart"

@@ -14,6 +14,72 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_prepared_launcher_keeps_native_qualification_identity(tmp_path, monkeypatch):
+    from claude_smart.native_selection import (
+        LearningSelectionError,
+        record_default_launcher,
+        use_prepared_launcher,
+    )
+    from reflexio.server.llm._native_model_ref import native_launch_identity_digest
+    from reflexio.server.llm.providers.native_cli_provider import _resolve_cli_path
+
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    (plugin / "guide-prepared-runtime").write_text("runtime-AbCd12")
+    launcher_dir = tmp_path / "shims"
+    launcher_dir.mkdir()
+    executable = launcher_dir / ("codex.exe" if os.name == "nt" else "codex")
+    executable.touch(mode=0o755)
+    unrelated_dir = tmp_path / "other"
+    unrelated_dir.mkdir()
+    other = unrelated_dir / executable.name
+    other.touch(mode=0o755)
+    private_tools = tmp_path / "private-tools"
+    private_tools.mkdir()
+    monkeypatch.setattr(sys, "prefix", str(plugin / ".venv"))
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/codex")
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
+    setup_path = os.pathsep.join((str(private_tools), str(launcher_dir)))
+    monkeypatch.setenv("PATH", setup_path)
+    fingerprint = native_launch_identity_digest()
+    record_default_launcher("codex")
+    use_prepared_launcher(plugin, "codex")
+    assert os.environ["PATH"] == setup_path
+
+    runtime_path = os.pathsep.join((str(private_tools), str(unrelated_dir)))
+    monkeypatch.setenv("PATH", runtime_path)
+    use_prepared_launcher(plugin, "claude-code")
+    assert os.environ["PATH"] == runtime_path
+    use_prepared_launcher(plugin, "codex")
+    assert _resolve_cli_path("codex") == str(executable)
+    assert os.get_exec_path() == [
+        str(private_tools),
+        str(launcher_dir),
+        str(unrelated_dir),
+    ]
+    assert "CLAUDE_SMART_CLI_PATH" not in os.environ
+    assert native_launch_identity_digest() == fingerprint
+
+    monkeypatch.setenv("PATH", str(unrelated_dir))
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(other))
+    use_prepared_launcher(plugin, "codex")
+    assert _resolve_cli_path("codex") == str(other)
+    assert os.environ["PATH"] == str(unrelated_dir)
+
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(tmp_path / "missing-override"))
+    use_prepared_launcher(plugin, "codex")
+    assert _resolve_cli_path("codex") == str(executable)
+
+    monkeypatch.setenv("PATH", str(unrelated_dir))
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH")
+    executable.unlink()
+    with pytest.raises(LearningSelectionError, match="Rerun Claude Smart setup"):
+        use_prepared_launcher(plugin, "codex")
+    assert os.environ["PATH"] == str(unrelated_dir)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Backend selection uses the POSIX shell")
 @pytest.mark.parametrize("coding_host", ["claude-code", "codex", "opencode"])
 @pytest.mark.parametrize("explicit_path", [False, True])

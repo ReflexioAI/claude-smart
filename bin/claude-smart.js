@@ -156,6 +156,8 @@ const COPYTREE_IGNORE_NAMES = new Set([
   ".git",
   "node_modules",
   ".next",
+  "guide-git",
+  "guide-native-launcher",
 ]);
 function shouldCopyPath(src) {
   const base = src.split(/[\\/]/).pop() || "";
@@ -2964,7 +2966,7 @@ function pendingStartupId() {
   }
 }
 
-async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
+async function resumeGuidedShutdown({ retainBaseline = true, replaceUnready = false } = {}) {
   const pending = readGuidedShutdown();
   const startup = pendingStartupId();
   if (!pending && !startup) return {};
@@ -2981,6 +2983,21 @@ async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
       if (pending.root && startup !== pending.id && pending.predecessorStopped !== true) {
         if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
           throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
+        if (existsSync(join(target, "guide-native-launcher")) &&
+            !(await runServiceWithProgress(target, "backend-service.sh", "preflight"))) {
+          if (replaceUnready) {
+            // The predecessor has not been stopped. Restore its selection
+            // before discarding the failed cutover, so interruption here
+            // leaves the existing recovery record usable.
+            forcePluginRoot(pending.root);
+            rmSync(GUIDED_PENDING_SHUTDOWN);
+            return retainBaseline ? { baseline: { root: pending.root, status: pending.status } } : {};
+          }
+          throw new Error(
+            "The prepared backend failed preflight. The previous services were left in place. " +
+            "Rerun setup to prepare another runtime."
+          );
+        }
         await stopServicesForInstall(pending.root, pending.status);
       }
       // Publish forward recovery before discarding the predecessor record.
@@ -3055,6 +3072,21 @@ async function prepareGuidedRuntime(config, options, settings, baseline) {
     if (!existsSync(join(pluginRoot, "scripts", "guided-command.sh")))
       throw new Error("The guided runtime command launcher is missing");
     const tools = await bootstrapPluginRuntime(pluginRoot, { settings });
+    const nativeHost = settings.request.updates[NATIVE_MODEL_ENV]?.split("/", 3)[1];
+    if (isBundledBackendUrl(settings.request.updates.REFLEXIO_URL) &&
+        [HOST_CLAUDE_CODE, HOST_CODEX].includes(nativeHost) && !settings.cliPath?.trim()) {
+      const code = await runChecked(pluginPythonPath(pluginRoot), [
+        "-I", "-m", "claude_smart.native_selection", "--record-default-launcher", nativeHost,
+      ], { env: { ...runtimeEnv(), CLAUDE_SMART_CLI_PATH: "" } });
+      if (code !== 0) throw new Error("Could not record the prepared native launcher.");
+    }
+    const git = resolveCommand(isWindows() ? ["git.exe", "git"] : ["git"]);
+    if (git) {
+      writeFileSync(join(pluginRoot, "guide-git"), JSON.stringify(resolve(git)), {
+        flag: "wx",
+        mode: 0o600,
+      });
+    }
     // Only the guide may replace the dependencies of a prepared generation.
     writeFileSync(join(pluginRoot, "guide-prepared-runtime"), id, { flag: "wx", mode: 0o600 });
     const readOnly = settings.request.updates[CLAUDE_SMART_READ_ONLY_ENV] === "1";
@@ -3147,7 +3179,7 @@ async function runGuidedCommand(command, args) {
           });
         }
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
-        const { baseline } = await resumeGuidedShutdown();
+        const { baseline } = await resumeGuidedShutdown({ replaceUnready: true });
         const settings = planInstallSettings(config, captured);
         // Recovery keeps the previous generation intact until registration is
         // complete, even when the user retries with just one host.
@@ -3186,7 +3218,7 @@ async function runGuidedCommand(command, args) {
       runHost: async (action, host, options, label) => {
         if (action === "uninstall" && !heldPackageLocks.has(GUIDE_INSTALL_LOCK)) {
           holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
-          await resumeGuidedShutdown({ retainBaseline: false });
+          await resumeGuidedShutdown({ retainBaseline: false, replaceUnready: true });
         }
         if (host === HOST_CODEX && codexPreflightFailure)
           return { code: 1, reason: codexPreflightFailure };

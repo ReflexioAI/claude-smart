@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
-# Wrapper for slash commands that invoke the claude_smart CLI via uv.
-# Claude Code runs `!` bash directives in slash command .md files in a
-# non-interactive, non-login shell that does NOT source ~/.zshrc or
-# ~/.bash_profile. As a result, binaries installed by smart-install.sh
-# at ~/.local/bin (e.g. uv from the astral.sh installer) are invisible
-# to those directives until the user manually re-sources their shell rc.
-# This wrapper bootstraps PATH the same way hook_entry.sh does so the
-# slash commands work on a fresh install.
+# Dispatch slash commands to the selected Python runtime. Standalone
+# installations can discover tools and finish a skipped Setup step.
 set -eu
 
 # The Python runtime does not own integration installation or removal.
@@ -20,13 +14,14 @@ esac
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_lib.sh
 . "$HERE/_lib.sh"
-claude_smart_source_login_path
+PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
+claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "cli.sh" "$@"
+if [ ! -f "$PLUGIN_ROOT/guide-prepared-runtime" ] || [ ! -f "$PLUGIN_ROOT/guide-git" ]; then
+  claude_smart_source_login_path
+fi
 claude_smart_prepend_astral_bins
 claude_smart_prepend_node_bins
 claude_smart_source_reflexio_env
-
-PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
-claude_smart_reexec_stable_plugin_root_if_needed "$PLUGIN_ROOT" "cli.sh" "$@"
 
 # A guided generation already owns its interpreter. Repair belongs to setup.
 if [ -f "$PLUGIN_ROOT/guide-prepared-runtime" ]; then
@@ -47,37 +42,6 @@ if [ -f "$FAILURE_MARKER" ] && ! claude_smart_python_imports "$PLUGIN_ROOT" clau
   echo "claude-smart is not installed correctly: $msg" >&2
   echo "Fix the underlying issue, then rerun npx claude-smart install (add --host codex or --host opencode for those hosts) to retry dependency setup." >&2
   exit 1
-fi
-
-if ! command -v uv >/dev/null 2>&1; then
-  # Self-heal: the Setup/SessionStart hook may have been skipped (trust
-  # prompt declined, plugin enabled mid-session, etc.) leaving the install
-  # half-done. Run smart-install.sh inline so the user does not have to
-  # restart Claude Code just to recover.
-  # Guard against recursion: if smart-install.sh ever shells back through
-  # this wrapper (e.g. a future migration step) we must not loop forever.
-  if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" = "1" ]; then
-    echo "claude-smart: bootstrap recursion detected; aborting." >&2
-    exit 1
-  fi
-  if [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
-    echo "claude-smart: 'uv' not found — bootstrapping dependencies (~1-3 min on first install)..." >&2
-    CLAUDE_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >/dev/null
-    claude_smart_prepend_astral_bins
-    claude_smart_prepend_node_bins
-  fi
-  if ! command -v uv >/dev/null 2>&1; then
-    if [ -f "$FAILURE_MARKER" ]; then
-      msg="$(head -n 1 "$FAILURE_MARKER" 2>/dev/null || echo "")"
-      [ -n "$msg" ] || msg="unknown error"
-      echo "claude-smart: install failed: $msg" >&2
-      echo "Fix the underlying issue and delete $FAILURE_MARKER to retry." >&2
-    else
-      echo "claude-smart: 'uv' not found on PATH after bootstrap attempt." >&2
-      echo "Install it from https://docs.astral.sh/uv/ or rerun $PLUGIN_ROOT/scripts/smart-install.sh manually." >&2
-    fi
-    exit 1
-  fi
 fi
 
 # Slash commands run synchronously and surface stderr directly to the user,
