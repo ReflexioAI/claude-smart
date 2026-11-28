@@ -65,10 +65,27 @@ def use_prepared_launcher(plugin_root: Path, host: str) -> None:
 
     from reflexio.server.llm.providers.native_cli_provider import _resolve_cli_path
 
+    current = _resolve_cli_path(host)
+    if current == str(executable):
+        return
+
     original = os.environ.get("PATH")
-    os.environ["PATH"] = os.pathsep.join(
-        (str(executable.parent), original) if original else (str(executable.parent),)
-    )
+    entries = os.get_exec_path()
+    position = len(entries)
+    if current is not None:
+        competing = Path(current).parent
+        position = next(
+            (
+                i
+                for i, value in enumerate(entries)
+                if value and Path(value).absolute() == competing
+            ),
+            position,
+        )
+    # Keep earlier utilities such as the runtime's private Node ahead of the
+    # new directory. Only a competing launcher justifies extending precedence.
+    entries.insert(position, str(executable.parent))
+    os.environ["PATH"] = os.pathsep.join(entries)
     if _resolve_cli_path(host) != str(executable):
         if original is None:
             os.environ.pop("PATH", None)

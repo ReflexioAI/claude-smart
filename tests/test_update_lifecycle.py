@@ -2129,6 +2129,22 @@ fs.renameSync = (source, target) => {
 
     os.utime(state / ".install.lock", (1, 1))
     env.pop("NODE_OPTIONS")
+    if installed:
+        assert (chosen / "guide-native-launcher").is_file()
+        candidate_backend = chosen / "scripts/backend-service.sh"
+        original = candidate_backend.read_bytes()
+        candidate_backend.write_bytes(
+            b'#!/bin/bash\nif [ "$1" = preflight ]; then exit 71; fi\n' + original
+        )
+        try:
+            refused = run()
+            assert refused.returncode == 1
+            assert "The prepared backend failed preflight" in refused.stderr
+            assert selected.resolve() == chosen
+            assert receipt.is_file()
+            assert all(row["action"] != "stop" for row in _calls(tmp_path))
+        finally:
+            candidate_backend.write_bytes(original)
     _write_bootstrap_uv(uv, mode="non_lock_failure")
     failed_retry = run()
     assert failed_retry.returncode == 1, failed_retry.stdout + failed_retry.stderr

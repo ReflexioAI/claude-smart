@@ -34,20 +34,31 @@ def test_prepared_launcher_keeps_native_qualification_identity(tmp_path, monkeyp
     unrelated_dir.mkdir()
     other = unrelated_dir / executable.name
     other.touch(mode=0o755)
+    private_tools = tmp_path / "private-tools"
+    private_tools.mkdir()
     monkeypatch.setattr(sys, "prefix", str(plugin / ".venv"))
     monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/codex")
     monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
-    monkeypatch.setenv("PATH", str(launcher_dir))
+    setup_path = os.pathsep.join((str(private_tools), str(launcher_dir)))
+    monkeypatch.setenv("PATH", setup_path)
     fingerprint = native_launch_identity_digest()
     record_default_launcher("codex")
+    use_prepared_launcher(plugin, "codex")
+    assert os.environ["PATH"] == setup_path
 
-    monkeypatch.setenv("PATH", str(unrelated_dir))
+    runtime_path = os.pathsep.join((str(private_tools), str(unrelated_dir)))
+    monkeypatch.setenv("PATH", runtime_path)
     use_prepared_launcher(plugin, "claude-code")
-    assert os.environ["PATH"] == str(unrelated_dir)
+    assert os.environ["PATH"] == runtime_path
     use_prepared_launcher(plugin, "codex")
     assert _resolve_cli_path("codex") == str(executable)
+    assert os.get_exec_path() == [
+        str(private_tools),
+        str(launcher_dir),
+        str(unrelated_dir),
+    ]
     assert "CLAUDE_SMART_CLI_PATH" not in os.environ
     assert native_launch_identity_digest() == fingerprint
 

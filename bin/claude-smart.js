@@ -2983,6 +2983,13 @@ async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
       if (pending.root && startup !== pending.id && pending.predecessorStopped !== true) {
         if (!existsSync(join(pending.root, "scripts", "backend-service.sh")))
           throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
+        if (existsSync(join(target, "guide-native-launcher")) &&
+            !(await runServiceWithProgress(target, "backend-service.sh", "preflight"))) {
+          throw new Error(
+            "The prepared backend failed preflight. The previous services were left in place. " +
+            "Restore the recorded launcher or provide a working explicit override before retrying setup."
+          );
+        }
         await stopServicesForInstall(pending.root, pending.status);
       }
       // Publish forward recovery before discarding the predecessor record.
