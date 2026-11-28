@@ -761,12 +761,38 @@ backend_start_grace_seconds() {
   esac
 }
 
+# Seconds the selected SDK supervisor waits for colocated inference before it
+# starts the API (0 when inference is attached). The supervisor bounds that
+# phase itself and exits when it expires, so it is not the hook's to cut short.
+backend_inference_ready_timeout_seconds() {
+  prepare_backend_import_context
+  [ -x "$backend_python" ] || return 1
+  value="$(cd "$PLUGIN_ROOT" && PYTHONPATH="$backend_pythonpath" \
+    "$backend_python" "$HERE/backend-inference-owner.py" --inference-ready-timeout)" || return 1
+  # Native Windows Python emits CRLF; command substitution strips only LF.
+  value="${value%$'\r'}"
+  case "$value" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+# The recorded launch is still starting while it is inside the SDK's own
+# inference-readiness wait plus the hook's grace for the API that follows.
+# Past both, a live launch without health is stuck and may be reclaimed.
 recorded_backend_pid_in_startup_grace() {
   recorded_backend_pid_alive || return 1
   now="$(claude_smart_now_epoch 2>/dev/null || printf '%s\n' "0")"
   mtime="$(claude_smart_path_mtime_epoch "$PID_FILE" 2>/dev/null || printf '%s\n' "$now")"
   age=$((now - mtime))
-  [ "$age" -lt "$(backend_start_grace_seconds)" ]
+  grace="$(backend_start_grace_seconds)"
+  [ "$age" -lt "$grace" ] && return 0
+  if ! ready_timeout="$(backend_inference_ready_timeout_seconds)"; then
+    claude_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" \
+      "[claude-smart] backend: could not read the SDK inference readiness deadline; applying startup grace only"
+    return 1
+  fi
+  [ "$age" -lt $((grace + ready_timeout)) ]
 }
 
 kill_pid_if_directionally_owned() {

@@ -5625,6 +5625,116 @@ def test_backend_start_honors_startup_grace_for_recorded_pid(
             warming.wait(timeout=5)
 
 
+@pytest.mark.parametrize(
+    ("age_seconds", "ready_timeout", "reclaimed", "reason"),
+    [
+        # Past the hook grace but inside the SDK's own inference readiness wait
+        # (claude-smart#300): the supervisor still owns this launch.
+        (70, "300", False, "still running but not healthy yet"),
+        # Past both bounds: a live launch without health is stuck.
+        (370, "300", True, "exceeded startup grace without health"),
+        # Attached inference is not awaited, so only the hook grace applies.
+        (70, "0", True, "exceeded startup grace without health"),
+        # An unreadable deadline keeps the existing grace, never an unbounded wait.
+        (
+            70,
+            "unavailable",
+            True,
+            "could not read the SDK inference readiness deadline",
+        ),
+    ],
+    ids=["inside-readiness", "stuck-past-readiness", "attached", "deadline-unknown"],
+)
+def test_backend_start_respects_sdk_inference_readiness_window(
+    tmp_path: Path,
+    age_seconds: int,
+    ready_timeout: str,
+    reclaimed: bool,
+    reason: str,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("process fixture is POSIX-only")
+    port = _free_port()
+    plugin_root = _seed_backend_service_test_plugin(tmp_path, port=port)
+    warming = subprocess.Popen(["/bin/sleep", "60"], start_new_session=True)
+    try:
+        state_dir = tmp_path / ".claude-smart"
+        state_dir.mkdir()
+        pid_file = state_dir / f"backend.{_backend_pid_key(plugin_root)}.pid"
+        pid_file.write_text(f"{warming.pid}\n")
+        recorded_at = time.time() - age_seconds
+        os.utime(pid_file, (recorded_at, recorded_at))
+        _write_fake_plugin_python(
+            plugin_root,
+            "#!/bin/sh\n"
+            'printf "python %s\\n" "$*" >> "$HOME/python.log"\n'
+            'case "$1" in\n'
+            "  */backend-inference-owner.py)\n"
+            '    if [ "${2:-}" != "--inference-ready-timeout" ]; then echo colocated; exit 0; fi\n'
+            '    if [ "$FAKE_READY_TIMEOUT" = "unavailable" ]; then exit 1; fi\n'
+            '    printf "%s\\n" "$FAKE_READY_TIMEOUT"; exit 0 ;;\n'
+            "  */backend-python-runner.py)\n"
+            '    case " $* " in *" --claude-smart-backend=1 "*)\n'
+            '      printf "spawned backend\\n" >> "$HOME/python.log" ;;\n'
+            "    esac ;;\n"
+            "esac\n"
+            "exit 0\n",
+        )
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _write_executable(bin_dir / "curl", "#!/bin/sh\nexit 22\n")
+        _write_executable(bin_dir / "lsof", "#!/bin/sh\nexit 0\n")
+        _write_executable(
+            bin_dir / "ps",
+            "#!/bin/sh\n"
+            'if [ "${3:-}" = "$WARMING_PID" ]; then\n'
+            '  printf "python backend-python-runner.py --claude-smart-backend=1 --claude-smart-plugin-root=%s --claude-smart-version=0.2.49 --claude-smart-reflexio-vendor-root=%s -- services start --only backend\\n" "$PWD" "$CLAUDE_SMART_REFLEXIO_VENDOR_ROOT"\n'
+            "fi\n",
+        )
+        _write_executable(
+            bin_dir / "uv",
+            '#!/bin/sh\nprintf "uv %s\\n" "$*" >> "$HOME/uv.log"\nexit 0\n',
+        )
+        _write_executable(bin_dir / "sleep", "#!/bin/sh\nexit 0\n")
+        env = _backend_service_env(
+            tmp_path,
+            bin_dir,
+            port,
+            FAKE_READY_TIMEOUT=ready_timeout,
+            WARMING_PID=str(warming.pid),
+        )
+        env.pop("CLAUDE_SMART_BACKEND_START_GRACE_SECONDS", None)
+
+        result = subprocess.run(
+            ["bash", str(plugin_root / "scripts" / "backend-service.sh"), "start"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert reason in (state_dir / "backend.log").read_text()
+        python_log = tmp_path / "python.log"
+        if reclaimed:
+            warming.wait(timeout=5)
+            _wait_for_file_text(python_log, "spawned backend")
+        else:
+            assert result.stdout == ""
+            assert warming.poll() is None
+            assert "spawned backend" not in (
+                python_log.read_text() if python_log.exists() else ""
+            )
+            assert (
+                "exceeded startup grace" not in (state_dir / "backend.log").read_text()
+            )
+    finally:
+        if warming.poll() is None:
+            warming.terminate()
+            warming.wait(timeout=5)
+
+
 def test_service_lock_recovers_dead_stale_lock(tmp_path: Path) -> None:
     state_dir = tmp_path / ".claude-smart"
     lock_dir = state_dir / "backend.start.lock"
