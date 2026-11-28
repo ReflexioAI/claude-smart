@@ -907,8 +907,8 @@ def test_public_confirmation_adopts_the_saved_opencode_executable(
     )
 
 
-@pytest.mark.parametrize("exported", [False, True])
-def test_setup_binds_opencode_without_a_model_variant(tmp_path: Path, exported: bool):
+@pytest.mark.parametrize("selection", ["default", "exported", "inconclusive-probe"])
+def test_setup_binds_opencode_without_a_model_variant(tmp_path: Path, selection: str):
     from tests.test_install_scripts import _run_public_setup
 
     tools = tmp_path / "relative-tools"
@@ -919,8 +919,10 @@ def test_setup_binds_opencode_without_a_model_variant(tmp_path: Path, exported: 
             ["relative-tools", str(tmp_path / "fake-bin"), os.environ["PATH"]]
         )
     }
-    if exported:
+    if selection != "default":
         env["CLAUDE_SMART_CLI_PATH"] = str(executable)
+    if selection == "inconclusive-probe":
+        executable.write_text("#!/bin/sh\nexit 1\n")
     result = _run_public_setup(
         tmp_path,
         "--backend",
@@ -934,11 +936,15 @@ def test_setup_binds_opencode_without_a_model_variant(tmp_path: Path, exported: 
     assert values["CLAUDE_SMART_CLI_PATH"] == str(executable)
     runtimes = tmp_path / ".claude-smart/guided-runtimes"
     runtime = runtimes / (runtimes / "selected").read_text().strip() / "plugin"
-    assert json.loads((runtime / "guide-native-launcher").read_text()) == {
-        "host": "opencode",
-        "selection": str(executable),
-        "executable": str(executable),
-    }
+    receipt = runtime / "guide-native-launcher"
+    if selection == "inconclusive-probe":
+        assert not receipt.exists()
+    else:
+        assert json.loads(receipt.read_text()) == {
+            "host": "opencode",
+            "selection": str(executable),
+            "executable": str(executable),
+        }
 
 
 def test_prepared_open_code_binding_uses_the_adopted_executable(
@@ -1139,12 +1145,13 @@ def test_public_setup_checks_opencode_variant_before_publication(
         env["PATH"] = os.pathsep.join(
             [str(tmp_path / "fake-bin"), str(tmp_path), os.environ["PATH"]]
         )
-    if case in {"empty-path-entry", "blank-opencode-path"}:
-        decoy = tmp_path / "decoy"
-        decoy.mkdir()
-        _fake_opencode_path(decoy)
+    if case in {"empty-path-entry", "blank-opencode-path", "saved-bare-opencode-path"}:
+        intended = tmp_path / "intended"
+        intended.mkdir()
+        executable = executable.rename(intended / "opencode")
+        _fake_opencode_path(tmp_path)
         env["PATH"] = os.pathsep.join(
-            ["", str(decoy), str(tmp_path / "fake-bin"), os.environ["PATH"]]
+            ["", str(intended), str(tmp_path / "fake-bin"), os.environ["PATH"]]
         )
     if case in {"worker-default", "worker-named"}:
         worker_bin = tmp_path / ".local/bin"
@@ -1182,7 +1189,13 @@ def test_public_setup_checks_opencode_variant_before_publication(
         values = dotenv_values(selected, interpolate=False)
         assert values["REFLEXIO_NATIVE_CLI_MODEL"] == f"local-cli/opencode/{model}"
         assert "CLAUDE_SMART_LEARNING_MODEL" not in values
-        if case in {"named-executable", "worker-named", "empty-path-entry"}:
+        if case in {
+            "named-executable",
+            "worker-named",
+            "empty-path-entry",
+            "blank-opencode-path",
+            "saved-bare-opencode-path",
+        }:
             selected_cli = values["CLAUDE_SMART_CLI_PATH"]
             assert selected_cli is not None
             assert Path(selected_cli) == executable

@@ -868,10 +868,10 @@ function resolveOpenCodePath(fallbackPath = "", explicitPath = "") {
 function resolvePosixOpenCodeCommand(name) {
   // The path spelling reaches exec intact. Resolving '..' lexically would
   // change the target when a parent component is a symlink.
-  for (const directory of (process.env.PATH ?? "/bin:/usr/bin").split(":")) {
+  for (const directory of (process.env.PATH ?? "/bin:/usr/bin").split(":").filter(Boolean)) {
     const candidate = isAbsolute(directory)
       ? `${directory}/${name}`
-      : `${process.cwd()}/${directory || "."}/${name}`;
+      : `${process.cwd()}/${directory}/${name}`;
     if (isExecutableFile(candidate)) return candidate;
   }
   return null;
@@ -2728,7 +2728,7 @@ function validateGuidedOpenCodeLearning(config, saved, withWorkerPath) {
   const nativeWire = ["--model", "--agent", "--format", "--title"].every((option) => runOptions.has(option)) &&
     (runOptions.has("--standalone") || runOptions.has("--attach"));
   if (!hasVariant) {
-    if (!nativeWire) config.adoptedOpenCodePath = command;
+    if (probe && !nativeWire) config.adoptedOpenCodePath = command;
     return;
   }
   if (!runOptions.has("--variant") && !(hasExplicitModel && runOptions.has("--standalone"))) {
