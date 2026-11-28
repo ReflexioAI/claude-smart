@@ -46,10 +46,21 @@ def record_default_launcher(host: str) -> None:
 
 def use_prepared_launcher(plugin_root: Path, host: str) -> None:
     """Reach a setup-resolved default without changing explicit SDK overrides."""
-    if os.environ.get("CLAUDE_SMART_CLI_PATH", "").strip():
-        return
     receipt = plugin_root / _PREPARED_LAUNCHER
     if not (plugin_root / "guide-prepared-runtime").is_file() or not receipt.is_file():
+        return
+
+    from reflexio.server.llm.providers.native_cli_provider import (
+        _anchored_override,
+        _resolve_cli_override_path,
+        _resolve_cli_path,
+    )
+
+    override = os.environ.get("CLAUDE_SMART_CLI_PATH")
+    if (
+        override
+        and _anchored_override(_resolve_cli_override_path(override)) is not None
+    ):
         return
 
     guidance = "The prepared native launcher is unavailable. Rerun Claude Smart setup."
@@ -62,8 +73,6 @@ def use_prepared_launcher(plugin_root: Path, host: str) -> None:
             raise ValueError
     except (OSError, ValueError, KeyError, TypeError):
         raise LearningSelectionError(guidance) from None
-
-    from reflexio.server.llm.providers.native_cli_provider import _resolve_cli_path
 
     current = _resolve_cli_path(host)
     if current == str(executable):

@@ -68,6 +68,11 @@ def test_prepared_launcher_keeps_native_qualification_identity(tmp_path, monkeyp
     assert _resolve_cli_path("codex") == str(other)
     assert os.environ["PATH"] == str(unrelated_dir)
 
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(tmp_path / "missing-override"))
+    use_prepared_launcher(plugin, "codex")
+    assert _resolve_cli_path("codex") == str(executable)
+
+    monkeypatch.setenv("PATH", str(unrelated_dir))
     monkeypatch.delenv("CLAUDE_SMART_CLI_PATH")
     executable.unlink()
     with pytest.raises(LearningSelectionError, match="Rerun Claude Smart setup"):

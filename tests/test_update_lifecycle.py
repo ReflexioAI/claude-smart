@@ -2064,9 +2064,12 @@ def test_guided_uninstall_keeps_standalone_codex_home(tmp_path, recorded):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="uses POSIX SIGKILL")
-@pytest.mark.parametrize("installed", [False, True])
+@pytest.mark.parametrize(
+    ("installed", "unready_operation"),
+    [(False, None), (True, None), (True, "setup"), (True, "uninstall")],
+)
 def test_retry_starts_selected_runtime_before_preparing_replacement(
-    tmp_path, installed
+    tmp_path, installed, unready_operation
 ):
     package, predecessor, uv, env = _fixture(tmp_path, "codex", installed=installed)
     _write_bootstrap_uv(uv, mode="fresh")
@@ -2129,22 +2132,35 @@ fs.renameSync = (source, target) => {
 
     os.utime(state / ".install.lock", (1, 1))
     env.pop("NODE_OPTIONS")
-    if installed:
+    if unready_operation:
         assert (chosen / "guide-native-launcher").is_file()
         candidate_backend = chosen / "scripts/backend-service.sh"
-        original = candidate_backend.read_bytes()
         candidate_backend.write_bytes(
-            b'#!/bin/bash\nif [ "$1" = preflight ]; then exit 71; fi\n' + original
+            b'#!/bin/bash\nif [ "$1" = preflight ]; then exit 71; fi\n'
+            + candidate_backend.read_bytes()
         )
-        try:
-            refused = run()
-            assert refused.returncode == 1
-            assert "The prepared backend failed preflight" in refused.stderr
-            assert selected.resolve() == chosen
-            assert receipt.is_file()
+        if unready_operation == "setup":
+            _write_bootstrap_uv(uv, mode="non_lock_failure")
+            failed_replacement = run()
+            assert failed_replacement.returncode == 1
+            assert "uv sync failed" in failed_replacement.stderr
+            assert selected.resolve() == predecessor
+            assert not receipt.exists()
             assert all(row["action"] != "stop" for row in _calls(tmp_path))
-        finally:
-            candidate_backend.write_bytes(original)
+            _write_bootstrap_uv(uv, mode="fresh")
+            replaced = run()
+            assert replaced.returncode == 0, replaced.stdout + replaced.stderr
+            assert selected.resolve() not in {chosen, predecessor}
+        else:
+            removed = _run(tmp_path, package, "codex", env, "uninstall")
+            assert removed.returncode == 0, removed.stdout + removed.stderr
+            assert not receipt.exists()
+        assert all(
+            row["action"] != "start"
+            for row in _calls(tmp_path)
+            if row["root"] == str(chosen)
+        )
+        return
     _write_bootstrap_uv(uv, mode="non_lock_failure")
     failed_retry = run()
     assert failed_retry.returncode == 1, failed_retry.stdout + failed_retry.stderr

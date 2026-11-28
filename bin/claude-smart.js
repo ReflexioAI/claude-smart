@@ -2966,7 +2966,7 @@ function pendingStartupId() {
   }
 }
 
-async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
+async function resumeGuidedShutdown({ retainBaseline = true, replaceUnready = false } = {}) {
   const pending = readGuidedShutdown();
   const startup = pendingStartupId();
   if (!pending && !startup) return {};
@@ -2985,9 +2985,17 @@ async function resumeGuidedShutdown({ retainBaseline = true } = {}) {
           throw new Error("The previous shared service runtime is unavailable; resolve shutdown before retrying setup");
         if (existsSync(join(target, "guide-native-launcher")) &&
             !(await runServiceWithProgress(target, "backend-service.sh", "preflight"))) {
+          if (replaceUnready) {
+            // The predecessor has not been stopped. Restore its selection
+            // before discarding the failed cutover, so interruption here
+            // leaves the existing recovery record usable.
+            forcePluginRoot(pending.root);
+            rmSync(GUIDED_PENDING_SHUTDOWN);
+            return retainBaseline ? { baseline: { root: pending.root, status: pending.status } } : {};
+          }
           throw new Error(
             "The prepared backend failed preflight. The previous services were left in place. " +
-            "Restore the recorded launcher or provide a working explicit override before retrying setup."
+            "Rerun setup to prepare another runtime."
           );
         }
         await stopServicesForInstall(pending.root, pending.status);
@@ -3171,7 +3179,7 @@ async function runGuidedCommand(command, args) {
           });
         }
         holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
-        const { baseline } = await resumeGuidedShutdown();
+        const { baseline } = await resumeGuidedShutdown({ replaceUnready: true });
         const settings = planInstallSettings(config, captured);
         // Recovery keeps the previous generation intact until registration is
         // complete, even when the user retries with just one host.
@@ -3210,7 +3218,7 @@ async function runGuidedCommand(command, args) {
       runHost: async (action, host, options, label) => {
         if (action === "uninstall" && !heldPackageLocks.has(GUIDE_INSTALL_LOCK)) {
           holdPackageInstallLock(GUIDE_INSTALL_LOCK, "installation guide");
-          await resumeGuidedShutdown({ retainBaseline: false });
+          await resumeGuidedShutdown({ retainBaseline: false, replaceUnready: true });
         }
         if (host === HOST_CODEX && codexPreflightFailure)
           return { code: 1, reason: codexPreflightFailure };
