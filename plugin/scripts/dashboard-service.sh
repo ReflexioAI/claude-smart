@@ -89,9 +89,10 @@ kill_recorded_dashboard() {
 # stop/uninstall can safely reap them without touching foreign listeners.
 marker_responds() {
   if [ -n "$prepared_node" ]; then
-    NODE_OPTIONS= "$prepared_node" - "$dashboard_port" 2>/dev/null <<'JS'
+    local proof
+    proof="$(NODE_OPTIONS= "$prepared_node" - "$dashboard_port" 2>/dev/null <<'JS'
 const http = require("node:http");
-process.exitCode = 1;
+const writeVerdict = (owned) => process.stdout.write(owned ? "owned" : "unowned");
 const request = http.request({
   hostname: "127.0.0.1",
   port: Number(process.argv[2]),
@@ -100,15 +101,17 @@ const request = http.request({
   agent: false,
   signal: AbortSignal.timeout(2000),
 }, (response) => {
-  if (response.statusCode < 400 && "x-claude-smart-dashboard" in response.headers) {
-    process.exitCode = 0;
-  }
+  writeVerdict(response.statusCode < 400 && "x-claude-smart-dashboard" in response.headers);
   response.resume();
 });
-request.on("error", () => { process.exitCode = 1; });
+request.on("error", () => writeVerdict(false));
 request.end();
 JS
-    return $?
+    )" || proof=""
+    case "$proof" in
+      owned) return 0 ;;
+      unowned) return 1 ;;
+    esac
   fi
   command -v curl >/dev/null 2>&1 || return 1
   curl -sfI --connect-timeout 1 --max-time 2 "http://127.0.0.1:$dashboard_port/api/health" 2>/dev/null \
@@ -232,6 +235,7 @@ case "$CMD" in
         if [ "${CLAUDE_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
           echo "[claude-smart] dashboard: npm is not on PATH; starting installer in background" >>"$LOG_FILE"
           CLAUDE_SMART_SPAWN_KEEP_OUTPUT=1 claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1 \
+            CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY=1 \
             bash "$PLUGIN_ROOT/scripts/smart-install.sh" \
             >>"$STATE_DIR/install.log" 2>&1 || true
         fi

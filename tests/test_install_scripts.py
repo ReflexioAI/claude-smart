@@ -151,6 +151,9 @@ def _write_bootstrap_uv(path: Path, *, mode: str) -> None:
         'if [ "$1" = "-P" ]; then shift; fi\n'
         'fixture_prefix="$(cd "$(dirname "$0")/.." && pwd)"\n'
         'fixture_plugin="$(cd "$fixture_prefix/.." && pwd)"\n'
+        'if [ "$1" = "-I" ] && [ "${2:-}" = "-" ]; then\n'
+        f'exec {shlex.quote(sys.executable)} "$@"\n'
+        "fi\n"
         'if [ "$1" = "-I" ] && [ "${2:-}" = "-m" ] && { [ "${3:-}" = "claude_smart.env_config" ] || [ "${3:-}" = "claude_smart.native_selection" ]; }; then\n'
         '  fixture_module="$3"; shift 3\n'
         '  fixture_sdk="$fixture_prefix/fixture-site-packages"\n'
@@ -709,6 +712,7 @@ def test_service_start_scripts_recover_missing_dependencies_without_cli_command(
         in dashboard
     )
     assert "claude_smart_spawn_detached env CLAUDE_SMART_BOOTSTRAPPING=1" in dashboard
+    assert "CLAUDE_SMART_INSTALL_PRIVATE_NODE_ONLY=1" in dashboard
     assert (
         "npm is not on PATH; installer recovery scheduled; dashboard cannot start yet"
         in dashboard
@@ -3308,10 +3312,17 @@ def test_dashboard_service_accepts_healthy_shared_dashboard_marker() -> None:
 
 @pytest.mark.skipif(os.name == "nt", reason="Uses a POSIX shell and Node symlink")
 @pytest.mark.parametrize(
-    ("status", "owned"), [(200, True), (200, False), (404, True), (None, True)]
+    ("status", "owned", "node_works"),
+    [
+        (200, True, True),
+        (200, False, True),
+        (404, True, True),
+        (None, True, True),
+        (200, True, False),
+    ],
 )
 def test_prepared_dashboard_status_uses_private_node_without_profile(
-    tmp_path: Path, status: int | None, owned: bool
+    tmp_path: Path, status: int | None, owned: bool, node_works: bool
 ) -> None:
     class Listener(http.server.BaseHTTPRequestHandler):
         def do_HEAD(self) -> None:
@@ -3336,9 +3347,14 @@ def test_prepared_dashboard_status_uses_private_node_without_profile(
         shutil.copy2(LIB.with_name(name), scripts / name)
     private_node = tmp_path / ".claude-smart/node/current/bin"
     private_node.mkdir(parents=True)
-    (private_node / "node").symlink_to(node_bin())
+    tools = ["dirname", "mkdir", "uname"]
+    if node_works:
+        (private_node / "node").symlink_to(node_bin())
+    else:
+        _write_executable(private_node / "node", "#!/bin/sh\nexit 127\n")
+        tools.extend(["curl", "grep"])
     env = _isolated_env(tmp_path)
-    env["PATH"] = _minimal_path(tmp_path, "dirname", "mkdir", "uname")
+    env["PATH"] = _minimal_path(tmp_path, *tools)
     env["NODE_OPTIONS"] = "--require=missing-profile-preload"
     login_probe = _trace_login_shell(tmp_path, env)
     with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Listener) as server:
@@ -3516,6 +3532,7 @@ def test_installers_start_backend_and_refresh_dashboard_services() -> None:
     assert (
         "if (claude_smart_source_reflexio_env; install_complete); then\n"
         "  claude_smart_source_reflexio_env\n"
+        "  record_standalone_git\n"
         "  verify_windows_local_embedding_runtime\n"
         "  start_backend_service"
     ) in smart_install
@@ -4434,6 +4451,9 @@ def test_smart_install_locked_sync_success_does_not_refresh_lock(
     plugin_root, smart_install, env = _prepare_smart_install_sync_fixture(
         tmp_path, mode="fresh"
     )
+    git = tmp_path / "bin/git"
+    _write_executable(git, "#!/bin/sh\nexit 0\n")
+    login_probe = _trace_login_shell(tmp_path, env)
 
     result = subprocess.run(
         ["/bin/bash", "--noprofile", "--norc", str(smart_install)],
@@ -4448,6 +4468,8 @@ def test_smart_install_locked_sync_success_does_not_refresh_lock(
     assert not (tmp_path / ".claude-smart" / "install-failed").exists()
     assert (tmp_path / ".claude-smart" / "install-complete").exists()
     assert (plugin_root / "uv.lock").read_text() == "locked\n"
+    assert Path(json.loads((plugin_root / "guide-git").read_text())) == git
+    assert not login_probe.exists()
     assert (tmp_path / "uv.log").read_text().splitlines()[:1] == [
         "uv sync --locked --python 3.12 --quiet",
     ]

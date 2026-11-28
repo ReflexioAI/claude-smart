@@ -504,8 +504,40 @@ fi
 
 preflight_supported_runtime_platform
 
+record_standalone_git() {
+  local executable python receipt
+  receipt="$PLUGIN_ROOT/guide-git"
+  [ ! -e "$receipt" ] || return 0
+  executable="$(command -v git)" || return 0
+  python="$(claude_smart_plugin_python "$PLUGIN_ROOT")"
+  if claude_smart_is_windows; then
+    executable="$(claude_smart_to_windows_path "$executable")"
+  fi
+  "$python" -I - "$receipt" "$executable" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+receipt, executable = sys.argv[1:]
+executable_path = Path(executable).absolute()
+if os.name == "nt" and not executable_path.is_file():
+    executable_path = executable_path.with_suffix(".exe")
+if not executable_path.is_file() or not os.access(executable_path, os.X_OK):
+    raise SystemExit(0)
+try:
+    fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+except OSError:
+    pass
+else:
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(str(executable_path), stream)
+PY
+}
+
 if (claude_smart_source_reflexio_env; install_complete); then
   claude_smart_source_reflexio_env
+  record_standalone_git
   verify_windows_local_embedding_runtime
   start_backend_service
   claude_smart_emit_continue
@@ -710,6 +742,7 @@ if [ "${CLAUDE_SMART_DEFER_SERVICES:-}" != "1" ] &&
   echo "[claude-smart] WARNING: failed to set ~/.reflexio/plugin-root symlink — slash commands may not resolve" >&2
 fi
 
+record_standalone_git
 start_backend_service
 
 write_success_marker

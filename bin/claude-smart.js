@@ -4259,7 +4259,7 @@ async function preparePluginDashboard(pluginRoot, nodeRuntime, env, settings) {
 
 function recordRuntimeTools(pluginRoot) {
   const git = resolveCommand(isWindows() ? ["git.exe", "git"] : ["git"]);
-  if (git) {
+  if (git && !pathEntryExists(join(pluginRoot, "guide-git"))) {
     writeFileSync(join(pluginRoot, "guide-git"), JSON.stringify(resolve(git)), {
       flag: "wx",
       mode: 0o600,
