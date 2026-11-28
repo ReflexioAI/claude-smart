@@ -29,6 +29,8 @@ from claude_smart import env_config
 _LOGGER = logging.getLogger(__name__)
 
 _USER_ID_OVERRIDE_ENV = "REFLEXIO_USER_ID"
+# A hook can resolve project identity more than once in its Python process.
+_TIMED_OUT_GIT_BINDINGS: set[str] = set()
 
 
 def _basename(path: str | os.PathLike[str]) -> str:
@@ -44,6 +46,7 @@ def _git_lines(base: Path, *args: str) -> list[str] | None:
     venv = Path(sys.prefix)
     root = venv.parent
     candidates = ["git"]
+    recorded = None
     if venv.name == ".venv":
         try:
             selected = json.loads((root / "guide-git").read_text(encoding="utf-8"))
@@ -53,8 +56,9 @@ def _git_lines(base: Path, *args: str) -> list[str] | None:
                 and Path(selected).is_file()
                 and os.access(selected, os.X_OK)
             ):
+                recorded = selected
                 fallback = shutil.which("git")
-                candidates = [selected]
+                candidates = [] if selected in _TIMED_OUT_GIT_BINDINGS else [selected]
                 if fallback and fallback != selected:
                     candidates.append(fallback)
         except (OSError, ValueError):
@@ -70,7 +74,12 @@ def _git_lines(base: Path, *args: str) -> list[str] | None:
                 check=False,
                 timeout=5,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired as exc:
+            if git == recorded:
+                _TIMED_OUT_GIT_BINDINGS.add(git)
+            _LOGGER.debug("git lookup timed out for %s: %s", git, exc)
+            continue
+        except OSError as exc:
             _LOGGER.debug("git lookup failed for %s: %s", git, exc)
             continue
         if result.returncode == 0:
