@@ -5806,6 +5806,72 @@ def test_backend_service_preflight_missing_vendor_preserves_services(
     assert "existing services were not changed" in result.stderr
 
 
+@pytest.mark.parametrize("vendor_matches", [True, False])
+def test_prepared_backend_only_setup_can_repair_the_vendored_package(
+    tmp_path: Path, vendor_matches: bool
+) -> None:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    plugin = _seed_backend_service_test_plugin(tmp_path, port=port)
+    (plugin / "guide-prepared-runtime").write_text("runtime-AbCd12")
+    (plugin / "vendor/reflexio/pyproject.toml").write_text(
+        '[project]\nversion = "0.0.0"\n'
+    )
+    _write_fake_plugin_python(
+        plugin,
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        f"  *vendor/reflexio/pyproject.toml) exit {int(not vendor_matches)} ;;\n"
+        '  *backend-python-runner.py*" --check-learning-model") exit 0 ;;\n'
+        '  *backend-python-runner.py*) touch "$HOME/backend-started" ;;\n'
+        "esac\n"
+        "exit 0\n",
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("lsof", "sleep"):
+        _write_executable(bin_dir / name, "#!/bin/sh\nexit 0\n")
+    _write_executable(bin_dir / "curl", "#!/bin/sh\nexit 22\n")
+    if not vendor_matches:
+        _write_executable(
+            bin_dir / "uv",
+            '#!/bin/sh\ntouch "$HOME/uv-called"\nexit 0\n',
+        )
+    env = _backend_service_env(
+        tmp_path, bin_dir, port, PATH=f"{bin_dir}:/usr/bin:/bin", SHELL=""
+    )
+    env["CLAUDE_SMART_BACKEND_AUTOSTART"] = "1"
+    env["CLAUDE_SMART_BOOTSTRAPPING"] = "1"
+    if vendor_matches:
+        assert shutil.which("uv", path=env["PATH"]) is None
+
+    result = subprocess.run(
+        ["/bin/bash", str(plugin / "scripts/backend-service.sh"), "start"],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    marker = tmp_path / "backend-started"
+    if vendor_matches:
+        for _ in range(40):
+            if marker.exists():
+                break
+            time.sleep(0.025)
+        assert marker.exists()
+    else:
+        assert not marker.exists()
+        assert not (tmp_path / "uv-called").exists()
+        assert (
+            "rerun npx claude-smart setup"
+            in (tmp_path / ".claude-smart/backend.log").read_text()
+        )
+
+
 @pytest.mark.parametrize("command", ["preflight", "start"])
 def test_backend_service_reports_retired_model_before_replacement(
     tmp_path: Path, command: str
