@@ -1324,3 +1324,31 @@ def test_backend_preflight_checks_the_selected_openclaw_config_before_replacing_
     assert name in result.stdout
     assert "private-executable-path" not in result.stdout
     assert dotenv.read_bytes() == original
+
+
+@requires_vendor
+def test_openclaw_preflight_uses_saved_instance_and_expanded_path(tmp_path: Path):
+    if not (VENDOR / "reflexio/server/llm/_openclaw_config.py").is_file():
+        pytest.skip("The historical SDK lacks executable binding admission")
+    executable = tmp_path / "openclaw"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    dotenv = tmp_path / "selected.env"
+    dotenv.write_text("REFLEXIO_OPENCLAW_EXECUTABLE=${REFLEXIO_LOG_DIR}/openclaw\n")
+    env = _env(tmp_path)
+    env.update(
+        REFLEXIO_ENV_FILE=str(dotenv),
+        REFLEXIO_NATIVE_CLI_MODEL="",
+        REFLEXIO_DEFAULT_ORG_ID="pre-migration-org",
+        REFLEXIO_LOG_DIR=str(tmp_path),
+    )
+    result = subprocess.run(
+        [sys.executable, "-P", str(RUNNER), "--check-learning-model"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

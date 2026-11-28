@@ -21,6 +21,18 @@ LEGACY_ORG_ENV = "REFLEXIO_DEFAULT_ORG_ID"
 LEGACY_MODEL_ENV = "CLAUDE_SMART_CLI_MODEL"
 
 
+def normalize_inherited_org_selector() -> bool:
+    """Keep the saved instance binding authoritative for a current SDK."""
+    if find_spec("reflexio.removed_env") is None:
+        return False
+    from reflexio.removed_env import REMOVED_ENV_ALIASES
+
+    if LEGACY_ORG_ENV not in REMOVED_ENV_ALIASES:
+        return False
+    os.environ.pop(LEGACY_ORG_ENV, None)
+    return True
+
+
 def check_openclaw_configuration() -> None:
     """Run the bundled SDK's read-only startup admission before replacement."""
     if find_spec("reflexio.server.llm._openclaw_config") is None:
@@ -30,6 +42,7 @@ def check_openclaw_configuration() -> None:
     from reflexio.server.llm._provider_errors import ProviderRequestGuardError
 
     try:
+        normalize_inherited_org_selector()
         load_local_launch_env(provision=False)
         openclaw_executable()
     except (ProviderRequestGuardError, ValueError) as exc:
@@ -115,15 +128,7 @@ def pin_legacy_sqlite_db_path(
         from reflexio.cli.env_loader import block_implicit_dotenv_walkup
 
         block_implicit_dotenv_walkup()
-        retired_org_selector = False
-        if find_spec("reflexio.removed_env") is not None:
-            from reflexio.removed_env import REMOVED_ENV_ALIASES
-
-            retired_org_selector = LEGACY_ORG_ENV in REMOVED_ENV_ALIASES
-        if retired_org_selector:
-            # This launcher has always owned Claude Smart's fixed organization.
-            # A stale inherited selector cannot override the saved SDK binding.
-            os.environ.pop(LEGACY_ORG_ENV, None)
+        retired_org_selector = normalize_inherited_org_selector()
         from reflexio.cli.run_services import DEFAULT_OSS_PORTS, get_env_port
         from reflexio.cli.utils import ensure_requested_ports_available
         from reflexio.config_file import FILE_FORMAT_VERSION, LocalConfigFile
